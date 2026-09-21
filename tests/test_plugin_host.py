@@ -10,6 +10,7 @@ from app_plugins.api import (
     TASK_CONTEXT_MENU,
     TOOLS_MENU,
     PluginCommand,
+    PluginMainWidget,
     PluginSettingsPage,
 )
 from app_plugins.builtin.audio_splitter import (
@@ -203,6 +204,63 @@ class PluginHostTests(unittest.TestCase):
         self.assertEqual([action.text() for action in submenu.actions()], ["可见命令"])
         actions[0].trigger()
         self.assertEqual(invoked, [(2, 5)])
+
+    def test_main_menu_commands_support_one_plugin_submenu(self):
+        class GroupedMainPlugin:
+            plugin_id = "grouped_main"
+
+            def register(self, context):
+                for command_id, title in (("one", "第一项"), ("two", "第二项")):
+                    context.register_command(PluginCommand(
+                        command_id,
+                        title,
+                        lambda _rows: None,
+                        frozenset({MAIN_MENU}),
+                        submenu="任务交付",
+                    ))
+
+        self.host.install(GroupedMainPlugin())
+        plugin_menu = self.host.attach_main_menu(QtWidgets.QMenuBar(self.main))
+
+        self.assertEqual(len(plugin_menu.actions()), 1)
+        submenu = plugin_menu.actions()[0].menu()
+        self.assertIsNotNone(submenu)
+        self.assertEqual(submenu.title(), "任务交付")
+        self.assertEqual(
+            [action.text() for action in submenu.actions()],
+            ["第一项", "第二项"],
+        )
+
+    def test_plugin_widget_is_mounted_inside_host_controlled_area(self):
+        class WidgetPlugin:
+            plugin_id = "widget_plugin"
+
+            def __init__(self):
+                self.widget = None
+
+            def create_widget(self, parent):
+                self.widget = QtWidgets.QPushButton("插件按钮", parent)
+                return self.widget
+
+            def register(self, context):
+                context.register_main_widget(PluginMainWidget(
+                    "quick_actions",
+                    self.create_widget,
+                    order=20,
+                ))
+
+        plugin = self.host.install(WidgetPlugin())
+        frame = QtWidgets.QFrame(self.main)
+        layout = QtWidgets.QVBoxLayout(frame)
+        mounted = self.host.attach_main_widget_area(frame, layout)
+
+        self.assertEqual(len(mounted), 1)
+        self.assertIs(plugin.widget.parent(), frame)
+        self.assertIs(layout.itemAt(0).widget(), plugin.widget)
+        self.assertIs(
+            self.host.main_widget_controller("widget_plugin", "quick_actions"),
+            plugin.widget,
+        )
 
     def test_rejects_plugins_requiring_newer_api(self):
         plugin = DemoPlugin()

@@ -5,7 +5,6 @@ import pathlib
 import random
 import shutil
 import traceback
-from datetime import date
 
 from qt_compat import QtWidgets, QtCore, QtGui
 from qt_compat import QDate, pyqtSignal
@@ -21,10 +20,10 @@ from app_plugins.builtin import (
     MusicDuckerPlugin,
     SmartVideoEditorPlugin,
     TaskAudioSubtitlePlugin,
+    TaskDeliveryPlugin,
 )
 from PYUI.main_setting_pyui import MainSettingDialog
 from model.AppTheme import UI_THEME_CONFIG_KEY, apply_ui_theme
-from PYUI.review_status_pyui import ReviewStatusDialog
 from PYUI.utility_managers_pyui import (
     AboutDialog,
     GoogleSheetMonitorDialog,
@@ -44,16 +43,7 @@ from model.ApiKeyHelper import (
 )
 from model.DailyLinkHistory import (
     DAILY_LINK_HISTORY_CONFIG_KEY,
-    daily_link_counts,
-    daily_task_sheet_failure_count,
-    daily_task_sheet_failures,
-    format_daily_links,
-    format_daily_task_sheet_failures,
-    format_person_daily_links,
-    history_dates,
     normalize_daily_link_history,
-    record_daily_person_links,
-    update_daily_task_sheet_results,
 )
 from model.FlowParameterGuard import (
     FLOW_GUARD_CONFIG_KEY,
@@ -78,14 +68,9 @@ from model.GoogleSheetMonitor import (
 )
 from model.OdsHelper import ReadTaskOds2, TaskData, format_task_table_report
 from model.OralVideoDurationChecker import check_oral_video_durations
-from model.ReviewStatusMonitor import (
-    ReviewStatusMonitorThread,
-    normalize_review_status_settings,
-)
-from model.ReviewSubmissionHistory import review_history_snapshot
+from model.ReviewStatusMonitor import normalize_review_status_settings
 from model.SubtitleHelper import generate_srt_whisper_only, get_text_language
 from model.TaskResultOrganizer import (
-    TaskResultOrganizerThread,
     load_effective_config as load_task_result_config,
     migrate_legacy_task_result_config,
 )
@@ -105,124 +90,6 @@ from model.TaskTableSchema import (
 )
 from model.UiInterval import IntervalPrompt
 from model.VideoHelper import FeatureMatcher
-
-
-class UpdatedFilesDetectionDialog(QtWidgets.QDialog):
-    """Show the files exported in this run before choosing review behavior."""
-
-    video_suffixes = {'.mp4', '.mov', '.m4v', '.avi', '.mkv', '.webm'}
-
-    def __init__(self, updated_files, parent=None):
-        super().__init__(parent)
-        self.updated_files = [pathlib.Path(path) for path in updated_files]
-        self.selected_mode = 'cancel'
-        self.setWindowTitle('选择视频审核方式')
-        self.setModal(True)
-        self.resize(900, 520)
-
-        layout = QtWidgets.QVBoxLayout(self)
-        video_count = sum(
-            path.suffix.lower() in self.video_suffixes
-            for path in self.updated_files
-        )
-        summary_label = QtWidgets.QLabel(
-            f'本次实际新增/更新 {len(self.updated_files)} 个文件，'
-            f'其中视频 {video_count} 个。\n'
-            '双击文件可先用系统默认程序打开，确认后再选择本轮处理方式。'
-        )
-        summary_label.setWordWrap(True)
-        layout.addWidget(summary_label)
-
-        self.file_tree = QtWidgets.QTreeWidget(self)
-        self.file_tree.setColumnCount(3)
-        self.file_tree.setHeaderLabels(['文件名', '大小', '所在目录'])
-        self.file_tree.setRootIsDecorated(False)
-        self.file_tree.setAlternatingRowColors(True)
-        self.file_tree.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
-        self.file_tree.setToolTip('双击文件可用系统默认程序打开')
-        self.file_tree.itemDoubleClicked.connect(self.openFileItem)
-        layout.addWidget(self.file_tree, 1)
-
-        for file_path in self.updated_files:
-            item = QtWidgets.QTreeWidgetItem([
-                file_path.name,
-                self.formatFileSize(file_path),
-                str(file_path.parent),
-            ])
-            item.setData(0, QtCore.Qt.UserRole, str(file_path))
-            item.setToolTip(0, str(file_path))
-            item.setToolTip(2, str(file_path.parent))
-            self.file_tree.addTopLevelItem(item)
-
-        header = self.file_tree.header()
-        header.setSectionResizeMode(0, QHeaderView.Stretch)
-        header.setSectionResizeMode(1, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(2, QHeaderView.Interactive)
-        self.file_tree.setColumnWidth(2, 330)
-        if self.file_tree.topLevelItemCount():
-            self.file_tree.setCurrentItem(self.file_tree.topLevelItem(0))
-
-        button_layout = QtWidgets.QHBoxLayout()
-        open_button = QtWidgets.QPushButton('打开选中文件', self)
-        open_button.clicked.connect(self.openSelectedFile)
-        button_layout.addWidget(open_button)
-        button_layout.addStretch(1)
-
-        cancel_button = QtWidgets.QPushButton('取消本次操作', self)
-        cancel_button.setToolTip('停止本次整理和上传，并保留文件列表供下次继续')
-        cancel_button.clicked.connect(self.reject)
-        button_layout.addWidget(cancel_button)
-
-        manual_button = QtWidgets.QPushButton('逐个手动审核', self)
-        manual_button.setToolTip('逐个显示抽帧图，由你人工判断')
-        manual_button.clicked.connect(lambda: self.chooseMode('manual'))
-        button_layout.addWidget(manual_button)
-
-        skip_button = QtWidgets.QPushButton('无需检测', self)
-        skip_button.setToolTip('不做检测，本轮视频全部按正常文件处理')
-        skip_button.clicked.connect(lambda: self.chooseMode('skip'))
-        button_layout.addWidget(skip_button)
-
-        ai_button = QtWidgets.QPushButton('使用 AI 检测', self)
-        ai_button.setToolTip('使用 AI 检测视频元素并自动分流')
-        ai_button.clicked.connect(lambda: self.chooseMode('ai'))
-        ai_button.setDefault(True)
-        button_layout.addWidget(ai_button)
-        layout.addLayout(button_layout)
-
-    @staticmethod
-    def formatFileSize(file_path):
-        try:
-            size = file_path.stat().st_size
-        except OSError:
-            return '无法读取'
-        units = ('B', 'KB', 'MB', 'GB', 'TB')
-        value = float(size)
-        for unit in units:
-            if value < 1024 or unit == units[-1]:
-                return f'{value:.0f} {unit}' if unit == 'B' else f'{value:.1f} {unit}'
-            value /= 1024
-        return str(size)
-
-    def chooseMode(self, mode):
-        self.selected_mode = mode
-        self.accept()
-
-    def openSelectedFile(self):
-        item = self.file_tree.currentItem()
-        if item is not None:
-            self.openFileItem(item)
-
-    def openFileItem(self, item, _column=0):
-        file_path = pathlib.Path(str(item.data(0, QtCore.Qt.UserRole) or ''))
-        if not file_path.is_file():
-            QMessageBox.warning(self, '打开文件', f'文件不存在：\n{file_path}')
-            return
-        opened = QtGui.QDesktopServices.openUrl(
-            QtCore.QUrl.fromLocalFile(str(file_path.resolve()))
-        )
-        if not opened:
-            QMessageBox.warning(self, '打开文件', f'无法调用系统默认程序：\n{file_path}')
 
 
 class OralDurationCheckThread(QtCore.QThread):
@@ -826,207 +693,6 @@ class OralDurationCheckResultDialog(QtWidgets.QDialog):
             QMessageBox.warning(self, '打开任务提交表格', '无法打开任务提交表格链接。')
 
 
-class DailyLinksDialog(QtWidgets.QDialog):
-    link_role = QtCore.Qt.UserRole
-
-    def __init__(self, history, parent=None):
-        super().__init__(parent)
-        self.history = normalize_daily_link_history(history)
-        self.setWindowTitle('每日链接与任务表记录（最近 7 天）')
-        self.resize(900, 680)
-
-        layout = QtWidgets.QVBoxLayout(self)
-        hint = QtWidgets.QLabel(
-            '上传完成后的人员文件夹链接会按日期和批次保存在这里。'
-            '双击链接可以直接打开。',
-            self,
-        )
-        hint.setWordWrap(True)
-        layout.addWidget(hint)
-
-        date_row = QtWidgets.QHBoxLayout()
-        date_row.addWidget(QtWidgets.QLabel('日期：', self))
-        self.date_combo = QtWidgets.QComboBox(self)
-        date_row.addWidget(self.date_combo, 1)
-        layout.addLayout(date_row)
-
-        self.link_tree = QtWidgets.QTreeWidget(self)
-        self.link_tree.setHeaderLabels(['收件人', '上传批次', 'Google Drive 链接'])
-        self.link_tree.setRootIsDecorated(True)
-        self.link_tree.setAlternatingRowColors(True)
-        self.link_tree.header().setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeToContents)
-        self.link_tree.header().setSectionResizeMode(1, QtWidgets.QHeaderView.ResizeToContents)
-        self.link_tree.header().setSectionResizeMode(2, QtWidgets.QHeaderView.Stretch)
-        layout.addWidget(self.link_tree, 1)
-
-        self.failure_title_label = QtWidgets.QLabel('任务提交表待核对视频', self)
-        failure_font = self.failure_title_label.font()
-        failure_font.setBold(True)
-        self.failure_title_label.setFont(failure_font)
-        layout.addWidget(self.failure_title_label)
-
-        self.failure_tree = QtWidgets.QTreeWidget(self)
-        self.failure_tree.setHeaderLabels(['视频名称', '上传批次', '原因'])
-        self.failure_tree.setAlternatingRowColors(True)
-        self.failure_tree.setMaximumHeight(190)
-        self.failure_tree.header().setSectionResizeMode(0, QtWidgets.QHeaderView.Stretch)
-        self.failure_tree.header().setSectionResizeMode(1, QtWidgets.QHeaderView.ResizeToContents)
-        self.failure_tree.header().setSectionResizeMode(2, QtWidgets.QHeaderView.Stretch)
-        layout.addWidget(self.failure_tree)
-
-        failure_buttons = QtWidgets.QHBoxLayout()
-        self.copy_failure_btn = QtWidgets.QPushButton('复制选中名称', self)
-        self.copy_all_failures_btn = QtWidgets.QPushButton('复制全部待核对信息', self)
-        failure_buttons.addWidget(self.copy_failure_btn)
-        failure_buttons.addWidget(self.copy_all_failures_btn)
-        failure_buttons.addStretch(1)
-        layout.addLayout(failure_buttons)
-
-        self.status_label = QtWidgets.QLabel('', self)
-        layout.addWidget(self.status_label)
-
-        buttons = QtWidgets.QHBoxLayout()
-        self.open_btn = QtWidgets.QPushButton('打开选中链接', self)
-        self.copy_link_btn = QtWidgets.QPushButton('复制选中链接', self)
-        self.copy_person_btn = QtWidgets.QPushButton('复制选中人员', self)
-        self.copy_day_btn = QtWidgets.QPushButton('复制当天全部', self)
-        close_btn = QtWidgets.QPushButton('关闭', self)
-        buttons.addWidget(self.open_btn)
-        buttons.addWidget(self.copy_link_btn)
-        buttons.addWidget(self.copy_person_btn)
-        buttons.addStretch(1)
-        buttons.addWidget(self.copy_day_btn)
-        buttons.addWidget(close_btn)
-        layout.addLayout(buttons)
-
-        for day_key in history_dates(self.history):
-            day = date.fromisoformat(day_key)
-            people_count, link_count = daily_link_counts(self.history, day_key)
-            failure_count = daily_task_sheet_failure_count(self.history, day_key)
-            self.date_combo.addItem(
-                f'{day:%Y-%m-%d}（{people_count} 人 / {link_count} 个链接 / '
-                f'{failure_count} 个待核对）',
-                day_key,
-            )
-        if self.date_combo.count() == 0:
-            self.date_combo.addItem('最近 7 天暂无已保存链接', '')
-            self.date_combo.setEnabled(False)
-
-        self.date_combo.currentIndexChanged.connect(self.refreshLinks)
-        self.link_tree.itemDoubleClicked.connect(lambda item, column: self.openSelectedLink())
-        self.open_btn.clicked.connect(self.openSelectedLink)
-        self.copy_link_btn.clicked.connect(self.copySelectedLink)
-        self.copy_person_btn.clicked.connect(self.copySelectedPerson)
-        self.copy_day_btn.clicked.connect(self.copyCurrentDay)
-        self.copy_failure_btn.clicked.connect(self.copySelectedFailure)
-        self.copy_all_failures_btn.clicked.connect(self.copyAllFailures)
-        close_btn.clicked.connect(self.accept)
-        self.refreshLinks()
-
-    def currentDayKey(self):
-        return str(self.date_combo.currentData() or '')
-
-    def refreshLinks(self, _index=None):
-        self.link_tree.clear()
-        day_key = self.currentDayKey()
-        people = self.history.get(day_key, {}).get('people', {})
-        for person, slots in sorted(people.items()):
-            person_item = QtWidgets.QTreeWidgetItem([person, '', f'{len(slots)} 个链接'])
-            self.link_tree.addTopLevelItem(person_item)
-            for slot, entry in sorted(slots.items()):
-                link = str(entry.get('link', '')).strip()
-                child = QtWidgets.QTreeWidgetItem(['', slot, link])
-                child.setData(0, self.link_role, link)
-                person_item.addChild(child)
-            person_item.setExpanded(True)
-        failures = daily_task_sheet_failures(self.history, day_key)
-        self.failure_tree.clear()
-        for failure in failures:
-            item = QtWidgets.QTreeWidgetItem([
-                failure['file_name'],
-                failure['slot'],
-                failure['reason'],
-            ])
-            item.setData(0, self.link_role, failure['file_name'])
-            self.failure_tree.addTopLevelItem(item)
-        self.failure_title_label.setText(
-            f'任务提交表待核对视频（{len(failures)}）'
-        )
-        people_count, link_count = daily_link_counts(self.history, day_key)
-        if day_key:
-            self.status_label.setText(
-                f'当天共 {people_count} 人、{link_count} 个批次链接；'
-                f'{len(failures)} 个视频需要核对任务提交表。'
-            )
-        else:
-            self.status_label.setText('上传成功后，链接会自动出现在这里。')
-
-    def selectedLink(self):
-        item = self.link_tree.currentItem()
-        if item is None:
-            return ''
-        return str(item.data(0, self.link_role) or '').strip()
-
-    def selectedPersonItem(self):
-        item = self.link_tree.currentItem()
-        if item is None:
-            return None
-        return item.parent() or item
-
-    def openSelectedLink(self):
-        link = self.selectedLink()
-        if not link:
-            QMessageBox.information(self, '查看每日链接', '请先选中一条具体链接。')
-            return
-        if not QtGui.QDesktopServices.openUrl(QtCore.QUrl(link)):
-            QMessageBox.warning(self, '查看每日链接', f'无法打开链接：\n{link}')
-
-    def copyText(self, text, message):
-        if not text:
-            return
-        set_internal_clipboard_text(text)
-        self.status_label.setText(message)
-
-    def copySelectedLink(self):
-        link = self.selectedLink()
-        if not link:
-            QMessageBox.information(self, '查看每日链接', '请先选中一条具体链接。')
-            return
-        self.copyText(link, '已复制选中的链接。')
-
-    def copySelectedPerson(self):
-        item = self.selectedPersonItem()
-        if item is None:
-            QMessageBox.information(self, '查看每日链接', '请先选中一位收件人。')
-            return
-        person = item.text(0).strip()
-        slots = self.history.get(self.currentDayKey(), {}).get('people', {}).get(person, {})
-        self.copyText(format_person_daily_links(person, slots), f'已复制 {person} 的当天链接。')
-
-    def copyCurrentDay(self):
-        day_key = self.currentDayKey()
-        _people_count, link_count = daily_link_counts(self.history, day_key)
-        if not day_key or not link_count:
-            QMessageBox.information(self, '查看每日链接', '当天没有可以复制的链接。')
-            return
-        self.copyText(format_daily_links(self.history, day_key), '已复制当天全部链接。')
-
-    def copySelectedFailure(self):
-        item = self.failure_tree.currentItem()
-        if item is None:
-            QMessageBox.information(self, '任务表待核对', '请先选中一个视频。')
-            return
-        self.copyText(item.text(0).strip(), '已复制选中的视频名称。')
-
-    def copyAllFailures(self):
-        day_key = self.currentDayKey()
-        text = format_daily_task_sheet_failures(self.history, day_key)
-        if not text:
-            QMessageBox.information(self, '任务表待核对', '当天没有待核对视频。')
-            return
-        self.copyText(text, '已复制当天全部待核对视频。')
-
-
 class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
     config_name = "config.json"
     google_sheet_monitor_settings_key = 'google_sheet_monitor'
@@ -1133,6 +799,7 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
         self.setupNotificationTray()
         self.plugin_host = PluginHost(self)
         self.inventory_plugin = self.plugin_host.install(InventoryPlugin())
+        self.task_delivery_plugin = self.plugin_host.install(TaskDeliveryPlugin())
         self.chrome_plugin = self.plugin_host.install(ChromeLauncherPlugin())
         self.codex_account_switcher_plugin = self.plugin_host.install(
             CodexAccountSwitcherPlugin()
@@ -1148,16 +815,9 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
         self.daily_tasks_plugin = self.plugin_host.install(DailyTasksPlugin())
         self.plugin_host.attach_main_menu(self.main_menu_bar)
         self.plugin_host.attach_tools_menu(self.tools_menu)
-        self.plugin_host.start_all()
         self.setupUtilityManagerButtons()
+        self.plugin_host.start_all()
 
-        self.task_result_hotkey_manager = GlobalHotkeyManager(
-            self,
-            hotkey_id=TASK_RESULT_HOTKEY_ID,
-        )
-        self.task_result_hotkey_manager.activated.connect(
-            self.triggerTaskResultFromHotkey
-        )
         self.load_task_hotkey_manager = GlobalHotkeyManager(
             self,
             hotkey_id=LOAD_TASK_HOTKEY_ID,
@@ -1189,24 +849,15 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
             self.toggleTaskDirectory
         )
         self.toggleTaskDirectory(False)
-        self.tidy_task_result_btn.clicked.connect(lambda clicked:self.tidyTaskResult())
         self._task_result_button_text = self.tidy_task_result_btn.text()
-        self.daily_links_btn.clicked.connect(lambda clicked: self.openDailyLinks())
         self.google_sheet_monitor_btn.clicked.connect(
             lambda clicked: self.openGoogleSheetMonitor()
-        )
-        self.review_status_btn.clicked.connect(
-            lambda clicked: self.openReviewStatus()
         )
         self.setting_btn.clicked.connect(lambda clicked:self.openSettings())
         self.about_btn.clicked.connect(lambda clicked: self.openAbout())
         self.about_btn.installEventFilter(self)
         self.printSignal.connect(self.print)
         # 快捷键冲突不能阻止主窗口启动；启动阶段只记录日志。
-        self.registerTaskResultGlobalHotkey(
-            self.task_result_global_hotkey,
-            show_error=False,
-        )
         self.registerLoadTaskGlobalHotkey(
             self.load_task_global_hotkey,
             show_error=False,
@@ -1222,7 +873,6 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
 
         self.startGoogleSheetMonitor()
         self.startFlowParameterGuard()
-        self.startReviewStatusMonitor()
 
         self.audio_settings = self._load_audio_settings()
 
@@ -1526,19 +1176,35 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
                 item.setText(field_label(schema, field_name))
 
     def setupUtilityManagerButtons(self):
-        self.daily_links_btn = QtWidgets.QPushButton(self.common_tools)
-        self.daily_links_btn.setObjectName("daily_links_btn")
-        self.manager_buttons_layout = QtWidgets.QHBoxLayout()
-        self.manager_buttons_layout.setObjectName("manager_buttons_layout")
+        legacy_tidy_button = self.tidy_task_result_btn
+        insert_index = self.verticalLayout.indexOf(legacy_tidy_button)
+        self.verticalLayout.removeWidget(legacy_tidy_button)
+        legacy_tidy_button.hide()
+        legacy_tidy_button.deleteLater()
+
+        self.plugin_main_frame = QtWidgets.QFrame(self.common_tools)
+        self.plugin_main_frame.setObjectName("plugin_main_frame")
+        self.plugin_main_frame.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+        self.plugin_main_layout = QtWidgets.QVBoxLayout(self.plugin_main_frame)
+        self.plugin_main_layout.setContentsMargins(0, 0, 0, 0)
+        self.plugin_main_layout.setSpacing(8)
+        self.verticalLayout.insertWidget(insert_index, self.plugin_main_frame)
+        self.plugin_host.attach_main_widget_area(
+            self.plugin_main_frame,
+            self.plugin_main_layout,
+        )
+        quick_actions = self.task_delivery_plugin.quick_actions
+        if quick_actions is None:
+            raise RuntimeError("任务交付插件没有创建主界面快捷控件。")
+        # Compatibility aliases keep existing host tests and external helpers
+        # working while ownership of the buttons moves to the plugin.
+        self.tidy_task_result_btn = quick_actions.organize_button
+        self.daily_links_btn = quick_actions.daily_links_button
+        self.review_status_btn = quick_actions.review_status_button
+
         self.google_sheet_monitor_btn = QtWidgets.QPushButton(self.common_tools)
         self.google_sheet_monitor_btn.setObjectName("google_sheet_monitor_btn")
-        self.review_status_btn = QtWidgets.QPushButton(self.common_tools)
-        self.review_status_btn.setObjectName("review_status_btn")
-        self.manager_buttons_layout.addWidget(self.google_sheet_monitor_btn)
-        self.manager_buttons_layout.addWidget(self.review_status_btn)
-        insert_index = self.verticalLayout.indexOf(self.tidy_task_result_btn) + 1
-        self.verticalLayout.insertWidget(insert_index, self.daily_links_btn)
-        self.verticalLayout.insertLayout(insert_index + 1, self.manager_buttons_layout)
+        self.verticalLayout.insertWidget(insert_index + 1, self.google_sheet_monitor_btn)
         self.updateDailyLinksButton()
         self.updateGoogleSheetMonitorButton()
         self.updateReviewStatusButton()
@@ -1580,214 +1246,33 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
             self._aux_click_reset_timer.stop()
         return super().eventFilter(watched, event)
 
+    # Compatibility entry points retained for scripts that call the old host API.
     def updateDailyLinksButton(self):
-        today_key = date.today().isoformat()
-        people_count, link_count = daily_link_counts(self.daily_link_history, today_key)
-        failure_count = daily_task_sheet_failure_count(
-            self.daily_link_history,
-            today_key,
-        )
-        self.daily_links_btn.setText('查看每日链接')
-        self.daily_links_btn.setToolTip(
-            f'今天已保存 {people_count} 人、{link_count} 个批次链接；'
-            f'任务提交表有 {failure_count} 个视频待核对。\n'
-            '黄色表示今天已有链接，红色表示还有待核对视频。'
-        )
-        if failure_count:
-            self.daily_links_btn.setStyleSheet('background-color:#FFD6D6;color:#202124;')
-        elif link_count:
-            self.daily_links_btn.setStyleSheet('background-color:#FFF1B8;color:#202124;')
-        else:
-            self.daily_links_btn.setStyleSheet('')
+        return self.task_delivery_plugin.controller.update_daily_links_button()
 
     def openDailyLinks(self):
-        normalized = normalize_daily_link_history(self.daily_link_history)
-        if normalized != self.daily_link_history:
-            self.daily_link_history = normalized
-            self.saveCurrentConfig()
-        DailyLinksDialog(self.daily_link_history, self).exec()
+        return self.task_delivery_plugin.open_daily_links()
 
     def updateReviewStatusButton(self, snapshot=None):
-        if snapshot is None:
-            snapshot = review_history_snapshot()
-        passed_count = int(snapshot.get('passed_count', 0) or 0)
-        changes_count = int(snapshot.get('needs_changes_count', 0) or 0)
-        if changes_count:
-            self.review_status_btn.setText(
-                '审核提醒：需修改 {}'.format(changes_count)
-            )
-        elif passed_count:
-            self.review_status_btn.setText(
-                '审核提醒：待发送 {}'.format(passed_count)
-            )
-        else:
-            self.review_status_btn.setText('审核提醒')
-        self.review_status_btn.setToolTip(
-            '审核通过待发送：{} 个；需要修改：{} 个。\n'
-            '红色优先表示存在需要修改的视频，绿色表示有审核通过的视频待发送。\n'
-            '双击列表中的视频可先打开检查。'.format(
-                passed_count,
-                changes_count,
-            )
-        )
-        if changes_count:
-            self.review_status_btn.setStyleSheet('background-color:#FFD6D6;color:#202124;')
-        elif passed_count:
-            self.review_status_btn.setStyleSheet('background-color:#DDF3E4;color:#202124;')
-        else:
-            self.review_status_btn.setStyleSheet('')
+        return self.task_delivery_plugin.controller.update_review_status_button(snapshot)
 
     def openReviewStatus(self):
-        ReviewStatusDialog(parent=self).exec()
-        self.updateReviewStatusButton()
+        return self.task_delivery_plugin.open_review_status()
 
     def startReviewStatusMonitor(self):
-        settings = self.review_status_settings
-        config = self.review_status_config
-        if not settings.get('review_status_monitor_enabled'):
-            self.review_status_state = '未启用'
-            self.updateReviewStatusButton()
-            return
-        if not str(config.get('review_sheet_url') or '').strip():
-            self.review_status_state = '未配置审核表'
-            self.updateReviewStatusButton()
-            return
-        if self.review_status_thread is not None:
-            return
-        thread = ReviewStatusMonitorThread(config, parent=self)
-        thread.status.connect(self.onReviewStatusMonitorStatus)
-        thread.snapshot.connect(self.updateReviewStatusButton)
-        thread.changed.connect(self.onReviewStatusChanged)
-        thread.log.connect(
-            lambda message: self.appendLog('[审核提醒] ' + message, end='')
-        )
-        thread.finished.connect(self.onReviewStatusMonitorFinished)
-        self.review_status_thread = thread
-        self.review_status_state = '正在启动…'
-        thread.start()
+        return self.task_delivery_plugin.controller.start_review_status_monitor()
 
     def stopReviewStatusMonitor(self, wait_ms=10000):
-        thread = self.review_status_thread
-        if thread is None:
-            return True
-        if thread.isRunning():
-            thread.stop()
-            if not thread.wait(wait_ms):
-                return False
-        if self.review_status_thread is thread:
-            self.review_status_thread = None
-        thread.deleteLater()
-        return True
+        return self.task_delivery_plugin.controller.stop_review_status_monitor(wait_ms)
 
     def restartReviewStatusMonitor(self):
-        if not self.stopReviewStatusMonitor():
-            QMessageBox.warning(self, '审核提醒', '后台表格检查仍在停止，请稍后再试。')
-            return False
-        self.startReviewStatusMonitor()
-        return True
+        return self.task_delivery_plugin.controller.restart_review_status_monitor()
 
     def requestReviewStatusCheck(self):
-        thread = self.review_status_thread
-        if thread is None:
-            self.startReviewStatusMonitor()
-            thread = self.review_status_thread
-        if thread is not None:
-            thread.request_check()
-
-    def onReviewStatusMonitorStatus(self, status):
-        status = str(status)
-        if status != self.review_status_state:
-            self.review_status_state = status
-            if status == '异常':
-                self.appendLog('[审核提醒] 监视器出现异常，请查看后续错误日志。', end='')
-
-    def onReviewStatusChanged(self, result):
-        passed = result.get('passed', [])
-        needs_changes = result.get('needs_changes', [])
-        self.updateReviewStatusButton(result.get('snapshot'))
-        if needs_changes:
-            names = '、'.join(
-                str(item.get('name') or '未命名视频') for item in needs_changes[:3]
-            )
-            suffix = ' 等' if len(needs_changes) > 3 else ''
-            self.showDesktopNotification(
-                '有视频需要修改',
-                '{} 个审核视频需要修改：{}{}'.format(
-                    len(needs_changes), names, suffix
-                ),
-                critical=True,
-            )
-            self.appendLog(
-                '[审核提醒] {} 个视频需要修改。'.format(len(needs_changes)),
-                end='',
-            )
-        if passed:
-            admins = {
-                str(item.get('admin') or '未填写管理员') for item in passed
-            }
-            self.showDesktopNotification(
-                '审核通过，待发送',
-                '{} 个视频已通过，请发给对应的 {} 位管理员。'.format(
-                    len(passed), len(admins)
-                ),
-            )
-            self.appendLog(
-                '[审核提醒] {} 个视频已通过，待发给 {} 位管理员。'.format(
-                    len(passed), len(admins)
-                ),
-                end='',
-            )
-
-    def onReviewStatusMonitorFinished(self):
-        thread = self.sender()
-        if self.review_status_thread is thread:
-            self.review_status_thread = None
+        return self.task_delivery_plugin.controller.request_review_status_check()
 
     def recordTaskResultHistory(self, result):
-        person_links = result.get('person_folder_links')
-        upload_date = result.get('upload_date') or date.today().isoformat()
-        upload_slot = result.get('upload_slot') or '未标记'
-        history = self.daily_link_history
-        saved_link_count = 0
-        failed_file_count = 0
-        try:
-            if isinstance(person_links, dict) and person_links:
-                history, saved_link_count = record_daily_person_links(
-                    history,
-                    upload_date,
-                    upload_slot,
-                    person_links,
-                )
-            history, failed_file_count = update_daily_task_sheet_results(
-                history,
-                upload_date,
-                upload_slot,
-                result.get('task_sheet_failed_files', ()),
-                result.get('task_sheet_successful_files', ()),
-            )
-        except (TypeError, ValueError) as error:
-            self.appendLog(f'[每日记录] 保存失败：{error}', end='')
-            return 0, 0
-        if history == self.daily_link_history:
-            return saved_link_count, failed_file_count
-        self.daily_link_history = history
-        if not self.saveCurrentConfig():
-            return 0, 0
-        self.updateDailyLinksButton()
-        if saved_link_count:
-            self.appendLog(
-                f'[每日链接] 已保存 {upload_date} / 批次 {upload_slot}：'
-                f'{saved_link_count} 人',
-                end='',
-            )
-        if failed_file_count:
-            self.appendLog(
-                f'[任务提交表] {failed_file_count} 个视频未能确认填写成功，'
-                '已加入每日待核对记录。',
-                end='',
-            )
-        return saved_link_count, failed_file_count
-
+        return self.task_delivery_plugin.controller.record_task_result_history(result)
     def setupNotificationTray(self):
         if not QtWidgets.QSystemTrayIcon.isSystemTrayAvailable():
             return
@@ -2411,120 +1896,24 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
 
 
     def tidyTaskResult(self):
-        if self.task_result_thread is not None and self.task_result_thread.isRunning():
-            QMessageBox.information(self, '整理任务结果', '整理或上传正在进行，请等待当前任务完成。')
-            return
-
-        base_dir = pathlib.Path(self.task_path_edit.text().strip())
-        if not base_dir.is_dir():
-            self.Critical('任务路径不是一个目录！！')
-            return
-
-        config = load_task_result_config(self.load_config())
-        selected_date = self.dateEdit.date()
-        task_date = date(selected_date.year(), selected_date.month(), selected_date.day())
-        thread = TaskResultOrganizerThread(
-            [task_date],
-            base_dir,
-            config,
-            self,
-            interactive_detection_choice=True,
-        )
-        thread.log.connect(self.onTaskResultLog)
-        thread.detection_choice_requested.connect(
-            self.onTaskResultDetectionChoiceRequested
-        )
-        thread.completed.connect(self.onTaskResultCompleted)
-        thread.failed.connect(self.onTaskResultFailed)
-        thread.finished.connect(self.onTaskResultFinished)
-        self.task_result_thread = thread
-        self.tidy_task_result_btn.setEnabled(False)
-        self.tidy_task_result_btn.setText('正在整理/上传…')
-        self.appendLog(f'开始整理任务结果：{task_date:%Y-%m-%d}', end='')
-        thread.start()
+        return self.task_delivery_plugin.organize_results()
 
     def onTaskResultLog(self, text):
-        self.appendLog(text, end='')
+        return self.task_delivery_plugin.controller.on_task_result_log(text)
 
     def onTaskResultDetectionChoiceRequested(self, updated_files):
-        selected_mode = 'cancel'
-        try:
-            dialog = UpdatedFilesDetectionDialog(updated_files, self)
-            if dialog.exec() == QtWidgets.QDialog.Accepted:
-                selected_mode = dialog.selected_mode
-        except BaseException as error:
-            self.appendLog(
-                f'显示更新文件列表失败，已取消本次操作：{error}',
-                end='',
-            )
-        finally:
-            thread = self.task_result_thread
-            if thread is not None:
-                thread.set_detection_choice(selected_mode)
-
-        mode_names = {
-            'ai': '使用 AI 检测',
-            'skip': '无需检测',
-            'manual': '逐个手动审核',
-            'cancel': '取消本次操作，保留待处理列表',
-        }
-        self.appendLog(
-            f'本轮视频处理方式：{mode_names.get(selected_mode, selected_mode)}',
-            end='',
+        return self.task_delivery_plugin.controller.on_detection_choice_requested(
+            updated_files
         )
 
     def onTaskResultCompleted(self, result):
-        if result.get('cancelled'):
-            QMessageBox.information(
-                self,
-                '已取消整理任务结果',
-                str(result.get('message') or '本次操作已取消。'),
-            )
-            return
-
-        if bool(load_task_result_config(self.load_config()).get('open_result_dir', True)):
-            for directory in result.get('result_dirs', []):
-                path = pathlib.Path(directory)
-                if path.exists():
-                    try:
-                        os.startfile(str(path))
-                    except OSError as error:
-                        self.appendLog(f'打开结果目录失败：{error}', end='')
-
-        saved_link_count, failed_file_count = self.recordTaskResultHistory(result)
-        # The organizer records newly submitted review links after the sheet
-        # write succeeds.  Wake the monitor now instead of waiting for its
-        # regular interval.
-        self.requestReviewStatusCheck()
-        message = str(result.get('message') or '整理完成')
-        changed_count = result.get('changed_file_count', 0)
-        uploaded_count = result.get('uploaded_file_count', 0)
-        details = f'{message}\n本次新增/更新：{changed_count} 个文件'
-        if result.get('upload_batch'):
-            details += f"\n上传批次：{result['upload_batch']}"
-            details += f'\n成功同步：{uploaded_count} 个文件'
-        if saved_link_count:
-            details += f'\n每日链接汇总：已保存 {saved_link_count} 人（保留 7 天）'
-        if failed_file_count:
-            details += f'\n任务提交表待核对：{failed_file_count} 个视频'
-        QMessageBox.information(self, '整理任务结果', details)
+        return self.task_delivery_plugin.controller.on_task_result_completed(result)
 
     def onTaskResultFailed(self, message):
-        QMessageBox.critical(
-            self,
-            '整理任务结果失败',
-            f'{message}\n\n详细过程已写入主界面日志。',
-        )
+        return self.task_delivery_plugin.controller.on_task_result_failed(message)
 
     def onTaskResultFinished(self):
-        thread = self.task_result_thread
-        self.task_result_thread = None
-        self.tidy_task_result_btn.setEnabled(True)
-        self.tidy_task_result_btn.setText(self._task_result_button_text or '整理任务结果')
-        if thread is not None:
-            thread.deleteLater()
-
-
+        return self.task_delivery_plugin.controller.on_task_result_finished()
     def assignVideo(self):
         if self.assign_video_thread is not None and self.assign_video_thread.isRunning():
             self.assign_video_thread.requestInterruption()
@@ -2650,6 +2039,8 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
         self.activateWindow()
 
     def triggerTaskResultFromHotkey(self):
+        if hasattr(self, "task_delivery_plugin"):
+            return self.task_delivery_plugin.controller.trigger_global_hotkey()
         self.activateForGlobalAction()
         self.tidyTaskResult()
 
@@ -2658,16 +2049,24 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
         self.loadTask()
 
     def updateActionShortcutTooltips(self):
-        self.tidy_task_result_btn.setToolTip(
-            f'整理并上传当前任务结果。系统全局快捷键：'
-            f'{self.task_result_global_hotkey}'
-        )
+        if hasattr(self, "task_delivery_plugin"):
+            self.task_delivery_plugin.controller.update_shortcut_tooltip()
+        else:
+            self.tidy_task_result_btn.setToolTip(
+                f'整理并上传当前任务结果。系统全局快捷键：'
+                f'{self.task_result_global_hotkey}'
+            )
         self.load_btn.setToolTip(
             f'按当前任务路径和目标日期加载任务。系统全局快捷键：'
             f'{self.load_task_global_hotkey}'
         )
 
     def registerTaskResultGlobalHotkey(self, shortcut, show_error=True):
+        if hasattr(self, "task_delivery_plugin"):
+            return self.task_delivery_plugin.controller.register_hotkey(
+                shortcut,
+                show_error=show_error,
+            )
         return self.registerGlobalHotkey(
             self.task_result_hotkey_manager,
             shortcut,
@@ -2694,11 +2093,6 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
                 settings.get(UI_THEME_CONFIG_KEY),
             )
             self.audio_settings = self._load_audio_settings()
-            saved_config = self.load_config()
-            self.review_status_settings = normalize_review_status_settings(
-                saved_config
-            )
-            self.review_status_config = load_task_result_config(saved_config)
             previous_flow_guard_settings = dict(self.flow_guard_settings)
             self.flow_guard_settings = normalize_flow_guard_settings(
                 settings.get(FLOW_GUARD_CONFIG_KEY)
@@ -2712,14 +2106,7 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
                 self._set_flow_guard_action_checked(
                     previous_flow_guard_settings["enabled"]
                 )
-            review_monitor_restarted = self.restartReviewStatusMonitor()
             registration_results = (
-                self.registerTaskResultGlobalHotkey(
-                    settings.get(
-                        TASK_RESULT_HOTKEY_CONFIG_KEY,
-                        self.task_result_global_hotkey,
-                    )
-                ),
                 self.registerLoadTaskGlobalHotkey(
                     settings.get(
                         LOAD_TASK_HOTKEY_CONFIG_KEY,
@@ -2735,14 +2122,13 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
             if (
                 all(registration_results)
                 and flow_guard_restarted
-                and review_monitor_restarted
             ):
                 QMessageBox.information(
                     self,
                     '设置',
                     '设置已保存。\n'
                     f'启动下一个浏览器：{self.chrome_plugin.global_hotkey}\n'
-                    f'整理任务结果：{self.task_result_global_hotkey}\n'
+                    f'整理任务结果：{self.task_delivery_plugin.global_hotkey}\n'
                     f'加载当前任务：{self.load_task_global_hotkey}\n'
                     f'库存与素材管理器：{self.inventory_plugin.global_hotkey}\n'
                     'Flow 参数守卫：{}（{}）'.format(
@@ -2845,8 +2231,6 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
             event.ignore()
             return
 
-        if self.task_result_hotkey_manager is not None:
-            self.task_result_hotkey_manager.close()
         if self.load_task_hotkey_manager is not None:
             self.load_task_hotkey_manager.close()
         self.plugin_host.stop_all()
@@ -2886,16 +2270,12 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
         existing_config["subtitle_include_line_breaks"] = self.subtitle_line_break_checkbox.isChecked()
         existing_config["subtitle_max_words_per_block"] = self.subtitle_max_words_spinbox.value()
         existing_config["subtitle_block_gap_ms"] = self.subtitle_gap_ms_spinbox.value()
-        existing_config[TASK_RESULT_HOTKEY_CONFIG_KEY] = self.task_result_global_hotkey
         existing_config[LOAD_TASK_HOTKEY_CONFIG_KEY] = self.load_task_global_hotkey
         existing_config[self.google_sheet_monitor_settings_key] = dict(
             self.google_sheet_monitor_settings
         )
         existing_config[FLOW_GUARD_CONFIG_KEY] = normalize_flow_guard_settings(
             self.flow_guard_settings
-        )
-        existing_config[DAILY_LINK_HISTORY_CONFIG_KEY] = normalize_daily_link_history(
-            self.daily_link_history
         )
         self.plugin_host.update_runtime_config(existing_config)
         
@@ -2927,20 +2307,6 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
         self.flow_guard_settings = normalize_flow_guard_settings(
             dic.get(FLOW_GUARD_CONFIG_KEY)
         )
-        self.review_status_settings = normalize_review_status_settings(dic)
-        self.review_status_config = load_task_result_config(dic)
-        self.daily_link_history = normalize_daily_link_history(
-            dic.get(DAILY_LINK_HISTORY_CONFIG_KEY)
-        )
-        try:
-            self.task_result_global_hotkey = normalize_hotkey_sequence(
-                dic.get(
-                    TASK_RESULT_HOTKEY_CONFIG_KEY,
-                    DEFAULT_TASK_RESULT_HOTKEY,
-                )
-            )
-        except ValueError:
-            self.task_result_global_hotkey = DEFAULT_TASK_RESULT_HOTKEY
         try:
             self.load_task_global_hotkey = normalize_hotkey_sequence(
                 dic.get(

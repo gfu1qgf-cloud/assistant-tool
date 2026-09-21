@@ -44,6 +44,9 @@ class MainPluginIntegrationTests(unittest.TestCase):
             "app_plugins.builtin.chrome_launcher.GlobalHotkeyManager",
             FakeHotkeyManager,
         ), patch(
+            "app_plugins.builtin.task_delivery_controller.GlobalHotkeyManager",
+            FakeHotkeyManager,
+        ), patch(
             "app_plugins.builtin.chrome_launcher.ChromeRunnerDialog.load_profiles",
             lambda self: None,
         ), patch.object(MainDialog, "setupNotificationTray", lambda self: None), patch.object(
@@ -67,6 +70,29 @@ class MainPluginIntegrationTests(unittest.TestCase):
                 self.assertIn("智能剪辑并生成 SRT…", plugin_titles)
                 self.assertIn("剪辑气口…", plugin_titles)
                 self.assertIn("每日任务管理", plugin_titles)
+                self.assertIn("任务交付", plugin_titles)
+                delivery_action = next(
+                    action
+                    for action in window.plugin_host.menu.actions()
+                    if action.text() == "任务交付"
+                )
+                self.assertEqual(
+                    [action.text() for action in delivery_action.menu().actions()],
+                    ["整理任务结果", "查看每日链接", "审核提醒"],
+                )
+                self.assertIsNotNone(window.task_delivery_plugin.quick_actions)
+                self.assertIs(
+                    window.tidy_task_result_btn,
+                    window.task_delivery_plugin.quick_actions.organize_button,
+                )
+                self.assertIs(
+                    window.daily_links_btn,
+                    window.task_delivery_plugin.quick_actions.daily_links_button,
+                )
+                self.assertIs(
+                    window.review_status_btn,
+                    window.task_delivery_plugin.quick_actions.review_status_button,
+                )
                 self.assertFalse(hasattr(window, "inventory_manager_btn"))
                 self.assertFalse(hasattr(window, "split_audio_btn"))
                 self.assertFalse(hasattr(window, "split_len_sbox"))

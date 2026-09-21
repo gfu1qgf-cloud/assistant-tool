@@ -32,3 +32,12 @@ class PluginSettingsPage:
     title: str
     factory: Callable
     order: int = 100
+
+
+@dataclass(frozen=True)
+class PluginMainWidget:
+    """A plugin-owned widget mounted into a host-controlled main-window area."""
+
+    widget_id: str
+    factory: Callable
+    order: int = 100

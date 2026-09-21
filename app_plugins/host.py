@@ -8,6 +8,7 @@ from app_plugins.api import (
     TASK_CONTEXT_MENU,
     TOOLS_MENU,
     PluginCommand,
+    PluginMainWidget,
     PluginSettingsPage,
 )
 
@@ -28,6 +29,9 @@ class PluginContext:
 
     def register_settings_page(self, page):
         self._host.register_settings_page(self.plugin_id, page)
+
+    def register_main_widget(self, widget):
+        self._host.register_main_widget(self.plugin_id, widget)
 
     def load_config(self):
         return self._host.main_window.load_config()
@@ -133,6 +137,9 @@ class PluginHost:
         self._commands = OrderedDict()
         self._settings_pages = OrderedDict()
         self._settings_controllers = []
+        self._main_widgets = OrderedDict()
+        self._main_widget_controllers = OrderedDict()
+        self._main_widget_layout = None
         self._main_actions = {}
         self._tool_actions = {}
         self._tools_separator = None
@@ -154,6 +161,7 @@ class PluginHost:
         context = PluginContext(self, plugin_id)
         existing_commands = set(self._commands)
         existing_pages = set(self._settings_pages)
+        existing_widgets = set(self._main_widgets)
         self._plugins[plugin_id] = plugin
         self._contexts[plugin_id] = context
         try:
@@ -165,6 +173,8 @@ class PluginHost:
                 self._commands.pop(command_id, None)
             for page_id in set(self._settings_pages) - existing_pages:
                 self._settings_pages.pop(page_id, None)
+            for widget_id in set(self._main_widgets) - existing_widgets:
+                self._main_widgets.pop(widget_id, None)
             raise
         if self.menu is not None:
             self._rebuild_main_menu()
@@ -204,6 +214,17 @@ class PluginHost:
             raise ValueError(f"插件设置页 ID 重复：{full_id}")
         self._settings_pages[full_id] = (plugin_id, page)
 
+    def register_main_widget(self, plugin_id, widget):
+        if not isinstance(widget, PluginMainWidget):
+            raise TypeError("register_main_widget 只接受 PluginMainWidget。")
+        widget_id = str(widget.widget_id or "").strip()
+        if not widget_id:
+            raise ValueError("插件主界面控件缺少 widget_id。")
+        full_id = f"{plugin_id}.{widget_id}"
+        if full_id in self._main_widgets:
+            raise ValueError(f"插件主界面控件 ID 重复：{full_id}")
+        self._main_widgets[full_id] = (plugin_id, widget)
+
     def attach_main_menu(self, menu_bar):
         if self.menu is None:
             self.menu = menu_bar.addMenu("插件")
@@ -215,6 +236,38 @@ class PluginHost:
         self.tools_menu = tools_menu
         self._rebuild_tools_menu()
         return self.tools_menu
+
+    def attach_main_widget_area(self, container, layout=None):
+        """Mount plugin widgets while keeping placement under host control."""
+        if not isinstance(container, QtWidgets.QWidget):
+            raise TypeError("插件主界面区域必须是 QWidget。")
+        target_layout = layout or container.layout()
+        if target_layout is None:
+            target_layout = QtWidgets.QVBoxLayout(container)
+            target_layout.setContentsMargins(0, 0, 0, 0)
+        self._main_widget_layout = target_layout
+        entries = sorted(
+            self._main_widgets.items(),
+            key=lambda item: (item[1][1].order, item[0]),
+        )
+        for full_id, (plugin_id, descriptor) in entries:
+            if full_id in self._main_widget_controllers:
+                continue
+            try:
+                controller = descriptor.factory(container)
+                widget = getattr(controller, "widget", controller)
+                if not isinstance(widget, QtWidgets.QWidget):
+                    raise TypeError(
+                        "主界面控件工厂必须返回 QWidget 或含 widget 的控制器。"
+                    )
+                target_layout.addWidget(widget)
+                self._main_widget_controllers[full_id] = controller
+            except Exception as error:
+                self._report_error(plugin_id, descriptor.widget_id, error)
+        return list(self._main_widget_controllers.items())
+
+    def main_widget_controller(self, plugin_id, widget_id):
+        return self._main_widget_controllers.get(f"{plugin_id}.{widget_id}")
 
     def _sorted_commands(self, location):
         entries = [
@@ -229,8 +282,19 @@ class PluginHost:
             return
         self.menu.clear()
         self._main_actions.clear()
+        submenus = {}
         for full_id, plugin_id, command in self._sorted_commands(MAIN_MENU):
-            action = self.menu.addAction(command.title)
+            submenu_title = str(command.submenu or "").strip()
+            target_menu = self.menu
+            if submenu_title:
+                target_menu = submenus.get(submenu_title)
+                if target_menu is None:
+                    target_menu = self.menu.addMenu(submenu_title)
+                    target_menu.setObjectName(
+                        "plugin_main_submenu_" + "_".join(submenu_title.split())
+                    )
+                    submenus[submenu_title] = target_menu
+            action = target_menu.addAction(command.title)
             action.setObjectName(full_id.replace(".", "_"))
             action.setToolTip(command.tooltip)
             action.setCheckable(bool(command.checkable))
