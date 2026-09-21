@@ -122,6 +122,35 @@ class SmartTimelineQt6EventTests(unittest.TestCase):
         self.assertIn("subtitle", widget.toolTip())
         widget.deleteLater()
 
+    def test_missing_subtitle_is_a_compact_badge_with_full_tooltip(self):
+        widget = SmartTimelineWidget()
+        widget.resize(720, 260)
+        missing_text = "this full missing sentence must only appear in the tooltip"
+        block = {
+            "timeline_start": 4.0,
+            "timeline_end": 4.04,
+            "anchor_time": 4.0,
+            "text": missing_text,
+            "missing_text": missing_text,
+            "display_text": "⛔ 缺段",
+            "suggestion": "please review",
+            "kind": "aligned",
+            "severity": "pink",
+            "clip_index": 0,
+            "is_missing": True,
+        }
+        widget.set_data([], [], 10.0, [], [block])
+        widget.show()
+        self.app.processEvents()
+        widget.grab()
+
+        rect, _record = widget._subtitle_rects[0]
+        self.assertLessEqual(rect.width(), 64.0)
+        self.assertLess(rect.height(), widget.SUBTITLE_HEIGHT)
+        widget.mouseMoveEvent(_MouseMoveEvent(rect.center().x(), rect.center().y()))
+        self.assertIn(missing_text, widget.toolTip())
+        widget.close()
+
 
 class _FakeWhisperModel:
     def __init__(self):
@@ -2210,6 +2239,9 @@ class SmartVideoEditorTests(unittest.TestCase):
                 source = Path(temporary) / name
                 source.write_bytes(b"fake")
                 sources.append(source)
+            script_lines, script_words = build_script_word_records(
+                "alpha beta gamma delta"
+            )
             clips = []
             for index, source in enumerate(sources):
                 clips.append({
@@ -2229,8 +2261,14 @@ class SmartVideoEditorTests(unittest.TestCase):
                         if index == 0 else [[0.0, 2.0]]
                     ),
                     "removed_seconds": 0.5 if index == 0 else 0.0,
-                    "expected_text": "alpha beta",
-                    "recognized_text": "alpha beta",
+                    "expected_text": (
+                        "alpha beta" if index == 0 else "gamma delta"
+                    ),
+                    "recognized_text": (
+                        "alpha beta" if index == 0 else "gamma delta"
+                    ),
+                    "script_word_start": index * 2,
+                    "script_word_end": index * 2 + 1,
                     "issues": [],
                     "words": [],
                     "included": True,
@@ -2241,12 +2279,31 @@ class SmartVideoEditorTests(unittest.TestCase):
                     "internal_pause_mode": "experimental",
                 }),
                 "summary": {"clip_count": 2, "green_count": 2},
-                "tasks": [{"label": "demo", "clips": clips}],
+                "tasks": [{
+                    "label": "demo",
+                    "script": "alpha beta gamma delta",
+                    "script_lines": script_lines,
+                    "script_words": script_words,
+                    "clips": clips,
+                }],
             }
             dialog = SmartVideoReviewDialog(bundle)
             try:
                 timeline = dialog.timeline_review
                 timeline.select_clip(0, 0)
+                self.assertEqual(
+                    timeline.task_script_text.toPlainText(),
+                    "alpha beta gamma delta",
+                )
+                self.assertEqual(
+                    timeline.task_script_text.textCursor().selectedText(),
+                    "alpha beta",
+                )
+                timeline.select_clip(0, 1)
+                self.assertEqual(
+                    timeline.task_script_text.textCursor().selectedText(),
+                    "gamma delta",
+                )
                 timeline._move_clip_to(0, 1)
                 self.assertEqual(
                     [clip["export_order"] for clip in dialog.bundle["tasks"][0]["clips"]],

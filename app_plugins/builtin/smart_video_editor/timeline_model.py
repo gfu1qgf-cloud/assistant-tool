@@ -233,6 +233,30 @@ def _aligned_text(clip, start, end):
     ).strip()
 
 
+def _script_word_range(clip, start, end):
+    indices = []
+    for word in clip.get("word_timeline", []) or []:
+        if (
+            _number(word.get("end")) > start
+            and _number(word.get("start")) < end
+            and word.get("script_word_index") is not None
+        ):
+            try:
+                indices.append(int(word["script_word_index"]))
+            except (TypeError, ValueError):
+                continue
+    if indices:
+        return min(indices), max(indices)
+    try:
+        clip_start = int(clip.get("script_word_start", -1))
+        clip_end = int(clip.get("script_word_end", -1))
+    except (TypeError, ValueError):
+        return None, None
+    if clip_start >= 0 and clip_end >= clip_start:
+        return clip_start, clip_end
+    return None, None
+
+
 def _subtitle_block(clip, clip_index, segments, kind, start, end, text):
     timeline_start = output_time_for_source(segments, clip_index, start)
     timeline_end = output_time_for_source(segments, clip_index, end)
@@ -258,6 +282,9 @@ def _subtitle_block(clip, clip_index, segments, kind, start, end, text):
             f"建议试听这一处。任务原文为「{text}」，模型听到「{comparison or '未识别到'}」；"
             "如果视频确实读错应重录或跳过，读音正确则可人工通过。"
         )
+    script_word_start, script_word_end = _script_word_range(
+        clip, start, end
+    )
     return {
         "kind": kind,
         "clip_index": clip_index,
@@ -271,6 +298,8 @@ def _subtitle_block(clip, clip_index, segments, kind, start, end, text):
         "similarity": ratio,
         "related_issues": related,
         "suggestion": suggestion,
+        "script_word_start": script_word_start,
+        "script_word_end": script_word_end,
     }
 
 
@@ -328,6 +357,10 @@ def _apply_track_gap(blocks, block_gap_ms):
     gap = block_gap_ms / 1000.0
     ordered = sorted(blocks, key=lambda item: item["timeline_start"])
     for current, following in zip(ordered, ordered[1:]):
+        # Missing-script warnings are point annotations rather than timed
+        # subtitles.  They must not stretch or shrink neighbouring captions.
+        if current.get("is_missing") or following.get("is_missing"):
+            continue
         current["timeline_end"] = max(
             current["timeline_start"] + 0.04,
             following["timeline_start"] - gap,
@@ -426,10 +459,6 @@ def build_subtitle_tracks(
     by_file_name = {}
     for segment in segments:
         by_file_name.setdefault(segment.get("file_name", ""), []).append(segment)
-    timeline_duration = max(
-        (float(segment.get("timeline_end") or 0.0) for segment in segments),
-        default=0.0,
-    )
     for missing_index, missing in enumerate(task.get("missing_blocks", []) or []):
         text = str(missing.get("text") or "").strip()
         if not text:
@@ -448,19 +477,18 @@ def build_subtitle_tracks(
         else:
             continue
 
-        display_span = min(6.0, max(2.0, 1.4 + len(text) * 0.035))
-        start = max(0.0, anchor - display_span / 2.0)
-        end = min(timeline_duration, start + display_span)
-        if end - start < min(0.5, timeline_duration):
-            start = max(0.0, end - display_span)
         aligned_blocks.append({
             "kind": "aligned",
             "clip_index": clip_index,
             "source_start": 0.0,
             "source_end": 0.0,
-            "timeline_start": start,
-            "timeline_end": max(start + 0.04, end),
-            "text": f"⛔ 缺段：{text}",
+            # This is a point warning, not two to six seconds of subtitle.
+            # The timeline widget gives it a small fixed-width badge.
+            "timeline_start": anchor,
+            "timeline_end": anchor + 0.04,
+            "anchor_time": anchor,
+            "text": text,
+            "display_text": "⛔ 缺段",
             "missing_text": text,
             "comparison_text": "未找到对应的视频语音",
             "severity": "pink",
@@ -469,6 +497,8 @@ def build_subtitle_tracks(
             "is_missing": True,
             "missing_block_index": missing_index,
             "missing_block": missing,
+            "script_word_start": missing.get("script_word_start"),
+            "script_word_end": missing.get("script_word_end"),
             "suggestion": (
                 f"确认缺少任务原文「{text}」。请补拍对应视频；"
                 "如果视频实际已经读出这段内容，请在缺段页人工确认误报。"

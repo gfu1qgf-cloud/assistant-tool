@@ -206,8 +206,11 @@ class SmartVideoTimelineModelTests(unittest.TestCase):
         warning = warnings[0]
         self.assertEqual(warning["severity"], "pink")
         self.assertIn("缺少的一段", warning["text"])
-        self.assertLessEqual(warning["timeline_start"], 2.0)
-        self.assertGreaterEqual(warning["timeline_end"], 2.0)
+        self.assertEqual(warning["display_text"], "⛔ 缺段")
+        self.assertAlmostEqual(warning["anchor_time"], 2.0)
+        self.assertLessEqual(
+            warning["timeline_end"] - warning["timeline_start"], 0.05
+        )
         self.assertEqual(warning["clip_index"], 1)
         self.assertIn("补拍", warning["suggestion"])
 

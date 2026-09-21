@@ -451,7 +451,7 @@ class SmartVideoTimelineReview(QtWidgets.QWidget):
         timeline_layout.addWidget(self.timeline_scroll)
 
         comparison = QtWidgets.QGroupBox(
-            "当前片段文案核对", timeline_column
+            "任务语音与当前片段核对", timeline_column
         )
         self.comparison_panel = comparison
         comparison_layout = QtWidgets.QGridLayout(comparison)
@@ -465,7 +465,20 @@ class SmartVideoTimelineReview(QtWidgets.QWidget):
         self.recognized_text.setMaximumHeight(58)
         comparison_layout.addWidget(self.expected_text, 1, 0)
         comparison_layout.addWidget(self.recognized_text, 1, 1)
-        comparison.setMaximumHeight(94)
+        task_script_label = QtWidgets.QLabel(
+            "完整任务语音（点击视频或字幕后自动选中对应文字）",
+            comparison,
+        )
+        comparison_layout.addWidget(task_script_label, 2, 0, 1, 2)
+        self.task_script_text = QtWidgets.QPlainTextEdit(comparison)
+        self.task_script_text.setReadOnly(True)
+        self.task_script_text.setMaximumHeight(76)
+        self.task_script_text.setToolTip(
+            "这里显示完整任务原文；点击时间线片段、字幕块或缺段警告时，"
+            "会高亮它在全文中的位置。"
+        )
+        comparison_layout.addWidget(self.task_script_text, 3, 0, 1, 2)
+        comparison.setMaximumHeight(190)
         timeline_layout.addWidget(comparison)
 
         right = QtWidgets.QWidget(body)
@@ -1570,6 +1583,84 @@ class SmartVideoTimelineReview(QtWidgets.QWidget):
             f"裁剪后预计成片 {format_time(kept_seconds)}。"
         )
 
+    @staticmethod
+    def _full_task_script(task):
+        lines = [
+            str(line).strip()
+            for line in task.get("script_lines", []) or []
+            if str(line).strip()
+        ]
+        if lines:
+            return "\n".join(lines), lines
+        text = str(task.get("script") or "").strip()
+        return text, text.splitlines() if text else []
+
+    def _task_script_span(self, task, record):
+        record = record if isinstance(record, dict) else {}
+        source = record.get("missing_block")
+        if isinstance(source, dict):
+            source = {**record, **source}
+        else:
+            source = record
+        text, lines = self._full_task_script(task)
+        words = task.get("script_words", []) or []
+        try:
+            start_index = int(source.get("script_word_start", -1))
+            end_index = int(source.get("script_word_end", -1))
+        except (TypeError, ValueError):
+            start_index = end_index = -1
+        if 0 <= start_index <= end_index < len(words) and lines:
+            first = words[start_index]
+            last = words[end_index]
+            try:
+                first_line = int(first.get("line_index", -1))
+                last_line = int(last.get("line_index", -1))
+                if 0 <= first_line < len(lines) and 0 <= last_line < len(lines):
+                    offsets = []
+                    position = 0
+                    for line in lines:
+                        offsets.append(position)
+                        position += len(line) + 1
+                    start = offsets[first_line] + int(first.get("char_start", 0))
+                    end = offsets[last_line] + int(last.get("char_end", 0))
+                    if 0 <= start < end <= len(text):
+                        return start, end
+            except (TypeError, ValueError):
+                pass
+
+        # Compatibility with older cached analyses that did not retain word
+        # indices on every subtitle block.
+        needle = str(
+            source.get("missing_text")
+            or source.get("text")
+            or source.get("expected_text")
+            or ""
+        ).strip()
+        if needle:
+            start = text.lower().find(needle.lower())
+            if start >= 0:
+                return start, start + len(needle)
+        return None
+
+    def _select_task_script_range(self, record):
+        tasks = self.bundle.get("tasks", []) or []
+        if self.task_index < 0 or self.task_index >= len(tasks):
+            return
+        span = self._task_script_span(tasks[self.task_index], record)
+        self.task_script_text.setExtraSelections([])
+        if not span:
+            return
+        cursor = QtGui.QTextCursor(self.task_script_text.document())
+        cursor.setPosition(span[0])
+        cursor.setPosition(span[1], QtGui.QTextCursor.MoveMode.KeepAnchor)
+        self.task_script_text.setTextCursor(cursor)
+        highlight = QtWidgets.QTextEdit.ExtraSelection()
+        highlight.cursor = cursor
+        highlight.format.setBackground(QtGui.QColor("#FFE082"))
+        highlight.format.setForeground(QtGui.QColor("#202124"))
+        self.task_script_text.setExtraSelections([highlight])
+        self.task_script_text.ensureCursorVisible()
+
     def _load_task(self, index, target_time=0.0):
         self._manual_delete_anchor = None
         task_index = self.task_combo.itemData(index) if index >= 0 else None
@@ -1589,6 +1680,9 @@ class SmartVideoTimelineReview(QtWidgets.QWidget):
             self.timeline.set_data([], [], 0.01)
             self.issue_tree.clear()
             self.issue_detail.clear()
+            self.expected_text.clear()
+            self.recognized_text.clear()
+            self.task_script_text.clear()
             self.duplicate_group_panel.hide()
             self.task_decision_status.setText("没有符合当前筛选条件的任务。")
             self.task_decision_status.setStyleSheet("color:#616B7E;")
@@ -1602,6 +1696,9 @@ class SmartVideoTimelineReview(QtWidgets.QWidget):
         self._preview_removed_once = False
         self.task_index = task_index
         task = self.bundle["tasks"][task_index]
+        task_script, _task_lines = self._full_task_script(task)
+        self.task_script_text.setPlainText(task_script)
+        self.task_script_text.setExtraSelections([])
         self.segments, self.duration = build_task_review_timeline(task)
         self._detected_preview_aspect = self._detect_task_preview_aspect(task)
         self._apply_preview_aspect()
@@ -1710,6 +1807,7 @@ class SmartVideoTimelineReview(QtWidgets.QWidget):
 
     def _subtitle_activated(self, block):
         self._select_clip(int(block.get("clip_index", 0)))
+        self._select_task_script_range(block)
         if block.get("is_missing"):
             title = "⛔ 缺失的任务原文"
         else:
@@ -1726,7 +1824,7 @@ class SmartVideoTimelineReview(QtWidgets.QWidget):
             f"<b>{html.escape(title)} · {html.escape(severity)}</b><br>"
             f"{format_time(block.get('timeline_start', 0.0))} - "
             f"{format_time(block.get('timeline_end', 0.0))}<hr>"
-            f"<b>本轨内容：</b>{html.escape(str(block.get('text') or '（空）'))}<br>"
+            f"<b>本轨内容：</b>{html.escape(str(block.get('missing_text') or block.get('text') or '（空）'))}<br>"
             f"<b>另一轨对应：</b>{html.escape(str(block.get('comparison_text') or '（未找到）'))}<br>"
             f"<b>对齐相似度：</b>{float(block.get('similarity', 0.0)) * 100:.1f}%<br><br>"
             f"<b>建议：</b>{html.escape(str(block.get('suggestion') or '请试听核对。'))}"
@@ -1774,6 +1872,7 @@ class SmartVideoTimelineReview(QtWidgets.QWidget):
                 self._apply_preview_aspect()
         self.expected_text.setPlainText(str(clip.get("expected_text") or ""))
         self.recognized_text.setPlainText(str(clip.get("recognized_text") or ""))
+        self._select_task_script_range(clip)
         self.acknowledge_button.setEnabled(not bool(clip.get("review_acknowledged")))
         self.acknowledge_button.setText(
             "✓ 已人工核对" if clip.get("review_acknowledged") else "✓ 当前片段没问题"
@@ -2100,6 +2199,8 @@ class SmartVideoTimelineReview(QtWidgets.QWidget):
         )
         if marker.get("clip_index") is not None:
             self._select_clip(int(marker["clip_index"]))
+        elif marker.get("kind") in {"missing", "unverified"}:
+            self._select_task_script_range(marker.get("block") or marker)
 
     def play_selected_issue(self):
         item = self.issue_tree.currentItem()

@@ -300,20 +300,27 @@ class SmartTimelineWidget(QtWidgets.QWidget):
                 right = self._x_for_time(block["timeline_end"])
                 block_width = max(4.0, right - left - 2)
                 if block.get("is_missing"):
-                    # Missing source text has no real audio duration.  Give its
-                    # warning enough visual width to remain readable at fit
-                    # zoom while keeping it anchored to the detected gap.
-                    block_width = max(150.0, block_width)
+                    # Missing text has no audio duration.  Keep it as a compact
+                    # point badge so it cannot cover the following subtitle.
+                    block_width = 62.0
+                    left = self._x_for_time(
+                        block.get("anchor_time", block["timeline_start"])
+                    ) - block_width / 2.0
                     timeline_right = self._x_for_time(self.duration) - 2
                     left = max(
                         self.LABEL_WIDTH,
                         min(left, timeline_right - block_width),
                     )
+                    rect_top = top + 6
+                    rect_height = self.SUBTITLE_HEIGHT - 12
+                else:
+                    rect_top = top
+                    rect_height = self.SUBTITLE_HEIGHT
                 rect = QtCore.QRectF(
                     left + 1,
-                    top,
+                    rect_top,
                     block_width,
-                    self.SUBTITLE_HEIGHT,
+                    rect_height,
                 )
                 self._subtitle_rects.append((rect, block))
                 if rect.right() < visible_left or rect.left() > visible_right:
@@ -337,7 +344,7 @@ class SmartTimelineWidget(QtWidgets.QWidget):
                     rect.adjusted(5, 0, -4, 0),
                     QtCore.Qt.AlignVCenter | QtCore.Qt.AlignLeft,
                     painter.fontMetrics().elidedText(
-                        block.get("text") or "（空）",
+                        block.get("display_text") or block.get("text") or "（空）",
                         QtCore.Qt.ElideRight,
                         max(1, int(rect.width() - 9)),
                     ),
@@ -392,16 +399,18 @@ class SmartTimelineWidget(QtWidgets.QWidget):
         point = event.position()
         marker = self._nearest_marker(point)
         if marker is not None:
-            self.markerActivated.emit(marker)
             self.seekRequested.emit(float(marker["time"]))
             if marker.get("clip_index") is not None:
                 self.clipActivated.emit(int(marker["clip_index"]))
+            self.markerActivated.emit(marker)
             return
         for rect, block in self._subtitle_rects:
             if rect.contains(point):
-                self.subtitleActivated.emit(block)
                 self.seekRequested.emit(float(block["timeline_start"]))
                 self.clipActivated.emit(int(block["clip_index"]))
+                # Activate last so the precise text selection is not replaced
+                # by the broader clip selection caused by seeking.
+                self.subtitleActivated.emit(block)
                 return
         seconds = self._time_for_x(point.x())
         self.seekRequested.emit(seconds)
@@ -454,7 +463,8 @@ class SmartTimelineWidget(QtWidgets.QWidget):
                     )
                 self.setToolTip(
                     f"{label} · {format_time(block['timeline_start'])}\n"
-                    f"{block.get('text') or '（空）'}\n{block.get('suggestion') or ''}"
+                    f"{block.get('missing_text') or block.get('text') or '（空）'}\n"
+                    f"{block.get('suggestion') or ''}"
                 )
                 return
         for rect, segment in self._segment_rects:
