@@ -298,6 +298,10 @@ class MaterialOrganizerDialog(QtWidgets.QDialog):
         self._build_ui()
         self.refresh_categories()
         self.refresh_assets()
+        # Recover records left pending or without a thumbnail by an older
+        # analyzer.  Valid error thumbnails are retained and are not retried
+        # on every open.
+        QtCore.QTimer.singleShot(0, self.repair_incomplete_assets)
 
     def _build_ui(self):
         root = QtWidgets.QVBoxLayout(self)
@@ -521,6 +525,23 @@ class MaterialOrganizerDialog(QtWidgets.QDialog):
             QtWidgets.QMessageBox.information(self, "未选择素材", "请先选择需要重新分析的视频。")
             return
         self.start_analysis(paths, force=True)
+
+    def repair_incomplete_assets(self):
+        if self.worker is not None and self.worker.isRunning():
+            return
+        paths = []
+        for asset in self.store.list_assets():
+            source = Path(str(asset.get("path") or ""))
+            thumbnail = Path(str(asset.get("thumbnail_path") or ""))
+            if not source.is_file():
+                continue
+            if asset.get("status") == "pending" or not thumbnail.is_file():
+                paths.append(source)
+        if paths:
+            self.status_label.setText(
+                f"正在自动修复 {len(paths)} 个缺少缩略图的素材…"
+            )
+            self.start_analysis(paths, force=True)
 
     def check_library(self):
         changed = self.store.refresh_file_states()

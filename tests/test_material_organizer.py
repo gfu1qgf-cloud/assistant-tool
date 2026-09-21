@@ -1,4 +1,5 @@
 import os
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -182,6 +183,31 @@ class MaterialMotionClassifierTests(unittest.TestCase):
             result = analyze_video(source, root / "thumbs", {})
             self.assertEqual(result["motion_key"], "damaged")
             self.assertEqual(result["status"], "error")
+            thumbnail = Path(result["thumbnail_path"])
+            self.assertTrue(thumbnail.is_file())
+            self.assertGreater(thumbnail.stat().st_size, 0)
+
+    def test_thumbnail_is_written_to_unicode_windows_path(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            ascii_source = root / "source.avi"
+            writer = cv2.VideoWriter(
+                str(ascii_source),
+                cv2.VideoWriter_fourcc(*"MJPG"),
+                10.0,
+                (160, 90),
+            )
+            if not writer.isOpened():
+                self.skipTest("OpenCV MJPG encoder is unavailable")
+            frame = np.full((90, 160, 3), 120, dtype=np.uint8)
+            for _index in range(12):
+                writer.write(frame)
+            writer.release()
+            unicode_root = root / "辅助小工具" / "素材整理"
+            unicode_root.mkdir(parents=True)
+            source = unicode_root / "第一条视频.avi"
+            shutil.move(str(ascii_source), str(source))
+            result = analyze_video(source, unicode_root / "缩略图", {})
             thumbnail = Path(result["thumbnail_path"])
             self.assertTrue(thumbnail.is_file())
             self.assertGreater(thumbnail.stat().st_size, 0)

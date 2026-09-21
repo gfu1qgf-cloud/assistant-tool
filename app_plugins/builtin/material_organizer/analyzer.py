@@ -175,6 +175,23 @@ def thumbnail_cache_path(path, thumbnail_root):
     return Path(thumbnail_root) / f"{digest}.jpg"
 
 
+def _write_jpeg(path, image, quality=88):
+    """Write a JPEG without OpenCV's Windows Unicode-path limitation."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    ok, encoded = cv2.imencode(
+        ".jpg", image, [cv2.IMWRITE_JPEG_QUALITY, int(quality)]
+    )
+    if not ok:
+        raise OSError(f"无法编码缩略图：{path}")
+    try:
+        path.write_bytes(encoded.tobytes())
+    except OSError as error:
+        raise OSError(f"无法写入缩略图：{path}") from error
+    if not path.is_file() or path.stat().st_size <= 0:
+        raise OSError(f"缩略图写入后为空：{path}")
+
+
 def error_analysis_result(path, thumbnail_root, settings=None, message="视频无法读取"):
     settings = normalize_material_organizer_settings(settings)
     thumbnail_path = thumbnail_cache_path(path, thumbnail_root)
@@ -182,7 +199,7 @@ def error_analysis_result(path, thumbnail_root, settings=None, message="视频�
     image = _error_thumbnail(
         settings["thumbnail_width"], settings["thumbnail_height"]
     )
-    cv2.imwrite(str(thumbnail_path), image, [cv2.IMWRITE_JPEG_QUALITY, 88])
+    _write_jpeg(thumbnail_path, image)
     try:
         signature = analysis_signature(path, settings)
     except OSError:
@@ -226,8 +243,7 @@ def generate_thumbnail(path, thumbnail_path, settings):
         success = True
     thumbnail_path = Path(thumbnail_path)
     thumbnail_path.parent.mkdir(parents=True, exist_ok=True)
-    if not cv2.imwrite(str(thumbnail_path), best, [cv2.IMWRITE_JPEG_QUALITY, 88]):
-        raise OSError(f"无法写入缩略图：{thumbnail_path}")
+    _write_jpeg(thumbnail_path, best)
     return success
 
 
