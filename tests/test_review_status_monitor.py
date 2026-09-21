@@ -10,7 +10,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from qt_compat import QtWidgets
 
-from PYUI.review_status_pyui import ReviewStatusDialog
+from PYUI.review_status_pyui import ReviewStatusDialog, format_history_time
 
 from model.ReviewStatusMonitor import (
     ReviewStatusMonitorThread,
@@ -184,6 +184,33 @@ class ReviewHistoryTests(unittest.TestCase):
 
             self.assertEqual(dialog.copy_selected_links(), 1)
             self.assertEqual(QtWidgets.QApplication.clipboard().text(), link)
+            dialog.close()
+
+    def test_dialog_shows_submission_time_and_orders_newest_first(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "history.json"
+            older_link = "https://drive.google.com/file/d/older/view"
+            newer_link = "https://drive.google.com/file/d/newer/view"
+            record_review_submissions(
+                [{"webViewLink": older_link, "name": "older.mp4"}],
+                path,
+                now=1_700_000_000,
+            )
+            record_review_submissions(
+                [{"webViewLink": newer_link, "name": "newer.mp4"}],
+                path,
+                now=1_700_003_600,
+            )
+
+            dialog = ReviewStatusDialog(path)
+            self.assertEqual(dialog.history_tree.headerItem().text(0), "提交时间")
+            newest = dialog.history_tree.topLevelItem(0)
+            self.assertEqual(newest.text(2), "newer.mp4")
+            self.assertEqual(
+                newest.text(0),
+                format_history_time(1_700_003_600),
+            )
+            self.assertIn("提交时间：", newest.toolTip(0))
             dialog.close()
 
     def test_local_administrator_is_attached_before_review_submission(self):

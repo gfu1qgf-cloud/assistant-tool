@@ -1,4 +1,5 @@
 from collections import defaultdict
+from datetime import datetime
 
 from qt_compat import QtCore, QtGui, QtWidgets
 
@@ -16,6 +17,19 @@ STATUS_TEXT = {
 }
 
 
+def format_history_time(value):
+    try:
+        timestamp = float(value or 0)
+    except (TypeError, ValueError, OverflowError):
+        return ""
+    if timestamp <= 0:
+        return ""
+    try:
+        return datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d %H:%M:%S")
+    except (OSError, OverflowError, ValueError):
+        return ""
+
+
 class ReviewStatusDialog(QtWidgets.QDialog):
     def __init__(self, history_path=None, parent=None):
         super().__init__(parent)
@@ -29,13 +43,13 @@ class ReviewStatusDialog(QtWidgets.QDialog):
 
         self.tabs = QtWidgets.QTabWidget(self)
         self.passed_tree = self._make_tree(
-            ("管理员", "视频", "阶段", "状态"),
+            ("提交时间", "管理员", "视频", "阶段", "状态"),
         )
         self.changes_tree = self._make_tree(
-            ("管理员", "视频", "阶段", "严重程度", "修改建议"),
+            ("提交时间", "管理员", "视频", "阶段", "严重程度", "修改建议"),
         )
         self.history_tree = self._make_tree(
-            ("管理员", "视频", "阶段", "状态", "修改建议"),
+            ("提交时间", "管理员", "视频", "阶段", "状态", "修改建议"),
         )
         self.tabs.addTab(self.passed_tree, "通过待发送")
         self.tabs.addTab(self.changes_tree, "需要修改")
@@ -102,8 +116,8 @@ class ReviewStatusDialog(QtWidgets.QDialog):
         tree.setSortingEnabled(True)
         header = tree.header()
         header.setSectionResizeMode(QtWidgets.QHeaderView.ResizeToContents)
-        if len(headers) > 1:
-            header.setSectionResizeMode(1, QtWidgets.QHeaderView.Stretch)
+        if "视频" in headers:
+            header.setSectionResizeMode(headers.index("视频"), QtWidgets.QHeaderView.Stretch)
         return tree
 
     @staticmethod
@@ -113,42 +127,52 @@ class ReviewStatusDialog(QtWidgets.QDialog):
         for data in items:
             values = []
             for field in fields:
-                if field == "status":
+                if field == "submitted_at":
+                    values.append(format_history_time(data.get(field)))
+                elif field == "status":
                     values.append(STATUS_TEXT.get(data.get(field), str(data.get(field) or "")))
                 else:
                     values.append(str(data.get(field) or ""))
             item = QtWidgets.QTreeWidgetItem(values)
             item.setData(0, QtCore.Qt.UserRole, data.get("key"))
             item.setData(0, QtCore.Qt.UserRole + 1, data.get("link"))
+            submitted_text = format_history_time(data.get("submitted_at"))
+            updated_text = format_history_time(data.get("status_updated_at"))
+            time_details = ["提交时间：{}".format(submitted_text or "旧记录未保存")]
+            if updated_text:
+                time_details.append("审核结果更新时间：{}".format(updated_text))
+            item.setToolTip(0, "\n".join(time_details))
             if data.get("status") == "needs_changes":
                 item.setBackground(0, QtGui.QColor("#FFD6D6"))
             elif data.get("status") == "passed":
                 item.setBackground(0, QtGui.QColor("#DDF3E4"))
             tree.addTopLevelItem(item)
         tree.setSortingEnabled(True)
+        tree.sortItems(0, QtCore.Qt.SortOrder.DescendingOrder)
 
     def refresh(self):
         snapshot = review_history_snapshot(self.history_path)
         self._fill(
             self.passed_tree,
             snapshot["passed"],
-            ("admin", "name", "phase", "status"),
+            ("submitted_at", "admin", "name", "phase", "status"),
         )
         self._fill(
             self.changes_tree,
             snapshot["needs_changes"],
-            ("admin", "name", "phase", "severity", "note"),
+            ("submitted_at", "admin", "name", "phase", "severity", "note"),
         )
         self._fill(
             self.history_tree,
             snapshot["all"],
-            ("admin", "name", "phase", "status", "note"),
+            ("submitted_at", "admin", "name", "phase", "status", "note"),
         )
         self.tabs.setTabText(0, "通过待发送 ({})".format(snapshot["passed_count"]))
         self.tabs.setTabText(1, "需要修改 ({})".format(snapshot["needs_changes_count"]))
         self.tabs.setTabText(2, "提交历史 ({})".format(len(snapshot["all"])))
         self.summary_label.setText(
-            "待发给管理员：{} 个；需要修改：{} 个；已保存提交历史：{} 个。".format(
+            "待发给管理员：{} 个；需要修改：{} 个；已保存提交历史：{} 个。"
+            "列表默认按提交时间从新到旧排列，可点击表头改换排序。".format(
                 snapshot["passed_count"],
                 snapshot["needs_changes_count"],
                 len(snapshot["all"]),
