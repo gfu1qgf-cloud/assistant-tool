@@ -224,6 +224,37 @@ class ClipboardInventoryBridgeTests(unittest.TestCase):
                     thread.deleteLater()
                 dialog.close()
 
+    def test_material_drive_monitor_is_part_of_material_add_form(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = InventoryStore(
+                root / "inventory.json",
+                material_root=root / "library",
+            )
+            dialog = InventoryManagerDialog(store)
+            try:
+                folder_url = (
+                    "https://drive.google.com/drive/folders/folder-monitor"
+                )
+                dialog.material_name_edit.setText("持续素材")
+                dialog.material_sources_edit.setPlainText(folder_url)
+                dialog.material_drive_monitor_checkbox.setChecked(True)
+
+                with patch.object(MaterialCopyThread, "start"):
+                    dialog.add_material()
+
+                self.assertEqual(
+                    dialog.material_copy_operation["monitor_folder_url"],
+                    folder_url,
+                )
+                self.assertEqual(dialog.tabs.count(), 3)
+            finally:
+                thread = dialog.material_copy_thread
+                dialog.material_copy_thread = None
+                if thread is not None:
+                    thread.deleteLater()
+                dialog.close()
+
     def test_clipboard_google_links_open_inventory_once_per_clipboard_value(self):
         plugin = self.make_clipboard_plugin()
         clipboard = QtWidgets.QApplication.clipboard()

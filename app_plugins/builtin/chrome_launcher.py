@@ -223,3 +223,4 @@ class ChromeLauncherPlugin:
             self.hotkey_manager = None
         if self.dialog is not None:
             self.dialog.close()
+

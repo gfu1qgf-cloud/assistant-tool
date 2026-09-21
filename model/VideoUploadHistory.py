@@ -217,6 +217,34 @@ def load_video_upload_history(config: Optional[Mapping] = None) -> Dict:
     return state
 
 
+def preferred_drive_file_ids_by_identity(
+    config: Optional[Mapping] = None,
+) -> Dict[str, str]:
+    """Return stable Drive IDs that can be updated in place on a later day."""
+    records = load_video_upload_history(config).get("records", [])
+    confirmed = {}
+    first_known = {}
+    for item in records:
+        logical_key = str(item.get("logical_key") or "").strip()
+        file_id = str(item.get("drive_file_id") or "").strip()
+        replacement = item.get("replacement") or {}
+        if (
+            not logical_key
+            or not file_id
+            or replacement.get("state") == "replaced"
+            or replacement.get("replaced_by_file_id")
+        ):
+            continue
+        first_known.setdefault(logical_key, file_id)
+        if (item.get("task_submission") or {}).get("status") == "confirmed":
+            # The latest confirmed ID is the one most likely referenced by the sheet.
+            confirmed[logical_key] = file_id
+    return {
+        logical_key: confirmed.get(logical_key, file_id)
+        for logical_key, file_id in first_known.items()
+    }
+
+
 def _save_state(path: Path, state: Mapping) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temp_path = path.with_name(path.name + ".tmp")

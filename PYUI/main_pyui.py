@@ -12,24 +12,29 @@ from PyQt5.QtCore import QDate, pyqtSignal
 from PyQt5.QtWidgets import QMessageBox, QHeaderView
 
 from app_plugins import PluginHost
-from app_plugins.builtin import AudioSplitterPlugin, ChromeLauncherPlugin, InventoryPlugin
+from app_plugins.builtin import (
+    AudioSplitterPlugin,
+    ChromeLauncherPlugin,
+    CodexAccountSwitcherPlugin,
+    DailyTasksPlugin,
+    InventoryPlugin,
+    MusicDuckerPlugin,
+    SmartVideoEditorPlugin,
+    TaskAudioSubtitlePlugin,
+)
 from PYUI.main_setting_pyui import MainSettingDialog
 from PYUI.review_status_pyui import ReviewStatusDialog
-from PYUI.smart_video_editor_pyui import (
-    SmartVideoExportResultDialog,
-    SmartVideoPendingDialog,
-    SmartVideoReviewDialog,
-    SmartVideoSourceDialog,
-)
 from PYUI.utility_managers_pyui import (
     AboutDialog,
     GoogleSheetMonitorDialog,
 )
 from QTUI.main_ui import Ui_MainDialog
+from app_paths import APP_ROOT
 from globalValue import globalValue
 from model.AppLogger import configure_application_logging
 from model.AudioHelper import CreateTTSAudio, CreateAudio, CreateAudio3
 from model.ClipboardHelper import set_internal_clipboard_text
+from model.ProjectInitializer import initialize_project_directory
 from model.ApiKeyHelper import (
     API_KEY_STATUSES_CONFIG_KEY,
     format_unix_time,
@@ -70,11 +75,6 @@ from model.GoogleSheetMonitor import (
     normalize_monitor_settings,
     reset_monitor_baseline,
 )
-from model.MusicDucker import (
-    DEFAULT_MUSIC_DUCKER_SETTINGS,
-    MusicDuckerThread,
-    normalize_music_ducker_settings,
-)
 from model.OdsHelper import ReadTaskOds2, TaskData, format_task_table_report
 from model.OralVideoDurationChecker import check_oral_video_durations
 from model.ReviewStatusMonitor import (
@@ -83,17 +83,6 @@ from model.ReviewStatusMonitor import (
 )
 from model.ReviewSubmissionHistory import review_history_snapshot
 from model.SubtitleHelper import generate_srt_whisper_only, get_text_language
-from model.SmartVideoEditor import (
-    SMART_VIDEO_EDITOR_CONFIG_KEY,
-    SMART_VIDEO_PENDING_CONFIG_KEY,
-    SmartVideoEditorThread,
-    discover_task_videos,
-    format_smart_video_export_blockers,
-    normalize_smart_video_editor_settings,
-    normalize_smart_video_pending_reviews,
-    smart_video_export_blockers,
-    update_smart_video_pending_reviews,
-)
 from model.TaskResultOrganizer import (
     TaskResultOrganizerThread,
     load_effective_config as load_task_result_config,
@@ -292,6 +281,137 @@ class TaskSubmissionAuditThread(QtCore.QThread):
             )
             return
         self.succeeded.emit(result)
+
+
+class VideoAssignmentThread(QtCore.QThread):
+    log = pyqtSignal(str)
+    completed = pyqtSignal(int, int)
+    failed = pyqtSignal(str, str)
+
+    def __init__(self, today_dir, video_root_dir, match_ratio_threshold=0.03, parent=None):
+        super().__init__(parent)
+        self.today_dir = str(today_dir)
+        self.video_root_dir = str(video_root_dir)
+        self.match_ratio_threshold = float(match_ratio_threshold)
+        self._interruption_requested = False
+
+    def requestInterruption(self):
+        self._interruption_requested = True
+        super().requestInterruption()
+
+    def isInterruptionRequested(self):
+        return self._interruption_requested or super().isInterruptionRequested()
+
+    def run(self):
+        try:
+            if self.isInterruptionRequested():
+                self.log.emit("视频分拣已在启动前取消。")
+                self.completed.emit(0, 0)
+                return
+
+            self.log.emit(f"正在建立图片特征库 (ORB模式): {self.today_dir} ...")
+            matcher = FeatureMatcher()
+
+            img_db = FeatureMatcher.scan_images_recursively(self.today_dir, matcher)
+            if self.isInterruptionRequested():
+                self.log.emit("视频分拣已由用户取消。")
+                self.completed.emit(0, 0)
+                return
+
+            if not img_db:
+                self.log.emit(f"任务目录下未找到有效图片特征库: {self.today_dir}")
+                self.completed.emit(0, 0)
+                return
+
+            self.log.emit(f"开始扫描视频: {self.video_root_dir} ...")
+
+            VIDEO_EXTS = ['.mp4', '.mkv', '.avi', '.mov', '.flv', '.wmv', '.ts']
+            processed = 0
+            moved = 0
+            cancelled = False
+
+            for root, dirs, files in os.walk(self.video_root_dir):
+                if self.isInterruptionRequested():
+                    cancelled = True
+                    break
+
+                for file in files:
+                    if self.isInterruptionRequested():
+                        cancelled = True
+                        break
+
+                    file_path = os.path.join(root, file)
+                    ext = os.path.splitext(file)[1].lower()
+                    if ext not in VIDEO_EXTS:
+                        continue
+
+                    self.log.emit(f"正在分析: {file} ...")
+
+                    frame = FeatureMatcher.get_video_frame_clean(file_path)
+                    if frame is None:
+                        continue
+
+                    if self.isInterruptionRequested():
+                        cancelled = True
+                        break
+
+                    _, video_desc = matcher.get_features(frame)
+                    if video_desc is None:
+                        continue
+
+                    best_score = 0.0
+                    best_match = None
+
+                    for img_data in img_db:
+                        if self.isInterruptionRequested():
+                            cancelled = True
+                            break
+                        score = matcher.match(img_data['desc'], video_desc)
+                        if score > best_score:
+                            best_score = score
+                            best_match = img_data
+
+                    if cancelled:
+                        break
+
+                    if best_score >= self.match_ratio_threshold:
+                        target_dir = best_match['folder']
+                        if os.path.abspath(root) == os.path.abspath(target_dir):
+                            processed += 1
+                            continue
+
+                        target_path = os.path.join(target_dir, file)
+                        if os.path.exists(target_path):
+                            base, ex = os.path.splitext(file)
+                            target_path = os.path.join(target_dir, f"{base}_match{ex}")
+
+                        try:
+                            self.log.emit(
+                                f"\n[匹配成功] {file}\n"
+                                f"         目标图片: {best_match['name']}\n"
+                                f"         特征重合度: {best_score:.2%}"
+                            )
+                            shutil.move(file_path, target_path)
+                            moved += 1
+                        except Exception as e:
+                            self.log.emit(f"\n[错误] 移动文件失败: {e}")
+
+                    processed += 1
+
+            if cancelled or self.isInterruptionRequested():
+                self.log.emit("\n" + "=" * 30)
+                self.log.emit(f"视频分拣已被用户中止。已处理: {moved}/{processed}")
+            else:
+                self.log.emit("\n" + "=" * 30)
+                self.log.emit(f"处理完成。归类: {moved}/{processed}")
+
+            self.completed.emit(moved, processed)
+
+        except (Exception, SystemExit) as error:
+            self.failed.emit(
+                f"{type(error).__name__}: {error}",
+                traceback.format_exc(),
+            )
 
 
 class TaskSubmissionAuditDialog(QtWidgets.QDialog):
@@ -908,7 +1028,6 @@ class DailyLinksDialog(QtWidgets.QDialog):
 
 class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
     config_name = "config.json"
-    music_ducker_settings_key = 'music_ducker_settings'
     google_sheet_monitor_settings_key = 'google_sheet_monitor'
     log_max_blocks = 200
 
@@ -979,20 +1098,12 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
         self._aux_click_reset_timer.timeout.connect(self._resetAuxClicks)
         self._task_language_by_row = {}
         self._task_language_color_by_code = {}
-        self.music_ducker_thread = None
-        self.music_ducker_settings = dict(DEFAULT_MUSIC_DUCKER_SETTINGS)
         self.task_result_global_hotkey = DEFAULT_TASK_RESULT_HOTKEY
         self.load_task_global_hotkey = DEFAULT_LOAD_TASK_HOTKEY
         self.task_result_hotkey_manager = None
         self.load_task_hotkey_manager = None
         self.task_result_thread = None
         self.task_reference_download_thread = None
-        self.smart_video_editor_thread = None
-        self._smart_video_editor_phase = None
-        self._smart_video_editor_result = None
-        self._smart_video_editor_error = None
-        self._smart_video_editor_settings = None
-        self.smart_video_pending_reviews = []
         self.task_reference_download_root = None
         self._task_result_button_text = ''
         self.loaded_project_dir = None
@@ -1005,6 +1116,9 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
         self.notification_tray_icon = None
         self.oral_duration_check_thread = None
         self.task_submission_audit_thread = None
+        self.assign_video_thread = None
+        self._assign_video_button_text = ""
+        self._last_video_assign_result = None
         self.flow_guard_settings = normalize_flow_guard_settings({})
         self.flow_guard_thread = None
         self.flow_guard_status = "未启动"
@@ -1019,7 +1133,18 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
         self.plugin_host = PluginHost(self)
         self.inventory_plugin = self.plugin_host.install(InventoryPlugin())
         self.chrome_plugin = self.plugin_host.install(ChromeLauncherPlugin())
+        self.codex_account_switcher_plugin = self.plugin_host.install(
+            CodexAccountSwitcherPlugin()
+        )
+        self.music_ducker_plugin = self.plugin_host.install(MusicDuckerPlugin())
         self.audio_splitter_plugin = self.plugin_host.install(AudioSplitterPlugin())
+        self.task_audio_subtitle_plugin = self.plugin_host.install(
+            TaskAudioSubtitlePlugin()
+        )
+        self.smart_video_editor_plugin = self.plugin_host.install(
+            SmartVideoEditorPlugin()
+        )
+        self.daily_tasks_plugin = self.plugin_host.install(DailyTasksPlugin())
         self.plugin_host.attach_main_menu(self.main_menu_bar)
         self.plugin_host.attach_tools_menu(self.tools_menu)
         self.plugin_host.start_all()
@@ -1037,6 +1162,9 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
             hotkey_id=LOAD_TASK_HOTKEY_ID,
         )
         self.load_task_hotkey_manager.activated.connect(self.triggerLoadTaskFromHotkey)
+        self.create_id_folder_btn.clicked.connect(
+            lambda clicked=False: self.initializeProjectDirectory()
+        )
         self.load_btn.clicked.connect(lambda clicked:self.loadTask())
         self.task_table_widget.cellDoubleClicked.connect(
             self.openTaskDirectoryForRow
@@ -1049,15 +1177,10 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
             self.showTaskContextMenu
         )
         self.assign_video_btn.clicked.connect(lambda clicked:self.assignVideo())
+        self._assign_video_button_text = self.assign_video_btn.text()
         self.open_chrome_btn.clicked.connect(lambda clicked:self.chromeRunner())
         self.launch_next_chrome_btn.clicked.connect(
             lambda clicked: self.launchNextChromeProfile()
-        )
-        self.music_ducker_checkbox.toggled.connect(
-            self.toggleMusicDucker
-        )
-        self.music_ducker_settings_btn.clicked.connect(
-            lambda clicked: self.editMusicDuckerSettings()
         )
         self.gen_audio_btn.clicked.connect(lambda clicked:self.genTaskAudio())
         self.gen_vtt_btn.clicked.connect(lambda clicked:self.genAllTaskVtt())
@@ -1131,16 +1254,6 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
         self.oral_duration_check_action.triggered.connect(
             self.startOralDurationCheck
         )
-        self.smart_video_pending_action = self.tools_menu.addAction(
-            '待处理智能剪辑'
-        )
-        self.smart_video_pending_action.setToolTip(
-            '查看上次未处理或暂缓的缺段任务，并重新加载视频分析'
-        )
-        self.smart_video_pending_action.triggered.connect(
-            self.openSmartVideoPendingReviews
-        )
-        self.updateSmartVideoPendingAction()
         self.tools_menu.addSeparator()
         self.flow_guard_action = self.tools_menu.addAction("Flow 参数守卫")
         self.flow_guard_action.setCheckable(True)
@@ -1870,6 +1983,50 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
         today_dir = task_dir.joinpath(task_date)
         return today_dir
 
+    def initializeProjectDirectory(self):
+        """Create the selected project directory and seed its task workbook once."""
+        today_dir = self.getTodayDir()
+        if today_dir is None:
+            return None
+        config = self.load_config()
+        table_file_name = str(config.get("task_table_file_name") or "tasks.ods").strip()
+        if not table_file_name or pathlib.Path(table_file_name).name != table_file_name:
+            self.Critical("任务表格文件名无效，请在程序设置中检查。")
+            return None
+
+        try:
+            configured_template = str(
+                config.get("task_table_template_path") or ""
+            ).strip()
+            template_candidates = []
+            if configured_template:
+                template_candidates.append(pathlib.Path(configured_template))
+            template_candidates.append(APP_ROOT / "任务登记表格.ods")
+            result = initialize_project_directory(
+                today_dir,
+                table_file_name,
+                template_candidates,
+            )
+            if result.get("missing_template"):
+                self.Critical(
+                    "项目目录已创建，但没有找到任务表格模板。\n"
+                    "请把模板放到程序根目录并命名为“任务登记表格.ods”。"
+                )
+                return today_dir
+            if result["copied"]:
+                self.appendLog(f"已复制任务表格模板：{result['table_path']}")
+            else:
+                self.appendLog(
+                    f"项目目录已存在，保留原任务表格：{result['table_path']}"
+                )
+            self.file_explorer_tree_view.load_directory(today_dir)
+            self.appendLog(f"项目目录初始化完成：{today_dir}")
+            return today_dir
+        except OSError as error:
+            self.Critical(f"初始化项目目录失败：{error}")
+            self.appendLog(f"初始化项目目录失败：{error}", level=logging.ERROR)
+            return None
+
     def Critical(self,text):
         QMessageBox.critical(self, "错误", text)
 
@@ -1969,10 +2126,6 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
 
         menu = QtWidgets.QMenu(self.task_table_widget)
         plugin_actions = self.plugin_host.populate_task_context_menu(menu, rows)
-        smart_video_action = menu.addAction("智能剪辑并生成 SRT…")
-        smart_video_action.setToolTip(
-            "使用任务语音文案核对视频片段、压缩过长气口，并生成对应 SRT"
-        )
         menu.addSeparator()
         open_action = menu.addAction(
             "打开任务目录"
@@ -1990,9 +2143,7 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
         )
         if selected in plugin_actions:
             return
-        if selected == smart_video_action:
-            self.startSmartVideoEditor(rows)
-        elif selected == open_action:
+        if selected == open_action:
             self.openSelectedTaskDirectories(rows)
         elif selected == copy_path_action:
             self.copySelectedTaskDirectoryPaths(rows)
@@ -2052,318 +2203,6 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
             )
             return []
         return targets
-
-    def startSmartVideoEditor(self, rows=None):
-        if (
-            self.smart_video_editor_thread is not None
-            and self.smart_video_editor_thread.isRunning()
-        ):
-            QMessageBox.information(
-                self,
-                "智能剪辑",
-                "智能剪辑正在分析或导出，请等待当前任务完成。",
-            )
-            return
-        rows = self.selectedTaskRows() if rows is None else list(rows)
-        targets = self.taskTargetsForRows(rows)
-        if not targets:
-            return
-
-        config = self.load_config()
-        settings = normalize_smart_video_editor_settings(
-            config.get(SMART_VIDEO_EDITOR_CONFIG_KEY)
-        )
-        # Smart editing uses the same subtitle controls as the proven main
-        # subtitle workflow.  Capture the live values now so the worker cannot
-        # drift onto a second, contradictory set of SRT options.
-        settings["srt_include_line_breaks"] = (
-            self.subtitle_line_break_checkbox.isChecked()
-        )
-        settings["srt_max_words_per_block"] = (
-            self.subtitle_max_words_spinbox.value()
-        )
-        settings["srt_block_gap_ms"] = self.subtitle_gap_ms_spinbox.value()
-        if not settings.get("ffmpeg_path"):
-            settings["ffmpeg_path"] = str(
-                config.get("shana_ffmpeg_path") or ""
-            ).strip()
-
-        jobs = []
-        for target in targets:
-            task = target["task"]
-            task_dir = pathlib.Path(target["target_dir"])
-            sources = discover_task_videos(task_dir, settings)
-            jobs.append({
-                "task_id": str(getattr(task, "task_id", "") or ""),
-                "task_name": str(getattr(task, "task_name", "") or ""),
-                "label": target["label"],
-                "task_dir": str(task_dir),
-                "script": str(getattr(task, "task_audio_text", "") or "").strip(),
-                "language": self.detectTaskLanguage(task),
-                "sources": [str(path) for path in sources],
-            })
-
-        self._startSmartVideoAnalysisJobs(jobs, settings)
-
-    def _startSmartVideoAnalysisJobs(self, jobs, settings):
-        """Confirm sources and start analysis for normal or persisted tasks."""
-        if not jobs:
-            QMessageBox.information(self, "智能剪辑", "没有可以分析的任务。")
-            return
-
-        selected_jobs = SmartVideoSourceDialog.get_jobs(jobs, self)
-        if selected_jobs is None:
-            self.appendLog("[智能剪辑] 用户取消了视频片段选择。", end="")
-            return
-        try:
-            whisper_model = globalValue.get_whisper_model()
-        except Exception as error:
-            self.appendLog(
-                f"[智能剪辑错误] Whisper 模型不可用：{type(error).__name__}: {error}",
-                end="",
-                level=logging.ERROR,
-            )
-            QMessageBox.critical(
-                self,
-                "智能剪辑无法启动",
-                "Whisper 模型不可用。详细错误已写入程序日志。",
-            )
-            return
-        self._smart_video_editor_settings = settings
-        self.appendLog(
-            f"[智能剪辑] 开始核对 {len(selected_jobs)} 个任务的视频片段。",
-            end="",
-        )
-        self._startSmartVideoWorker(
-            "analyze",
-            settings,
-            jobs=selected_jobs,
-            model=whisper_model,
-        )
-
-    def updateSmartVideoPendingAction(self):
-        action = getattr(self, "smart_video_pending_action", None)
-        if action is None:
-            return
-        count = len(self.smart_video_pending_reviews)
-        action.setText(
-            f"待处理智能剪辑（{count}）" if count else "待处理智能剪辑"
-        )
-
-    def _rememberSmartVideoPendingReviews(self, bundle):
-        self.smart_video_pending_reviews = update_smart_video_pending_reviews(
-            self.smart_video_pending_reviews,
-            bundle,
-        )
-        self.updateSmartVideoPendingAction()
-        self.saveCurrentConfig()
-
-    def openSmartVideoPendingReviews(self):
-        if (
-            self.smart_video_editor_thread is not None
-            and self.smart_video_editor_thread.isRunning()
-        ):
-            QMessageBox.information(
-                self, "待处理智能剪辑", "智能剪辑正在运行，请稍后再处理。"
-            )
-            return
-        while True:
-            if not self.smart_video_pending_reviews:
-                QMessageBox.information(
-                    self, "待处理智能剪辑", "目前没有待处理的缺段任务。"
-                )
-                return
-            dialog = SmartVideoPendingDialog(
-                self.smart_video_pending_reviews, self
-            )
-            if dialog.exec_() != QtWidgets.QDialog.Accepted:
-                return
-            selected = list(dialog.selected_records)
-            if dialog.action == "remove":
-                remove_ids = {
-                    str(item.get("record_id") or "") for item in selected
-                }
-                self.smart_video_pending_reviews = [
-                    item for item in self.smart_video_pending_reviews
-                    if str(item.get("record_id") or "") not in remove_ids
-                ]
-                self.updateSmartVideoPendingAction()
-                self.saveCurrentConfig()
-                continue
-            if dialog.action != "reanalyze":
-                return
-
-            config = self.load_config()
-            settings = normalize_smart_video_editor_settings(
-                config.get(SMART_VIDEO_EDITOR_CONFIG_KEY)
-            )
-            settings["srt_include_line_breaks"] = (
-                self.subtitle_line_break_checkbox.isChecked()
-            )
-            settings["srt_max_words_per_block"] = (
-                self.subtitle_max_words_spinbox.value()
-            )
-            settings["srt_block_gap_ms"] = self.subtitle_gap_ms_spinbox.value()
-            if not settings.get("ffmpeg_path"):
-                settings["ffmpeg_path"] = str(
-                    config.get("shana_ffmpeg_path") or ""
-                ).strip()
-            jobs = []
-            for record in selected:
-                task_dir = pathlib.Path(record.get("task_dir") or "")
-                sources = []
-                seen = set()
-                for source in list(record.get("sources", [])) + [
-                    str(path) for path in discover_task_videos(task_dir, settings)
-                ]:
-                    key = os.path.normcase(os.path.abspath(str(source)))
-                    if key in seen or not pathlib.Path(source).is_file():
-                        continue
-                    seen.add(key)
-                    sources.append(str(source))
-                jobs.append({
-                    "task_id": str(record.get("task_id") or ""),
-                    "task_name": str(record.get("task_name") or ""),
-                    "label": str(
-                        record.get("label") or record.get("task_id") or "任务"
-                    ),
-                    "task_dir": str(task_dir),
-                    "script": str(record.get("script") or ""),
-                    "language": str(record.get("language") or ""),
-                    "sources": sources,
-                })
-            self._startSmartVideoAnalysisJobs(jobs, settings)
-            return
-
-    def _startSmartVideoWorker(
-        self,
-        phase,
-        settings,
-        jobs=None,
-        model=None,
-        bundle=None,
-    ):
-        thread = SmartVideoEditorThread(
-            phase,
-            settings,
-            jobs=jobs,
-            model=model,
-            bundle=bundle,
-            parent=self,
-        )
-        thread.log.connect(self.onSmartVideoEditorLog)
-        thread.completed.connect(self.onSmartVideoEditorCompleted)
-        thread.failed.connect(self.onSmartVideoEditorFailed)
-        thread.finished.connect(self.onSmartVideoEditorFinished)
-        self.smart_video_editor_thread = thread
-        self._smart_video_editor_phase = phase
-        self._smart_video_editor_result = None
-        self._smart_video_editor_error = None
-        thread.start()
-
-    def onSmartVideoEditorLog(self, message):
-        self.appendLog(message, end="")
-
-    def onSmartVideoEditorCompleted(self, result):
-        self._smart_video_editor_result = result
-
-    def onSmartVideoEditorFailed(self, message, details):
-        self._smart_video_editor_error = (message, details)
-        self.appendLog(
-            f"[智能剪辑错误] {message}\n{details}",
-            end="",
-            level=logging.ERROR,
-        )
-
-    def onSmartVideoEditorFinished(self):
-        thread = self.smart_video_editor_thread
-        phase = self._smart_video_editor_phase
-        result = self._smart_video_editor_result
-        error = self._smart_video_editor_error
-        self.smart_video_editor_thread = None
-        self._smart_video_editor_phase = None
-        self._smart_video_editor_result = None
-        self._smart_video_editor_error = None
-        if thread is not None:
-            thread.deleteLater()
-        if error is not None:
-            QMessageBox.critical(
-                self,
-                "智能剪辑失败",
-                f"{error[0]}\n\n详细堆栈已写入程序日志。",
-            )
-            return
-        if result is None:
-            return
-        if phase == "analyze":
-            QtCore.QTimer.singleShot(
-                0, lambda value=result: self._handleSmartVideoAnalysis(value)
-            )
-        else:
-            self._handleSmartVideoExportResult(result)
-
-    def _handleSmartVideoAnalysis(self, bundle):
-        summary = bundle.get("summary", {})
-        self.appendLog(
-            "[智能剪辑] 核对完成：通过 {green}，需核对 {orange}，严重异常 {pink}，"
-            "未匹配文案 {missing} 段；共标出 {problems} 个具体问题、"
-            "{cuts} 个自动裁切区间。".format(
-                green=summary.get("green_count", 0),
-                orange=summary.get("orange_count", 0),
-                pink=summary.get("pink_count", 0),
-                missing=summary.get("missing_count", 0),
-                problems=summary.get("problem_count", 0),
-                cuts=summary.get("cut_decision_count", 0),
-            ),
-            end="",
-        )
-        settings = normalize_smart_video_editor_settings(
-            self._smart_video_editor_settings or bundle.get("settings")
-        )
-        blockers = smart_video_export_blockers(bundle)
-        if blockers:
-            self.appendLog(
-                f"[智能剪辑严重错误] 检测到 {len(blockers)} 个缺段，等待人工决定。",
-                end="",
-                level=logging.ERROR,
-            )
-            QMessageBox.warning(
-                self,
-                "检测到缺段，需要人工决定",
-                "任务原文存在没有对应视频的片段。你可以在核对窗口中试听后"
-                "标记“没问题”，也可以暂缓这个任务并先导出其余任务。\n\n"
-                + format_smart_video_export_blockers(blockers, limit=8),
-            )
-        if summary.get("needs_review") or not settings.get("auto_export_clean"):
-            reviewed = SmartVideoReviewDialog.get_reviewed_bundle(bundle, self)
-            if reviewed is None:
-                self._rememberSmartVideoPendingReviews(bundle)
-                self.appendLog(
-                    "[智能剪辑] 已取消导出；分析报告、识别缓存和待处理任务已保留。",
-                    end="",
-                )
-                return
-            bundle = reviewed
-        self._rememberSmartVideoPendingReviews(bundle)
-        self.appendLog("[智能剪辑] 核对已确认，开始生成视频与 SRT。", end="")
-        self._startSmartVideoWorker(
-            "export",
-            settings,
-            bundle=bundle,
-            model=globalValue.get_whisper_model(),
-        )
-
-    def _handleSmartVideoExportResult(self, result):
-        completed = result.get("completed", [])
-        failed = result.get("failed", [])
-        skipped = result.get("skipped", [])
-        self.appendLog(
-            f"[智能剪辑] 导出结束：成功 {len(completed)}，"
-            f"缺段暂缓 {len(skipped)}，失败 {len(failed)}。",
-            end="",
-            level=logging.ERROR if failed else logging.INFO,
-        )
-        SmartVideoExportResultDialog(result, self).exec_()
 
     def assignMaterialImagesToTasks(self, rows=None):
         """Compatibility entry point for the extracted inventory plugin."""
@@ -2686,13 +2525,22 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
 
 
     def assignVideo(self):
+        if self.assign_video_thread is not None and self.assign_video_thread.isRunning():
+            self.assign_video_thread.requestInterruption()
+            self.assign_video_btn.setEnabled(False)
+            self.assign_video_btn.setText("正在停止…")
+            self.appendLog("已请求停止视频分拣，等待当前文件处理完成...")
+            return self.assign_video_thread
+
         today_dir = self.getTodayDir()
         VIDEO_ROOT_DIR = globalValue.videoSortingStationPath()
 
-        # 匹配阈值 (0.0 ~ 1.0)
-        # 这个值代表：图片中的特征点，有多少比例在视频帧中找到了？
-        # 0.2 表示图片中 20% 的特征在视频里找到了。
-        # 对于裁剪严重的图片，建议设置在 0.15 ~ 0.3 之间。
+        if today_dir is None:
+            return None
+        if not str(VIDEO_ROOT_DIR or "").strip():
+            self.Critical("没有配置视频来源目录。")
+            return None
+
         try:
             MATCH_RATIO_THRESHOLD = float(
                 self.load_config().get("video_match_ratio_threshold", 0.03)
@@ -2701,78 +2549,53 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
             MATCH_RATIO_THRESHOLD = 0.03
         MATCH_RATIO_THRESHOLD = min(1.0, max(0.0, MATCH_RATIO_THRESHOLD))
 
-        # 视频后缀
-        VIDEO_EXTS = ['.mp4', '.mkv', '.avi', '.mov', '.flv', '.wmv', '.ts']
-
         if not os.path.exists(VIDEO_ROOT_DIR) or not os.path.exists(today_dir):
             self.Critical("视频来源目录或当前任务目录配置错误。")
-            return
+            return None
 
-        # 初始化匹配器
-        matcher = FeatureMatcher()
+        if not self._assign_video_button_text:
+            self._assign_video_button_text = self.assign_video_btn.text() or "分拣视频"
+        self.assign_video_btn.setText("停止分拣")
+        self.assign_video_btn.setEnabled(True)
 
-        # 1. 加载图片库 (计算特征)
-        img_db = FeatureMatcher.scan_images_recursively(today_dir, matcher)
-        if not img_db: return
+        thread = VideoAssignmentThread(
+            today_dir=today_dir,
+            video_root_dir=VIDEO_ROOT_DIR,
+            match_ratio_threshold=MATCH_RATIO_THRESHOLD,
+            parent=self,
+        )
+        thread.log.connect(self.appendLog)
+        thread.completed.connect(self.onAssignVideoCompleted)
+        thread.failed.connect(self.onAssignVideoFailed)
+        thread.finished.connect(self.onAssignVideoFinished)
 
-        self.appendLog(f"开始扫描视频: {VIDEO_ROOT_DIR} ...")
+        self.assign_video_thread = thread
+        thread.start()
+        return thread
 
-        processed = 0
-        moved = 0
+    def onAssignVideoCompleted(self, matched_count, total_count):
+        self._last_video_assign_result = (matched_count, total_count)
 
-        for root, dirs, files in os.walk(VIDEO_ROOT_DIR):
-            for file in files:
-                file_path = os.path.join(root, file)
-                ext = os.path.splitext(file)[1].lower()
+    def onAssignVideoFailed(self, message, traceback_text):
+        self.appendLog(f"分拣视频发生异常：\n{traceback_text}")
+        QMessageBox.critical(self, "分拣视频失败", f"分拣视频过程中出现错误：\n{message}")
 
-                if ext in VIDEO_EXTS:
-                    self.appendLog(f"正在分析: {file} ...", end='\r')
-
-                    # 获取视频帧
-                    frame = FeatureMatcher.get_video_frame_clean(file_path)
-                    if frame is None: continue
-
-                    # 计算视频帧的特征
-                    _, video_desc = matcher.get_features(frame)
-                    if video_desc is None: continue
-
-                    best_score = 0.0
-                    best_match = None
-
-                    # 2. 与图片库逐一进行特征匹配
-                    for img_data in img_db:
-                        score = matcher.match(img_data['desc'], video_desc)
-
-                        if score > best_score:
-                            best_score = score
-                            best_match = img_data
-
-                    # 3. 判定匹配
-                    if best_score >= MATCH_RATIO_THRESHOLD:
-                        target_dir = best_match['folder']
-
-                        if os.path.abspath(root) == os.path.abspath(target_dir):
-                            continue
-
-                        target_path = os.path.join(target_dir, file)
-                        if os.path.exists(target_path):
-                            base, ex = os.path.splitext(file)
-                            target_path = os.path.join(target_dir, f"{base}_match{ex}")
-
-                        try:
-                            self.appendLog(f"\n[匹配成功] {file}")
-                            self.appendLog(f"         目标图片: {best_match['name']}")
-                            self.appendLog(f"         特征重合度: {best_score:.2%}")  # 显示百分比
-
-                            shutil.move(file_path, target_path)
-                            moved += 1
-                        except Exception as e:
-                            self.appendLog(f"\n[错误] {e}")
-
-                    processed += 1
-
-        self.appendLog("\n" + "=" * 30)
-        self.appendLog(f"处理完成。归类: {moved}/{processed}")
+    def onAssignVideoFinished(self, matched_count=None, total_count=None, *args, **kwargs):
+        thread = self.assign_video_thread
+        self.assign_video_thread = None
+        if hasattr(self, "assign_video_btn") and self.assign_video_btn is not None:
+            self.assign_video_btn.setEnabled(True)
+            self.assign_video_btn.setText(self._assign_video_button_text or "分拣视频")
+        if (
+            matched_count is not None
+            and total_count is not None
+            and not isinstance(matched_count, QtCore.QObject)
+        ):
+            self._last_video_assign_result = (matched_count, total_count)
+        if thread is not None:
+            delete_later = getattr(thread, "deleteLater", None)
+            if callable(delete_later):
+                delete_later()
 
     def chromeRunner(self):
         """Compatibility entry point; Chrome lifecycle belongs to its plugin."""
@@ -2860,152 +2683,6 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
             'load_task_global_hotkey',
             show_error=show_error,
         )
-
-    def toggleMusicDucker(self, enabled):
-        thread = self.music_ducker_thread
-        if not enabled:
-            if thread is not None and thread.isRunning():
-                self.music_ducker_checkbox.setEnabled(False)
-                self.music_ducker_checkbox.setText('正在停止音乐压制...')
-                thread.stop()
-            return
-
-        if thread is not None and thread.isRunning():
-            return
-
-        thread = MusicDuckerThread(self.music_ducker_settings, self)
-        thread.message.connect(self.onMusicDuckerMessage)
-        thread.error.connect(self.onMusicDuckerError)
-        thread.finished.connect(self.onMusicDuckerFinished)
-        self.music_ducker_thread = thread
-        self.music_ducker_checkbox.setText('音乐压制运行中')
-        self.music_ducker_checkbox.setStyleSheet(
-            'QCheckBox { color: #1B5E20; font-weight: bold; }'
-        )
-        self.music_ducker_settings_btn.setEnabled(False)
-        thread.start()
-
-    def editMusicDuckerSettings(self):
-        dialog = QtWidgets.QDialog(self)
-        dialog.setWindowTitle('音乐压制参数')
-        form = QtWidgets.QFormLayout(dialog)
-
-        trigger_apps_edit = QtWidgets.QLineEdit(dialog)
-        trigger_apps_edit.setText(', '.join(
-            self.music_ducker_settings['trigger_apps']
-        ))
-        trigger_apps_edit.setToolTip('用逗号分隔；不写 .exe 时会自动补全。')
-
-        music_apps_edit = QtWidgets.QPlainTextEdit(dialog)
-        music_apps_edit.setPlainText('\n'.join(
-            self.music_ducker_settings['music_apps']
-        ))
-        music_apps_edit.setMaximumHeight(100)
-        music_apps_edit.setToolTip('每行一个进程名，也可以用逗号分隔。')
-
-        duck_to_spin = QtWidgets.QSpinBox(dialog)
-        duck_to_spin.setRange(0, 100)
-        duck_to_spin.setSuffix(' %')
-        duck_to_spin.setValue(self.music_ducker_settings['duck_to_percent'])
-        duck_to_spin.setToolTip('检测到达芬奇出声后，音乐最终降低到的音量。')
-
-        threshold_spin = QtWidgets.QDoubleSpinBox(dialog)
-        threshold_spin.setRange(0, 1)
-        threshold_spin.setDecimals(4)
-        threshold_spin.setSingleStep(0.001)
-        threshold_spin.setValue(self.music_ducker_settings['peak_threshold'])
-        threshold_spin.setToolTip('数值越低越灵敏；太低可能把底噪也当成出声。')
-
-        release_spin = QtWidgets.QDoubleSpinBox(dialog)
-        release_spin.setRange(0, 600)
-        release_spin.setDecimals(1)
-        release_spin.setSuffix(' 秒')
-        release_spin.setValue(self.music_ducker_settings['release_seconds'])
-        release_spin.setToolTip('达芬奇安静多久后，开始恢复音乐音量。')
-
-        fade_down_spin = QtWidgets.QDoubleSpinBox(dialog)
-        fade_down_spin.setRange(0, 600)
-        fade_down_spin.setDecimals(1)
-        fade_down_spin.setSuffix(' 秒')
-        fade_down_spin.setValue(self.music_ducker_settings['fade_down_seconds'])
-
-        fade_up_spin = QtWidgets.QDoubleSpinBox(dialog)
-        fade_up_spin.setRange(0, 600)
-        fade_up_spin.setDecimals(1)
-        fade_up_spin.setSuffix(' 秒')
-        fade_up_spin.setValue(self.music_ducker_settings['fade_up_seconds'])
-
-        interval_spin = QtWidgets.QSpinBox(dialog)
-        interval_spin.setRange(50, 5000)
-        interval_spin.setSingleStep(50)
-        interval_spin.setSuffix(' ms')
-        interval_spin.setValue(self.music_ducker_settings['check_interval_ms'])
-        interval_spin.setToolTip('越小响应越快，但检测频率和 CPU 占用也越高。')
-
-        form.addRow('触发程序：', trigger_apps_edit)
-        form.addRow('压低的程序：', music_apps_edit)
-        form.addRow('压低后的音量：', duck_to_spin)
-        form.addRow('触发峰值阈值：', threshold_spin)
-        form.addRow('安静等待时间：', release_spin)
-        form.addRow('压低渐变时间：', fade_down_spin)
-        form.addRow('恢复渐变时间：', fade_up_spin)
-        form.addRow('检测间隔：', interval_spin)
-
-        hint_label = QtWidgets.QLabel(
-            '参数会保存到 config.json，并在下一次启用音乐压制时生效。',
-            dialog,
-        )
-        hint_label.setWordWrap(True)
-        form.addRow(hint_label)
-
-        button_box = QtWidgets.QDialogButtonBox(
-            QtWidgets.QDialogButtonBox.Save | QtWidgets.QDialogButtonBox.Cancel,
-            dialog,
-        )
-        button_box.button(QtWidgets.QDialogButtonBox.Save).setText('保存')
-        button_box.button(QtWidgets.QDialogButtonBox.Cancel).setText('取消')
-        button_box.accepted.connect(dialog.accept)
-        button_box.rejected.connect(dialog.reject)
-        form.addRow(button_box)
-
-        if dialog.exec_() != QtWidgets.QDialog.Accepted:
-            return
-
-        previous_settings = dict(self.music_ducker_settings)
-        self.music_ducker_settings = normalize_music_ducker_settings({
-            'trigger_apps': trigger_apps_edit.text(),
-            'music_apps': music_apps_edit.toPlainText(),
-            'duck_to_percent': duck_to_spin.value(),
-            'peak_threshold': threshold_spin.value(),
-            'release_seconds': release_spin.value(),
-            'fade_down_seconds': fade_down_spin.value(),
-            'fade_up_seconds': fade_up_spin.value(),
-            'check_interval_ms': interval_spin.value(),
-        })
-        if self.saveCurrentConfig():
-            self.appendLog('[音乐压制] 参数已保存。', end='')
-        else:
-            self.music_ducker_settings = previous_settings
-
-    def onMusicDuckerMessage(self, message):
-        self.appendLog(f'[音乐压制] {message}', end='')
-
-    def onMusicDuckerError(self, message):
-        self.appendLog(f'[音乐压制错误] {message}', end='')
-        QMessageBox.critical(self, '音乐压制启动失败', message)
-
-    def onMusicDuckerFinished(self):
-        thread = self.music_ducker_thread
-        self.music_ducker_thread = None
-        self.music_ducker_checkbox.blockSignals(True)
-        self.music_ducker_checkbox.setChecked(False)
-        self.music_ducker_checkbox.blockSignals(False)
-        self.music_ducker_checkbox.setEnabled(True)
-        self.music_ducker_checkbox.setText('启用音乐压制')
-        self.music_ducker_checkbox.setStyleSheet('')
-        self.music_ducker_settings_btn.setEnabled(True)
-        if thread is not None:
-            thread.deleteLater()
 
     def openSettings(self):
         """打开设置对话框"""
@@ -3100,17 +2777,6 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
                 '正在读取任务提交表格，请等待完成后再关闭程序。',
             )
             return
-        smart_video_thread = self.smart_video_editor_thread
-        if smart_video_thread is not None and smart_video_thread.isRunning():
-            smart_video_thread.requestInterruption()
-            event.ignore()
-            QMessageBox.warning(
-                self,
-                "智能剪辑仍在进行",
-                "已请求停止智能剪辑。正在处理的识别或编码步骤结束后即可关闭程序；"
-                "原视频不会被改动。",
-            )
-            return
         reference_thread = self.task_reference_download_thread
         if reference_thread is not None and reference_thread.isRunning():
             reference_thread.requestInterruption()
@@ -3129,18 +2795,17 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
                 '正在整理、检测或上传文件。为避免中断上传，请等待完成后再关闭程序。',
             )
             return
-        thread = self.music_ducker_thread
-        if thread is not None and thread.isRunning():
-            thread.stop()
-            if not thread.wait(5000):
+        assign_thread = self.assign_video_thread
+        if assign_thread is not None and assign_thread.isRunning():
+            assign_thread.requestInterruption()
+            if not assign_thread.wait(2000):
                 event.ignore()
                 QMessageBox.warning(
                     self,
-                    '音乐压制仍在停止',
-                    '正在恢复音乐音量，请稍后再关闭程序。',
+                    '视频分拣仍在运行',
+                    '已请求停止视频分拣，正在等待当前文件处理完成，请稍候再关闭程序。',
                 )
                 return
-
         if not self.stopGoogleSheetMonitor():
             event.ignore()
             QMessageBox.warning(
@@ -3182,7 +2847,7 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
         self.plugin_host.stop_all()
         if self.notification_tray_icon is not None:
             self.notification_tray_icon.hide()
-
+              
         super().closeEvent(event)
 
     def saveCurrentConfig(self):
@@ -3209,16 +2874,13 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
                 existing_config = json.load(rf)
         else:
             existing_config = {}
-
+        
         # 更新任务路径，保留其他配置（如API key）
         existing_config["task_path"] = self.task_path_edit.text()
         existing_config["audio_use_task_name"] = self.audio_use_task_name_checkbox.isChecked()
         existing_config["subtitle_include_line_breaks"] = self.subtitle_line_break_checkbox.isChecked()
         existing_config["subtitle_max_words_per_block"] = self.subtitle_max_words_spinbox.value()
         existing_config["subtitle_block_gap_ms"] = self.subtitle_gap_ms_spinbox.value()
-        existing_config[self.music_ducker_settings_key] = dict(
-            self.music_ducker_settings
-        )
         existing_config[TASK_RESULT_HOTKEY_CONFIG_KEY] = self.task_result_global_hotkey
         existing_config[LOAD_TASK_HOTKEY_CONFIG_KEY] = self.load_task_global_hotkey
         existing_config[self.google_sheet_monitor_settings_key] = dict(
@@ -3230,13 +2892,8 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
         existing_config[DAILY_LINK_HISTORY_CONFIG_KEY] = normalize_daily_link_history(
             self.daily_link_history
         )
-        existing_config[SMART_VIDEO_PENDING_CONFIG_KEY] = (
-            normalize_smart_video_pending_reviews(
-                self.smart_video_pending_reviews
-            )
-        )
         self.plugin_host.update_runtime_config(existing_config)
-
+        
         return existing_config
 
     def load(self,dic):
@@ -3259,9 +2916,6 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
             block_gap_ms = -1
         self.subtitle_max_words_spinbox.setValue(max_words_per_block)
         self.subtitle_gap_ms_spinbox.setValue(block_gap_ms)
-        self.music_ducker_settings = normalize_music_ducker_settings(
-            dic.get(self.music_ducker_settings_key)
-        )
         self.google_sheet_monitor_settings = normalize_monitor_settings(
             dic.get(self.google_sheet_monitor_settings_key)
         )
@@ -3272,9 +2926,6 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
         self.review_status_config = load_task_result_config(dic)
         self.daily_link_history = normalize_daily_link_history(
             dic.get(DAILY_LINK_HISTORY_CONFIG_KEY)
-        )
-        self.smart_video_pending_reviews = normalize_smart_video_pending_reviews(
-            dic.get(SMART_VIDEO_PENDING_CONFIG_KEY)
         )
         try:
             self.task_result_global_hotkey = normalize_hotkey_sequence(
@@ -3294,7 +2945,7 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
             )
         except ValueError:
             self.load_task_global_hotkey = DEFAULT_LOAD_TASK_HOTKEY
-
+    
     def load_config(self):
         """加载配置文件"""
         if os.path.exists(self.config_name):
@@ -3312,7 +2963,7 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
             for name, value in settings.items()
             if str(name).strip() and isinstance(value, dict)
         }
-
+    
     def get_elevenlabs_api_keys(self, progress_callback=None):
         """按持久化状态筛选 Key，并轮换可用 Key。"""
         def emit(message):
@@ -3359,19 +3010,9 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
         return []
 
     def genAllTaskVtt(self):
-        root_dir = self.getTodayDir()
-        for task in self.task_list:
-            result_dir = root_dir.joinpath(task.task_type).joinpath(task.task_id)
-            if not result_dir.exists():
-                result_dir.mkdir(parents=True)
-            result_file = result_dir / f"task_audio.wav"
-            if not result_file.exists():
-                result_file = result_dir / f"task_audio.mp3"
-            if not result_file.exists():
-                result_file = result_dir / f"task_audio.m4a"
-
-            if result_file.exists():
-                self.genSrt(result_file, task)
+        plugin = getattr(self, "task_audio_subtitle_plugin", None)
+        if plugin is not None:
+            return plugin.generate_all_subtitles()
 
     def genSrt(self, result_file: pathlib.Path, task: TaskData):
         # 生成ASS字幕（支持卡拉OK逐字高亮）
@@ -3543,37 +3184,21 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
         self._audioProgress(summary)
 
     def genTaskAudio(self):
-        if getattr(self, "_audio_generation_active", False):
-            self._audioProgress("音频任务仍在运行，请等待完成。")
-            return
-
-        self._audio_generation_active = True
-        original_text = self.gen_audio_btn.text()
-        self.gen_audio_btn.setEnabled(False)
-        self.gen_audio_btn.setText("正在生成音频…")
-        try:
-            self._generateTaskAudio(
+        plugin = getattr(self, "task_audio_subtitle_plugin", None)
+        if plugin is None:
+            return self._generateTaskAudio(
                 use_task_name=self.audio_use_task_name_checkbox.isChecked()
             )
-        except Exception as error:
-            self.app_logger.exception("音频批量处理意外中断")
-            self._audioProgress(
-                f"批量处理意外中断：{type(error).__name__}: {error}"
-                "（完整 traceback 已写入本地日志）",
-                level=logging.ERROR,
-            )
-            QMessageBox.critical(
-                self,
-                "生成音频失败",
-                f"音频处理意外中断：{error}\n\n完整错误已写入本地日志。",
-            )
-        finally:
-            self._audio_generation_active = False
-            self.gen_audio_btn.setText(original_text)
-            self.gen_audio_btn.setEnabled(True)
+        use_task_name = self.audio_use_task_name_checkbox.isChecked()
+        return plugin.generate_all_audio(
+            use_task_name=use_task_name,
+            with_subtitles=not use_task_name,
+        )
 
     def print(self,text,end='\n'):
         self.appendLog(text, end)
 
     def printEmit(self,text,end='\n'):
         self.printSignal.emit(text,end)
+
+

@@ -65,6 +65,7 @@ def generate_srt_whisper_only(audio_path, text, output_srt_path, language="sk",
                                chars_per_line=25, max_lines=2,
                                include_line_breaks=False,
                                max_words_per_block=0,
+                               max_chars_per_block=None,
                                block_gap_ms=None,
                                model=None):
 
@@ -91,14 +92,16 @@ def generate_srt_whisper_only(audio_path, text, output_srt_path, language="sk",
     # 启用单词数控制时先合并，再按单词时间戳均匀分块，避免原始段落边界
     # 产生大量只有一两个词的小块。
     max_words_per_block = max(0, int(max_words_per_block or 0))
-    if max_words_per_block:
+    if max_chars_per_block is None:
+        max_chars_per_block = chars_per_line * max_lines
+    max_chars_per_block = max(0, int(max_chars_per_block or 0))
+    if max_words_per_block or max_chars_per_block:
         result.merge_all_segments()
         result.split_by_length(
-            max_words=max_words_per_block,
+            max_words=max_words_per_block or None,
+            max_chars=max_chars_per_block or None,
             even_split=True,
         )
-    else:
-        result.split_by_length(max_chars=chars_per_line * max_lines)
 
     result.to_srt_vtt(
         output_srt_path,
@@ -118,6 +121,7 @@ def generate_srt_whisper_only(audio_path, text, output_srt_path, language="sk",
         max_lines=max_lines,
         include_line_breaks=include_line_breaks,
         max_words_per_block=max_words_per_block,
+        max_chars_per_block=max_chars_per_block,
         block_gap_ms=block_gap_ms,
     )
 
@@ -236,6 +240,7 @@ def fix_srt_line_length(srt_text: str,
                         max_lines: int = 2,
                         include_line_breaks: bool = True,
                         max_words_per_block: int = 0,
+                        max_chars_per_block=None,
                         block_gap_ms=None) -> str:
     """
     解析 SRT，对超长字幕块进行拆分与换行修复，返回修复后的 SRT 字符串。
@@ -247,6 +252,7 @@ def fix_srt_line_length(srt_text: str,
     max_lines        : 最多行数（默认 2），二者之积为单块最大字符数
     include_line_breaks: 字幕块内部是否按行宽插入换行
     max_words_per_block: 每个字幕块的最大单词数；0 表示继续按字符数分块
+    max_chars_per_block: 每个字幕块最大字符数；None 沿用行宽×行数，0 表示不限
     block_gap_ms      : 相邻字幕块间隔毫秒；None/-1 保留，0 表示首尾相接
     """
     # ── 解析 SRT ──────────────────────────────────────────────
@@ -273,24 +279,38 @@ def fix_srt_line_length(srt_text: str,
 
     # ── 拆分超长块 ────────────────────────────────────────────
     new_blocks = []
+    if max_chars_per_block is None:
+        max_chars_per_block = single_line_chars * max_lines
+    max_chars_per_block = max(0, int(max_chars_per_block or 0))
     for blk in blocks:
         # 把字幕文本里的换行当空格处理，统一衡量总长度
         flat_text = re.sub(r'\s+', ' ', blk['text'])
         if max_words_per_block and max_words_per_block > 0:
-            segments = split_srt_block_by_words(
+            word_segments = split_srt_block_by_words(
                 flat_text,
                 max_words_per_block,
-                include_line_breaks,
+                False,
                 single_line_chars,
                 max_lines,
             )
         else:
-            segments = split_srt_block(
-                flat_text,
-                single_line_chars,
-                max_lines,
-                include_line_breaks
-            )
+            word_segments = [flat_text]
+        segments = []
+        for segment in word_segments:
+            if max_chars_per_block > 0:
+                pieces = split_srt_block(
+                    segment,
+                    max_chars_per_block,
+                    1,
+                    False,
+                )
+            else:
+                pieces = [segment]
+            for piece in pieces:
+                segments.append(
+                    wrap_lines(piece, single_line_chars, max_lines)
+                    if include_line_breaks else re.sub(r'\s+', ' ', piece)
+                )
 
         if len(segments) == 1:
             new_blocks.append({'start': blk['start'],

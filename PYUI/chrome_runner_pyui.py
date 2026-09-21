@@ -1,3 +1,4 @@
+import copy
 import json
 import os
 import random
@@ -65,7 +66,7 @@ class ChromeRunnerDialog(QtWidgets.QDialog,Ui_ChromeRunnerDialog):
 
         group_action_layout = QtWidgets.QHBoxLayout()
         self.save_profile_group_members_btn = QtWidgets.QPushButton(
-            '管理分组成员…',
+            '管理成员 / 子分组…',
             self,
         )
         self.start_profile_group_iterator_btn = QtWidgets.QPushButton(
@@ -73,10 +74,10 @@ class ChromeRunnerDialog(QtWidgets.QDialog,Ui_ChromeRunnerDialog):
             self,
         )
         self.save_profile_group_members_btn.setToolTip(
-            '用勾选列表随时向分组添加或移除 Chrome Profile'
+            '管理分组直接包含的 Chrome Profile，也可以加入其他分组组成组合分组'
         )
         self.start_profile_group_iterator_btn.setToolTip(
-            '忽略配置在总列表中是否连续，按当前列表顺序建立分组迭代队列'
+            '按直接成员和子分组的顺序展开、自动去重，并从保存位置继续迭代'
         )
         group_action_layout.addWidget(self.save_profile_group_members_btn)
         group_action_layout.addWidget(self.start_profile_group_iterator_btn)
@@ -165,6 +166,7 @@ class ChromeRunnerDialog(QtWidgets.QDialog,Ui_ChromeRunnerDialog):
                     item.setData(Qt.UserRole, profile['directory'])
                     self.chrome_list_widget.addItem(item)
 
+                self.populate_profile_group_combo()
                 self.restore_iterator_position()
                 self.update_iterator_status(f'已加载 {len(self.profiles)} 个 profiles')
 
@@ -196,6 +198,7 @@ class ChromeRunnerDialog(QtWidgets.QDialog,Ui_ChromeRunnerDialog):
             list_item.setData(Qt.UserRole, profile['directory'])
             self.chrome_list_widget.addItem(list_item)
 
+        self.populate_profile_group_combo()
         self.restore_iterator_position()
         self.update_iterator_status(f'已扫描 {len(self.profiles)} 个 profiles')
 
@@ -241,6 +244,36 @@ class ChromeRunnerDialog(QtWidgets.QDialog,Ui_ChromeRunnerDialog):
             None,
         )
 
+    def group_contains_group(self, group_id, target_group_id, visited=None):
+        """Return whether one group recursively contains another group."""
+        group_id = str(group_id or '')
+        target_group_id = str(target_group_id or '')
+        if not group_id or not target_group_id:
+            return False
+        if group_id == target_group_id:
+            return True
+        visited = set(visited or ())
+        if group_id in visited:
+            return False
+        visited.add(group_id)
+        group = self.get_profile_group(group_id)
+        if group is None:
+            return False
+        return any(
+            self.group_contains_group(child_id, target_group_id, visited)
+            for child_id in group.get('child_group_ids', [])
+        )
+
+    def would_create_group_cycle(self, parent_group_id, child_group_id):
+        parent_group_id = str(parent_group_id or '')
+        child_group_id = str(child_group_id or '')
+        return (
+            not parent_group_id
+            or not child_group_id
+            or parent_group_id == child_group_id
+            or self.group_contains_group(child_group_id, parent_group_id)
+        )
+
     def load_profile_groups(self):
         config = self.read_config()
         raw_section = config.get(self.profile_groups_config_key, {})
@@ -257,6 +290,7 @@ class ChromeRunnerDialog(QtWidgets.QDialog,Ui_ChromeRunnerDialog):
             raw_groups = []
 
         groups = []
+        raw_children_by_id = {}
         seen_ids = set()
         seen_names = set()
         for raw_group in raw_groups:
@@ -284,25 +318,47 @@ class ChromeRunnerDialog(QtWidgets.QDialog,Ui_ChromeRunnerDialog):
                 candidate = str(self._saved_next_profile_directory or '').strip()
                 if candidate in directories:
                     next_directory = candidate
-            if next_directory not in directories:
+            # A combination group's next Profile may come from a child group,
+            # so it must not be validated against direct members only.
+            if not next_directory:
                 next_directory = directories[0] if directories else ''
+            raw_children = raw_group.get('child_group_ids', [])
+            if not isinstance(raw_children, list):
+                raw_children = []
+            raw_children_by_id[group_id] = list(dict.fromkeys(
+                str(child_id).strip()
+                for child_id in raw_children
+                if str(child_id).strip()
+            ))
             group = dict(raw_group)
             group.update({
                 'id': group_id,
                 'name': name,
                 'profile_directories': directories,
+                'child_group_ids': [],
                 'next_profile_directory': next_directory,
             })
             groups.append(group)
             seen_ids.add(group_id)
             seen_names.add(name.casefold())
 
+        # Rebuild references in file order.  Invalid/self references are
+        # discarded, and only the edge that would close a cycle is rejected.
+        self.profile_groups = groups
+        valid_group_ids = {group['id'] for group in groups}
+        for group in groups:
+            for child_id in raw_children_by_id.get(group['id'], []):
+                if child_id not in valid_group_ids:
+                    continue
+                if self.would_create_group_cycle(group['id'], child_id):
+                    continue
+                group['child_group_ids'].append(child_id)
+
         selected_group_id = (
             str(selected_group_id) if selected_group_id else None
         )
         if selected_group_id not in seen_ids:
             selected_group_id = None
-        self.profile_groups = groups
         self.selected_group_id = selected_group_id
         if self.active_iterator_group_id not in seen_ids:
             self.active_iterator_group_id = None
@@ -310,7 +366,7 @@ class ChromeRunnerDialog(QtWidgets.QDialog,Ui_ChromeRunnerDialog):
 
     def profile_groups_config(self):
         return {
-            'version': 2,
+            'version': 3,
             'selected_group_id': self.selected_group_id,
             'groups': self.profile_groups,
         }
@@ -330,9 +386,11 @@ class ChromeRunnerDialog(QtWidgets.QDialog,Ui_ChromeRunnerDialog):
         self.profile_group_combo.addItem('不使用分组（手动选择）', None)
         selected_index = 0
         for group in self.profile_groups:
-            member_count = len(group.get('profile_directories', []))
+            member_count = len(self.get_group_profile_directories(group['id']))
+            child_count = len(group.get('child_group_ids', []))
+            child_text = f" / {child_count} 子组" if child_count else ''
             self.profile_group_combo.addItem(
-                f"{group['name']}（{member_count}）",
+                f"{group['name']}（{member_count} Profile{child_text}）",
                 group['id'],
             )
             if group['id'] == self.selected_group_id:
@@ -350,15 +408,33 @@ class ChromeRunnerDialog(QtWidgets.QDialog,Ui_ChromeRunnerDialog):
         self.start_profile_group_iterator_btn.setEnabled(has_group)
 
     def get_group_profile_directories(self, group_id=None):
+        return self._resolve_group_profile_directories(group_id, set())
+
+    def _resolve_group_profile_directories(self, group_id, ancestry):
         group = self.get_profile_group(group_id)
         if group is None:
             return []
-        member_set = set(group.get('profile_directories', []))
-        return [
+        group_id = str(group.get('id') or '')
+        if group_id in ancestry:
+            return []
+        ancestry = set(ancestry)
+        ancestry.add(group_id)
+
+        direct_members = set(group.get('profile_directories', []))
+        directories = [
             profile['directory']
             for profile in self.profiles
-            if profile['directory'] in member_set
+            if profile['directory'] in direct_members
         ]
+        seen = set(directories)
+        for child_id in group.get('child_group_ids', []):
+            for directory in self._resolve_group_profile_directories(
+                child_id, ancestry
+            ):
+                if directory not in seen:
+                    directories.append(directory)
+                    seen.add(directory)
+        return directories
 
     def select_current_group_members(self):
         group = self.get_profile_group()
@@ -399,6 +475,7 @@ class ChromeRunnerDialog(QtWidgets.QDialog,Ui_ChromeRunnerDialog):
             'id': uuid.uuid4().hex,
             'name': name,
             'profile_directories': self.get_selected_profile_directories(),
+            'child_group_ids': [],
             'next_profile_directory': '',
         }
         if group['profile_directories']:
@@ -460,12 +537,18 @@ class ChromeRunnerDialog(QtWidgets.QDialog,Ui_ChromeRunnerDialog):
         )
         if answer != QMessageBox.Yes:
             return
-        old_groups = list(self.profile_groups)
+        old_groups = copy.deepcopy(self.profile_groups)
         old_selected_group_id = self.selected_group_id
         old_active_group_id = self.active_iterator_group_id
         self.profile_groups = [
             item for item in self.profile_groups if item['id'] != group['id']
         ]
+        for remaining_group in self.profile_groups:
+            remaining_group['child_group_ids'] = [
+                child_id
+                for child_id in remaining_group.get('child_group_ids', [])
+                if child_id != group['id']
+            ]
         self.selected_group_id = None
         if self.active_iterator_group_id == group['id']:
             self.active_iterator_group_id = None
@@ -474,12 +557,17 @@ class ChromeRunnerDialog(QtWidgets.QDialog,Ui_ChromeRunnerDialog):
             self.selected_group_id = old_selected_group_id
             self.active_iterator_group_id = old_active_group_id
             return
-        self.save_iterator_state()
+        self.refresh_active_group_iterator()
         self.populate_profile_group_combo()
         self.update_iterator_status(f"已删除分组“{group['name']}”")
 
-    def update_profile_group_members(self, group, selected_directories):
-        """更新分组成员，尽量保留该分组原来的独立进度。"""
+    def update_profile_group_members(
+        self,
+        group,
+        selected_directories,
+        child_group_ids=None,
+    ):
+        """Update direct Profiles/subgroups while preserving this cursor."""
         if group is None:
             return False
         available_order = [profile['directory'] for profile in self.profiles]
@@ -491,33 +579,69 @@ class ChromeRunnerDialog(QtWidgets.QDialog,Ui_ChromeRunnerDialog):
         selected_directories = [
             directory for directory in available_order if directory in selected_set
         ]
+        if child_group_ids is None:
+            child_group_ids = list(group.get('child_group_ids', []))
+        valid_ids = {item['id'] for item in self.profile_groups}
+        normalized_child_ids = []
+        for child_id in child_group_ids:
+            child_id = str(child_id or '').strip()
+            if not child_id or child_id not in valid_ids:
+                continue
+            if child_id in normalized_child_ids:
+                continue
+            if self.would_create_group_cycle(group['id'], child_id):
+                self.update_iterator_status('不能保存：子分组之间形成了循环引用')
+                return False
+            normalized_child_ids.append(child_id)
+
         old_directories = list(group.get('profile_directories', []))
+        old_child_group_ids = list(group.get('child_group_ids', []))
         old_next_directory = str(group.get('next_profile_directory') or '')
         group['profile_directories'] = selected_directories
-        if old_next_directory in selected_directories:
+        group['child_group_ids'] = normalized_child_ids
+        effective_directories = self.get_group_profile_directories(group['id'])
+        if old_next_directory in effective_directories:
             group['next_profile_directory'] = old_next_directory
         else:
             group['next_profile_directory'] = (
-                selected_directories[0] if selected_directories else ''
+                effective_directories[0] if effective_directories else ''
             )
         if not self.save_profile_groups():
             group['profile_directories'] = old_directories
+            group['child_group_ids'] = old_child_group_ids
             group['next_profile_directory'] = old_next_directory
             return False
-        if self.active_iterator_group_id == group['id']:
-            self.iterator_profile_directories = list(selected_directories)
-            next_directory = group['next_profile_directory']
-            self.next_profile_index = (
-                selected_directories.index(next_directory)
-                if next_directory in selected_directories else 0
-            )
-            self._saved_next_profile_directory = next_directory or None
-            self.save_iterator_state()
+        self.refresh_active_group_iterator()
         self.populate_profile_group_combo()
         self.update_iterator_status(
             self.group_progress_text(group, '已更新')
         )
         return True
+
+    def refresh_active_group_iterator(self):
+        """Re-expand an active hierarchy after any member group changes."""
+        active_group = self.get_profile_group(self.active_iterator_group_id)
+        if active_group is None:
+            if self.active_iterator_group_id:
+                self.active_iterator_group_id = None
+            self.save_iterator_state()
+            return
+        directories = self.get_group_profile_directories(active_group['id'])
+        next_directory = str(
+            active_group.get('next_profile_directory')
+            or self._saved_next_profile_directory
+            or ''
+        )
+        if next_directory not in directories:
+            next_directory = directories[0] if directories else ''
+        active_group['next_profile_directory'] = next_directory
+        self.iterator_profile_directories = directories
+        self.next_profile_index = (
+            directories.index(next_directory)
+            if next_directory in directories else 0
+        )
+        self._saved_next_profile_directory = next_directory or None
+        self.save_iterator_state()
 
     def edit_profile_group_members(self):
         group = self.get_profile_group()
@@ -527,12 +651,23 @@ class ChromeRunnerDialog(QtWidgets.QDialog,Ui_ChromeRunnerDialog):
 
         dialog = QtWidgets.QDialog(self)
         dialog.setWindowTitle(f"管理分组成员 - {group['name']}")
-        dialog.resize(520, 620)
+        dialog.resize(590, 650)
         layout = QtWidgets.QVBoxLayout(dialog)
-        layout.addWidget(QtWidgets.QLabel(
-            '勾选这个分组需要包含的 Chrome Profile：', dialog
+        hint = QtWidgets.QLabel(
+            '可以直接勾选 Profile，也可以加入多个子分组。启动顺序为：'
+            '直接 Profile → 各子分组；重复的 Profile 只启动一次。',
+            dialog,
+        )
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+
+        tabs = QtWidgets.QTabWidget(dialog)
+        profile_page = QtWidgets.QWidget(tabs)
+        profile_layout = QtWidgets.QVBoxLayout(profile_page)
+        profile_layout.addWidget(QtWidgets.QLabel(
+            '这个分组直接包含的 Chrome Profile：', profile_page
         ))
-        member_list = QtWidgets.QListWidget(dialog)
+        member_list = QtWidgets.QListWidget(profile_page)
         member_list.setAlternatingRowColors(True)
         member_set = set(group.get('profile_directories', []))
         for profile in self.profiles:
@@ -545,11 +680,11 @@ class ChromeRunnerDialog(QtWidgets.QDialog,Ui_ChromeRunnerDialog):
             item.setCheckState(
                 Qt.Checked if profile['directory'] in member_set else Qt.Unchecked
             )
-        layout.addWidget(member_list, 1)
+        profile_layout.addWidget(member_list, 1)
 
         quick_layout = QtWidgets.QHBoxLayout()
-        select_all_button = QtWidgets.QPushButton('全选', dialog)
-        clear_button = QtWidgets.QPushButton('全不选', dialog)
+        select_all_button = QtWidgets.QPushButton('全选', profile_page)
+        clear_button = QtWidgets.QPushButton('全不选', profile_page)
 
         def set_all_members(check_state):
             for index in range(member_list.count()):
@@ -560,7 +695,69 @@ class ChromeRunnerDialog(QtWidgets.QDialog,Ui_ChromeRunnerDialog):
         quick_layout.addWidget(select_all_button)
         quick_layout.addWidget(clear_button)
         quick_layout.addStretch(1)
-        layout.addLayout(quick_layout)
+        profile_layout.addLayout(quick_layout)
+        tabs.addTab(profile_page, '直接 Profile')
+
+        child_page = QtWidgets.QWidget(tabs)
+        child_layout = QtWidgets.QVBoxLayout(child_page)
+        child_layout.addWidget(QtWidgets.QLabel(
+            '勾选要包含的子分组；可用上移/下移决定各组的迭代顺序：',
+            child_page,
+        ))
+        child_group_list = QtWidgets.QListWidget(child_page)
+        child_group_list.setAlternatingRowColors(True)
+        selected_child_ids = list(group.get('child_group_ids', []))
+        selected_child_set = set(selected_child_ids)
+        groups_by_id = {item['id']: item for item in self.profile_groups}
+        ordered_group_ids = selected_child_ids + [
+            item['id'] for item in self.profile_groups
+            if item['id'] not in selected_child_set
+        ]
+        for candidate_id in ordered_group_ids:
+            candidate = groups_by_id.get(candidate_id)
+            if candidate is None or candidate_id == group['id']:
+                continue
+            effective_count = len(
+                self.get_group_profile_directories(candidate_id)
+            )
+            item = QListWidgetItem(
+                f"{candidate['name']}（{effective_count} 个 Profile）",
+                child_group_list,
+            )
+            item.setData(Qt.UserRole, candidate_id)
+            item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+            item.setCheckState(
+                Qt.Checked if candidate_id in selected_child_set else Qt.Unchecked
+            )
+            if (
+                candidate_id not in selected_child_set
+                and self.would_create_group_cycle(group['id'], candidate_id)
+            ):
+                item.setFlags(item.flags() & ~Qt.ItemIsEnabled)
+                item.setToolTip('不能加入：这会形成分组循环引用')
+        child_layout.addWidget(child_group_list, 1)
+
+        child_buttons = QtWidgets.QHBoxLayout()
+        child_up_button = QtWidgets.QPushButton('上移', child_page)
+        child_down_button = QtWidgets.QPushButton('下移', child_page)
+
+        def move_child_group(offset):
+            row = child_group_list.currentRow()
+            target = row + offset
+            if row < 0 or target < 0 or target >= child_group_list.count():
+                return
+            item = child_group_list.takeItem(row)
+            child_group_list.insertItem(target, item)
+            child_group_list.setCurrentItem(item)
+
+        child_up_button.clicked.connect(lambda: move_child_group(-1))
+        child_down_button.clicked.connect(lambda: move_child_group(1))
+        child_buttons.addWidget(child_up_button)
+        child_buttons.addWidget(child_down_button)
+        child_buttons.addStretch(1)
+        child_layout.addLayout(child_buttons)
+        tabs.addTab(child_page, '包含的子分组')
+        layout.addWidget(tabs, 1)
 
         buttons = QtWidgets.QDialogButtonBox(
             QtWidgets.QDialogButtonBox.Save | QtWidgets.QDialogButtonBox.Cancel,
@@ -578,7 +775,16 @@ class ChromeRunnerDialog(QtWidgets.QDialog,Ui_ChromeRunnerDialog):
             for index in range(member_list.count())
             if member_list.item(index).checkState() == Qt.Checked
         ]
-        self.update_profile_group_members(group, selected_directories)
+        selected_child_ids = [
+            child_group_list.item(index).data(Qt.UserRole)
+            for index in range(child_group_list.count())
+            if child_group_list.item(index).checkState() == Qt.Checked
+        ]
+        self.update_profile_group_members(
+            group,
+            selected_directories,
+            selected_child_ids,
+        )
 
     def save_selected_profiles_to_group(self):
         """保留给旧入口调用：将当前列表选中项作为全部成员。"""
@@ -798,18 +1004,26 @@ class ChromeRunnerDialog(QtWidgets.QDialog,Ui_ChromeRunnerDialog):
         available_directories = {
             profile['directory'] for profile in self.profiles
         }
-        selected_set = {
-            directory for directory in self.iterator_profile_directories
-            if directory in available_directories
-        }
-        # 选中的迭代队列始终按当前可见列表顺序排列。
-        self.iterator_profile_directories = [
-            profile['directory']
-            for profile in self.profiles
-            if profile['directory'] in selected_set
-        ]
+        active_group = self.get_profile_group(self.active_iterator_group_id)
+        if active_group is not None:
+            # Re-expand the hierarchy after restart so child-group edits and
+            # their configured order are reflected without losing the cursor.
+            self.iterator_profile_directories = (
+                self.get_group_profile_directories(active_group['id'])
+            )
+        else:
+            selected_set = {
+                directory for directory in self.iterator_profile_directories
+                if directory in available_directories
+            }
+            # Manual selection remains ordered like the visible Profile list.
+            self.iterator_profile_directories = [
+                profile['directory']
+                for profile in self.profiles
+                if profile['directory'] in selected_set
+            ]
 
-        display_selected_set = selected_set
+        display_selected_set = set(self.iterator_profile_directories)
         selected_group = self.get_profile_group()
         if selected_group is not None:
             display_selected_set = set(
@@ -844,10 +1058,13 @@ class ChromeRunnerDialog(QtWidgets.QDialog,Ui_ChromeRunnerDialog):
         return selected_directories
 
     def get_iterator_profiles(self):
-        selected_set = set(self.iterator_profile_directories)
+        profiles_by_directory = {
+            profile['directory']: profile for profile in self.profiles
+        }
         return [
-            profile for profile in self.profiles
-            if profile['directory'] in selected_set
+            profiles_by_directory[directory]
+            for directory in self.iterator_profile_directories
+            if directory in profiles_by_directory
         ]
 
     def update_iterator_status(self, message=None):
@@ -903,7 +1120,7 @@ class ChromeRunnerDialog(QtWidgets.QDialog,Ui_ChromeRunnerDialog):
         group_names = [
             group['name']
             for group in self.profile_groups
-            if profile_directory in group.get('profile_directories', [])
+            if profile_directory in self.get_group_profile_directories(group['id'])
         ]
         return f"所属分组：{'、'.join(group_names)}" if group_names else ''
 

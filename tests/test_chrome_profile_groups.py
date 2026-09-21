@@ -148,7 +148,7 @@ class ChromeProfileGroupTests(unittest.TestCase):
             self.assertEqual(
                 groups["group-b"]["next_profile_directory"], "Profile 2"
             )
-            self.assertEqual(saved["chrome_profile_groups"]["version"], 2)
+            self.assertEqual(saved["chrome_profile_groups"]["version"], 3)
 
     def test_member_update_preserves_or_repairs_saved_group_position(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -176,8 +176,123 @@ class ChromeProfileGroupTests(unittest.TestCase):
             ))
             self.assertEqual(group["next_profile_directory"], "Profile 2")
             self.assertEqual(
-                dialog.save_profile_group_members_btn.text(), "管理分组成员…"
+                dialog.save_profile_group_members_btn.text(), "管理成员 / 子分组…"
             )
+
+    def test_nested_groups_expand_in_group_order_and_deduplicate_profiles(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config_path = Path(directory) / "config.json"
+            dialog = self.create_dialog(config_path)
+            dialog.profile_groups = [
+                {
+                    "id": "group-a",
+                    "name": "A 组",
+                    "profile_directories": ["Profile 2", "Profile 3"],
+                    "child_group_ids": [],
+                },
+                {
+                    "id": "group-b",
+                    "name": "B 组",
+                    "profile_directories": ["Profile 1", "Profile 2"],
+                    "child_group_ids": [],
+                },
+                {
+                    "id": "combo",
+                    "name": "组合组",
+                    "profile_directories": [],
+                    "child_group_ids": ["group-a", "group-b"],
+                    "next_profile_directory": "Profile 2",
+                },
+            ]
+            dialog.selected_group_id = "combo"
+            self.assertEqual(
+                dialog.get_group_profile_directories("combo"),
+                ["Profile 2", "Profile 3", "Profile 1"],
+            )
+            dialog.launch_profile = MagicMock(return_value=(True, None))
+
+            first = dialog.start_group_iterator()
+            second = dialog.launch_next_profile()
+
+            self.assertEqual(first["directory"], "Profile 2")
+            self.assertEqual(second["directory"], "Profile 3")
+            self.assertEqual(
+                dialog.iterator_profile_directories,
+                ["Profile 2", "Profile 3", "Profile 1"],
+            )
+
+            restored = self.create_dialog(config_path)
+            restored.launch_profile = MagicMock(return_value=(True, None))
+            third = restored.launch_next_profile()
+            self.assertEqual(third["directory"], "Profile 1")
+            self.assertEqual(restored.active_iterator_group_id, "combo")
+
+    def test_nested_group_can_contain_another_nested_group(self):
+        with tempfile.TemporaryDirectory() as directory:
+            dialog = self.create_dialog(Path(directory) / "config.json")
+            dialog.profile_groups = [
+                {
+                    "id": "leaf",
+                    "name": "叶子组",
+                    "profile_directories": ["Profile 1", "Profile 2"],
+                    "child_group_ids": [],
+                },
+                {
+                    "id": "middle",
+                    "name": "中间组",
+                    "profile_directories": ["Profile 3"],
+                    "child_group_ids": ["leaf"],
+                },
+                {
+                    "id": "top",
+                    "name": "总组",
+                    "profile_directories": [],
+                    "child_group_ids": ["middle"],
+                },
+            ]
+
+            self.assertEqual(
+                dialog.get_group_profile_directories("top"),
+                ["Profile 3", "Profile 1", "Profile 2"],
+            )
+            self.assertTrue(dialog.group_contains_group("top", "leaf"))
+
+    def test_cycle_is_rejected_and_loaded_cycle_is_sanitized(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config_path = Path(directory) / "config.json"
+            dialog = self.create_dialog(config_path)
+            group_a = {
+                "id": "group-a",
+                "name": "A 组",
+                "profile_directories": ["Profile 1"],
+                "child_group_ids": ["group-b"],
+            }
+            group_b = {
+                "id": "group-b",
+                "name": "B 组",
+                "profile_directories": ["Profile 2"],
+                "child_group_ids": [],
+            }
+            dialog.profile_groups = [group_a, group_b]
+
+            self.assertFalse(dialog.update_profile_group_members(
+                group_b, ["Profile 2"], ["group-a"]
+            ))
+            self.assertEqual(group_b["child_group_ids"], [])
+
+            config_path.write_text(json.dumps({
+                "chrome_profile_groups": {
+                    "version": 3,
+                    "groups": [
+                        dict(group_a, child_group_ids=["group-b"]),
+                        dict(group_b, child_group_ids=["group-a"]),
+                    ],
+                },
+            }, ensure_ascii=False), encoding="utf-8")
+            restored = self.create_dialog(config_path)
+            groups = {group["id"]: group for group in restored.profile_groups}
+            self.assertEqual(groups["group-a"]["child_group_ids"], ["group-b"])
+            self.assertEqual(groups["group-b"]["child_group_ids"], [])
 
 
 if __name__ == "__main__":

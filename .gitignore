@@ -18,6 +18,8 @@
 /VideoUploadHistory.json
 /VideoUploadHistoryArchives/
 /InventoryState.json
+/MaterialDriveSyncState.json
+/DailyTasks.json
 /MaterialLibrary/
 /TaskReferenceDownloadState.json
 /人脸数据库/
@@ -36,6 +38,7 @@ __pycache__/
 # Editor and operating-system noise
 .idea/
 .vscode/
+/.agents/
 .DS_Store
 Thumbs.db
 
@@ -44,3 +47,7 @@ Thumbs.db
 /dist/
 /dist_final/
 /*.spec
+
+# Pinned third-party player binaries are fetched by packaging/fetch_mpv.py
+/runtime/mpv/mpv.exe
+/runtime/mpv/vulkan-1.dll

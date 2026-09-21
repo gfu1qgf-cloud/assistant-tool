@@ -13,6 +13,8 @@ from urllib.parse import parse_qs, urlparse
 from model.GoogleDriveDownloader import (
     DownloadError,
     download_one,
+    jfif_content_extension,
+    normalize_jfif_filename,
     parse_drive_link,
     safe_filename,
 )
@@ -110,6 +112,7 @@ def _report(callback, message):
 
 def _unique_target(parent, name):
     safe_name, _changed = safe_filename(str(name or "素材"), "素材")
+    safe_name, _was_jfif = normalize_jfif_filename(safe_name)
     safe_name = safe_name[:180]
     target = Path(parent) / safe_name
     if not target.exists():
@@ -197,6 +200,7 @@ def _download_api_file(service, metadata, output_dir, progress_callback):
 
     mime_type = str(metadata.get("mimeType") or "")
     name = str(metadata.get("name") or metadata.get("id") or "素材")
+    was_jfif = Path(name).suffix.casefold() == ".jfif"
     if mime_type.startswith(GOOGLE_NATIVE_PREFIX):
         export = NATIVE_EXPORTS.get(mime_type)
         if export is None:
@@ -230,15 +234,26 @@ def _download_api_file(service, metadata, output_dir, progress_callback):
                     if percent >= last_percent + 10 or percent >= 100:
                         _report(progress_callback, f"正在下载 {target.name}：{percent}%")
                         last_percent = percent
-        os.replace(str(part), str(target))
+        final_target = target
+        if was_jfif:
+            desired = target.with_suffix(jfif_content_extension(part))
+            if desired != target:
+                final_target = _unique_target(output_dir, desired.name)
+        os.replace(str(part), str(final_target))
     except BaseException:
         try:
             part.unlink()
         except OSError:
             pass
         raise
-    _report(progress_callback, f"下载完成：{target.name}")
-    return target
+    if was_jfif:
+        _report(
+            progress_callback,
+            f"JFIF 图片已保存为通用格式：{final_target.name}",
+        )
+    else:
+        _report(progress_callback, f"下载完成：{final_target.name}")
+    return final_target
 
 
 def _download_api_item(

@@ -59,9 +59,14 @@ class MainPluginIntegrationTests(unittest.TestCase):
                 self.assertIn("监听剪贴板中的 Google 链接", plugin_titles)
                 self.assertIn("Chrome 启动器", plugin_titles)
                 self.assertIn("启动下一个 Chrome", plugin_titles)
+                self.assertIn("Codex 多账号切换…", plugin_titles)
+                self.assertIn("智能剪辑并生成 SRT…", plugin_titles)
+                self.assertIn("剪辑气口…", plugin_titles)
+                self.assertIn("每日任务管理", plugin_titles)
                 self.assertFalse(hasattr(window, "inventory_manager_btn"))
                 self.assertFalse(hasattr(window, "split_audio_btn"))
                 self.assertFalse(hasattr(window, "split_len_sbox"))
+                self.assertFalse(hasattr(window, "smart_video_editor_thread"))
                 self.assertIsNotNone(window.chrome_plugin.dialog)
                 self.assertIsNotNone(window.audio_splitter_plugin.dialog)
 
@@ -74,6 +79,26 @@ class MainPluginIntegrationTests(unittest.TestCase):
                     "切分任务音频…",
                     [action.text() for action in task_actions],
                 )
+                self.assertIn(
+                    "智能剪辑并生成 SRT…",
+                    [action.text() for action in task_actions],
+                )
+                self.assertIn(
+                    "剪辑气口…",
+                    [action.text() for action in task_actions],
+                )
+                task_action_titles = [action.text() for action in task_actions]
+                self.assertIn("生成任务音频【不带字幕】", task_action_titles)
+                self.assertIn("生成任务音频【带字幕】", task_action_titles)
+                self.assertIn("生成任务音频【使用任务名】", task_action_titles)
+                self.assertIn("生成任务字幕", task_action_titles)
+                self.assertIn("生成任务字幕【不使用默认配置】", task_action_titles)
+                submenu_titles = [
+                    action.menu().title()
+                    for action in task_menu.actions()
+                    if action.menu() is not None
+                ]
+                self.assertIn("音频与字幕", submenu_titles)
 
                 with patch.object(window, "_showAuxNotice") as notice:
                     for _index in range(10):
@@ -98,8 +123,11 @@ class MainPluginIntegrationTests(unittest.TestCase):
                         for index in range(settings.settingTabWidget.count())
                     ]
                     self.assertIn("库存插件", tab_titles)
+                    self.assertIn("智能剪辑", tab_titles)
                     self.assertIn("Chrome 插件", tab_titles)
                     self.assertIn("切分音频插件", tab_titles)
+                    self.assertIn("音频与字幕插件", tab_titles)
+                    self.assertNotIn("生成音频设置", tab_titles)
                     self.assertNotIn("切分音频设置", tab_titles)
                     self.assertFalse(hasattr(settings, "inventory_manager_hotkey_edit"))
                     self.assertTrue(settings.chrome_hotkey_edit.isHidden())

@@ -228,6 +228,31 @@ def safe_filename(name: str, fallback: str) -> tuple[str, bool]:
     return name, changed
 
 
+def normalize_jfif_filename(name: str) -> tuple[str, bool]:
+    """Use a widely supported extension for a downloaded JFIF image.
+
+    JFIF is a JPEG interchange format, so JPEG bytes do not need lossy
+    re-encoding.  The downloaded payload is still inspected later in case a
+    file named ``.jfif`` actually contains PNG data.
+    """
+    path = Path(str(name or ""))
+    if path.suffix.casefold() != ".jfif":
+        return str(name), False
+    return path.with_suffix(".jpg").name, True
+
+
+def jfif_content_extension(path: Path) -> str:
+    """Return .png for a PNG payload; JFIF/JPEG and unknown data use .jpg."""
+    try:
+        with Path(path).open("rb") as stream:
+            header = stream.read(16)
+    except OSError:
+        return ".jpg"
+    if header.startswith(b"\x89PNG\r\n\x1a\n"):
+        return ".png"
+    return ".jpg"
+
+
 def migrate_legacy_mojibake_file(output_dir: Path, correct_filename: str) -> Path | None:
     """Rename a file saved by the old header decoder without overwriting data."""
     target = output_dir / correct_filename
@@ -338,9 +363,12 @@ def download_one(
     try:
         google_name = filename_from_headers(response.headers) or link.file_id
         filename, changed = safe_filename(google_name, link.file_id)
+        filename, was_jfif = normalize_jfif_filename(filename)
         target = output_dir / filename
         if changed:
             print(f"    文件名含系统不允许的字符，保存为：{filename}")
+        if was_jfif:
+            print(f"    JFIF 图片将保存为通用格式：{filename}")
         if target.exists() and not overwrite:
             return "skipped", target
         if not overwrite:
@@ -353,12 +381,19 @@ def download_one(
         part = target.with_name(target.name + ".part")
         try:
             copy_response(response, part, total)
-            part.replace(target)
+            final_target = (
+                target.with_suffix(jfif_content_extension(part))
+                if was_jfif else target
+            )
+            if final_target.exists() and not overwrite:
+                part.unlink()
+                return "skipped", final_target
+            part.replace(final_target)
         except BaseException:
             if part.exists():
                 part.unlink()
             raise
-        return "downloaded", target
+        return "downloaded", final_target
     finally:
         response.close()
 

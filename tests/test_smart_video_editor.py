@@ -9,29 +9,55 @@ from unittest import mock
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from globalValue import GlobalValue
 from PyQt5 import QtCore, QtWidgets
 
+from app_plugins.builtin.smart_video_editor.settings import (
+    SmartVideoEditorSettingsPage,
+)
+from app_plugins.builtin.smart_video_editor.breath_editor import (
+    BreathCutReviewDialog,
+    BreathCutSourceDialog,
+)
+from app_plugins.builtin.smart_video_editor.engine import (
+    _compact_record_similarity,
+    _protect_edges_adjacent_to_missing_script,
+)
+from app_plugins.builtin.smart_video_editor.timeline_review import (
+    SmartVideoTimelineReview,
+)
 from PYUI.main_setting_pyui import MainSettingDialog
 from PYUI.smart_video_editor_pyui import (
+    SmartVideoExportResultDialog,
     SmartVideoPendingDialog,
     SmartVideoReviewDialog,
     SmartVideoSourceDialog,
+    _comparison_html,
 )
 from model.SmartVideoEditor import (
+    _build_clip_plan,
+    analyze_breath_cut_files,
     analyze_smart_video_jobs,
+    apply_manual_breath_overrides,
     apply_clip_review,
     best_unit_window,
+    breath_cut_plan,
     build_script_word_records,
     build_srt_cues,
+    combine_breath_gap_ranges,
     detect_silence_ranges,
+    detect_voice_absence_ranges,
     discover_task_videos,
     export_smart_video_bundle,
+    export_breath_cut_bundle,
     find_pause_removals,
     kept_ranges,
     normalize_smart_video_editor_settings,
     normalize_smart_video_pending_reviews,
     refine_trim_boundaries,
     render_task_problem_report,
+    select_duplicate_group_clip,
+    smart_video_jobs_require_model,
     smart_video_export_blockers,
     set_smart_video_missing_review,
     source_time_in_kept_ranges,
@@ -123,6 +149,331 @@ class SmartVideoEditorTests(unittest.TestCase):
         )
         self.assertEqual(text_units("你好，世界！"), ["你", "好", "世", "界"])
 
+    def test_whisper_model_can_switch_without_restarting_process(self):
+        created = []
+
+        def fake_model(source, **options):
+            value = {"source": source, "options": options}
+            created.append(value)
+            return value
+
+        values = GlobalValue()
+        with mock.patch("globalValue.WhisperModel", side_effect=fake_model):
+            base = values.get_whisper_model("base")
+            medium = values.get_whisper_model("medium")
+            repeated = values.get_whisper_model("medium")
+
+        self.assertIsNot(base, medium)
+        self.assertIs(medium, repeated)
+        self.assertEqual([item["source"] for item in created], ["base", "medium"])
+        self.assertEqual(values.whisper_model_name(), "medium")
+
+    def test_standalone_breath_ui_reuses_timeline_and_keeps_full_frame_mode(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary) / "preview.mp4"
+            source.write_bytes(b"not-a-real-video-but-present")
+            source_dialog = BreathCutSourceDialog([source])
+            try:
+                self.assertEqual(source_dialog.list_widget.count(), 1)
+            finally:
+                source_dialog.close()
+            bundle = {
+                "workflow": "breath_cut",
+                "settings": normalize_smart_video_editor_settings({}),
+                "tasks": [{
+                    "task_id": "preview",
+                    "label": "preview.mp4",
+                    "output_dir": str(Path(temporary) / "气口剪辑结果"),
+                    "missing_blocks": [],
+                    "clips": [{
+                        "source": str(source),
+                        "file_name": source.name,
+                        "included": True,
+                        "source_index": 0,
+                        "export_order": 1,
+                        "original_duration": 4.0,
+                        "trim_start": 0.5,
+                        "trim_end": 3.5,
+                        "pause_removals": [[1.5, 2.0]],
+                        "kept_ranges": [[0.5, 1.5], [2.0, 3.5]],
+                        "issues": [],
+                        "words": [],
+                    }],
+                }],
+            }
+            dialog = BreathCutReviewDialog(bundle)
+            try:
+                review = dialog.timeline_review
+                dialog.resize(1500, 900)
+                dialog.ensurePolished()
+                dialog.layout().activate()
+                review.layout().activate()
+                review.breath_panel.layout().activate()
+                normal_parameter_width = max(
+                    review.pause_keep_after_spinbox.sizeHint().width(),
+                    review.min_silence_spinbox.sizeHint().width(),
+                )
+                self.assertLessEqual(
+                    review.pause_keep_after_spinbox.width(),
+                    normal_parameter_width + 12,
+                )
+                self.assertLessEqual(review.apply_breath_button.width(), 110)
+                self.assertTrue(review.breath_only)
+                self.assertTrue(review.task_filter_widget.isHidden())
+                self.assertTrue(review.issue_panel.isHidden())
+                self.assertEqual(
+                    review.breath_detection_mode_combo.currentData(),
+                    "voice_refined",
+                )
+                self.assertEqual(
+                    review.mark_delete_start_button.text(), "记删除起点"
+                )
+                self.assertEqual(
+                    review.restore_removed_button.text(), "恢复当前灰色区"
+                )
+                self.assertIn(
+                    "裁剪后：00:02.50",
+                    review.remaining_duration_label.text(),
+                )
+                with mock.patch(
+                    "app_plugins.builtin.smart_video_editor.timeline_review._media_shape",
+                    return_value=(1920, 1080, 30.0),
+                ):
+                    review._media_aspect_cache.clear()
+                    review._detected_preview_aspect = (
+                        review._detect_task_preview_aspect(bundle["tasks"][0])
+                    )
+                    review._apply_preview_aspect()
+                self.assertEqual(review._detected_preview_aspect, "landscape")
+                self.assertGreaterEqual(review.player.minimumWidth(), 360)
+                internal_removed = next(
+                    segment for segment in review.segments
+                    if segment.get("is_removed")
+                    and segment.get("remove_reason") == "句内气口"
+                )
+                review._restore_removed_segment(internal_removed)
+                self.assertEqual(
+                    review.bundle["tasks"][0]["clips"][0]["pause_removals"],
+                    [],
+                )
+                backend = review.player.backend
+                if hasattr(backend, "video_widgets"):
+                    self.assertTrue(all(
+                        video.aspectRatioMode() == QtCore.Qt.KeepAspectRatio
+                        for video in backend.video_widgets
+                    ))
+            finally:
+                dialog.close()
+
+    def test_timeline_subtitle_controls_preview_and_save_global_defaults(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary) / "speech.mp4"
+            source.write_bytes(b"fake")
+            words = [
+                {"text": text, "start": index * 0.4, "end": index * 0.4 + 0.3}
+                for index, text in enumerate(("alpha", "beta", "gamma", "delta"))
+            ]
+            aligned = [
+                {
+                    "raw": value["text"],
+                    "normalized": value["text"],
+                    "start": value["start"],
+                    "end": value["end"],
+                    "line_index": 0,
+                }
+                for value in words
+            ]
+            bundle = {
+                "settings": normalize_smart_video_editor_settings({
+                    "whisper_model_size": "base",
+                    "srt_max_words_per_block": 4,
+                    "srt_max_chars_per_block": 50,
+                }),
+                "summary": {"clip_count": 1, "green_count": 1},
+                "tasks": [{
+                    "label": "subtitle-preview",
+                    "missing_blocks": [],
+                    "clips": [{
+                        "source": str(source),
+                        "file_name": source.name,
+                        "source_index": 0,
+                        "export_order": 1,
+                        "status": "green",
+                        "trim_start": 0.0,
+                        "trim_end": 2.0,
+                        "original_duration": 2.0,
+                        "pause_removals": [],
+                        "kept_ranges": [[0.0, 2.0]],
+                        "removed_seconds": 0.0,
+                        "expected_text": "alpha beta gamma delta",
+                        "recognized_text": "alpha beta gamma delta",
+                        "words": words,
+                        "word_timeline": aligned,
+                        "issues": [],
+                        "included": True,
+                    }],
+                }],
+            }
+            saved = []
+
+            def save_defaults(values):
+                saved.append(dict(values))
+                return True, "已保存"
+
+            dialog = SmartVideoReviewDialog(
+                bundle,
+                save_subtitle_defaults=save_defaults,
+            )
+            try:
+                timeline = dialog.timeline_review
+                dialog.resize(1480, 860)
+                dialog.ensurePolished()
+                dialog.layout().activate()
+                timeline.layout().activate()
+                timeline.subtitle_settings_panel.layout().activate()
+                self.assertLessEqual(
+                    timeline.subtitle_gap_spinbox.width(),
+                    timeline.subtitle_gap_spinbox.sizeHint().width() + 12,
+                )
+                self.assertEqual(len(timeline.aligned_subtitles), 1)
+                timeline.subtitle_model_combo.setCurrentIndex(
+                    timeline.subtitle_model_combo.findData("large-v3")
+                )
+                timeline.subtitle_max_words_spinbox.setValue(2)
+                timeline.subtitle_max_chars_spinbox.setValue(0)
+                timeline.subtitle_gap_spinbox.setValue(0)
+                timeline.subtitle_line_break_checkbox.setChecked(True)
+                reviewed = dialog.collect()
+
+                self.assertEqual(
+                    reviewed["settings"]["whisper_model_size"],
+                    "large-v3",
+                )
+                self.assertEqual(len(timeline.aligned_subtitles), 2)
+                self.assertAlmostEqual(
+                    timeline.aligned_subtitles[0]["timeline_end"],
+                    timeline.aligned_subtitles[1]["timeline_start"],
+                )
+                timeline._save_subtitle_defaults()
+                self.assertEqual(saved[0]["srt_max_words_per_block"], 2)
+                self.assertEqual(saved[0]["srt_block_gap_ms"], 0)
+                self.assertTrue(saved[0]["srt_include_line_breaks"])
+                self.assertEqual(saved[0]["whisper_model_size"], "large-v3")
+            finally:
+                dialog.close()
+
+    def test_timeline_recalculates_voice_detection_in_background(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary) / "voice.mp4"
+            source.write_bytes(b"fake")
+            settings = normalize_smart_video_editor_settings({
+                "breath_detection_mode": "voice_only",
+            })
+            clip = {
+                "source": str(source),
+                "file_name": source.name,
+                "included": True,
+                "source_index": 0,
+                "export_order": 1,
+                "original_duration": 4.0,
+                "trim_start": 0.0,
+                "trim_end": 4.0,
+                "pause_removals": [],
+                "kept_ranges": [[0.0, 4.0]],
+                "issues": [],
+                "words": [],
+            }
+            bundle = {
+                "workflow": "breath_cut",
+                "settings": settings,
+                "tasks": [{
+                    "task_id": "voice",
+                    "label": "voice.mp4",
+                    "clips": [clip],
+                    "missing_blocks": [],
+                }],
+            }
+            dialog = BreathCutReviewDialog(bundle)
+            try:
+                review = dialog.timeline_review
+                with mock.patch.object(
+                    review.voice_loader, "start"
+                ) as voice_start, mock.patch.object(
+                    review.silence_loader, "start"
+                ) as db_start:
+                    review._apply_breath_settings()
+                voice_start.assert_called_once()
+                db_start.assert_not_called()
+                review._breath_voice_complete([{
+                    "clip_index": 0,
+                    "ranges": [[0.0, 0.7], [3.1, 4.0]],
+                    "error": "",
+                }])
+                reviewed_clip = review.bundle["tasks"][0]["clips"][0]
+                self.assertEqual(
+                    reviewed_clip["voice_absence_ranges"],
+                    [[0.0, 0.7], [3.1, 4.0]],
+                )
+                self.assertEqual(reviewed_clip["trim_start"], 0.58)
+                self.assertEqual(reviewed_clip["trim_end"], 3.32)
+            finally:
+                dialog.close()
+
+    def test_smart_timeline_recalculates_tail_after_detection_mode_changes(self):
+        settings = normalize_smart_video_editor_settings({
+            "breath_detection_mode": "voice_only",
+        })
+        clip = {
+            "file_name": "11.mp4",
+            "included": True,
+            "original_duration": 10.005,
+            "trim_start": 0.0,
+            "trim_end": 10.005,
+            "automatic_trim_start": 0.0,
+            "automatic_trim_end": 10.005,
+            "pause_removals": [],
+            "automatic_pause_removals": [],
+            "word_timeline": [
+                {"start": 0.0, "end": 0.46, "anchor": True},
+                {"start": 7.7, "end": 8.2, "anchor": True},
+            ],
+            "words": [],
+            "issues": [],
+            "boundary_warnings": [],
+            "boundary_decisions": [],
+        }
+        review = mock.Mock()
+        review._breath_reanalysis_running = True
+        review.breath_only = False
+        review.task_index = 0
+        review.bundle = {
+            "settings": settings,
+            "tasks": [{
+                "clips": [clip],
+                "missing_blocks": [],
+                "unverified_blocks": [],
+            }],
+        }
+        SmartVideoTimelineReview._breath_reanalysis_complete(review, [{
+            "clip_index": 0,
+            "ranges": [],
+            "error": "",
+            "voice_ranges": [[8.44, 10.005]],
+            "voice_error": "",
+        }])
+        self.assertAlmostEqual(clip["automatic_trim_end"], 8.66, places=3)
+        self.assertAlmostEqual(clip["trim_end"], 8.66, places=3)
+        self.assertIn(
+            "tail_cut",
+            [item.get("kind") for item in clip["boundary_decisions"]],
+        )
+
+    def test_review_diff_highlights_only_real_word_changes(self):
+        self.assertIn("文案与识别内容一致", _comparison_html("Alpha", "alpha"))
+        difference = _comparison_html("alpha beta", "alpha gamma")
+        self.assertIn("#F4CCCC", difference)
+        self.assertIn("#FCE5CD", difference)
+
     def test_best_window_ignores_false_start_and_tail(self):
         expected = text_units("prosím zdravie a silu")
         observed = text_units("ehm znovu prosím zdravie a silu ďakujem")
@@ -172,6 +523,186 @@ class SmartVideoEditorTests(unittest.TestCase):
             find_pause_removals(words, 0.0, 2.5, settings), []
         )
 
+    def test_standalone_breath_plan_handles_edges_and_internal_silence(self):
+        settings = normalize_smart_video_editor_settings({
+            "compress_internal_pauses": True,
+            "internal_pause_mode": "experimental",
+            "lead_padding_ms": 100,
+            "tail_padding_ms": 200,
+            "pause_threshold_ms": 800,
+            "retained_pause_ms": 300,
+        })
+        start, end, removals, ranges = breath_cut_plan(
+            6.0,
+            [[0.0, 0.7], [2.0, 3.5], [5.2, 6.0]],
+            settings,
+        )
+        self.assertEqual(start, 0.6)
+        self.assertEqual(end, 5.4)
+        self.assertEqual(removals, [[2.15, 3.35]])
+        self.assertEqual(ranges, [[0.6, 2.15], [3.35, 5.4]])
+
+    def test_voice_absence_and_db_evidence_are_merged(self):
+        ranges = combine_breath_gap_ranges(
+            6.016,
+            [[3.574, 5.032], [5.290, 6.016]],
+            [[0.0, 0.304], [4.016, 6.016]],
+        )
+        self.assertEqual(ranges, [[0.0, 0.304], [3.574, 6.016]])
+
+    def test_breath_detection_modes_use_clear_set_operations(self):
+        arguments = (6.0, [[2.0, 4.0]], [[3.0, 5.0]])
+        self.assertEqual(
+            combine_breath_gap_ranges(*arguments, mode="db_only"),
+            [[2.0, 4.0]],
+        )
+        self.assertEqual(
+            combine_breath_gap_ranges(*arguments, mode="voice_only"),
+            [[3.0, 5.0]],
+        )
+        self.assertEqual(
+            combine_breath_gap_ranges(*arguments, mode="union"),
+            [[2.0, 5.0]],
+        )
+        self.assertEqual(
+            combine_breath_gap_ranges(*arguments, mode="intersection"),
+            [[3.0, 4.0]],
+        )
+
+    def test_pause_compression_supports_asymmetric_keep_amounts(self):
+        settings = normalize_smart_video_editor_settings({
+            "compress_internal_pauses": True,
+            "internal_pause_mode": "experimental",
+            "pause_threshold_ms": 800,
+            "pause_keep_before_ms": 100,
+            "pause_keep_after_ms": 250,
+        })
+        _start, _end, removals, _ranges = breath_cut_plan(
+            5.0, [[2.0, 3.5]], settings
+        )
+        self.assertEqual(removals, [[2.1, 3.25]])
+
+    def test_manual_breath_edits_survive_automatic_plan(self):
+        clip = {
+            "original_duration": 10.0,
+            "manual_delete_ranges": [[6.0, 7.0]],
+            "manual_keep_ranges": [[3.4, 3.6]],
+            "manual_keep_head": True,
+        }
+        apply_manual_breath_overrides(
+            clip, 1.0, 9.0, [[3.0, 4.0]]
+        )
+        self.assertEqual(clip["trim_start"], 0.0)
+        self.assertEqual(clip["trim_end"], 9.0)
+        self.assertEqual(
+            clip["pause_removals"],
+            [[3.0, 3.4], [3.6, 4.0], [6.0, 7.0]],
+        )
+        self.assertEqual(clip["automatic_trim_start"], 1.0)
+
+    def test_db_silence_cannot_override_detected_quiet_speech(self):
+        ranges = combine_breath_gap_ranges(
+            6.0,
+            [[2.0, 3.0]],
+            [[0.0, 0.4], [5.5, 6.0]],
+        )
+        self.assertEqual(ranges, [[0.0, 0.4], [5.5, 6.0]])
+
+    def test_db_silence_is_used_when_voice_detection_failed(self):
+        ranges = combine_breath_gap_ranges(
+            6.0,
+            [[0.0, 0.7], [5.2, 6.0]],
+            [],
+            voice_detection_available=False,
+        )
+        self.assertEqual(ranges, [[0.0, 0.7], [5.2, 6.0]])
+
+    def test_voice_detection_uses_bundled_faster_whisper_vad(self):
+        settings = normalize_smart_video_editor_settings({
+            "vad_threshold": 0.55,
+            "vad_speech_pad_ms": 300,
+        })
+        fake_audio = mock.MagicMock()
+        fake_audio.size = 16000 * 4
+        fake_audio.__len__.return_value = 16000 * 4
+        with mock.patch(
+            "faster_whisper.audio.decode_audio",
+            return_value=fake_audio,
+        ), mock.patch(
+            "faster_whisper.vad.get_speech_timestamps",
+            return_value=[{"start": 8000, "end": 40000}],
+        ) as vad:
+            ranges, error = detect_voice_absence_ranges(
+                "clip.mp4", 4.0, settings
+            )
+        self.assertFalse(error)
+        self.assertEqual(ranges, [[0.0, 0.5], [2.5, 4.0]])
+        options = vad.call_args.args[1]
+        self.assertAlmostEqual(options.threshold, 0.55)
+        self.assertAlmostEqual(options.neg_threshold, 0.5)
+        self.assertEqual(options.min_speech_duration_ms, 120)
+        self.assertEqual(options.speech_pad_ms, 300)
+
+    def test_standalone_breath_analysis_and_export_without_script(self):
+        ffmpeg = shutil.which("ffmpeg")
+        if not ffmpeg:
+            self.skipTest("FFmpeg is unavailable")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "standalone.mp4"
+            subprocess.run([
+                ffmpeg, "-y", "-f", "lavfi", "-i",
+                "color=c=blue:s=320x240:r=25:d=4",
+                "-f", "lavfi", "-i",
+                "aevalsrc=if(between(t\\,0.7\\,1.5)+between(t\\,2.7\\,3.4)\\,0.45*sin(2*PI*440*t)\\,0):s=48000:d=4",
+                "-shortest", "-c:v", "libx264", "-c:a", "aac", str(source),
+            ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            settings = normalize_smart_video_editor_settings({
+                "ffmpeg_path": ffmpeg,
+                "voice_detection_enabled": False,
+                "compress_internal_pauses": True,
+                "internal_pause_mode": "experimental",
+                "silence_threshold_db": -35,
+                "min_silence_ms": 300,
+                "pause_threshold_ms": 700,
+                "retained_pause_ms": 250,
+                "existing_output": "overwrite",
+            })
+            bundle = analyze_breath_cut_files([source], settings)
+            self.assertEqual(bundle["workflow"], "breath_cut")
+            clip = bundle["tasks"][0]["clips"][0]
+            self.assertTrue(clip["pause_removals"])
+            self.assertLess(clip["trim_start"], clip["trim_end"])
+            result = export_breath_cut_bundle(bundle, settings)
+            self.assertFalse(result["failed"])
+            self.assertTrue(Path(result["completed"][0]["video"]).is_file())
+
+    def test_standalone_breath_export_preserves_video_when_audio_is_missing(self):
+        ffmpeg = shutil.which("ffmpeg")
+        if not ffmpeg:
+            self.skipTest("FFmpeg is unavailable")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "no_audio.mp4"
+            subprocess.run([
+                ffmpeg, "-y", "-f", "lavfi", "-i",
+                "color=c=green:s=160x120:r=20:d=1", "-c:v", "libx264",
+                str(source),
+            ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            settings = normalize_smart_video_editor_settings({
+                "ffmpeg_path": ffmpeg,
+                "compress_internal_pauses": True,
+                "internal_pause_mode": "experimental",
+                "existing_output": "overwrite",
+            })
+            bundle = analyze_breath_cut_files([source], settings)
+            clip = bundle["tasks"][0]["clips"][0]
+            self.assertTrue(clip["silence_detection_error"])
+            self.assertEqual(clip["kept_ranges"], [[0.0, 1.0]])
+            result = export_breath_cut_bundle(bundle, settings)
+            self.assertFalse(result["failed"])
+            self.assertTrue(Path(result["completed"][0]["video"]).is_file())
+
     def test_db_silence_detection_places_cuts_inside_measured_quiet_audio(self):
         ffmpeg = shutil.which("ffmpeg")
         if not ffmpeg:
@@ -219,6 +750,90 @@ class SmartVideoEditorTests(unittest.TestCase):
             ["head_boundary_unconfirmed", "tail_boundary_unconfirmed"],
         )
 
+    def test_unmatched_script_still_trims_voice_proven_tail_gap(self):
+        """A script mismatch must not retain a proven multi-second tail gap."""
+        settings = normalize_smart_video_editor_settings({})
+        script_lines, script_words = build_script_word_records(
+            "Nepredstieraj, že si túto správu nevidela."
+        )
+        transcription = {
+            "text": "Nie predstíraj, že si tu to správňe videla.",
+            "duration": 6.016,
+            "words": [
+                {"text": "Nie", "start": 0.30, "end": 0.84},
+                {"text": "predstíraj", "start": 0.84, "end": 1.56},
+                {"text": "že", "start": 1.88, "end": 2.06},
+                {"text": "si", "start": 2.06, "end": 2.22},
+                {"text": "tu", "start": 2.22, "end": 2.36},
+                {"text": "to", "start": 2.36, "end": 2.50},
+                {"text": "správňe", "start": 2.50, "end": 3.12},
+                {"text": "videla", "start": 3.12, "end": 3.44},
+            ],
+        }
+        clip = _build_clip_plan(
+            Path("1_20260918144407.mp4"),
+            transcription,
+            None,
+            script_words,
+            script_lines,
+            settings,
+            0,
+            [[3.574, 5.032], [5.290, 6.016]],
+            "",
+            [[0.0, 0.304], [4.016, 6.016]],
+            "",
+        )
+        self.assertEqual(clip["status"], "pink")
+        self.assertAlmostEqual(clip["trim_end"], 4.016, places=3)
+        self.assertIn(
+            "script_position_unmatched",
+            [item["kind"] for item in clip["issues"]],
+        )
+        self.assertIn(
+            "tail_cut",
+            [item["kind"] for item in clip["boundary_decisions"]],
+        )
+
+    def test_short_boundary_word_typo_counts_as_audio_evidence(self):
+        expected = [{"norm": "ak"}]
+        observed = [{"norm": "a"}]
+        self.assertGreaterEqual(
+            _compact_record_similarity(expected, observed), 0.72
+        )
+
+    def test_missing_word_guard_does_not_restore_proven_no_voice_tail(self):
+        clip = {
+            "script_word_start": 164,
+            "script_word_end": 179,
+            "original_duration": 10.005,
+            "trim_start": 0.0,
+            "trim_end": 8.66,
+            "word_timeline": [{
+                "script_word_index": 179,
+                "start": 7.7,
+                "end": 8.2,
+                "anchor": True,
+            }],
+            "voice_absence_ranges": [[8.44, 10.005]],
+            "voice_detection_error": "",
+            "boundary_decisions": [{"kind": "tail_cut"}],
+            "boundary_warnings": [],
+            "alignment_issues": [],
+            "issues": [],
+            "pause_removals": [],
+        }
+        _protect_edges_adjacent_to_missing_script([clip], [{
+            "script_word_start": 180,
+            "script_word_end": 180,
+            "text": "Ak",
+            "edge_audio_supported": False,
+        }])
+        self.assertAlmostEqual(clip["trim_end"], 8.66, places=3)
+        self.assertNotIn(
+            "missing_script_boundary_guard",
+            [item.get("kind") for item in clip.get("issues", [])],
+        )
+
     def test_source_discovery_excludes_generated_output(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -248,10 +863,28 @@ class SmartVideoEditorTests(unittest.TestCase):
             model = _FakeWhisperModel()
             safe_settings = {"silence_detection_enabled": False}
             first = analyze_smart_video_jobs(jobs, model, safe_settings)
-            second = analyze_smart_video_jobs(jobs, model, safe_settings)
+            stat = source.stat()
+            os.utime(
+                source,
+                ns=(stat.st_atime_ns, stat.st_mtime_ns + 2_000_000_000),
+            )
+            progress = []
+            self.assertFalse(smart_video_jobs_require_model(jobs, safe_settings))
+            self.assertTrue(smart_video_jobs_require_model(
+                jobs,
+                {
+                    **safe_settings,
+                    "whisper_model_size": "medium",
+                },
+            ))
+            second = analyze_smart_video_jobs(
+                jobs, None, safe_settings, progress=progress.append
+            )
             self.assertEqual(model.calls, 1)
             self.assertEqual(first["summary"]["green_count"], 1)
             self.assertTrue(second["tasks"][0]["clips"][0]["from_cache"])
+            self.assertEqual(second["summary"]["task_cache_count"], 1)
+            self.assertTrue(any("完整分析缓存命中" in item for item in progress))
             report = task_dir / "智能剪辑结果" / "智能剪辑审核.json"
             self.assertTrue(report.is_file())
             text_report = task_dir / "智能剪辑结果" / "智能剪辑问题报告.txt"
@@ -463,7 +1096,7 @@ class SmartVideoEditorTests(unittest.TestCase):
         )
         self.assertEqual([cue["text"] for cue in cues], ["first", "middle", "last"])
 
-    def test_duplicate_take_is_not_given_an_invented_second_position(self):
+    def test_duplicate_take_is_auto_excluded_instead_of_exported_twice(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             first = root / "alpha_beta.mp4"
@@ -480,10 +1113,182 @@ class SmartVideoEditorTests(unittest.TestCase):
                 "sources": [str(first), str(first), str(second)],
             }], _MappingWhisperModel(), {"silence_detection_enabled": False})
             clips = result["tasks"][0]["clips"]
-            unmatched = [clip for clip in clips if clip["script_word_start"] < 0]
-            self.assertEqual(len(unmatched), 1)
-            self.assertEqual(unmatched[0]["status"], "pink")
+            duplicates = [
+                clip for clip in clips if clip.get("auto_excluded_duplicate")
+            ]
+            self.assertEqual(len(duplicates), 1)
+            self.assertFalse(duplicates[0]["included"])
+            self.assertEqual(duplicates[0]["status"], "orange")
+            self.assertEqual(duplicates[0]["duplicate_of"], "alpha_beta.mp4")
+            self.assertEqual(result["summary"]["duplicate_count"], 1)
+            self.assertEqual(
+                [clip["file_name"] for clip in clips if clip["included"]],
+                ["alpha_beta.mp4", "gamma_delta.mp4"],
+            )
+            self.assertEqual(
+                subtitle_text_for_export(result["tasks"][0]),
+                "alpha beta\ngamma delta",
+            )
             self.assertTrue(result["summary"]["needs_review"])
+
+    def test_different_files_with_same_take_and_script_position_are_deduplicated(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            sources = [
+                root / "take_a.mp4",
+                root / "take_b.mp4",
+                root / "ending.mp4",
+            ]
+            for index, source in enumerate(sources):
+                source.write_bytes(f"video-{index}".encode("utf-8"))
+            model = _DictionaryWhisperModel({
+                "take_a.mp4": "alpha beta gamma",
+                "take_b.mp4": "alpha beta gamma",
+                "ending.mp4": "delta epsilon zeta",
+            })
+            result = analyze_smart_video_jobs([{
+                "task_id": "T-repeat-take",
+                "label": "T-repeat-take",
+                "task_dir": str(root),
+                "script": "alpha beta gamma\ndelta epsilon zeta",
+                "language": "en",
+                "sources": [str(path) for path in sources],
+            }], model, {"silence_detection_enabled": False})
+            duplicates = [
+                clip for clip in result["tasks"][0]["clips"]
+                if clip.get("auto_excluded_duplicate")
+            ]
+            self.assertEqual(len(duplicates), 1)
+            self.assertFalse(duplicates[0]["included"])
+            self.assertIn("重复", duplicates[0]["issue_reason"])
+
+    def test_reordered_title_take_is_grouped_and_can_replace_kept_version(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            sources = [
+                root / "take_title_first.mp4",
+                root / "take_title_last.mp4",
+                root / "ending.mp4",
+            ]
+            for index, source in enumerate(sources):
+                source.write_bytes(f"video-{index}".encode("utf-8"))
+            title_first = (
+                "prayer for strength lord I come to you when I am weak"
+            )
+            title_last = (
+                "lord I come to you when I am weak prayer for strength"
+            )
+            result = analyze_smart_video_jobs([{
+                "task_id": "T-reordered-duplicate",
+                "label": "T-reordered-duplicate",
+                "task_dir": str(root),
+                "script": title_first + "\nthank you amen",
+                "language": "en",
+                "sources": [str(path) for path in sources],
+            }], _DictionaryWhisperModel({
+                sources[0].name: title_first,
+                sources[1].name: title_last,
+                sources[2].name: "thank you amen",
+            }), {"silence_detection_enabled": False})
+
+            task = result["tasks"][0]
+            grouped = [
+                (index, clip)
+                for index, clip in enumerate(task["clips"])
+                if clip.get("duplicate_group_id")
+            ]
+            self.assertEqual(len(grouped), 2)
+            self.assertEqual(
+                len({clip["duplicate_group_id"] for _index, clip in grouped}),
+                1,
+            )
+            self.assertEqual(
+                sum(bool(clip.get("duplicate_selected")) for _index, clip in grouped),
+                1,
+            )
+            previous_index = next(
+                index for index, clip in grouped
+                if clip.get("duplicate_selected")
+            )
+            replacement_index = next(
+                index for index, clip in grouped
+                if not clip.get("duplicate_selected")
+            )
+            previous_order = task["clips"][previous_index]["export_order"]
+            replacement_old_order = task["clips"][replacement_index]["export_order"]
+
+            select_duplicate_group_clip(
+                task, replacement_index, result["settings"]
+            )
+
+            self.assertFalse(task["clips"][previous_index]["included"])
+            self.assertTrue(task["clips"][replacement_index]["included"])
+            self.assertEqual(
+                task["clips"][replacement_index]["export_order"],
+                previous_order,
+            )
+            self.assertEqual(
+                task["clips"][previous_index]["export_order"],
+                replacement_old_order,
+            )
+            self.assertEqual(
+                sum(
+                    bool(clip.get("included"))
+                    for _index, clip in grouped
+                ),
+                1,
+            )
+            self.assertEqual(
+                task["clips"][replacement_index]["script_word_start"], 0
+            )
+
+            review = SmartVideoTimelineReview(result)
+            try:
+                review._select_clip(replacement_index)
+                self.assertFalse(review.duplicate_group_panel.isHidden())
+                self.assertEqual(
+                    len(review.duplicate_button_group.buttons()), 2
+                )
+                segment = next(
+                    item for item in review.segments
+                    if item["clip_index"] == replacement_index
+                )
+                self.assertTrue(segment["duplicate_selected"])
+                review.duplicate_button_group.button(previous_index).click()
+                self.assertTrue(
+                    task["clips"][previous_index]["duplicate_selected"]
+                )
+                self.assertFalse(
+                    task["clips"][replacement_index]["included"]
+                )
+            finally:
+                review.close_player()
+                review.close()
+
+    def test_same_words_at_two_real_script_positions_are_not_deduplicated(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            first = root / "first.mp4"
+            second = root / "second.mp4"
+            first.write_bytes(b"first-video")
+            second.write_bytes(b"second-video")
+            model = _DictionaryWhisperModel({
+                first.name: "thank you all",
+                second.name: "thank you all",
+            })
+            result = analyze_smart_video_jobs([{
+                "task_id": "T-real-repeat",
+                "label": "T-real-repeat",
+                "task_dir": str(root),
+                "script": "thank you all\nthank you all",
+                "language": "en",
+                "sources": [str(first), str(second)],
+            }], model, {"silence_detection_enabled": False})
+            self.assertEqual(result["summary"]["duplicate_count"], 0)
+            self.assertTrue(all(
+                clip.get("included", True)
+                for clip in result["tasks"][0]["clips"]
+            ))
 
     def test_cjk_phrase_token_maps_to_individual_script_character_times(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -716,6 +1521,11 @@ class SmartVideoEditorTests(unittest.TestCase):
                 self.assertEqual(row.text(0), "未处理")
                 self.assertIn("second sentence is absent", row.text(3))
                 self.assertIn("first_words.mp4", row.text(4))
+                block = dialog._selected_missing_block()
+                neighbor = dialog._missing_neighbor_clip(block, "previous")
+                self.assertIsNotNone(neighbor)
+                self.assertEqual(neighbor["file_name"], "first_words.mp4")
+                self.assertTrue(dialog.preview_missing_before_button.isEnabled())
             finally:
                 dialog.close()
 
@@ -756,28 +1566,130 @@ class SmartVideoEditorTests(unittest.TestCase):
             }], _MappingWhisperModel(), {"silence_detection_enabled": False})
             dialog = SmartVideoReviewDialog(bundle)
             try:
-                dialog.missing_tree.setCurrentItem(
-                    dialog.missing_tree.topLevelItem(0)
-                )
                 with mock.patch.object(
                     QtWidgets.QMessageBox,
                     "question",
                     return_value=QtWidgets.QMessageBox.Yes,
                 ):
-                    dialog._set_missing_decision("approved")
+                    dialog.timeline_review.approve_task_button.click()
                 self.assertTrue(dialog.export_button.isEnabled())
                 self.assertEqual(
                     dialog.missing_tree.topLevelItem(0).text(0), "人工通过"
                 )
-
-                dialog.missing_tree.setCurrentItem(
-                    dialog.missing_tree.topLevelItem(0)
+                self.assertIn(
+                    "继续生成",
+                    dialog.timeline_review.task_decision_status.text(),
                 )
-                dialog._set_missing_decision("skipped")
+
+                dialog.timeline_review.skip_task_button.click()
                 self.assertTrue(dialog.export_button.isEnabled())
                 self.assertEqual(dialog.export_button.text(), "导出其余任务")
+                self.assertIn(
+                    "本次将跳过",
+                    dialog.timeline_review.task_decision_status.text(),
+                )
             finally:
                 dialog.close()
+
+    def test_timeline_filters_and_locates_missing_segment_tasks(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            clean_source = root / "gamma_delta.mp4"
+            missing_source = root / "first_words.mp4"
+            clean_source.write_bytes(b"clean")
+            missing_source.write_bytes(b"missing")
+            bundle = analyze_smart_video_jobs([
+                {
+                    "task_id": "T-clean",
+                    "label": "T-clean",
+                    "task_dir": str(root / "clean"),
+                    "script": "gamma delta",
+                    "language": "en",
+                    "sources": [str(clean_source)],
+                },
+                {
+                    "task_id": "T-missing-filter",
+                    "label": "T-missing-filter",
+                    "task_dir": str(root / "missing"),
+                    "script": "first words\nsecond sentence is absent",
+                    "language": "en",
+                    "sources": [str(missing_source)],
+                },
+            ], _MappingWhisperModel(), {"silence_detection_enabled": False})
+            dialog = SmartVideoReviewDialog(bundle)
+            try:
+                timeline = dialog.timeline_review
+                self.assertEqual(
+                    timeline.missing_task_count_label.text(),
+                    "缺段任务 1（未处理 1）",
+                )
+                timeline.task_filter_combo.setCurrentIndex(
+                    timeline.task_filter_combo.findData("unresolved")
+                )
+                self.assertEqual(timeline.task_combo.count(), 1)
+                self.assertEqual(timeline.task_combo.itemData(0), 1)
+                self.assertEqual(timeline.task_index, 1)
+                self.assertIn("⛔ 未处理 · 缺段 1", timeline.task_combo.itemText(0))
+
+                timeline.issue_filter_combo.setCurrentIndex(
+                    timeline.issue_filter_combo.findData("missing")
+                )
+                self.assertEqual(timeline.issue_tree.topLevelItemCount(), 1)
+                marker = timeline.issue_tree.topLevelItem(0).data(
+                    0, QtCore.Qt.UserRole
+                )
+                self.assertEqual(marker["kind"], "missing")
+
+                set_smart_video_missing_review(bundle["tasks"][1], "approved")
+                timeline.refresh(bundle)
+                self.assertEqual(timeline.task_combo.count(), 0)
+                self.assertEqual(
+                    timeline.missing_task_count_label.text(),
+                    "缺段任务 1（未处理 0）",
+                )
+                timeline.task_filter_combo.setCurrentIndex(
+                    timeline.task_filter_combo.findData("missing")
+                )
+                self.assertEqual(timeline.task_combo.count(), 1)
+                self.assertIn("✓ 已确认完整", timeline.task_combo.itemText(0))
+
+                timeline.select_clip(0, 0)
+                self.assertEqual(timeline.task_filter_combo.currentData(), "all")
+                self.assertEqual(timeline.task_index, 0)
+            finally:
+                dialog.close()
+
+    def test_export_result_dialog_keeps_long_paths_inside_visible_columns(self):
+        long_name = "very-long-video-name-" + ("x" * 180) + ".mp4"
+        video_path = str(Path("C:/exports") / long_name)
+        srt_path = str(Path("C:/exports") / long_name.replace(".mp4", ".srt"))
+        dialog = SmartVideoExportResultDialog({
+            "completed": [{
+                "task_id": "T-very-long-name",
+                "video": video_path,
+                "srt": srt_path,
+            }],
+            "failed": [],
+            "skipped": [],
+        })
+        try:
+            row = dialog.tree.topLevelItem(0)
+            self.assertEqual(row.text(2), long_name)
+            self.assertEqual(row.toolTip(2), video_path)
+            self.assertEqual(row.toolTip(3), srt_path)
+            self.assertEqual(
+                dialog.tree.horizontalScrollBarPolicy(),
+                QtCore.Qt.ScrollBarAlwaysOff,
+            )
+            header = dialog.tree.header()
+            self.assertEqual(
+                header.sectionResizeMode(2), QtWidgets.QHeaderView.Stretch
+            )
+            self.assertEqual(
+                header.sectionResizeMode(3), QtWidgets.QHeaderView.Stretch
+            )
+        finally:
+            dialog.close()
 
     def test_skipped_missing_task_does_not_block_other_exports(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -1024,18 +1936,46 @@ class SmartVideoEditorTests(unittest.TestCase):
         )
 
     def test_program_settings_exposes_smart_editor_without_touching_subtitle_values(self):
-        dialog = MainSettingDialog()
+        page = SmartVideoEditorSettingsPage()
         try:
-            self.assertGreaterEqual(
-                dialog.settingTabWidget.indexOf(dialog.smart_video_editor_tab), 0
+            page.lead_padding_spinbox.setValue(180)
+            page.silence_db_spinbox.setValue(-42)
+            page.vad_threshold_spinbox.setValue(0.6)
+            page.vad_neg_threshold_spinbox.setValue(0.4)
+            page.vad_min_speech_spinbox.setValue(180)
+            page.vad_speech_pad_spinbox.setValue(275)
+            page.breath_detection_mode_combo.setCurrentIndex(
+                page.breath_detection_mode_combo.findData("intersection")
             )
-            dialog.smart_lead_padding_spinbox.setValue(180)
-            dialog.smart_silence_db_spinbox.setValue(-42)
-            settings = dialog._get_smart_video_editor_settings()
+            page.pause_keep_before_spinbox.setValue(110)
+            page.pause_keep_after_spinbox.setValue(240)
+            page.whisper_model_combo.setCurrentIndex(
+                page.whisper_model_combo.findData("medium")
+            )
+            page.use_main_subtitle_settings_checkbox.setChecked(False)
+            page.subtitle_max_words_spinbox.setValue(4)
+            page.subtitle_max_chars_spinbox.setValue(32)
+            page.subtitle_gap_spinbox.setValue(0)
+            page.subtitle_line_break_checkbox.setChecked(True)
+            settings = page.settings()
             self.assertEqual(settings["lead_padding_ms"], 180)
             self.assertEqual(settings["silence_threshold_db"], -42)
+            self.assertTrue(settings["voice_detection_enabled"])
+            self.assertAlmostEqual(settings["vad_threshold"], 0.6)
+            self.assertAlmostEqual(settings["vad_neg_threshold"], 0.4)
+            self.assertEqual(settings["vad_min_speech_ms"], 180)
+            self.assertEqual(settings["vad_speech_pad_ms"], 275)
+            self.assertEqual(settings["breath_detection_mode"], "intersection")
+            self.assertEqual(settings["pause_keep_before_ms"], 110)
+            self.assertEqual(settings["pause_keep_after_ms"], 240)
+            self.assertEqual(settings["whisper_model_size"], "medium")
+            self.assertFalse(settings["use_main_subtitle_settings"])
+            self.assertEqual(settings["srt_max_words_per_block"], 4)
+            self.assertEqual(settings["srt_max_chars_per_block"], 32)
+            self.assertEqual(settings["srt_block_gap_ms"], 0)
+            self.assertTrue(settings["srt_include_line_breaks"])
         finally:
-            dialog.close()
+            page.widget.close()
 
     def test_program_settings_exposes_output_filename_length(self):
         dialog = MainSettingDialog()
@@ -1123,6 +2063,16 @@ class SmartVideoEditorTests(unittest.TestCase):
             try:
                 reviewed = review_dialog.collect()
                 self.assertTrue(reviewed["tasks"][0]["clips"][0]["included"])
+                self.assertEqual(
+                    review_dialog.review_mode_tabs.currentIndex(),
+                    review_dialog.timeline_tab_index,
+                )
+                self.assertGreaterEqual(len(review_dialog.timeline_review.segments), 1)
+                self.assertTrue(any(
+                    segment.get("is_removed")
+                    for segment in review_dialog.timeline_review.segments
+                ))
+                self.assertEqual(len(review_dialog.timeline_review.markers), 1)
                 self.assertFalse(review_dialog.table.isColumnHidden(
                     review_dialog.COL_ISSUES
                 ))
@@ -1134,8 +2084,86 @@ class SmartVideoEditorTests(unittest.TestCase):
                     "0.800-1.100s",
                     review_dialog.issue_tree.topLevelItem(0).text(1),
                 )
+                self.assertTrue(review_dialog.problem_only_checkbox.isChecked())
+                self.assertEqual(review_dialog.problem_position_label.text(), "问题 1 / 1")
+                self.assertIn("正确", review_dialog.detail_diff.toPlainText())
+                self.assertIn("识别", review_dialog.detail_diff.toPlainText())
+                with mock.patch(
+                    "PYUI.smart_video_editor_pyui.save_analysis_reports"
+                ):
+                    review_dialog._set_clip_acknowledged(True)
+                reviewed_clip = review_dialog.bundle["tasks"][0]["clips"][0]
+                self.assertTrue(reviewed_clip["review_acknowledged"])
+                self.assertEqual(
+                    review_dialog.table.item(0, review_dialog.COL_STATUS).text(),
+                    "人工已核对",
+                )
             finally:
                 review_dialog.close()
+
+    def test_timeline_reorders_clips_and_can_clear_internal_breath_cuts(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            sources = []
+            for name in ("one.mp4", "two.mp4"):
+                source = Path(temporary) / name
+                source.write_bytes(b"fake")
+                sources.append(source)
+            clips = []
+            for index, source in enumerate(sources):
+                clips.append({
+                    "source": str(source),
+                    "file_name": source.name,
+                    "source_index": index,
+                    "export_order": index + 1,
+                    "status": "green",
+                    "trim_start": 0.0,
+                    "trim_end": 2.0,
+                    "original_duration": 2.0,
+                    "pause_removals": [[0.7, 1.2]] if index == 0 else [],
+                    "silence_ranges": [],
+                    "voice_absence_ranges": [],
+                    "kept_ranges": (
+                        [[0.0, 0.7], [1.2, 2.0]]
+                        if index == 0 else [[0.0, 2.0]]
+                    ),
+                    "removed_seconds": 0.5 if index == 0 else 0.0,
+                    "expected_text": "alpha beta",
+                    "recognized_text": "alpha beta",
+                    "issues": [],
+                    "words": [],
+                    "included": True,
+                })
+            bundle = {
+                "settings": normalize_smart_video_editor_settings({
+                    "compress_internal_pauses": True,
+                    "internal_pause_mode": "experimental",
+                }),
+                "summary": {"clip_count": 2, "green_count": 2},
+                "tasks": [{"label": "demo", "clips": clips}],
+            }
+            dialog = SmartVideoReviewDialog(bundle)
+            try:
+                timeline = dialog.timeline_review
+                timeline.select_clip(0, 0)
+                timeline._move_clip_to(0, 1)
+                self.assertEqual(
+                    [clip["export_order"] for clip in dialog.bundle["tasks"][0]["clips"]],
+                    [2, 1],
+                )
+                self.assertEqual(
+                    dialog.table.item(0, dialog.COL_ORDER).text(), "2"
+                )
+
+                timeline.compress_pauses_checkbox.setChecked(False)
+                timeline._apply_breath_settings()
+                self.assertEqual(
+                    dialog.bundle["tasks"][0]["clips"][0]["pause_removals"], []
+                )
+                self.assertEqual(
+                    dialog.table.item(0, dialog.COL_REMOVED).text(), "0.00"
+                )
+            finally:
+                dialog.close()
 
     def test_readable_problem_report_contains_time_and_word_difference(self):
         task = {
@@ -1256,6 +2284,7 @@ class SmartVideoEditorTests(unittest.TestCase):
             self.assertEqual(aligned_text, "authoritative task text")
             self.assertTrue(aligned_options["include_line_breaks"])
             self.assertEqual(aligned_options["max_words_per_block"], 3)
+            self.assertEqual(aligned_options["max_chars_per_block"], 50)
             self.assertEqual(aligned_options["block_gap_ms"], 0)
             ffprobe = shutil.which("ffprobe")
             if ffprobe:
@@ -1263,13 +2292,27 @@ class SmartVideoEditorTests(unittest.TestCase):
                     ffprobe,
                     "-v", "error",
                     "-select_streams", "v:0",
-                    "-show_entries", "stream=start_time,has_b_frames",
+                    "-show_entries",
+                    "stream=start_time,has_b_frames,duration,nb_frames,r_frame_rate",
                     "-of", "json",
                     item["video"],
                 ], check=True, capture_output=True, text=True)
                 timing = json.loads(probe.stdout)["streams"][0]
                 self.assertAlmostEqual(float(timing["start_time"]), 0.0, places=3)
                 self.assertEqual(int(timing["has_b_frames"]), 0)
+                rate_num, rate_den = map(
+                    int, timing["r_frame_rate"].split("/", 1)
+                )
+                frame_duration = (
+                    int(timing["nb_frames"]) / (rate_num / rate_den)
+                )
+                # Joining independently AAC-encoded MP4 segments used to add
+                # encoder padding before every following segment.  Their video
+                # timestamps then contained gaps even though the frame count
+                # was correct, so Resolve displayed a longer clip.
+                self.assertAlmostEqual(
+                    float(timing["duration"]), frame_duration, delta=0.002
+                )
 
 
 if __name__ == "__main__":

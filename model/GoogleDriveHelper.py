@@ -17,6 +17,7 @@ SCOPES = ["https://www.googleapis.com/auth/drive"]
 GOOGLE_FOLDER_MIME = "application/vnd.google-apps.folder"
 UPLOAD_CHUNK_SIZE = 8 * 1024 * 1024
 UPLOAD_MAX_RETRIES = 8
+METADATA_MAX_RETRIES = 5
 
 
 def folder_name(task_date: date) -> str:
@@ -137,22 +138,147 @@ def escape_query_text(text: str) -> str:
     return text.replace("\\", "\\\\").replace("'", "\\'")
 
 
-def list_remote_children(service, parent_id: str, name: str) -> List[Dict]:
+def _is_rate_limit_403(exc: Exception) -> bool:
+    try:
+        content = getattr(exc, "content", b"")
+        if isinstance(content, (bytes, bytearray)):
+            content_str = content.decode("utf-8", errors="ignore")
+        else:
+            content_str = str(content or "")
+
+        resp = getattr(exc, "resp", None)
+        reason_str = str(getattr(resp, "reason", ""))
+        err_str = str(exc)
+
+        combined = f"{err_str} {content_str} {reason_str}".lower()
+        normalized = combined.replace(" ", "").replace("_", "").replace("-", "")
+        if "ratelimitexceeded" in normalized or "userratelimitexceeded" in normalized:
+            return True
+        if "ratelimit" in normalized or "userratelimit" in normalized:
+            return True
+
+        if "{" in content_str:
+            import json
+            try:
+                data = json.loads(content_str)
+                if isinstance(data, dict):
+                    err_obj = data.get("error", {})
+                    if isinstance(err_obj, dict):
+                        for err in err_obj.get("errors", []):
+                            if isinstance(err, dict):
+                                r = str(err.get("reason", "")).lower()
+                                if r in {"ratelimitexceeded", "userratelimitexceeded"}:
+                                    return True
+                                m = str(err.get("message", "")).lower()
+                                if "rate limit" in m or "quota" in m:
+                                    return True
+                        msg = str(err_obj.get("message", "")).lower()
+                        if "rate limit" in msg or "quota" in msg:
+                            return True
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return False
+
+
+def is_retryable_upload_error(exc: Exception) -> bool:
+    try:
+        from googleapiclient.errors import HttpError
+    except Exception:
+        HttpError = None
+
+    status = None
+    resp = getattr(exc, "resp", None)
+    if resp is not None:
+        try:
+            status = int(getattr(resp, "status", None))
+        except (ValueError, TypeError):
+            pass
+
+    if status is None and HttpError is not None and isinstance(exc, HttpError):
+        try:
+            status = int(getattr(exc.resp, "status", None))
+        except (ValueError, TypeError):
+            pass
+
+    if status is not None:
+        if status in {429, 500, 502, 503, 504}:
+            return True
+        if status == 403 and _is_rate_limit_403(exc):
+            return True
+        return False
+
+    retryable_types = (
+        ssl.SSLError,
+        socket.timeout,
+        TimeoutError,
+        ConnectionError,
+        OSError,
+    )
+    return isinstance(exc, retryable_types)
+
+
+is_retryable_metadata_error = is_retryable_upload_error
+
+
+def retry_sleep_seconds(retry_count: int) -> float:
+    base = min(60, 2 ** retry_count)
+    return base + random.uniform(0.0, 1.5)
+
+
+def list_remote_children(
+    service,
+    parent_id: str,
+    name: str,
+    max_retries: int = METADATA_MAX_RETRIES,
+) -> List[Dict]:
     safe_name = escape_query_text(name)
     query = f"'{parent_id}' in parents and name = '{safe_name}' and trashed = false"
-    results = service.files().list(
-        q=query,
-        spaces="drive",
-        fields="files(id,name,mimeType,md5Checksum,size,modifiedTime,webViewLink,webContentLink)",
-        pageSize=20,
-        supportsAllDrives=True,
-        includeItemsFromAllDrives=True,
-    ).execute()
-    return results.get("files", [])
+    for attempt in range(max_retries + 1):
+        try:
+            results = service.files().list(
+                q=query,
+                spaces="drive",
+                fields="files(id,name,mimeType,md5Checksum,size,modifiedTime,webViewLink,webContentLink)",
+                pageSize=20,
+                supportsAllDrives=True,
+                includeItemsFromAllDrives=True,
+            ).execute()
+            return results.get("files", [])
+        except Exception as exc:
+            if not is_retryable_upload_error(exc) or attempt >= max_retries:
+                raise
+            wait_seconds = retry_sleep_seconds(attempt + 1)
+            time.sleep(wait_seconds)
 
 
-def get_or_create_remote_folder(service, parent_id: str, folder_name_text: str) -> str:
-    matches = list_remote_children(service, parent_id, folder_name_text)
+def get_remote_file(
+    service,
+    file_id: str,
+    max_retries: int = METADATA_MAX_RETRIES,
+) -> Dict:
+    for attempt in range(max_retries + 1):
+        try:
+            return service.files().get(
+                fileId=file_id,
+                fields="id,name,mimeType,md5Checksum,size,modifiedTime,webViewLink,webContentLink,trashed",
+                supportsAllDrives=True,
+            ).execute()
+        except Exception as exc:
+            if not is_retryable_upload_error(exc) or attempt >= max_retries:
+                raise
+            wait_seconds = retry_sleep_seconds(attempt + 1)
+            time.sleep(wait_seconds)
+
+
+def get_or_create_remote_folder(
+    service,
+    parent_id: str,
+    folder_name_text: str,
+    max_retries: int = METADATA_MAX_RETRIES,
+) -> str:
+    matches = list_remote_children(service, parent_id, folder_name_text, max_retries=max_retries)
     for item in matches:
         if item.get("mimeType") == GOOGLE_FOLDER_MIME:
             return item["id"]
@@ -162,13 +288,27 @@ def get_or_create_remote_folder(service, parent_id: str, folder_name_text: str) 
         "mimeType": GOOGLE_FOLDER_MIME,
         "parents": [parent_id],
     }
-    folder = service.files().create(
-        body=metadata,
-        fields="id",
-        supportsAllDrives=True,
-    ).execute()
-    print(f"已创建云端文件夹: {folder_name_text}")
-    return folder["id"]
+
+    for attempt in range(max_retries + 1):
+        if attempt > 0:
+            matches = list_remote_children(service, parent_id, folder_name_text, max_retries=max_retries)
+            for item in matches:
+                if item.get("mimeType") == GOOGLE_FOLDER_MIME:
+                    return item["id"]
+
+        try:
+            folder = service.files().create(
+                body=metadata,
+                fields="id",
+                supportsAllDrives=True,
+            ).execute()
+            print(f"已创建云端文件夹: {folder_name_text}")
+            return folder["id"]
+        except Exception as exc:
+            if not is_retryable_upload_error(exc) or attempt >= max_retries:
+                raise
+            wait_seconds = retry_sleep_seconds(attempt + 1)
+            time.sleep(wait_seconds)
 
 
 def get_or_create_remote_folder_path(service, parent_id: str, relative_dir: Path) -> str:
@@ -220,29 +360,6 @@ def format_file_size(size_bytes: int) -> str:
     return f"{size_bytes}B"
 
 
-def is_retryable_upload_error(exc: Exception) -> bool:
-    try:
-        from googleapiclient.errors import HttpError
-    except Exception:
-        HttpError = None
-
-    if HttpError is not None and isinstance(exc, HttpError):
-        status = getattr(exc.resp, "status", None)
-        return status in {429, 500, 502, 503, 504}
-
-    retryable_types = (
-        ssl.SSLError,
-        socket.timeout,
-        TimeoutError,
-        ConnectionError,
-        OSError,
-    )
-    return isinstance(exc, retryable_types)
-
-
-def retry_sleep_seconds(retry_count: int) -> float:
-    base = min(60, 2 ** retry_count)
-    return base + random.uniform(0.0, 1.5)
 
 
 def execute_resumable_upload(request, local_file: Path, action_text: str) -> Dict:
@@ -320,9 +437,40 @@ def update_existing_file(service, local_file: Path, remote_file_id: str) -> Dict
     return updated
 
 
-def sync_file(service, local_file: Path, parent_id: str) -> Optional[Dict]:
+def sync_file(
+    service,
+    local_file: Path,
+    parent_id: str,
+    preferred_file_id: str = "",
+) -> Optional[Dict]:
     matches = list_remote_children(service, parent_id, local_file.name)
     remote_files = [item for item in matches if item.get("mimeType") != GOOGLE_FOLDER_MIME]
+
+    reused_previous_batch = False
+    preferred_file_id = str(preferred_file_id or "").strip()
+    if not remote_files and preferred_file_id:
+        try:
+            previous_file = get_remote_file(service, preferred_file_id)
+        except Exception as exc:
+            status = getattr(getattr(exc, "resp", None), "status", None)
+            if status not in {403, 404}:
+                raise
+            print(
+                "历史网盘文件已不可访问，改为在本批次新建："
+                f"{local_file.name} -> {preferred_file_id}"
+            )
+        else:
+            if (
+                not previous_file.get("trashed")
+                and previous_file.get("mimeType") != GOOGLE_FOLDER_MIME
+                and not is_google_native_file(previous_file)
+            ):
+                remote_files = [previous_file]
+                reused_previous_batch = True
+                print(
+                    "发现跨批次同名成品，沿用原链接覆盖："
+                    f"{local_file.name} -> {preferred_file_id}"
+                )
 
     if not remote_files:
         created = upload_new_file(service, local_file, parent_id)
@@ -344,12 +492,18 @@ def sync_file(service, local_file: Path, parent_id: str) -> Optional[Dict]:
 
     if remote_md5 and remote_md5 == local_md5:
         print(f"跳过一致文件: {local_file}")
-        remote_file["action"] = "skipped_same"
+        remote_file["action"] = (
+            "skipped_same_previous_batch"
+            if reused_previous_batch
+            else "skipped_same"
+        )
         remote_file["local_file"] = str(local_file)
         return remote_file
 
     updated = update_existing_file(service, local_file, remote_file["id"])
-    updated["action"] = "updated"
+    updated["action"] = (
+        "updated_previous_batch" if reused_previous_batch else "updated"
+    )
     updated["local_file"] = str(local_file)
     return updated
 
@@ -430,6 +584,7 @@ def upload_routed_changed_files_to_drive_batch(
     parent_folder_id: str,
     batch_date: date,
     batch_slot: str,
+    preferred_file_ids: Optional[Dict[str, str]] = None,
 ) -> List[Dict]:
     date_folder_id = get_or_create_remote_folder(service, parent_folder_id, folder_name(batch_date))
     slot_folder_id = get_or_create_remote_folder(service, date_folder_id, batch_slot)
@@ -474,7 +629,15 @@ def upload_routed_changed_files_to_drive_batch(
                 local_relative_path.parent,
             )
             try:
-                synced = sync_file(service, changed_file, target_parent_id)
+                synced = sync_file(
+                    service,
+                    changed_file,
+                    target_parent_id,
+                    preferred_file_id=(preferred_file_ids or {}).get(
+                        changed_file.name,
+                        "",
+                    ),
+                )
             except Exception as exc:
                 print(f"上传失败，跳过当前文件：{changed_file.name} -> {type(exc).__name__}: {exc}")
                 total += 1

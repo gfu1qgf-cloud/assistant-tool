@@ -1,4 +1,5 @@
 import json
+import io
 import logging
 import tempfile
 import time
@@ -22,6 +23,12 @@ from model.GoogleSheetMonitor import (
 from model.GoogleDriveHelper import (
     collect_person_folder_links,
     get_or_create_remote_folder_path_with_root,
+)
+from model.GoogleDriveDownloader import (
+    download_one,
+    jfif_content_extension,
+    normalize_jfif_filename,
+    parse_drive_link,
 )
 from model.InventoryManager import (
     InventoryStore,
@@ -76,6 +83,7 @@ from model.TaskSubmissionHelper import (
     record_needs_review,
     oral_video_type_for_record,
     resolve_task_submission_layout,
+    task_dates_match,
     write_task_submission_links,
 )
 from model.TaskReferenceDownloader import (
@@ -95,6 +103,7 @@ from model.TaskResultOrganizer import (
     clear_pending_changed_file_batches,
     compress_routed_batches,
     file_identity,
+    get_upload_batch,
     is_review_upload_record,
     load_pending_changed_file_batches,
     merge_changed_file_batches,
@@ -929,6 +938,60 @@ class InventoryTests(unittest.TestCase):
 
 
 class MaterialSourceDownloaderTests(unittest.TestCase):
+    def test_jfif_download_name_uses_supported_image_extension(self):
+        self.assertEqual(
+            normalize_jfif_filename("Portrait.JFIF"),
+            ("Portrait.jpg", True),
+        )
+        self.assertEqual(
+            normalize_jfif_filename("Portrait.jpeg"),
+            ("Portrait.jpeg", False),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            jpeg = Path(directory) / "image.jpg.part"
+            jpeg.write_bytes(b"\xff\xd8\xff\xe0JFIF")
+            png = Path(directory) / "image.png.part"
+            png.write_bytes(b"\x89PNG\r\n\x1a\ncontent")
+            self.assertEqual(jfif_content_extension(jpeg), ".jpg")
+            self.assertEqual(jfif_content_extension(png), ".png")
+
+    def test_public_drive_download_normalizes_jfif_after_inspecting_payload(self):
+        class FakeResponse(io.BytesIO):
+            def __init__(self, data):
+                super().__init__(data)
+                self.headers = {
+                    "Content-Disposition": 'attachment; filename="portrait.jfif"',
+                }
+
+        link = parse_drive_link(
+            "https://drive.google.com/file/d/image-123/view"
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            with patch(
+                "model.GoogleDriveDownloader.open_download_response",
+                return_value=FakeResponse(b"\xff\xd8\xff\xe0JFIF-image"),
+            ):
+                status, target = download_one(
+                    link, output, False, 10, {}
+                )
+            self.assertEqual(status, "downloaded")
+            self.assertEqual(target.name, "portrait.jpg")
+            self.assertTrue(target.is_file())
+
+            png_output = output / "png"
+            png_output.mkdir()
+            with patch(
+                "model.GoogleDriveDownloader.open_download_response",
+                return_value=FakeResponse(b"\x89PNG\r\n\x1a\nimage"),
+            ):
+                status, target = download_one(
+                    link, png_output, False, 10, {}
+                )
+            self.assertEqual(status, "downloaded")
+            self.assertEqual(target.name, "portrait.png")
+            self.assertTrue(target.is_file())
+
     def test_parse_file_folder_and_google_document_links(self):
         file_link = parse_material_drive_link(
             "https://drive.google.com/file/d/file-123/view?resourcekey=key-1"
@@ -1006,6 +1069,11 @@ class MaterialSourceDownloaderTests(unittest.TestCase):
                             "mimeType": "video/mp4",
                         },
                         {
+                            "id": "image-1",
+                            "name": "portrait.jfif",
+                            "mimeType": "image/jpeg",
+                        },
+                        {
                             "id": "subfolder-1",
                             "name": "Documents",
                             "mimeType": "application/vnd.google-apps.folder",
@@ -1058,9 +1126,12 @@ class MaterialSourceDownloaderTests(unittest.TestCase):
                 )
 
             root = output_dir / "Cloud Pack"
-            self.assertEqual(result.downloaded_files, 2)
+            self.assertEqual(result.downloaded_files, 3)
             self.assertTrue(result.used_authenticated_api)
             self.assertEqual((root / "clip.mp4").read_bytes(), b"file:video-1")
+            self.assertEqual(
+                (root / "portrait.jpg").read_bytes(), b"file:image-1"
+            )
             self.assertTrue((root / "Documents" / "Readme.docx").is_file())
 
 
@@ -1271,6 +1342,15 @@ class TaskReferenceCacheTests(unittest.TestCase):
 
 
 class TaskTableSchemaTests(unittest.TestCase):
+    def test_task_dates_match_ignores_sheet_leading_zero_formatting(self):
+        self.assertTrue(task_dates_match("914", "0914"))
+        self.assertTrue(task_dates_match("2026-09-14", "0914"))
+        self.assertTrue(task_dates_match("9/14/2026", "2026年9月14日"))
+
+    def test_task_dates_match_rejects_different_calendar_dates(self):
+        self.assertFalse(task_dates_match("915", "0914"))
+        self.assertFalse(task_dates_match("2025-09-14", "2026-09-14"))
+
     @staticmethod
     def _add_row(table, values, link_column=None):
         row = TableRow()
@@ -1669,6 +1749,7 @@ class TaskTableSchemaTests(unittest.TestCase):
             "Tasks",
             column_map,
             first_data_row=2,
+            default_completion_date="2026-08-27",
         )
 
         self.assertEqual(len(matched), 1)
@@ -1688,6 +1769,35 @@ class TaskTableSchemaTests(unittest.TestCase):
             ranges["'Tasks'!M21"],
             '=HYPERLINK("https://drive.google.com/file/d/oral123/view",'
             '"AliceMARKER-0911-7-oral title.mp4")',
+        )
+
+        records[0].pop("task_submission_completed_at")
+        batch_updates, _batch_matched = build_task_sheet_updates(
+            {
+                "task_submission_creator": "operator",
+                "task_submission_creator_marker": "MARKER",
+                "review_folder_name": "manual-review",
+            },
+            records,
+            rows,
+            "Tasks",
+            column_map,
+            first_data_row=2,
+            default_completion_date="2026-08-27",
+        )
+        batch_ranges = {
+            item["range"]: item["values"][0][0] for item in batch_updates
+        }
+        self.assertEqual(batch_ranges["'Tasks'!K21"], "2026-08-27")
+
+    def test_upload_batch_before_seven_keeps_previous_business_date(self):
+        self.assertEqual(
+            get_upload_batch({}, datetime(2026, 9, 15, 6, 59)),
+            (date(2026, 9, 14), "03"),
+        )
+        self.assertEqual(
+            get_upload_batch({}, datetime(2026, 9, 15, 7, 0)),
+            (date(2026, 9, 15), "01"),
         )
 
     def test_oral_append_expands_full_google_sheet_before_write(self):

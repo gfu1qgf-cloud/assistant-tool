@@ -14,6 +14,26 @@ datas = []
 binaries = []
 hiddenimports = []
 
+task_table_template = project_root / "任务登记表格.ods"
+if task_table_template.is_file():
+    datas.append((str(task_table_template), "."))
+
+mpv_runtime = project_root / "runtime" / "mpv"
+required_mpv_files = ("mpv.exe", "vulkan-1.dll")
+missing_mpv_files = [
+    name for name in required_mpv_files
+    if not (mpv_runtime / name).is_file()
+]
+if missing_mpv_files:
+    raise SystemExit(
+        "Missing pinned mpv runtime: " + ", ".join(missing_mpv_files)
+        + ". Run: python packaging/fetch_mpv.py"
+    )
+for runtime_name in (*required_mpv_files, "README.md"):
+    runtime_file = mpv_runtime / runtime_name
+    if runtime_file.is_file():
+        datas.append((str(runtime_file), "runtime/mpv"))
+
 # Generate and collect the Windows UI Automation wrapper used by the external
 # Flow parameter guard. This avoids trying to create comtypes.gen files beside
 # the installed executable at runtime.

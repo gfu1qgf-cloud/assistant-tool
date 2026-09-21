@@ -1,6 +1,8 @@
 import copy
 import json
 import os
+import shutil
+from datetime import datetime
 from pathlib import Path
 from PyQt5 import QtCore, QtGui, QtWidgets
 from PyQt5.QtWidgets import QMessageBox
@@ -58,10 +60,38 @@ from model.TaskTableSchema import (
     load_task_table_schema,
     save_task_table_schema,
 )
-from model.SmartVideoEditor import (
-    SMART_VIDEO_EDITOR_CONFIG_KEY,
-    normalize_smart_video_editor_settings,
-)
+
+
+def _write_config_with_rolling_backups(config_path, config, retain=10):
+    """Atomically save local settings and retain a small recovery history."""
+    config_path = Path(config_path)
+    if config_path.exists():
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+        backup_path = config_path.with_name(
+            f"{config_path.name}.bak-settings-{stamp}"
+        )
+        shutil.copy2(config_path, backup_path)
+        backups = sorted(
+            config_path.parent.glob(f"{config_path.name}.bak-settings-*"),
+            key=lambda path: path.stat().st_mtime_ns,
+            reverse=True,
+        )
+        for obsolete in backups[max(1, int(retain)):]:
+            obsolete.unlink()
+
+    temp_path = config_path.with_name(f"{config_path.name}.settings.tmp")
+    try:
+        with temp_path.open("w", encoding="utf-8") as handle:
+            json.dump(config, handle, indent=4, ensure_ascii=False)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_path, config_path)
+    except Exception:
+        try:
+            temp_path.unlink()
+        except FileNotFoundError:
+            pass
+        raise
 
 
 class AudioProfileDialog(QtWidgets.QDialog):
@@ -234,6 +264,10 @@ class MainSettingDialog(QtWidgets.QDialog, Ui_MainSettingDialog):
             plugin_host is not None
             and plugin_host.plugin("chrome_launcher") is not None
         )
+        self._audio_managed_by_plugin = bool(
+            plugin_host is not None
+            and plugin_host.plugin("task_audio_subtitle") is not None
+        )
         self.setupUi(self)
         if self._chrome_managed_by_plugin:
             # The old widgets remain as a source-run compatibility fallback,
@@ -244,9 +278,13 @@ class MainSettingDialog(QtWidgets.QDialog, Ui_MainSettingDialog):
             self.chrome_hotkey_help_label.hide()
         self._build_additional_hotkey_editors()
         self._build_flow_guard_tab()
-        self._build_smart_video_editor_tab()
         self.audio_settings = {}
-        self._build_audio_settings_editor()
+        if self._audio_managed_by_plugin:
+            audio_tab_index = self.settingTabWidget.indexOf(self.tab_3)
+            if audio_tab_index >= 0:
+                self.settingTabWidget.removeTab(audio_tab_index)
+        else:
+            self._build_audio_settings_editor()
         self._build_task_result_tab()
         self._build_task_schema_tab()
         self.plugin_settings_pages = []
@@ -256,7 +294,7 @@ class MainSettingDialog(QtWidgets.QDialog, Ui_MainSettingDialog):
                 self.settingTabWidget,
             )
         self.api_key_statuses = {}
-
+        
         # 连接按钮信号
         self.ok_btn.clicked.connect(self.accept)
         self.cancel_btn.clicked.connect(self.reject)
@@ -264,26 +302,26 @@ class MainSettingDialog(QtWidgets.QDialog, Ui_MainSettingDialog):
         self.remove_api_key_btn.clicked.connect(self.remove_selected_api_keys)
         self.reset_api_key_status_btn.clicked.connect(self.reset_selected_api_key_statuses)
         self.elevenlabs_api_key_edit.returnPressed.connect(self.add_api_key)
-
+        
         # 加载当前配置
         self.load_config()
-
+    
     def load_config(self):
         """加载配置到界面"""
         hotkey = DEFAULT_CHROME_NEXT_HOTKEY
         task_result_hotkey = DEFAULT_TASK_RESULT_HOTKEY
         load_task_hotkey = DEFAULT_LOAD_TASK_HOTKEY
         flow_guard_settings = normalize_flow_guard_settings({})
-        smart_video_editor_settings = normalize_smart_video_editor_settings({})
         config = load_task_result_config()
         try:
             migrate_legacy_task_result_config("config.json")
             if os.path.exists("config.json"):
                 with open("config.json", "r", encoding="utf-8") as f:
                     config = load_task_result_config(json.load(f))
-                    self.audio_settings = normalize_audio_settings(
-                        config.get("audio_settings", {})
-                    )
+                    if not self._audio_managed_by_plugin:
+                        self.audio_settings = normalize_audio_settings(
+                            config.get("audio_settings", {})
+                        )
                     api_keys = config.get('elevenlabs_api_keys')
                     if api_keys is None:
                         api_keys = config.get('elevenlabs_api_key', '')
@@ -309,14 +347,12 @@ class MainSettingDialog(QtWidgets.QDialog, Ui_MainSettingDialog):
                     flow_guard_settings = normalize_flow_guard_settings(
                         config.get(FLOW_GUARD_CONFIG_KEY)
                     )
-                    smart_video_editor_settings = normalize_smart_video_editor_settings(
-                        config.get(SMART_VIDEO_EDITOR_CONFIG_KEY)
-                    )
             self._load_task_result_config(config)
         except Exception as e:
             print(f"加载配置失败: {e}")
             self._load_task_result_config(config)
-        self._refresh_audio_settings_table()
+        if not self._audio_managed_by_plugin:
+            self._refresh_audio_settings_table()
         try:
             hotkey = normalize_hotkey_sequence(hotkey)
         except ValueError:
@@ -335,7 +371,6 @@ class MainSettingDialog(QtWidgets.QDialog, Ui_MainSettingDialog):
             load_task_hotkey = DEFAULT_LOAD_TASK_HOTKEY
         self.load_task_hotkey_edit.setKeySequence(QtGui.QKeySequence(load_task_hotkey))
         self._load_flow_guard_settings(flow_guard_settings)
-        self._load_smart_video_editor_settings(smart_video_editor_settings)
         if self.plugin_host is not None:
             self.plugin_host.load_settings_pages(config)
 
@@ -513,214 +548,6 @@ class MainSettingDialog(QtWidgets.QDialog, Ui_MainSettingDialog):
                 ),
             }
         )
-
-    def _build_smart_video_editor_tab(self):
-        self.smart_video_editor_tab = QtWidgets.QWidget(self.settingTabWidget)
-        layout = QtWidgets.QVBoxLayout(self.smart_video_editor_tab)
-        scroll = QtWidgets.QScrollArea(self.smart_video_editor_tab)
-        scroll.setWidgetResizable(True)
-        content = QtWidgets.QWidget(scroll)
-        form = QtWidgets.QFormLayout(content)
-        form.setFieldGrowthPolicy(QtWidgets.QFormLayout.AllNonFixedFieldsGrow)
-
-        self.smart_lead_padding_spinbox = QtWidgets.QSpinBox(content)
-        self.smart_lead_padding_spinbox.setRange(0, 3000)
-        self.smart_lead_padding_spinbox.setSuffix(" ms")
-        self.smart_tail_padding_spinbox = QtWidgets.QSpinBox(content)
-        self.smart_tail_padding_spinbox.setRange(0, 3000)
-        self.smart_tail_padding_spinbox.setSuffix(" ms")
-        form.addRow("片段开头留白：", self.smart_lead_padding_spinbox)
-        form.addRow("片段结尾留白：", self.smart_tail_padding_spinbox)
-
-        self.smart_silence_detection_checkbox = QtWidgets.QCheckBox(
-            "启用分贝静音检测（推荐；自动切点必须有音量证据）", content
-        )
-        self.smart_silence_detection_checkbox.setToolTip(
-            "Whisper 只负责定位说到哪个单词；实际首尾切点必须位于 FFmpeg "
-            "检测到的低音量区间。找不到静音时会保留原片并提示核对。"
-        )
-        self.smart_silence_db_spinbox = QtWidgets.QSpinBox(content)
-        self.smart_silence_db_spinbox.setRange(-80, -5)
-        self.smart_silence_db_spinbox.setSuffix(" dB")
-        self.smart_silence_db_spinbox.setToolTip(
-            "越接近 0 越容易把较小声音当作静音；如果误剪说话，请调低，"
-            "例如从 -35 调到 -42 dB。"
-        )
-        self.smart_min_silence_spinbox = QtWidgets.QSpinBox(content)
-        self.smart_min_silence_spinbox.setRange(80, 5000)
-        self.smart_min_silence_spinbox.setSingleStep(50)
-        self.smart_min_silence_spinbox.setSuffix(" ms")
-        self.smart_boundary_search_spinbox = QtWidgets.QSpinBox(content)
-        self.smart_boundary_search_spinbox.setRange(100, 10000)
-        self.smart_boundary_search_spinbox.setSingleStep(100)
-        self.smart_boundary_search_spinbox.setSuffix(" ms")
-        self.smart_boundary_search_spinbox.setToolTip(
-            "只在首词之前、尾词之后的这个范围内寻找静音边界。"
-        )
-        form.addRow("", self.smart_silence_detection_checkbox)
-        form.addRow("静音音量阈值：", self.smart_silence_db_spinbox)
-        form.addRow("最短静音时长：", self.smart_min_silence_spinbox)
-        form.addRow("切点搜索范围：", self.smart_boundary_search_spinbox)
-
-        self.smart_compress_pauses_checkbox = QtWidgets.QCheckBox(
-            "实验性：压缩句子内部的过长停顿（默认关闭）", content
-        )
-        self.smart_compress_pauses_checkbox.setToolTip(
-            "正常智能剪辑已经会删除每段开头和结尾的气口。句内停顿可能包含"
-            "Whisper 漏掉的单词，开启后存在误剪风险。"
-        )
-        self.smart_pause_threshold_spinbox = QtWidgets.QSpinBox(content)
-        self.smart_pause_threshold_spinbox.setRange(300, 10000)
-        self.smart_pause_threshold_spinbox.setSingleStep(100)
-        self.smart_pause_threshold_spinbox.setSuffix(" ms")
-        self.smart_retained_pause_spinbox = QtWidgets.QSpinBox(content)
-        self.smart_retained_pause_spinbox.setRange(0, 5000)
-        self.smart_retained_pause_spinbox.setSingleStep(50)
-        self.smart_retained_pause_spinbox.setSuffix(" ms")
-        form.addRow("", self.smart_compress_pauses_checkbox)
-        form.addRow("超过此时长才压缩：", self.smart_pause_threshold_spinbox)
-        form.addRow("压缩后保留：", self.smart_retained_pause_spinbox)
-
-        self.smart_pass_similarity_spinbox = QtWidgets.QSpinBox(content)
-        self.smart_pass_similarity_spinbox.setRange(40, 100)
-        self.smart_pass_similarity_spinbox.setSuffix(" %")
-        self.smart_severe_similarity_spinbox = QtWidgets.QSpinBox(content)
-        self.smart_severe_similarity_spinbox.setRange(0, 95)
-        self.smart_severe_similarity_spinbox.setSuffix(" %")
-        form.addRow("自动通过相似度：", self.smart_pass_similarity_spinbox)
-        form.addRow("严重异常低于：", self.smart_severe_similarity_spinbox)
-
-        subtitle_note = QtWidgets.QLabel(
-            "智能剪辑会对最终成片调用主界面的原字幕功能重新强制对齐，"
-            "并使用主界面当前的换行、每块最多单词和字幕块间隔参数。",
-            content,
-        )
-        subtitle_note.setWordWrap(True)
-        subtitle_note.setStyleSheet("color:#555;")
-        form.addRow("字幕生成：", subtitle_note)
-
-        self.smart_output_folder_edit = QtWidgets.QLineEdit(content)
-        self.smart_ffmpeg_path_edit = QtWidgets.QLineEdit(content)
-        self.smart_ffmpeg_path_edit.setPlaceholderText(
-            "留空时使用整理任务结果的编码器或系统 ffmpeg"
-        )
-        browse_row = QtWidgets.QWidget(content)
-        browse_layout = QtWidgets.QHBoxLayout(browse_row)
-        browse_layout.setContentsMargins(0, 0, 0, 0)
-        browse_layout.addWidget(self.smart_ffmpeg_path_edit, 1)
-        browse_button = QtWidgets.QPushButton("浏览…", browse_row)
-        browse_button.clicked.connect(self._browse_smart_ffmpeg)
-        browse_layout.addWidget(browse_button)
-        self.smart_existing_output_combo = QtWidgets.QComboBox(content)
-        self.smart_existing_output_combo.addItem("保留旧文件并生成新版本", "version")
-        self.smart_existing_output_combo.addItem("覆盖旧输出", "overwrite")
-        self.smart_existing_output_combo.addItem("已有输出时跳过", "skip")
-        self.smart_auto_export_checkbox = QtWidgets.QCheckBox(
-            "没有发生裁切且全部通过时直接导出；有裁切或异常时打开核对界面", content
-        )
-        form.addRow("输出目录名：", self.smart_output_folder_edit)
-        form.addRow("FFmpeg 编码器：", browse_row)
-        form.addRow("已有输出：", self.smart_existing_output_combo)
-        form.addRow("", self.smart_auto_export_checkbox)
-
-        note = QtWidgets.QLabel(
-            "该功能从任务列表右键菜单启动：以任务语音文案为正确内容，Whisper 只负责"
-            "定位和核对。原视频永不覆盖，分析报告和识别缓存保存在输出目录中。"
-            "正常模式同时要求单词位置和分贝静音证据，找不到可靠静音就保留原片。"
-            "句内停顿压缩属于实验功能，并且也必须通过分贝检测，默认关闭。",
-            content,
-        )
-        note.setWordWrap(True)
-        note.setStyleSheet("color:#666;")
-        form.addRow(note)
-
-        scroll.setWidget(content)
-        layout.addWidget(scroll)
-        self.settingTabWidget.addTab(self.smart_video_editor_tab, "智能剪辑")
-        self.smart_compress_pauses_checkbox.toggled.connect(
-            self._update_smart_video_editor_enabled_state
-        )
-        self.smart_silence_detection_checkbox.toggled.connect(
-            self._update_smart_video_editor_enabled_state
-        )
-
-    def _browse_smart_ffmpeg(self):
-        current = self.smart_ffmpeg_path_edit.text().strip()
-        selected, _filter = QtWidgets.QFileDialog.getOpenFileName(
-            self,
-            "选择 FFmpeg 编码器",
-            current,
-            "可执行文件 (*.exe);;所有文件 (*)",
-        )
-        if selected:
-            self.smart_ffmpeg_path_edit.setText(selected)
-
-    def _load_smart_video_editor_settings(self, settings):
-        settings = normalize_smart_video_editor_settings(settings)
-        self.smart_lead_padding_spinbox.setValue(settings["lead_padding_ms"])
-        self.smart_tail_padding_spinbox.setValue(settings["tail_padding_ms"])
-        self.smart_silence_detection_checkbox.setChecked(
-            settings["silence_detection_enabled"]
-        )
-        self.smart_silence_db_spinbox.setValue(settings["silence_threshold_db"])
-        self.smart_min_silence_spinbox.setValue(settings["min_silence_ms"])
-        self.smart_boundary_search_spinbox.setValue(settings["boundary_search_ms"])
-        self.smart_compress_pauses_checkbox.setChecked(
-            settings["compress_internal_pauses"]
-        )
-        self.smart_pause_threshold_spinbox.setValue(settings["pause_threshold_ms"])
-        self.smart_retained_pause_spinbox.setValue(settings["retained_pause_ms"])
-        self.smart_pass_similarity_spinbox.setValue(
-            settings["pass_similarity_percent"]
-        )
-        self.smart_severe_similarity_spinbox.setValue(
-            settings["severe_similarity_percent"]
-        )
-        self.smart_output_folder_edit.setText(settings["output_folder_name"])
-        self.smart_ffmpeg_path_edit.setText(settings["ffmpeg_path"])
-        index = self.smart_existing_output_combo.findData(
-            settings["existing_output"]
-        )
-        self.smart_existing_output_combo.setCurrentIndex(index if index >= 0 else 0)
-        self.smart_auto_export_checkbox.setChecked(settings["auto_export_clean"])
-        self._update_smart_video_editor_enabled_state()
-
-    def _update_smart_video_editor_enabled_state(self):
-        silence_enabled = self.smart_silence_detection_checkbox.isChecked()
-        self.smart_silence_db_spinbox.setEnabled(silence_enabled)
-        self.smart_min_silence_spinbox.setEnabled(silence_enabled)
-        self.smart_boundary_search_spinbox.setEnabled(silence_enabled)
-        pause_enabled = (
-            silence_enabled and self.smart_compress_pauses_checkbox.isChecked()
-        )
-        self.smart_pause_threshold_spinbox.setEnabled(pause_enabled)
-        self.smart_retained_pause_spinbox.setEnabled(pause_enabled)
-
-    def _get_smart_video_editor_settings(self):
-        return normalize_smart_video_editor_settings({
-            "lead_padding_ms": self.smart_lead_padding_spinbox.value(),
-            "tail_padding_ms": self.smart_tail_padding_spinbox.value(),
-            "silence_detection_enabled": (
-                self.smart_silence_detection_checkbox.isChecked()
-            ),
-            "silence_threshold_db": self.smart_silence_db_spinbox.value(),
-            "min_silence_ms": self.smart_min_silence_spinbox.value(),
-            "boundary_search_ms": self.smart_boundary_search_spinbox.value(),
-            "compress_internal_pauses": self.smart_compress_pauses_checkbox.isChecked(),
-            "internal_pause_mode": (
-                "experimental"
-                if self.smart_compress_pauses_checkbox.isChecked()
-                else "off"
-            ),
-            "pause_threshold_ms": self.smart_pause_threshold_spinbox.value(),
-            "retained_pause_ms": self.smart_retained_pause_spinbox.value(),
-            "pass_similarity_percent": self.smart_pass_similarity_spinbox.value(),
-            "severe_similarity_percent": self.smart_severe_similarity_spinbox.value(),
-            "output_folder_name": self.smart_output_folder_edit.text().strip(),
-            "ffmpeg_path": self.smart_ffmpeg_path_edit.text().strip(),
-            "existing_output": self.smart_existing_output_combo.currentData(),
-            "auto_export_clean": self.smart_auto_export_checkbox.isChecked(),
-        })
 
     @staticmethod
     def _section_label(text, parent):
@@ -1462,7 +1289,7 @@ class MainSettingDialog(QtWidgets.QDialog, Ui_MainSettingDialog):
             self.elevenlabs_api_key_list.item(index).data(QtCore.Qt.UserRole)
             for index in range(self.elevenlabs_api_key_list.count())
         ]
-
+    
     def get_config(self):
         """获取界面中的配置"""
         config = {
@@ -1479,8 +1306,9 @@ class MainSettingDialog(QtWidgets.QDialog, Ui_MainSettingDialog):
                 )
             ),
             FLOW_GUARD_CONFIG_KEY: self._get_flow_guard_settings(),
-            SMART_VIDEO_EDITOR_CONFIG_KEY: self._get_smart_video_editor_settings(),
         }
+        if self._audio_managed_by_plugin:
+            config.pop('audio_settings', None)
         if not self._chrome_managed_by_plugin:
             config[CHROME_NEXT_HOTKEY_CONFIG_KEY] = normalize_hotkey_sequence(
                 self.chrome_hotkey_edit.keySequence().toString(
@@ -1491,17 +1319,18 @@ class MainSettingDialog(QtWidgets.QDialog, Ui_MainSettingDialog):
         if self.plugin_host is not None:
             self.plugin_host.update_settings_config(config)
         return config
-
+    
     def save_config(self):
         """保存配置到文件"""
         try:
+            config_path = Path("config.json")
             # 读取现有配置
-            if os.path.exists("config.json"):
-                with open("config.json", "r", encoding="utf-8") as f:
+            if config_path.exists():
+                with config_path.open("r", encoding="utf-8") as f:
                     config = json.load(f)
             else:
                 config = {}
-
+            
             # 更新API key
             new_config = self.get_config()
             config.update(new_config)
@@ -1510,57 +1339,17 @@ class MainSettingDialog(QtWidgets.QDialog, Ui_MainSettingDialog):
                 self.api_key_statuses,
                 new_config['elevenlabs_api_keys'],
             )
-
-            # 保存配置
-            with open("config.json", "w", encoding="utf-8") as f:
-                json.dump(config, f, indent=4, ensure_ascii=False)
-
+            
+            # 即使某个设置页以后出现回归，也能从最近十次保存中恢复。
+            _write_config_with_rolling_backups(config_path, config)
+            
             return True
         except Exception as e:
             QMessageBox.critical(self, "错误", f"保存配置失败: {e}")
             return False
-
+    
     def accept(self):
         """确定按钮点击事件"""
-        output_folder_name = self.smart_output_folder_edit.text().strip()
-        if (
-            not output_folder_name
-            or output_folder_name in {".", ".."}
-            or any(character in output_folder_name for character in '<>:"/\\|?*')
-        ):
-            self.settingTabWidget.setCurrentWidget(self.smart_video_editor_tab)
-            self.smart_output_folder_edit.setFocus()
-            QMessageBox.warning(
-                self,
-                "智能剪辑目录无效",
-                "输出目录必须是一个普通文件夹名称，不能包含路径或特殊字符。",
-            )
-            return
-        if (
-            self.smart_severe_similarity_spinbox.value()
-            >= self.smart_pass_similarity_spinbox.value()
-        ):
-            self.settingTabWidget.setCurrentWidget(self.smart_video_editor_tab)
-            self.smart_severe_similarity_spinbox.setFocus()
-            QMessageBox.warning(
-                self,
-                "相似度范围无效",
-                "严重异常阈值必须低于自动通过阈值。",
-            )
-            return
-        if (
-            self.smart_compress_pauses_checkbox.isChecked()
-            and self.smart_retained_pause_spinbox.value()
-            >= self.smart_pause_threshold_spinbox.value()
-        ):
-            self.settingTabWidget.setCurrentWidget(self.smart_video_editor_tab)
-            self.smart_retained_pause_spinbox.setFocus()
-            QMessageBox.warning(
-                self,
-                "气口参数无效",
-                "压缩后保留的停顿必须短于触发压缩的时长。",
-            )
-            return
         if (
             self.task_result_run_upload_checkbox.isChecked()
             and not self.task_result_drive_folder_edit.text().strip()
@@ -1647,13 +1436,13 @@ class MainSettingDialog(QtWidgets.QDialog, Ui_MainSettingDialog):
             self.elevenlabs_api_key_edit.clear()
         if self.save_config():
             super().accept()
-
+    
     @staticmethod
     def get_settings(parent=None, plugin_host=None):
         """静态方法：显示设置对话框并返回配置"""
         dialog = MainSettingDialog(parent, plugin_host=plugin_host)
         result = dialog.exec_()
-
+        
         if result == QtWidgets.QDialog.Accepted:
             return dialog.get_config()
         return None

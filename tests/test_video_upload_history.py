@@ -4,10 +4,13 @@ import unittest
 import zipfile
 from datetime import datetime
 from pathlib import Path
+from unittest.mock import patch
 
+from model.GoogleDriveHelper import sync_file
 from model.VideoUploadHistory import (
     load_video_upload_history,
     normalize_video_identity,
+    preferred_drive_file_ids_by_identity,
     record_video_uploads,
 )
 
@@ -32,6 +35,27 @@ class FakeFiles:
 class FakeDriveService:
     def __init__(self):
         self.files_api = FakeFiles()
+
+    def files(self):
+        return self.files_api
+
+
+class FakeSyncFiles:
+    def __init__(self, previous_file):
+        self.previous_file = previous_file
+        self.get_calls = []
+
+    def list(self, **_kwargs):
+        return FakeRequest({"files": []})
+
+    def get(self, **kwargs):
+        self.get_calls.append(kwargs)
+        return FakeRequest(dict(self.previous_file))
+
+
+class FakeSyncDriveService:
+    def __init__(self, previous_file):
+        self.files_api = FakeSyncFiles(previous_file)
 
     def files(self):
         return self.files_api
@@ -80,6 +104,34 @@ class VideoUploadHistoryTests(unittest.TestCase):
             normalize_video_identity("[SHANA]Alice-0910-7-title.mp4"),
             normalize_video_identity("Alice-0910-7-title.mp4"),
         )
+
+    def test_sync_file_updates_preferred_previous_batch_id_in_place(self):
+        remote = {
+            "id": "stable-file",
+            "name": "AliceMARKER-0910-7-title.mp4",
+            "mimeType": "video/mp4",
+            "md5Checksum": "old-md5",
+            "trashed": False,
+            "webViewLink": "https://drive.google.com/file/d/stable-file/view",
+        }
+        service = FakeSyncDriveService(remote)
+        local_file = Path("C:/result/AliceMARKER-0910-7-title.mp4")
+        updated = dict(remote, md5Checksum="new-md5")
+
+        with patch("model.GoogleDriveHelper.file_md5", return_value="new-md5"), patch(
+            "model.GoogleDriveHelper.update_existing_file",
+            return_value=updated,
+        ) as update:
+            result = sync_file(
+                service,
+                local_file,
+                "today-folder",
+                preferred_file_id="stable-file",
+            )
+
+        update.assert_called_once_with(service, local_file, "stable-file")
+        self.assertEqual(result["id"], "stable-file")
+        self.assertEqual(result["action"], "updated_previous_batch")
 
     def test_later_upload_trashes_old_same_video_and_links_versions(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -163,6 +215,70 @@ class VideoUploadHistoryTests(unittest.TestCase):
             records = load_video_upload_history(config)["records"]
             new_saved = next(item for item in records if item["drive_file_id"] == "new-file")
             self.assertEqual(new_saved["replacement"]["state"], "cleanup_deferred")
+
+    def test_preferred_drive_id_keeps_first_unconfirmed_link_stable(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = self.config(root)
+            file_name = "AliceMARKER-0910-7-title.mp4"
+            failed_report = {
+                "attempted": True,
+                "successful_files": [],
+                "failed_files": [{"file_name": file_name, "reason": "no row"}],
+            }
+            record_video_uploads(
+                config,
+                [uploaded_record("first-file", file_name, "first-md5")],
+                "2026-09-10",
+                "02",
+                failed_report,
+                now=datetime.fromisoformat("2026-09-10T12:00:00+02:00"),
+            )
+            record_video_uploads(
+                config,
+                [uploaded_record("duplicate-file", file_name, "second-md5")],
+                "2026-09-11",
+                "01",
+                failed_report,
+                now=datetime.fromisoformat("2026-09-11T09:00:00+02:00"),
+            )
+
+            preferred = preferred_drive_file_ids_by_identity(config)
+
+            self.assertEqual(
+                preferred[normalize_video_identity(file_name)],
+                "first-file",
+            )
+
+    def test_preferred_drive_id_uses_latest_confirmed_sheet_link(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = self.config(root)
+            config["video_upload_replace_old_enabled"] = False
+            file_name = "AliceMARKER-0910-7-title.mp4"
+            record_video_uploads(
+                config,
+                [uploaded_record("old-file", file_name, "old-md5")],
+                "2026-09-10",
+                "02",
+                confirmed_report(file_name),
+                now=datetime.fromisoformat("2026-09-10T12:00:00+02:00"),
+            )
+            record_video_uploads(
+                config,
+                [uploaded_record("new-file", file_name, "new-md5")],
+                "2026-09-11",
+                "01",
+                confirmed_report(file_name),
+                now=datetime.fromisoformat("2026-09-11T09:00:00+02:00"),
+            )
+
+            preferred = preferred_drive_file_ids_by_identity(config)
+
+            self.assertEqual(
+                preferred[normalize_video_identity(file_name)],
+                "new-file",
+            )
 
     def test_records_older_than_one_month_are_archived_as_zip(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -1,3 +1,4 @@
+import ssl
 import threading
 
 from PyQt5 import QtCore
@@ -21,6 +22,33 @@ DEFAULT_REVIEW_STATUS_SETTINGS = {
     "review_status_monitor_enabled": True,
     "review_status_monitor_poll_seconds": 300,
 }
+
+REVIEW_NETWORK_RETRY_DELAYS = (1.0, 3.0)
+
+
+def is_transient_review_error(error):
+    """Distinguish reconnectable transport failures from config/data errors."""
+    if isinstance(error, (ssl.SSLError, ConnectionError, TimeoutError)):
+        return True
+    response = getattr(error, "resp", None)
+    try:
+        status_code = int(getattr(response, "status", 0) or 0)
+    except (TypeError, ValueError):
+        status_code = 0
+    if status_code in {408, 429, 500, 502, 503, 504}:
+        return True
+    message = str(error or "").casefold()
+    return any(text in message for text in (
+        "eof occurred in violation of protocol",
+        "unexpected eof",
+        "remote end closed connection",
+        "connection reset",
+        "connection aborted",
+        "temporarily unavailable",
+        "timed out",
+        "timeout",
+        "ssl: wrong version number",
+    ))
 
 
 def normalize_review_status_settings(config=None):
@@ -210,6 +238,50 @@ class ReviewStatusMonitorThread(QtCore.QThread):
             valueRenderOption="FORMULA",
         ).execute().get("values", [])
 
+    def _retry_wait(self, seconds):
+        self._wake_event.wait(max(0.0, float(seconds)))
+        self._wake_event.clear()
+        return not self.isInterruptionRequested()
+
+    def _read_statuses_with_retry(self, service):
+        """Retry short network failures with a fresh Google API connection."""
+        attempts = len(REVIEW_NETWORK_RETRY_DELAYS) + 1
+        for attempt in range(attempts):
+            try:
+                if service is None:
+                    service = load_sheets_service(self.config)
+                values = self._read_values(service)
+                return service, statuses_from_review_values(values)
+            except (Exception, SystemExit) as error:
+                can_retry = (
+                    is_transient_review_error(error)
+                    and attempt < len(REVIEW_NETWORK_RETRY_DELAYS)
+                )
+                if not can_retry:
+                    self._close_service(service)
+                    raise
+                self._close_service(service)
+                service = None
+                self.status.emit(
+                    "网络波动，正在重试 {}/{}…".format(
+                        attempt + 1, len(REVIEW_NETWORK_RETRY_DELAYS)
+                    )
+                )
+                if not self._retry_wait(REVIEW_NETWORK_RETRY_DELAYS[attempt]):
+                    raise InterruptedError("审核结果监视器已停止")
+        raise RuntimeError("审核结果监视重试流程异常结束")
+
+    @staticmethod
+    def _close_service(service):
+        """Release httplib2 sockets owned by a Google discovery resource."""
+        http = getattr(service, "_http", None) if service is not None else None
+        close = getattr(http, "close", None)
+        if callable(close):
+            try:
+                close()
+            except (OSError, RuntimeError):
+                pass
+
     def _emit_snapshot(self):
         snapshot = review_history_snapshot(self.history_path)
         self.snapshot.emit(snapshot)
@@ -217,45 +289,56 @@ class ReviewStatusMonitorThread(QtCore.QThread):
 
     def run(self):
         service = None
-        while not self.isInterruptionRequested():
-            try:
-                snapshot = self._emit_snapshot()
-                if not snapshot["all"]:
-                    self.status.emit("等待新的审核提交记录")
-                else:
-                    if service is None:
-                        self.status.emit("正在读取审核表…")
-                        service = load_sheets_service(self.config)
-                    values = self._read_values(service)
-                    statuses = statuses_from_review_values(values)
-                    transitions = apply_review_statuses(
-                        statuses,
-                        self.history_path,
-                    )
+        try:
+            while not self.isInterruptionRequested():
+                try:
                     snapshot = self._emit_snapshot()
-                    self.status.emit("运行中")
-                    if transitions:
-                        self.changed.emit(
-                            {
-                                "items": transitions,
-                                "passed": [
-                                    item for item in transitions
-                                    if item.get("status") == "passed"
-                                ],
-                                "needs_changes": [
-                                    item for item in transitions
-                                    if item.get("status") == "needs_changes"
-                                ],
-                                "snapshot": snapshot,
-                            }
+                    if not snapshot["all"]:
+                        self.status.emit("等待新的审核提交记录")
+                    else:
+                        if service is None:
+                            self.status.emit("正在读取审核表…")
+                        service, statuses = self._read_statuses_with_retry(service)
+                        transitions = apply_review_statuses(
+                            statuses,
+                            self.history_path,
                         )
-                self._last_error = ""
-            except (Exception, SystemExit) as error:
-                message = "{}: {}".format(type(error).__name__, error)
-                self.status.emit("异常")
-                if message != self._last_error:
-                    self.log.emit("审核结果监视失败：{}".format(message))
-                    self._last_error = message
-                service = None
-            if not self.isInterruptionRequested():
-                self._wait()
+                        snapshot = self._emit_snapshot()
+                        self.status.emit("运行中")
+                        if transitions:
+                            self.changed.emit(
+                                {
+                                    "items": transitions,
+                                    "passed": [
+                                        item for item in transitions
+                                        if item.get("status") == "passed"
+                                    ],
+                                    "needs_changes": [
+                                        item for item in transitions
+                                        if item.get("status") == "needs_changes"
+                                    ],
+                                    "snapshot": snapshot,
+                                }
+                            )
+                    self._last_error = ""
+                except InterruptedError:
+                    break
+                except (Exception, SystemExit) as error:
+                    message = "{}: {}".format(type(error).__name__, error)
+                    transient = is_transient_review_error(error)
+                    self.status.emit("网络暂时不可用" if transient else "异常")
+                    if message != self._last_error:
+                        if transient:
+                            self.log.emit(
+                                "审核表网络连接暂时中断（已自动重试，"
+                                "下次轮询会继续）：{}".format(message)
+                            )
+                        else:
+                            self.log.emit("审核结果监视失败：{}".format(message))
+                        self._last_error = message
+                    self._close_service(service)
+                    service = None
+                if not self.isInterruptionRequested():
+                    self._wait()
+        finally:
+            self._close_service(service)

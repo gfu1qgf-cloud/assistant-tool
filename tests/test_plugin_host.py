@@ -22,6 +22,16 @@ from app_plugins.builtin.chrome_launcher import (
     ChromeLauncherSettingsPage,
 )
 from app_plugins.builtin.inventory import InventoryPlugin, InventorySettingsPage
+from app_plugins.builtin.music_ducker import (
+    MUSIC_DUCKER_CONFIG_KEY,
+    MusicDuckerPlugin,
+    MusicDuckerSettingsPage,
+)
+from app_plugins.builtin.smart_video_editor import SmartVideoEditorPlugin
+from app_plugins.builtin.smart_video_editor.engine import (
+    SMART_VIDEO_EDITOR_CONFIG_KEY,
+    SMART_VIDEO_PENDING_CONFIG_KEY,
+)
 from app_plugins.host import PluginHost
 from model.GlobalHotkey import (
     CHROME_NEXT_HOTKEY_CONFIG_KEY,
@@ -156,6 +166,44 @@ class PluginHostTests(unittest.TestCase):
         self.assertEqual(controllers[0][2].loaded["source"], "loaded")
         self.assertEqual(config["demo_setting"], 7)
 
+    def test_task_commands_support_submenus_and_visibility(self):
+        invoked = []
+
+        class GroupedPlugin:
+            plugin_id = "grouped"
+            required_api_version = 1
+
+            def register(self, context):
+                context.register_command(PluginCommand(
+                    "visible",
+                    "可见命令",
+                    lambda rows: invoked.append(rows),
+                    frozenset({TASK_CONTEXT_MENU}),
+                    submenu="音频与字幕",
+                    visible=lambda rows: bool(rows),
+                ))
+                context.register_command(PluginCommand(
+                    "hidden",
+                    "隐藏命令",
+                    lambda rows: None,
+                    frozenset({TASK_CONTEXT_MENU}),
+                    submenu="音频与字幕",
+                    visible=lambda _rows: False,
+                ))
+
+        self.host.install(GroupedPlugin())
+        task_menu = QtWidgets.QMenu(self.main)
+        actions = self.host.populate_task_context_menu(task_menu, [2, 5])
+
+        self.assertEqual([action.text() for action in actions], ["可见命令"])
+        self.assertEqual(len(task_menu.actions()), 1)
+        submenu = task_menu.actions()[0].menu()
+        self.assertIsNotNone(submenu)
+        self.assertEqual(submenu.title(), "音频与字幕")
+        self.assertEqual([action.text() for action in submenu.actions()], ["可见命令"])
+        actions[0].trigger()
+        self.assertEqual(invoked, [(2, 5)])
+
     def test_rejects_plugins_requiring_newer_api(self):
         plugin = DemoPlugin()
         plugin.required_api_version = self.host.api_version + 1
@@ -205,6 +253,66 @@ class PluginHostTests(unittest.TestCase):
         self.assertEqual(tools_menu.actions()[-1].text(), "批量切分音频…")
         self.assertEqual(task_actions[0].text(), "切分任务音频…")
         self.assertEqual(tabs.tabText(0), "切分音频插件")
+
+    def test_music_ducker_registers_menu_and_preserves_existing_config_key(self):
+        self.main.config = {
+            MUSIC_DUCKER_CONFIG_KEY: {
+                "duck_to_percent": 17,
+                "trigger_apps": ["resolve.exe"],
+            }
+        }
+        plugin = self.host.install(MusicDuckerPlugin())
+        menu_bar = QtWidgets.QMenuBar(self.main)
+        plugin_menu = self.host.attach_main_menu(menu_bar)
+        dialog = QtWidgets.QDialog(self.main)
+        tabs = QtWidgets.QTabWidget(dialog)
+        controllers = self.host.create_settings_pages(dialog, tabs)
+        self.host.load_settings_pages(self.main.config)
+        saved = {}
+        self.host.update_settings_config(saved)
+        self.host.update_runtime_config(saved)
+
+        self.assertEqual(plugin_menu.actions()[0].text(), "启用音乐压制")
+        self.assertEqual(tabs.tabText(0), "音乐压制")
+        self.assertEqual(plugin.settings["duck_to_percent"], 17)
+        self.assertEqual(saved[MUSIC_DUCKER_CONFIG_KEY]["duck_to_percent"], 17)
+        self.assertIsInstance(controllers[0][2], MusicDuckerSettingsPage)
+
+    def test_smart_video_editor_owns_menu_task_settings_and_pending_state(self):
+        self.main.config = {
+            SMART_VIDEO_EDITOR_CONFIG_KEY: {"lead_padding_ms": 180},
+            SMART_VIDEO_PENDING_CONFIG_KEY: [{
+                "record_id": "demo",
+                "task_id": "1",
+                "task_dir": "C:/demo",
+                "findings": [{"kind": "missing_script"}],
+            }],
+        }
+        plugin = self.host.install(SmartVideoEditorPlugin())
+        menu_bar = QtWidgets.QMenuBar(self.main)
+        plugin_menu = self.host.attach_main_menu(menu_bar)
+        tools_menu = QtWidgets.QMenu("工具", self.main)
+        self.host.attach_tools_menu(tools_menu)
+        self.host.start_all()
+        task_menu = QtWidgets.QMenu(self.main)
+        task_actions = self.host.populate_task_context_menu(task_menu, [0])
+        dialog = QtWidgets.QDialog(self.main)
+        tabs = QtWidgets.QTabWidget(dialog)
+        controllers = self.host.create_settings_pages(dialog, tabs)
+        self.host.load_settings_pages(self.main.config)
+        saved = {}
+        self.host.update_settings_config(saved)
+        self.host.update_runtime_config(saved)
+
+        self.assertEqual(plugin_menu.actions()[0].text(), "智能剪辑并生成 SRT…")
+        self.assertEqual(task_actions[0].text(), "智能剪辑并生成 SRT…")
+        self.assertEqual(tools_menu.actions()[-1].text(), "待处理智能剪辑（1）")
+        self.assertEqual(tabs.tabText(0), "智能剪辑")
+        self.assertEqual(
+            controllers[0][2].lead_padding_spinbox.value(), 180
+        )
+        self.assertEqual(saved[SMART_VIDEO_EDITOR_CONFIG_KEY]["lead_padding_ms"], 180)
+        self.assertEqual(len(saved[SMART_VIDEO_PENDING_CONFIG_KEY]), 1)
 
 
 class InventorySettingsPageTests(unittest.TestCase):

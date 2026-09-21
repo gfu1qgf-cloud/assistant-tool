@@ -58,6 +58,51 @@ class PluginContext:
             require_loaded=require_loaded,
         )
 
+    def task_language(self, task):
+        """Return the host's normalized language for one task."""
+        return self._host.main_window.detectTaskLanguage(task)
+
+    def subtitle_generation_settings(self):
+        """Expose the live subtitle controls without leaking widget details."""
+        window = self._host.main_window
+        return {
+            "srt_include_line_breaks": (
+                window.subtitle_line_break_checkbox.isChecked()
+            ),
+            "srt_max_words_per_block": window.subtitle_max_words_spinbox.value(),
+            "srt_block_gap_ms": window.subtitle_gap_ms_spinbox.value(),
+        }
+
+    def set_subtitle_generation_settings(self, settings):
+        """Update the host's global subtitle controls from a plugin editor."""
+        window = self._host.main_window
+        values = settings if isinstance(settings, dict) else {}
+        mappings = (
+            (
+                window.subtitle_line_break_checkbox,
+                "setChecked",
+                bool(values.get("srt_include_line_breaks", False)),
+            ),
+            (
+                window.subtitle_max_words_spinbox,
+                "setValue",
+                int(values.get("srt_max_words_per_block", 0) or 0),
+            ),
+            (
+                window.subtitle_gap_ms_spinbox,
+                "setValue",
+                int(values.get("srt_block_gap_ms", -1)),
+            ),
+        )
+        for widget, method, value in mappings:
+            getattr(widget, method)(value)
+
+    def whisper_model(self, model_name=None):
+        """Return the application's shared, lazily initialized Whisper model."""
+        from globalValue import globalValue
+
+        return globalValue.get_whisper_model(model_name)
+
     def update_command(
         self,
         command_id,
@@ -233,8 +278,26 @@ class PluginHost:
     def populate_task_context_menu(self, menu, rows):
         actions = []
         context_rows = tuple(rows or ())
+        submenus = {}
         for full_id, plugin_id, command in self._sorted_commands(TASK_CONTEXT_MENU):
-            action = menu.addAction(command.title)
+            if command.visible is not None:
+                try:
+                    if not bool(command.visible(context_rows)):
+                        continue
+                except Exception as error:
+                    self._report_error(plugin_id, command.title, error)
+                    continue
+            submenu_title = str(command.submenu or "").strip()
+            target_menu = menu
+            if submenu_title:
+                target_menu = submenus.get(submenu_title)
+                if target_menu is None:
+                    target_menu = menu.addMenu(submenu_title)
+                    target_menu.setObjectName(
+                        "plugin_submenu_" + "_".join(submenu_title.split())
+                    )
+                    submenus[submenu_title] = target_menu
+            action = target_menu.addAction(command.title)
             action.setObjectName(full_id.replace(".", "_"))
             action.setToolTip(command.tooltip)
             if command.enabled is not None:

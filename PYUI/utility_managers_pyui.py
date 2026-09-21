@@ -26,6 +26,7 @@ from model.InventoryManager import (
     STATUS_MODERATE,
     material_directory_stats,
 )
+from model.MaterialSourceDownloader import parse_material_drive_link
 
 
 STATUS_COLORS = {
@@ -1156,8 +1157,11 @@ class InventoryItemDialog(QtWidgets.QDialog):
 class InventoryManagerDialog(QtWidgets.QDialog):
     changed = QtCore.pyqtSignal()
     log = QtCore.pyqtSignal(str)
+    material_monitor_requested = QtCore.pyqtSignal(object)
+    material_monitor_stopped = QtCore.pyqtSignal()
+    material_monitor_sync_requested = QtCore.pyqtSignal()
 
-    def __init__(self, store, parent=None):
+    def __init__(self, store, parent=None, material_sync_settings=None):
         super().__init__(parent)
         self.setAttribute(QtCore.Qt.WA_DeleteOnClose, False)
         self.setModal(False)
@@ -1166,6 +1170,7 @@ class InventoryManagerDialog(QtWidgets.QDialog):
         self.material_copy_thread = None
         self.material_copy_operation = None
         self.pending_material_sources = []
+        self.material_sync_settings = dict(material_sync_settings or {})
         self.setWindowTitle("库存与素材管理器")
         self.resize(900, 620)
 
@@ -1255,8 +1260,18 @@ class InventoryManagerDialog(QtWidgets.QDialog):
             "保存时读取第一个 Google Drive 文件夹的真实名称；"
             "多个来源时仍使用第一个谷歌文件夹命名"
         )
+        self.material_drive_monitor_checkbox = QtWidgets.QCheckBox(
+            "持续监视网盘",
+            name_row,
+        )
+        self.material_drive_monitor_checkbox.setToolTip(
+            "仅适用于单独添加的一个 Google Drive 文件夹；"
+            "保存后定期下载新增或更新的文件。"
+            "本地已移动或删除的旧文件不会重复下载。"
+        )
         name_row_layout.addWidget(self.material_name_edit, 1)
         name_row_layout.addWidget(self.material_use_drive_folder_name_checkbox)
+        name_row_layout.addWidget(self.material_drive_monitor_checkbox)
         form.addRow("素材名称：", name_row)
         self.material_sources_edit = MaterialDropEdit(self.material_tab)
         form.addRow("素材来源：", self.material_sources_edit)
@@ -1536,6 +1551,7 @@ class InventoryManagerDialog(QtWidgets.QDialog):
             self.delete_button,
             self.material_name_edit,
             self.material_use_drive_folder_name_checkbox,
+            self.material_drive_monitor_checkbox,
             self.material_sources_edit,
             self.material_add_files_btn,
             self.material_add_folder_btn,
@@ -1569,6 +1585,24 @@ class InventoryManagerDialog(QtWidgets.QDialog):
         use_drive_folder_name = (
             self.material_use_drive_folder_name_checkbox.isChecked()
         )
+        monitor_folder_url = ""
+        if self.material_drive_monitor_checkbox.isChecked():
+            folder_sources = []
+            for source in paths:
+                try:
+                    link = parse_material_drive_link(source)
+                except Exception:
+                    continue
+                if link.is_folder:
+                    folder_sources.append(str(source).strip())
+            if len(paths) != 1 or len(folder_sources) != 1:
+                QtWidgets.QMessageBox.warning(
+                    self,
+                    "无法监视",
+                    "持续监视的素材请只添加一个 Google Drive 文件夹链接。",
+                )
+                return
+            monitor_folder_url = folder_sources[0]
         if not name and not use_drive_folder_name:
             QtWidgets.QMessageBox.warning(self, "缺少名称", "请输入素材名称。")
             return
@@ -1592,6 +1626,7 @@ class InventoryManagerDialog(QtWidgets.QDialog):
             "name": name,
             "sources": list(paths),
             "use_drive_folder_name": use_drive_folder_name,
+            "monitor_folder_url": monitor_folder_url,
         }
         thread = MaterialCopyThread(
             self.store,
@@ -1650,6 +1685,15 @@ class InventoryManagerDialog(QtWidgets.QDialog):
         if not appended:
             self.material_name_edit.clear()
             self.material_sources_edit.clear()
+            self.material_use_drive_folder_name_checkbox.setChecked(False)
+            self.material_drive_monitor_checkbox.setChecked(False)
+            monitor_folder_url = str(operation.get("monitor_folder_url") or "")
+            if monitor_folder_url:
+                self.material_monitor_requested.emit({
+                    "folder_url": monitor_folder_url,
+                    "local_dir": material.get("path", ""),
+                    "material_id": material.get("id", ""),
+                })
         self.refresh_materials(selected_id=material.get("id"))
         action_text = "已追加到" if appended else "已保存"
         self.material_status_label.setText(
@@ -1741,10 +1785,21 @@ class InventoryManagerDialog(QtWidgets.QDialog):
         if not index.isValid():
             return
         self.material_table.selectRow(index.row())
+        material = self._selected_material(show_message=False)
+        if not material:
+            return
         menu = QtWidgets.QMenu(self.material_table)
         append_action = menu.addAction("追加素材…")
         open_action = menu.addAction("打开素材目录")
         copy_sources_action = menu.addAction("复制来源")
+        monitor_folder_url = self._material_drive_folder_url(material)
+        monitored = self._is_material_monitored(material)
+        monitor_action = menu.addAction(
+            "停止网盘监视" if monitored else "持续监视此网盘"
+        )
+        monitor_action.setEnabled(monitored or bool(monitor_folder_url))
+        sync_action = menu.addAction("立即检查网盘")
+        sync_action.setEnabled(monitored)
         menu.addSeparator()
         remove_action = menu.addAction("移除记录")
         selected = menu.exec_(self.material_table.viewport().mapToGlobal(position))
@@ -1754,8 +1809,46 @@ class InventoryManagerDialog(QtWidgets.QDialog):
             self.open_selected_material()
         elif selected == copy_sources_action:
             self.copy_selected_material_sources()
+        elif selected == monitor_action:
+            if monitored:
+                self.material_monitor_stopped.emit()
+            else:
+                self.material_monitor_requested.emit({
+                    "folder_url": monitor_folder_url,
+                    "local_dir": material.get("path", ""),
+                    "material_id": material.get("id", ""),
+                })
+        elif selected == sync_action:
+            self.material_monitor_sync_requested.emit()
         elif selected == remove_action:
             self.remove_material_record()
+
+    @staticmethod
+    def _material_drive_folder_url(material):
+        for source in material.get("sources", []):
+            value = str(source.get("value") or "").strip()
+            try:
+                if parse_material_drive_link(value).is_folder:
+                    return value
+            except Exception:
+                continue
+        return ""
+
+    def _is_material_monitored(self, material):
+        if not self.material_sync_settings.get("enabled"):
+            return False
+        configured_id = str(
+            self.material_sync_settings.get("material_id") or ""
+        )
+        if configured_id:
+            return str(material.get("id") or "") == configured_id
+        return os.path.normcase(str(material.get("path") or "")) == os.path.normcase(
+            str(self.material_sync_settings.get("local_dir") or "")
+        )
+
+    def set_material_sync_settings(self, settings):
+        self.material_sync_settings = dict(settings or {})
+        self.refresh_materials()
 
     def _selected_person(self, show_message=True):
         row = self.people_table.currentRow()
@@ -2178,7 +2271,11 @@ class InventoryManagerDialog(QtWidgets.QDialog):
             created_at = str(material.get("created_at", "")).replace("T", " ")[:16]
             values = [
                 material["name"],
-                stats["status"],
+                (
+                    f"{stats['status']} · 网盘监视中"
+                    if self._is_material_monitored(material)
+                    else stats["status"]
+                ),
                 material.get("source_summary", f"{material.get('source_count', 0)} 项"),
                 stats["file_count"],
                 _format_file_size(stats["size_bytes"]),
@@ -2222,6 +2319,13 @@ class InventoryManagerDialog(QtWidgets.QDialog):
 
         removed = result["removed"]
         if removed:
+            monitored_id = str(
+                self.material_sync_settings.get("material_id") or ""
+            )
+            if monitored_id and any(
+                str(item.get("id") or "") == monitored_id for item in removed
+            ):
+                self.material_monitor_stopped.emit()
             details = "\n".join(
                 f"• {item['name']}：{item['check_reason']}"
                 for item in removed
@@ -2299,7 +2403,10 @@ class InventoryManagerDialog(QtWidgets.QDialog):
         if answer != QtWidgets.QMessageBox.Yes:
             return
         try:
+            was_monitored = self._is_material_monitored(material)
             self.store.remove_material_record(material["id"])
+            if was_monitored:
+                self.material_monitor_stopped.emit()
             self.refresh_materials()
             self.changed.emit()
         except (KeyError, OSError, ValueError) as error:

@@ -2,6 +2,7 @@ import hashlib
 import json
 import os
 import re
+import threading
 import unicodedata
 import uuid
 from datetime import date, datetime
@@ -37,6 +38,9 @@ from model.TaskTableSchema import (
 # Real spreadsheet targets belong in the ignored local configuration.
 DEFAULT_TASK_SHEET_URL = ""
 DEFAULT_AUDIT_LOG_FILE = APP_ROOT / "TaskSubmissionLog.jsonl"
+
+
+_AUDIT_LOG_LOCK = threading.RLock()
 VIDEO_SUFFIXES = {".mp4", ".mov", ".m4v", ".avi", ".mkv", ".webm"}
 TASK_TITLE_MAX_LENGTH = 100
 ORAL_SHORT_VIDEO_TYPE = "口播视频-Flow【1分钟以内】"
@@ -126,18 +130,86 @@ def get_audit_log_path(config: Dict) -> Path:
 
 def append_audit_events(config: Dict, events: List[Dict]) -> Path:
     log_path = get_audit_log_path(config)
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-    with log_path.open("a", encoding="utf-8") as handle:
-        for event in events:
-            handle.write(json.dumps(event, ensure_ascii=False, default=str) + "\n")
-        handle.flush()
-        os.fsync(handle.fileno())
+    with _AUDIT_LOG_LOCK:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with log_path.open("a", encoding="utf-8") as handle:
+            for event in events:
+                handle.write(json.dumps(event, ensure_ascii=False, default=str) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
     return log_path
 
 
 def normalize_match_text(text: str) -> str:
     text = unicodedata.normalize("NFKC", str(text or "")).casefold()
     return re.sub(r"[\W_]+", "", text, flags=re.UNICODE)
+
+
+def _task_date_candidates(value) -> set:
+    """Return plausible (year, month, day) tuples for task-sheet date values."""
+    if isinstance(value, datetime):
+        value = value.date()
+    if isinstance(value, date):
+        return {(value.year, value.month, value.day)}
+
+    text = unicodedata.normalize("NFKC", str(value or "")).strip()
+    if not text:
+        return set()
+    parts = re.findall(r"\d+", text)
+    candidates = set()
+
+    def add(year, month, day):
+        try:
+            year = int(year) if year is not None else None
+            month = int(month)
+            day = int(day)
+            date(year or 2000, month, day)
+        except (TypeError, ValueError):
+            return
+        candidates.add((year, month, day))
+
+    if len(parts) == 1:
+        compact = parts[0]
+        if len(compact) == 8:
+            add(compact[:4], compact[4:6], compact[6:8])
+        elif 3 <= len(compact) <= 4:
+            number = int(compact)
+            add(None, number // 100, number % 100)
+    elif len(parts) == 2:
+        first, second = map(int, parts)
+        add(None, first, second)
+        # Also accept a locale-rendered day/month value when month/day is impossible.
+        if first > 12 or second > 12:
+            add(None, second, first)
+    elif len(parts) == 3:
+        first, second, third = parts
+        if len(first) == 4:
+            add(first, second, third)
+        elif len(third) == 4:
+            add(third, first, second)
+            if int(first) > 12 or int(second) > 12:
+                add(third, second, first)
+    return candidates
+
+
+def task_dates_match(actual, expected) -> bool:
+    """Compare task dates by calendar meaning instead of display formatting."""
+    if normalize_match_text(actual) == normalize_match_text(expected):
+        return True
+    actual_dates = _task_date_candidates(actual)
+    expected_dates = _task_date_candidates(expected)
+    for actual_year, actual_month, actual_day in actual_dates:
+        for expected_year, expected_month, expected_day in expected_dates:
+            if (actual_month, actual_day) != (expected_month, expected_day):
+                continue
+            if (
+                actual_year is not None
+                and expected_year is not None
+                and actual_year != expected_year
+            ):
+                continue
+            return True
+    return False
 
 
 def task_filename_match_key(text: str) -> str:
@@ -306,12 +378,11 @@ def oral_video_type_for_record(record: Dict) -> Optional[str]:
 
 
 def completion_date_for_record(record: Dict, fallback: Optional[str] = None) -> str:
-    """Return an explicit historical upload date, otherwise today's date.
+    """Return an explicit upload date, otherwise the supplied business date.
 
-    Normal uploads do not set the override and keep the existing behavior.
-    History-based repairs set it to the original upload batch date so a late
-    repair does not make many older videos look as if they were all completed
-    today.
+    Normal uploads receive the upload batch date from the organizer, including
+    the previous-day batch used before 07:00.  History-based repairs can still
+    override it per record so a late repair keeps the original completion date.
     """
 
     raw_value = str(record.get("task_submission_completed_at") or "").strip()
@@ -549,6 +620,7 @@ def build_task_sheet_updates(
     failed_files: Optional[List[Dict]] = None,
     already_submitted_files: Optional[List[str]] = None,
     first_data_row: int = 1,
+    default_completion_date: Optional[str] = None,
 ) -> Tuple[List[Dict], List[Dict]]:
     creator = config_str(
         config,
@@ -595,13 +667,19 @@ def build_task_sheet_updates(
     updates = []
     matched = []
     used_rows = set()
-    today_text = date.today().strftime("%Y-%m-%d")
+    completion_date_fallback = (
+        str(default_completion_date or "").strip()
+        or date.today().strftime("%Y-%m-%d")
+    )
     next_append_row = max(
         [int(row["row"]) for row in rows] + [max(0, int(first_data_row) - 1)]
     ) + 1
 
     for record in records:
-        completion_date_text = completion_date_for_record(record, today_text)
+        completion_date_text = completion_date_for_record(
+            record,
+            completion_date_fallback,
+        )
         file_name = record_file_name(record)
         video_info = extract_video_match_info(file_name, creator_marker)
         if not video_info:
@@ -1031,6 +1109,7 @@ def write_task_submission_links(
     records: List[Dict],
     result_report: Optional[Dict] = None,
     drive_service=None,
+    completion_date=None,
 ) -> int:
     if isinstance(result_report, dict):
         result_report.clear()
@@ -1084,6 +1163,13 @@ def write_task_submission_links(
         failed_files=failed_files,
         already_submitted_files=already_submitted_files,
         first_data_row=header_row + 1,
+        default_completion_date=(
+            completion_date.date().isoformat()
+            if isinstance(completion_date, datetime)
+            else completion_date.isoformat()
+            if isinstance(completion_date, date)
+            else str(completion_date or "").strip()
+        ),
     )
     if isinstance(result_report, dict):
         result_report["failed_files"] = failed_files
@@ -1237,8 +1323,10 @@ def write_task_submission_links(
                 "task_date_correct": (
                     "task_date" not in column_map
                     or not is_append
-                    or normalize_match_text(actual.get("task_date"))
-                    == normalize_match_text(item["planned_after"]["task_date"])
+                    or task_dates_match(
+                        actual.get("task_date"),
+                        item["planned_after"]["task_date"],
+                    )
                 ),
                 "creator_correct": (
                     normalize_match_text(actual.get("creator"))

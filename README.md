@@ -31,6 +31,10 @@ python main.py
 
 下载后解压整个目录，复制并填写 `config.example.json`，然后运行 `AssistantTool.exe`。不要只移动 EXE；旁边的 `_internal` 目录是运行所需依赖。
 
+时间线播放器使用固定版本的官方 mpv Windows 运行库。发布构建会从官方
+GitHub Release 下载并校验 SHA-256；校验失败或文件缺失时会直接终止打包，
+不会生成缺少播放器的发布包。
+
 验证发布包来源：
 
 ```powershell

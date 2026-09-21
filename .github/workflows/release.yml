@@ -39,6 +39,9 @@ jobs:
           PYTHONDONTWRITEBYTECODE: "1"
         run: python -m unittest discover -s tests -v
 
+      - name: Fetch pinned mpv runtime
+        run: python packaging/fetch_mpv.py
+
       - name: Build Windows application
         run: pyinstaller --noconfirm --clean packaging/AssistantTool.spec
 

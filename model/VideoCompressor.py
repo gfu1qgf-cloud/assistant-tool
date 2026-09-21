@@ -50,7 +50,6 @@ def legacy_compressed_file_name(src_file, prefix):
     keep_stem_length = MAX_COMPRESSED_FILE_NAME_LENGTH - len(prefix) - len(".mp4")
     keep_stem_length = max(20, keep_stem_length)
     short_name = f"{prefix}{src_file.stem[:keep_stem_length]}.mp4"
-    print(f"文件名太长，压缩版文件名截短为：{short_name}")
     return short_name
 
 
@@ -64,8 +63,6 @@ def make_compressed_file_name(
     src_file = Path(src_file)
     file_name = f"{prefix}{src_file.stem}.mp4"
     limited_name = limit_output_filename(file_name, int(max_length or 0))
-    if limited_name != file_name:
-        print(f"成品文件名超过 {max_length} 个字符，压缩版保存为：{limited_name}")
     return limited_name
 
 

@@ -20,6 +20,8 @@ class PluginCommand:
     enabled: Callable = None
     checkable: bool = False
     checked: Callable = None
+    submenu: str = ""
+    visible: Callable = None
 
 
 @dataclass(frozen=True)

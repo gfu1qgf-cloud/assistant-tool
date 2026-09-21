@@ -1,8 +1,10 @@
 import tempfile
 import unittest
 import os
+import ssl
 from pathlib import Path
 from types import SimpleNamespace
+from unittest import mock
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -11,7 +13,9 @@ from PyQt5 import QtWidgets
 from PYUI.review_status_pyui import ReviewStatusDialog
 
 from model.ReviewStatusMonitor import (
+    ReviewStatusMonitorThread,
     detect_review_columns,
+    is_transient_review_error,
     review_status_from_row,
     statuses_from_review_values,
 )
@@ -99,6 +103,52 @@ class ReviewStatusParsingTests(unittest.TestCase):
         key = canonical_review_link("https://drive.google.com/file/d/video-1/view")
         self.assertEqual(statuses[key]["status"], "passed")
         self.assertEqual(statuses[key]["sheet_row"], 3)
+
+
+class ReviewStatusNetworkTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+
+    def test_ssl_eof_is_retryable_but_sheet_structure_error_is_not(self):
+        self.assertTrue(is_transient_review_error(
+            ssl.SSLEOFError(8, "EOF occurred in violation of protocol")
+        ))
+        self.assertFalse(is_transient_review_error(
+            ValueError("审核表中没有找到审核结果列")
+        ))
+
+    def test_retry_rebuilds_service_and_returns_statuses(self):
+        thread = ReviewStatusMonitorThread({
+            "review_sheet_url": "https://docs.google.com/spreadsheets/d/demo/edit",
+        })
+        statuses = []
+        thread.status.connect(statuses.append)
+        first_service = object()
+        second_service = object()
+        row = [""] * len(HEADERS)
+        row[2] = "https://drive.google.com/file/d/retry/view"
+        row[5] = "可以使用"
+        row[11] = "可以使用"
+        with mock.patch(
+            "model.ReviewStatusMonitor.load_sheets_service",
+            side_effect=[first_service, second_service],
+        ) as loader, mock.patch.object(
+            thread,
+            "_read_values",
+            side_effect=[
+                ssl.SSLEOFError(8, "EOF occurred in violation of protocol"),
+                [HEADERS, row],
+            ],
+        ), mock.patch.object(thread, "_retry_wait", return_value=True):
+            service, result = thread._read_statuses_with_retry(None)
+
+        self.assertIs(service, second_service)
+        self.assertEqual(loader.call_count, 2)
+        self.assertTrue(any("正在重试" in value for value in statuses))
+        key = canonical_review_link(row[2])
+        self.assertEqual(result[key]["status"], "passed")
+        thread.deleteLater()
 
 
 class ReviewHistoryTests(unittest.TestCase):

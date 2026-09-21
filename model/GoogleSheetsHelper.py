@@ -39,9 +39,22 @@ def extract_sheet_gid(value: str) -> Optional[int]:
     return int(match.group(1))
 
 
-def sheet_range(sheet_name: str, a1: str) -> str:
+def sheet_range(sheet_name: str, a1: str = "") -> str:
     safe_name = sheet_name.replace("'", "''")
-    return f"'{safe_name}'!{a1}"
+    a1_text = (a1 or "").strip()
+    if not a1_text:
+        return f"'{safe_name}'"
+    return f"'{safe_name}'!{a1_text}"
+
+
+def column_to_letter(col_idx: int) -> str:
+    if col_idx < 1:
+        raise ValueError("Column index must be >= 1")
+    result = []
+    while col_idx > 0:
+        col_idx, remainder = divmod(col_idx - 1, 26)
+        result.append(chr(65 + remainder))
+    return "".join(reversed(result))
 
 
 def load_sheets_service(config: Dict, config_prefix: str = "review_sheet"):
@@ -285,7 +298,7 @@ def write_review_video_links(config: Dict, records: List[Dict]) -> int:
     service = load_sheets_service(config)
     sheet_name, sheet_id = get_sheet_info(service, spreadsheet_id, gid)
 
-    read_range = sheet_range(sheet_name, "A1:Z2000")
+    read_range = sheet_range(sheet_name)
     values = service.spreadsheets().values().get(
         spreadsheetId=spreadsheet_id,
         range=read_range,
@@ -319,7 +332,9 @@ def write_review_video_links(config: Dict, records: List[Dict]) -> int:
         start_row = insert_at
 
     end_row = start_row + len(rows) - 1
-    write_range = sheet_range(sheet_name, f"A{start_row}:Z{end_row}")
+    max_cols = max((len(r) for r in rows), default=1)
+    max_col_letter = column_to_letter(max_cols)
+    write_range = sheet_range(sheet_name, f"A{start_row}:{max_col_letter}{end_row}")
     service.spreadsheets().values().update(
         spreadsheetId=spreadsheet_id,
         range=write_range,

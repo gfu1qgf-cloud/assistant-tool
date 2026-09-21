@@ -27,7 +27,11 @@ from model.TaskSubmissionHelper import (
     task_sheet_failures_for_records,
     write_task_submission_links,
 )
-from model.VideoUploadHistory import record_video_uploads
+from model.VideoUploadHistory import (
+    normalize_video_identity,
+    preferred_drive_file_ids_by_identity,
+    record_video_uploads,
+)
 from model.VideoCompressor import compress_video
 from model import VideoElementDetector as video_element_detector
 from model.VideoElementDetector import (
@@ -860,12 +864,24 @@ def run_task_result_organizer(
             task_by_file=task_by_file,
             upload_task_by_file=upload_task_by_file,
         )
+        preferred_file_ids = {}
+        if config_bool(config, "video_upload_replace_old_enabled", True):
+            file_ids_by_identity = preferred_drive_file_ids_by_identity(config)
+            for _root_dir, changed_files, _remote_prefix in routed_batches:
+                for changed_file in changed_files:
+                    file_id = file_ids_by_identity.get(
+                        normalize_video_identity(Path(changed_file).name),
+                        "",
+                    )
+                    if file_id:
+                        preferred_file_ids[Path(changed_file).name] = file_id
         uploaded_records = upload_routed_changed_files_to_drive_batch(
             service,
             routed_batches,
             parent_folder_id,
             batch_date=batch_date,
             batch_slot=batch_slot,
+            preferred_file_ids=preferred_file_ids,
         )
         attach_local_task_metadata(uploaded_records, upload_task_by_file, config)
         summary["uploaded_file_count"] = len(uploaded_records)
@@ -877,6 +893,7 @@ def run_task_result_organizer(
                 uploaded_records,
                 result_report=task_sheet_report,
                 drive_service=service,
+                completion_date=batch_date,
             )
             print(f"任务提交表格：已填写 {task_sheet_count} 条")
             summary["task_sheet_count"] = task_sheet_count
