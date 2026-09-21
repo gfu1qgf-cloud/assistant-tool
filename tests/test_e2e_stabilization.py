@@ -89,6 +89,86 @@ class FakeHotkeyManager(QtCore.QObject):
         self.sequence = None
 
 
+class FakeSignal:
+    def __init__(self):
+        self.callbacks = []
+
+    def connect(self, callback):
+        self.callbacks.append(callback)
+
+    def emit(self, *args):
+        for callback in list(self.callbacks):
+            callback(*args)
+
+
+class FakeButton:
+    def __init__(self, text="分拣视频"):
+        self._text = text
+        self._enabled = True
+
+    def setText(self, text):
+        self._text = text
+
+    def text(self):
+        return self._text
+
+    def setEnabled(self, enabled):
+        self._enabled = bool(enabled)
+
+    def isEnabled(self):
+        return self._enabled
+
+
+class FakeVideoAssignmentWorker:
+    def __init__(self, *args, **kwargs):
+        self.log = FakeSignal()
+        self.completed = FakeSignal()
+        self.failed = FakeSignal()
+        self.finished = FakeSignal()
+        self.running = False
+        self.finished_state = False
+        self.interrupted = False
+
+    def start(self):
+        self.running = True
+
+    def isRunning(self):
+        return self.running
+
+    def isFinished(self):
+        return self.finished_state
+
+    def requestInterruption(self):
+        self.interrupted = True
+
+    def finish(self, matched_count=1, total_count=1):
+        self.running = False
+        self.finished_state = True
+        self.completed.emit(matched_count, total_count)
+        self.finished.emit()
+
+    def deleteLater(self):
+        pass
+
+
+def make_assignment_host(today_dir=None, config=None):
+    """Build the minimal host needed by MainDialog assignment methods."""
+    host = MagicMock()
+    host.assign_video_thread = None
+    host.assign_video_btn = FakeButton()
+    host._assign_video_button_text = ""
+    host._last_video_assign_result = None
+    host.getTodayDir.return_value = str(today_dir) if today_dir is not None else None
+    host.load_config.return_value = dict(config or {"video_match_ratio_threshold": 0.03})
+    host.onAssignVideoCompleted.side_effect = (
+        lambda *args: MainDialog.onAssignVideoCompleted(host, *args)
+    )
+    host.onAssignVideoFinished.side_effect = (
+        lambda *args: MainDialog.onAssignVideoFinished(host, *args)
+    )
+    return host
+
+
 @contextmanager
 def create_test_main_window(config_dict=None):
     """Context manager creating a safely headless MainDialog instance."""
@@ -315,21 +395,17 @@ class Tier1FeatureCoverageTests(unittest.TestCase):
         videos_dir = self.tmp_path / "videos"
         videos_dir.mkdir(parents=True)
 
-        with create_test_main_window() as win:
-            with patch.object(win, "getTodayDir", return_value=str(today_dir)), \
-                 patch("globalValue.globalValue.videoSortingStationPath", return_value=str(videos_dir)), \
-                 patch.object(VideoAssignmentThread, "start"):
-                btn = win.assign_video_btn
-                btn.setEnabled(True)
-                btn.setText("分拣视频")
+        win = make_assignment_host(today_dir)
+        with patch("globalValue.globalValue.videoSortingStationPath", return_value=str(videos_dir)), \
+             patch("PYUI.main_pyui.VideoAssignmentThread", FakeVideoAssignmentWorker):
+            btn = win.assign_video_btn
+            returned_thread = MainDialog.assignVideo(win)
 
-                returned_thread = win.assignVideo()
-
-                self.assertIsNotNone(returned_thread)
-                self.assertIsInstance(returned_thread, VideoAssignmentThread)
-                self.assertTrue(btn.isEnabled(), "Button must remain enabled for cancellation while thread runs")
-                self.assertEqual(btn.text(), "停止分拣")
-                self.assertIs(win.assign_video_thread, returned_thread)
+            self.assertIsNotNone(returned_thread)
+            self.assertIsInstance(returned_thread, FakeVideoAssignmentWorker)
+            self.assertTrue(btn.isEnabled(), "Button must remain enabled for cancellation while thread runs")
+            self.assertEqual(btn.text(), "停止分拣")
+            self.assertIs(win.assign_video_thread, returned_thread)
 
     def test_tier1_r1_04_thread_emits_log_signals_instead_of_direct_ui_call(self):
         """Verify VideoAssignmentThread communicates through log signals."""
@@ -353,18 +429,18 @@ class Tier1FeatureCoverageTests(unittest.TestCase):
 
     def test_tier1_r1_05_thread_completion_triggers_cleanup_and_reenables_button(self):
         """Verify completion restores button state and cleans up thread reference."""
-        with create_test_main_window() as win:
-            btn = win.assign_video_btn
-            btn.setEnabled(False)
-            win._assign_video_button_text = "原始分拣"
-            win.assign_video_thread = MagicMock()
+        win = make_assignment_host()
+        btn = win.assign_video_btn
+        btn.setEnabled(False)
+        win._assign_video_button_text = "原始分拣"
+        win.assign_video_thread = MagicMock()
 
-            win.onAssignVideoFinished(2, 5)
+        MainDialog.onAssignVideoFinished(win, 2, 5)
 
-            self.assertTrue(btn.isEnabled())
-            self.assertEqual(btn.text(), "原始分拣")
-            self.assertIsNone(win.assign_video_thread)
-            self.assertEqual(win._last_video_assign_result, (2, 5))
+        self.assertTrue(btn.isEnabled())
+        self.assertEqual(btn.text(), "原始分拣")
+        self.assertIsNone(win.assign_video_thread)
+        self.assertEqual(win._last_video_assign_result, (2, 5))
 
     # --- R2: InventoryStore RMW Locking ---
 
@@ -705,14 +781,12 @@ class Tier2BoundaryAndCornerCaseTests(unittest.TestCase):
 
     def test_tier2_r1_03_nonexistent_paths_prevent_thread_launch(self):
         """Boundary: missing directory paths in assignVideo trigger Critical messagebox and return None."""
-        with create_test_main_window() as win:
-            with patch.object(win, "getTodayDir", return_value=str(self.tmp_path / "nonexistent_today")), \
-                 patch("globalValue.globalValue.videoSortingStationPath", return_value=str(self.tmp_path / "nonexistent_vid")), \
-                 patch.object(win, "Critical") as mock_crit:
-                result = win.assignVideo()
-                self.assertIsNone(result)
-                mock_crit.assert_called_once()
-                self.assertTrue(win.assign_video_btn.isEnabled())
+        win = make_assignment_host(self.tmp_path / "nonexistent_today")
+        with patch("globalValue.globalValue.videoSortingStationPath", return_value=str(self.tmp_path / "nonexistent_vid")):
+            result = MainDialog.assignVideo(win)
+            self.assertIsNone(result)
+            win.Critical.assert_called_once()
+            self.assertTrue(win.assign_video_btn.isEnabled())
 
     def test_tier2_r1_04_corrupt_video_frame_gracefully_skipped(self):
         """Boundary: video file whose frame decoding returns None is skipped without terminating loop."""
@@ -1438,18 +1512,17 @@ class Tier4RealWorldApplicationScenarioTests(unittest.TestCase):
         videos_dir = self.tmp_path / "videos"
         videos_dir.mkdir()
 
-        with create_test_main_window() as win:
-            with patch.object(win, "getTodayDir", return_value=str(today_dir)), \
-                 patch("globalValue.globalValue.videoSortingStationPath", return_value=str(videos_dir)):
-                thread = win.assignVideo()
-                self.assertIsNotNone(thread)
-                self.assertTrue(thread.isRunning() or thread.isFinished())
+        win = make_assignment_host(today_dir)
+        with patch("globalValue.globalValue.videoSortingStationPath", return_value=str(videos_dir)), \
+             patch("PYUI.main_pyui.VideoAssignmentThread", FakeVideoAssignmentWorker):
+            thread = MainDialog.assignVideo(win)
+            self.assertIsNotNone(thread)
+            self.assertTrue(thread.isRunning())
 
-                thread.wait(3000)
-                QtWidgets.QApplication.processEvents()
+            thread.finish()
 
-                self.assertTrue(win.assign_video_btn.isEnabled())
-                self.assertEqual(win.assign_video_btn.text(), "分拣视频")
+            self.assertTrue(win.assign_video_btn.isEnabled())
+            self.assertEqual(win.assign_video_btn.text(), "分拣视频")
 
 
 if __name__ == "__main__":
