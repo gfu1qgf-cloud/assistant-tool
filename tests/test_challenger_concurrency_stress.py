@@ -621,46 +621,75 @@ class TestVideoAssignmentInteractiveCancellation(unittest.TestCase):
         Click 3+: idempotent, does not spawn duplicate threads.
         On finish: button reset to '分拣视频', enabled=True.
         """
+        class FakeSignal:
+            def __init__(self):
+                self.callbacks = []
+
+            def connect(self, callback):
+                self.callbacks.append(callback)
+
+            def emit(self, *args):
+                for callback in list(self.callbacks):
+                    callback(*args)
+
+        class FakeVideoAssignmentThread:
+            def __init__(self, *args, **kwargs):
+                self.log = FakeSignal()
+                self.completed = FakeSignal()
+                self.failed = FakeSignal()
+                self.finished = FakeSignal()
+                self.running = False
+                self.interrupted = False
+
+            def start(self):
+                self.running = True
+
+            def isRunning(self):
+                return self.running
+
+            def requestInterruption(self):
+                self.interrupted = True
+
+            def isInterruptionRequested(self):
+                return self.interrupted
+
+            def finish(self, matched_count=1, total_count=1):
+                self.running = False
+                self.completed.emit(matched_count, total_count)
+                self.finished.emit()
+
+            def deleteLater(self):
+                pass
+
         win = make_test_main_window()
         try:
             # Configure valid paths
             win.getTodayDir = lambda: str(self.today_dir)
-            with patch("globalValue.globalValue.videoSortingStationPath", return_value=str(self.video_root)):
-                # Mock worker to run briefly
-                with patch.object(VideoAssignmentThread, "run") as mock_run:
-                    # Let thread simulate a short sleep
-                    def delayed_run(t_self):
-                        time.sleep(0.2)
-                        t_self.completed.emit(1, 1)
+            with patch("globalValue.globalValue.videoSortingStationPath", return_value=str(self.video_root)), \
+                 patch("PYUI.main_pyui.VideoAssignmentThread", FakeVideoAssignmentThread):
+                # 1st click -> Starts one worker
+                t1 = win.assignVideo()
+                self.assertIsNotNone(t1)
+                self.assertTrue(t1.isRunning())
+                self.assertEqual(win.assign_video_btn.text(), "停止分拣")
+                self.assertTrue(win.assign_video_btn.isEnabled())
 
-                    mock_run.side_effect = lambda: delayed_run(win.assign_video_thread)
+                # 2nd click -> Requests interruption
+                t2 = win.assignVideo()
+                self.assertIs(t1, t2)
+                self.assertTrue(t1.isInterruptionRequested())
+                self.assertEqual(win.assign_video_btn.text(), "正在停止…")
+                self.assertFalse(win.assign_video_btn.isEnabled())
 
-                    # 1st click -> Starts thread
-                    t1 = win.assignVideo()
-                    self.assertIsNotNone(t1)
-                    self.assertTrue(t1.isRunning())
-                    self.assertEqual(win.assign_video_btn.text(), "停止分拣")
-                    self.assertTrue(win.assign_video_btn.isEnabled())
+                # 3rd click -> idempotent; no duplicate worker
+                t3 = win.assignVideo()
+                self.assertIs(t1, t3)
 
-                    # 2nd click -> Requests interruption
-                    t2 = win.assignVideo()
-                    self.assertIs(t1, t2)
-                    self.assertTrue(t1.isInterruptionRequested())
-                    self.assertEqual(win.assign_video_btn.text(), "正在停止…")
-                    self.assertFalse(win.assign_video_btn.isEnabled())
-
-                    # 3rd click -> idempotent
-                    t3 = win.assignVideo()
-                    self.assertIs(t1, t3)
-
-                    # Wait for thread completion
-                    t1.wait(3000)
-                    QtWidgets.QApplication.processEvents()
-
-                    # Button restored
-                    self.assertTrue(win.assign_video_btn.isEnabled())
-                    self.assertEqual(win.assign_video_btn.text(), "分拣视频")
-                    self.assertIsNone(win.assign_video_thread)
+                # Completion restores the button and clears the worker reference.
+                t1.finish()
+                self.assertTrue(win.assign_video_btn.isEnabled())
+                self.assertEqual(win.assign_video_btn.text(), "分拣视频")
+                self.assertIsNone(win.assign_video_thread)
         finally:
             win.close()
 
