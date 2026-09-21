@@ -688,27 +688,29 @@ class TestVideoAssignmentInteractiveCancellation(unittest.TestCase):
 
     def test_close_event_timeout_wait_failure(self):
         """closeEvent ignores close and warns user if thread does not stop within 2s."""
-        win = make_test_main_window()
-        try:
-            # This test only verifies the closeEvent decision.  A real QThread is
-            # unnecessary here and can make Qt tear down a native thread object
-            # while its methods are monkey-patched on headless CI runners.
-            thread = MagicMock()
-            thread.isRunning.return_value = True
-            thread.wait.return_value = False
-            win.assign_video_thread = thread
+        # Exercise the early-return branch without constructing or destroying a
+        # native window.  Windows headless CI can terminate inside Qt teardown,
+        # which tests the platform plugin instead of our closeEvent decision.
+        win = MagicMock()
+        win.plugin_host.can_close_all.return_value = (True, "")
+        win.oral_duration_check_thread = None
+        win.task_submission_audit_thread = None
+        win.task_reference_download_thread = None
+        win.task_result_thread = None
+        thread = MagicMock()
+        thread.isRunning.return_value = True
+        thread.wait.return_value = False
+        win.assign_video_thread = thread
 
-            event = QtGui.QCloseEvent()
-            with patch("PyQt5.QtWidgets.QMessageBox.warning") as mock_warn:
-                win.closeEvent(event)
-                self.assertFalse(event.isAccepted(), "closeEvent must be ignored when wait() times out")
-                thread.requestInterruption.assert_called_once_with()
-                thread.wait.assert_called_once_with(2000)
-                mock_warn.assert_called_once()
-                self.assertIn("视频分拣仍在运行", mock_warn.call_args[0][1])
-        finally:
-            win.assign_video_thread = None
-            win.close()
+        event = MagicMock()
+        with patch("PyQt5.QtWidgets.QMessageBox.warning") as mock_warn:
+            MainDialog.closeEvent(win, event)
+
+        event.ignore.assert_called_once_with()
+        thread.requestInterruption.assert_called_once_with()
+        thread.wait.assert_called_once_with(2000)
+        mock_warn.assert_called_once()
+        self.assertIn("视频分拣仍在运行", mock_warn.call_args[0][1])
 
 
 if __name__ == "__main__":
