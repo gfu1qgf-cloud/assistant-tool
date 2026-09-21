@@ -22,6 +22,7 @@ from app_plugins.builtin.smart_video_editor.breath_editor import (
 from app_plugins.builtin.smart_video_editor.engine import (
     _compact_record_similarity,
     _protect_edges_adjacent_to_missing_script,
+    _token_equivalent,
 )
 from app_plugins.builtin.smart_video_editor.timeline_review import (
     SmartVideoTimelineReview,
@@ -831,6 +832,75 @@ class SmartVideoEditorTests(unittest.TestCase):
         observed = [{"norm": "a"}]
         self.assertGreaterEqual(
             _compact_record_similarity(expected, observed), 0.72
+        )
+
+    def test_accent_only_word_variant_keeps_tail_anchor_and_trims_dead_air(self):
+        self.assertTrue(_token_equivalent("amen", "ámen"))
+        settings = normalize_smart_video_editor_settings({})
+        script_lines, script_words = build_script_word_records(
+            "V mene Pána Ježiša Krista. Amen."
+        )
+        transcription = {
+            "text": "V mene Pána Ježiša Krista. Ámen.",
+            "duration": 8.0,
+            "words": [
+                {"text": "V", "start": 0.0, "end": 0.12},
+                {"text": "mene", "start": 0.12, "end": 0.42},
+                {"text": "Pána", "start": 0.42, "end": 0.94},
+                {"text": "Ježiša", "start": 0.94, "end": 1.52},
+                {"text": "Krista.", "start": 1.52, "end": 2.02},
+                {"text": "Ámen.", "start": 2.32, "end": 3.12},
+            ],
+        }
+        clip = _build_clip_plan(
+            Path("Maria_speaking_Slovak_Amen.mp4"),
+            transcription,
+            {"start": 0, "end": 5, "similarity": 1.0, "overlap_ratio": 0.0},
+            script_words,
+            script_lines,
+            settings,
+            0,
+            [],
+            "",
+            [[2.328, 2.696], [4.344, 8.0]],
+            "",
+        )
+        self.assertTrue(clip["word_timeline"][-1]["anchor"])
+        self.assertAlmostEqual(clip["trim_end"], 4.564, places=3)
+        self.assertIn(
+            "tail_cut",
+            [item["kind"] for item in clip["boundary_decisions"]],
+        )
+
+    def test_unanchored_text_does_not_restore_vad_proven_tail_gap(self):
+        settings = normalize_smart_video_editor_settings({})
+        script_lines, script_words = build_script_word_records("alpha omega")
+        transcription = {
+            "text": "alpha ending",
+            "duration": 6.0,
+            "words": [
+                {"text": "alpha", "start": 0.2, "end": 0.8},
+                {"text": "ending", "start": 1.0, "end": 2.0},
+            ],
+        }
+        clip = _build_clip_plan(
+            Path("unanchored-tail.mp4"),
+            transcription,
+            {"start": 0, "end": 1, "similarity": 0.7, "overlap_ratio": 0.0},
+            script_words,
+            script_lines,
+            settings,
+            0,
+            [],
+            "",
+            [[3.0, 6.0]],
+            "",
+        )
+        self.assertFalse(clip["word_timeline"][-1]["anchor"])
+        self.assertAlmostEqual(clip["trim_end"], 3.22, places=3)
+        self.assertNotIn(
+            "unconfirmed_last_word",
+            [item["kind"] for item in clip["boundary_warnings"]],
         )
 
     def test_missing_word_guard_does_not_restore_proven_no_voice_tail(self):

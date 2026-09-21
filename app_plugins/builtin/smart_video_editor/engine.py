@@ -31,7 +31,7 @@ SMART_VIDEO_PENDING_CONFIG_KEY = "smart_video_pending_reviews"
 SMART_VIDEO_EDITOR_REPORT_NAME = "智能剪辑审核.json"
 SMART_VIDEO_EDITOR_TEXT_REPORT_NAME = "智能剪辑问题报告.txt"
 BREATH_CUT_OUTPUT_FOLDER_NAME = "气口剪辑结果"
-SMART_VIDEO_ANALYSIS_CACHE_VERSION = 8
+SMART_VIDEO_ANALYSIS_CACHE_VERSION = 9
 VOICE_ACTIVITY_CACHE_VERSION = 1
 VIDEO_SUFFIXES = {".mp4", ".mov", ".m4v", ".avi", ".mkv", ".webm", ".mts"}
 BREATH_DETECTION_MODES = (
@@ -576,6 +576,21 @@ def _edit_similarity(left, right):
     return 1.0 - previous[-1] / max(len(left), len(right), 1)
 
 
+def _diacritic_fold(value):
+    """Fold accent-only spelling variants for ASR word alignment.
+
+    Whisper may transcribe a borrowed or devotional word with the local
+    accent (for example ``Amen`` -> ``Ámen``).  That is useful text, but it
+    must not turn an actually recognized edge word into an unanchored word and
+    consequently disable an otherwise proven breath cut.
+    """
+    return "".join(
+        character
+        for character in unicodedata.normalize("NFKD", str(value or ""))
+        if not unicodedata.combining(character)
+    )
+
+
 def _compact_record_similarity(expected_records, observed_records):
     expected = "".join(
         str(item.get("norm") or "") for item in expected_records
@@ -613,6 +628,8 @@ def _token_equivalent(left, right):
         return True
     if min(len(left), len(right)) < 4:
         return False
+    if _diacritic_fold(left) == _diacritic_fold(right):
+        return True
     length_ratio = min(len(left), len(right)) / max(len(left), len(right))
     return length_ratio >= 0.72 and _edit_similarity(left, right) >= 0.78
 
@@ -2314,7 +2331,12 @@ def _build_clip_plan(
     # pink, but do not retain an otherwise proven multi-second head/tail gap:
     # recognized word timestamps + measured dB silence are sufficient for an
     # edge cut.  They are deliberately *not* used to make internal cuts here.
-    boundary_words = clip_slice or recognized_words
+    # Trimming is a physical-audio decision, so its outer boundary must use
+    # every word actually heard by ASR. A fuzzy script window may omit a
+    # differently spelled final word even though it is present in the audio;
+    # that shorter window can move the search origin too far left and miss a
+    # real multi-second tail gap.
+    boundary_words = recognized_words or clip_slice
     if boundary_words:
         first_word = boundary_words[0]
         last_word = boundary_words[-1]
@@ -2331,7 +2353,30 @@ def _build_clip_plan(
         # Missing anchors at an outer boundary mean ASR did not prove where the
         # utterance starts/ends. Preserve that source edge even if a nearby
         # quiet interval exists.
-        if clip_slice and word_timeline and not word_timeline[0].get("anchor", False):
+        first_recognized_start = min(
+            (float(item.get("start") or 0.0) for item in recognized_words),
+            default=float(first_word.get("start") or 0.0),
+        )
+        last_recognized_end = max(
+            (float(item.get("end") or 0.0) for item in recognized_words),
+            default=float(last_word.get("end") or duration),
+        )
+        head_no_voice_proven = any(
+            float(left) <= 0.03
+            and float(right) <= first_recognized_start + 0.05
+            for left, right in voice_absence_ranges
+        )
+        tail_no_voice_proven = any(
+            float(right) >= duration - 0.03
+            and float(left) >= last_recognized_end - 0.05
+            for left, right in voice_absence_ranges
+        )
+        if (
+            clip_slice
+            and word_timeline
+            and not word_timeline[0].get("anchor", False)
+            and not head_no_voice_proven
+        ):
             trim_start = 0.0
             boundary_warnings.append({
                 "severity": "pink",
@@ -2341,7 +2386,12 @@ def _build_clip_plan(
                 "title": "首词时间未确认",
                 "detail": "首个文案单词没有直接识别锚点，片头已保留，请人工核对。",
             })
-        if clip_slice and word_timeline and not word_timeline[-1].get("anchor", False):
+        if (
+            clip_slice
+            and word_timeline
+            and not word_timeline[-1].get("anchor", False)
+            and not tail_no_voice_proven
+        ):
             trim_end = duration
             boundary_warnings.append({
                 "severity": "pink",
