@@ -98,7 +98,7 @@ class FileExplorerTreeView(QTreeView):
 
 
         # 显示菜单并获取选中的动作
-        action = menu.exec_(self.viewport().mapToGlobal(position))
+        action = menu.exec(self.viewport().mapToGlobal(position))
 
         # 处理菜单动作
         if action == copy_path_action:

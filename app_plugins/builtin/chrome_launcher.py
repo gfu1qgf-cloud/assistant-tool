@@ -193,7 +193,7 @@ class ChromeLauncherPlugin:
     def open_launcher(self):
         if self.dialog is None:
             raise RuntimeError("Chrome 启动器尚未初始化")
-        return self.dialog.exec_()
+        return self.dialog.exec()
 
     def launch_next_profile(self):
         if self.dialog is None:

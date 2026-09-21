@@ -230,7 +230,7 @@ class ReviewStatusDialog(QtWidgets.QDialog):
         menu = QtWidgets.QMenu(tree)
         copy_action = menu.addAction("复制 Google Drive 链接")
         open_action = menu.addAction("打开视频")
-        selected_action = menu.exec_(tree.viewport().mapToGlobal(position))
+        selected_action = menu.exec(tree.viewport().mapToGlobal(position))
         if selected_action is copy_action:
             self.copy_selected_links()
         elif selected_action is open_action:

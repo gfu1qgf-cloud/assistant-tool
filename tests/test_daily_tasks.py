@@ -776,14 +776,14 @@ class TestDailyTasksUIAndIntegration(unittest.TestCase):
             self.assertEqual(dialog.task_table.rowCount(), 2)
 
             # Test simulating double-click on row 1: passes (1, 0)
-            with patch.object(TaskEditDialog, "exec_", return_value=QtWidgets.QDialog.Rejected):
+            with patch.object(TaskEditDialog, "exec", return_value=QtWidgets.QDialog.Rejected):
                 dialog.edit_task_action(1, 0)
                 # Confirm row 1 is now selected
                 self.assertEqual(dialog.task_table.currentRow(), 1)
 
             # Test button click which passes boolean False (checked)
             # Should NOT override existing selected row 1 to row 0
-            with patch.object(TaskEditDialog, "exec_", return_value=QtWidgets.QDialog.Rejected):
+            with patch.object(TaskEditDialog, "exec", return_value=QtWidgets.QDialog.Rejected):
                 dialog.edit_task_action(False)
                 self.assertEqual(dialog.task_table.currentRow(), 1)
         finally:
@@ -801,14 +801,14 @@ class TestDailyTasksUIAndIntegration(unittest.TestCase):
 
             # Right click on row 1
             rect = dialog.task_table.visualRect(dialog.task_table.model().index(1, 0))
-            with patch.object(QtWidgets.QMenu, "exec_"):
+            with patch.object(QtWidgets.QMenu, "exec"):
                 dialog._show_task_context_menu(rect.center())
 
             self.assertEqual(dialog.task_table.currentRow(), 1)
             self.assertEqual(dialog._selected_task_id(), self.store.get_tasks()[1]["id"])
 
             # Right click on empty space below rows
-            with patch.object(QtWidgets.QMenu, "exec_"):
+            with patch.object(QtWidgets.QMenu, "exec"):
                 dialog._show_task_context_menu(QtCore.QPoint(50, 900))
             self.assertEqual(dialog.task_table.currentRow(), -1)
             self.assertIsNone(dialog._selected_task_id())
@@ -897,7 +897,7 @@ class TestDailyTasksUIAndIntegration(unittest.TestCase):
             # Add a new task via TaskEditDialog
             with patch.object(
                 TaskEditDialog,
-                "exec_",
+                "exec",
                 return_value=QtWidgets.QDialog.Accepted,
             ), patch.object(
                 TaskEditDialog,

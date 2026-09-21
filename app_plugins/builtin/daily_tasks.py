@@ -1145,7 +1145,7 @@ class DailyTasksDialog(QtWidgets.QDialog):
         self.saved_browser = QtWidgets.QTextBrowser(tab)
         self.saved_browser.setOpenExternalLinks(True)
         self.saved_browser.setStyleSheet(
-            "background-color: #FAFAFA; border: 1px solid #E0E0E0; border-radius: 4px;"
+            "background-color:#FAFAFA;color:#212121;border:1px solid #E0E0E0;border-radius:4px;"
         )
         self.saved_list.itemClicked.connect(
             lambda item: self._on_saved_item_selected(item, None)
@@ -1302,7 +1302,7 @@ class DailyTasksDialog(QtWidgets.QDialog):
 
     def add_task_action(self):
         dlg = TaskEditDialog(parent=self)
-        if dlg.exec_() == QtWidgets.QDialog.Accepted:
+        if dlg.exec() == QtWidgets.QDialog.Accepted:
             data = dlg.get_data()
             try:
                 self.store.add_task(
@@ -1338,7 +1338,7 @@ class DailyTasksDialog(QtWidgets.QDialog):
         if not task:
             return
         dlg = TaskEditDialog(task=task, parent=self)
-        if dlg.exec_() == QtWidgets.QDialog.Accepted:
+        if dlg.exec() == QtWidgets.QDialog.Accepted:
             data = dlg.get_data()
             try:
                 self.store.update_task(
@@ -1419,7 +1419,7 @@ class DailyTasksDialog(QtWidgets.QDialog):
         menu.addSeparator()
         gen_act = menu.addAction("✨ 生成执行建议")
         gen_act.triggered.connect(self.generate_suggestion_action)
-        menu.exec_(self.task_table.viewport().mapToGlobal(pos))
+        menu.exec(self.task_table.viewport().mapToGlobal(pos))
 
     def generate_suggestion_action(self, *args):
         all_tasks = self.store.get_tasks("all")

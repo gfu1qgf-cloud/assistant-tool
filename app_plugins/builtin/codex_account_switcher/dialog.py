@@ -366,7 +366,7 @@ class AccountSwitcherDialog(QtWidgets.QDialog):
 
     def adopt_current(self):
         dialog = NameDialog("保存当前账号", "账号名称", "当前账号", self)
-        if dialog.exec_() != QtWidgets.QDialog.Accepted:
+        if dialog.exec() != QtWidgets.QDialog.Accepted:
             return
         was_running = is_chatgpt_running()
         if not self._ensure_app_closed("建立第一个账号档案前需要让 Codex 完全退出。"):
@@ -398,7 +398,7 @@ class AccountSwitcherDialog(QtWidgets.QDialog):
 
     def add_profile(self):
         dialog = NameDialog("添加桌面账号", "账号名称", "", self)
-        if dialog.exec_() != QtWidgets.QDialog.Accepted:
+        if dialog.exec() != QtWidgets.QDialog.Accepted:
             return
         try:
             profile = self.store.add_empty_profile(dialog.value)
@@ -487,7 +487,7 @@ class AccountSwitcherDialog(QtWidgets.QDialog):
         if not profile:
             return
         dialog = NameDialog("重命名账号", "新名称", profile.name, self)
-        if dialog.exec_() != QtWidgets.QDialog.Accepted:
+        if dialog.exec() != QtWidgets.QDialog.Accepted:
             return
         try:
             self.store.rename_profile(profile.profile_id, dialog.value)

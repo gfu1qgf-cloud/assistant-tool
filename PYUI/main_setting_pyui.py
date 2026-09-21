@@ -18,6 +18,12 @@ from model.GlobalHotkey import (
     TASK_RESULT_HOTKEY_CONFIG_KEY,
     normalize_hotkey_sequence,
 )
+from model.AppTheme import (
+    DEFAULT_UI_THEME,
+    THEME_CHOICES,
+    UI_THEME_CONFIG_KEY,
+    normalize_ui_theme,
+)
 from model.ApiKeyHelper import (
     API_KEY_STATUSES_CONFIG_KEY,
     api_key_id,
@@ -277,6 +283,7 @@ class MainSettingDialog(QtWidgets.QDialog, Ui_MainSettingDialog):
             self.chrome_hotkey_edit.hide()
             self.chrome_hotkey_help_label.hide()
         self._build_additional_hotkey_editors()
+        self._build_appearance_tab()
         self._build_flow_guard_tab()
         self.audio_settings = {}
         if self._audio_managed_by_plugin:
@@ -312,6 +319,7 @@ class MainSettingDialog(QtWidgets.QDialog, Ui_MainSettingDialog):
         task_result_hotkey = DEFAULT_TASK_RESULT_HOTKEY
         load_task_hotkey = DEFAULT_LOAD_TASK_HOTKEY
         flow_guard_settings = normalize_flow_guard_settings({})
+        ui_theme = DEFAULT_UI_THEME
         config = load_task_result_config()
         try:
             migrate_legacy_task_result_config("config.json")
@@ -347,6 +355,7 @@ class MainSettingDialog(QtWidgets.QDialog, Ui_MainSettingDialog):
                     flow_guard_settings = normalize_flow_guard_settings(
                         config.get(FLOW_GUARD_CONFIG_KEY)
                     )
+                    ui_theme = normalize_ui_theme(config.get(UI_THEME_CONFIG_KEY))
             self._load_task_result_config(config)
         except Exception as e:
             print(f"加载配置失败: {e}")
@@ -371,6 +380,8 @@ class MainSettingDialog(QtWidgets.QDialog, Ui_MainSettingDialog):
             load_task_hotkey = DEFAULT_LOAD_TASK_HOTKEY
         self.load_task_hotkey_edit.setKeySequence(QtGui.QKeySequence(load_task_hotkey))
         self._load_flow_guard_settings(flow_guard_settings)
+        theme_index = self.ui_theme_combo.findData(ui_theme)
+        self.ui_theme_combo.setCurrentIndex(max(0, theme_index))
         if self.plugin_host is not None:
             self.plugin_host.load_settings_pages(config)
 
@@ -665,7 +676,7 @@ class MainSettingDialog(QtWidgets.QDialog, Ui_MainSettingDialog):
             suggested_name=suggested_name,
             parent=self,
         )
-        if dialog.exec_() != QtWidgets.QDialog.Accepted:
+        if dialog.exec() != QtWidgets.QDialog.Accepted:
             return None
         return dialog.result_name, dialog.result_profile
 
@@ -1306,6 +1317,9 @@ class MainSettingDialog(QtWidgets.QDialog, Ui_MainSettingDialog):
                 )
             ),
             FLOW_GUARD_CONFIG_KEY: self._get_flow_guard_settings(),
+            UI_THEME_CONFIG_KEY: normalize_ui_theme(
+                self.ui_theme_combo.currentData()
+            ),
         }
         if self._audio_managed_by_plugin:
             config.pop('audio_settings', None)
@@ -1319,6 +1333,25 @@ class MainSettingDialog(QtWidgets.QDialog, Ui_MainSettingDialog):
         if self.plugin_host is not None:
             self.plugin_host.update_settings_config(config)
         return config
+
+    def _build_appearance_tab(self):
+        self.appearance_tab = QtWidgets.QWidget(self.settingTabWidget)
+        layout = QtWidgets.QVBoxLayout(self.appearance_tab)
+        form = QtWidgets.QFormLayout()
+        self.ui_theme_combo = QtWidgets.QComboBox(self.appearance_tab)
+        for label, value in THEME_CHOICES:
+            self.ui_theme_combo.addItem(label, value)
+        form.addRow("界面主题：", self.ui_theme_combo)
+        layout.addLayout(form)
+        note = QtWidgets.QLabel(
+            "浅色模式是默认值，可避免 Windows 深色外观与旧界面颜色混用。"
+            "更改后点击“确定”即可立即应用。",
+            self.appearance_tab,
+        )
+        note.setWordWrap(True)
+        layout.addWidget(note)
+        layout.addStretch(1)
+        self.settingTabWidget.addTab(self.appearance_tab, "外观")
     
     def save_config(self):
         """保存配置到文件"""
@@ -1441,7 +1474,7 @@ class MainSettingDialog(QtWidgets.QDialog, Ui_MainSettingDialog):
     def get_settings(parent=None, plugin_host=None):
         """静态方法：显示设置对话框并返回配置"""
         dialog = MainSettingDialog(parent, plugin_host=plugin_host)
-        result = dialog.exec_()
+        result = dialog.exec()
         
         if result == QtWidgets.QDialog.Accepted:
             return dialog.get_config()

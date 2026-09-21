@@ -147,4 +147,4 @@ if __name__ == "__main__":
     ui = Ui_MainSettingDialog()
     ui.setupUi(MainSettingDialog)
     MainSettingDialog.show()
-    sys.exit(app.exec_())
+    sys.exit(app.exec())

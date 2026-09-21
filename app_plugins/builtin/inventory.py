@@ -769,7 +769,7 @@ class InventoryPlugin:
             return
 
         dialog = MaterialGroupAssignmentDialog(groups, targets, self.context.parent_widget)
-        if dialog.exec_() != QtWidgets.QDialog.Accepted:
+        if dialog.exec() != QtWidgets.QDialog.Accepted:
             return
         assignments = dialog.assignments()
         distribution = dialog.distribution_summary()

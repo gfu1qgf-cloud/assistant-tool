@@ -247,7 +247,7 @@ class TaskAudioSubtitleSettingsPage:
             suggested_name=suggested_name,
             parent=self.widget,
         )
-        if dialog.exec_() != QtWidgets.QDialog.Accepted:
+        if dialog.exec() != QtWidgets.QDialog.Accepted:
             return None
         return dialog.result_name, dialog.result_profile
 
@@ -615,7 +615,7 @@ class TaskAudioSubtitlePlugin:
 
     def _subtitle_custom(self, rows):
         dialog = SubtitleOptionsDialog(self.current_subtitle_settings(), self.parent)
-        if dialog.exec_() == QtWidgets.QDialog.Accepted:
+        if dialog.exec() == QtWidgets.QDialog.Accepted:
             self.start_subtitles(rows, dialog.values())
 
     def generate_all_audio(self, use_task_name=False, with_subtitles=True):

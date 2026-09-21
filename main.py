@@ -19,12 +19,13 @@ app_logger, app_log_file = configure_application_logging()
 install_exception_hooks()
 app_logger.info("程序启动，Python：%s", sys.version.replace("\n", " "))
 
-from globalValue import globalValue # 必须在PYQT5之前初始化，否则会出问题
+from globalValue import globalValue
 
 
 from qt_compat import QtWidgets
 
 from model.ComboBoxWheelGuard import ComboBoxWheelGuard
+from model.AppTheme import apply_configured_ui_theme
 
 
 from PYUI.main_pyui import MainDialog
@@ -35,12 +36,13 @@ def main():
     globalValue.get_whisper_model()
 
     app = QtWidgets.QApplication(sys.argv)
+    apply_configured_ui_theme(app, APP_ROOT / "config.json")
     app.combo_box_wheel_guard = ComboBoxWheelGuard(app)
     app.installEventFilter(app.combo_box_wheel_guard)
     app.aboutToQuit.connect(shutdown_application_logging)
     Dialog = MainDialog()
     Dialog.show()
-    return app.exec_()
+    return app.exec()
 
 
 if __name__ == "__main__":

@@ -262,6 +262,6 @@ class TaskTableSchemaDialog(QtWidgets.QDialog):
     @classmethod
     def get_schema(cls, schema, ods_path=None, parent=None):
         dialog = cls(schema, ods_path, parent)
-        if dialog.exec_() != QtWidgets.QDialog.Accepted:
+        if dialog.exec() != QtWidgets.QDialog.Accepted:
             return None
         return dialog.schema()

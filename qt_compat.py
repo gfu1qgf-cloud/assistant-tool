@@ -130,12 +130,6 @@ QtWidgets.QAction = QtGui.QAction
 QtWidgets.QShortcut = QtGui.QShortcut
 QtWidgets.QFileSystemModel = QtGui.QFileSystemModel
 
-# Qt6 removed the underscored spelling while the application still uses it.
-for _type in (QtWidgets.QApplication, QtWidgets.QDialog, QtWidgets.QMenu):
-    if not hasattr(_type, "exec_"):
-        _type.exec_ = _type.exec
-
-
 # Frequently imported names kept in one place for concise feature imports.
 QApplication = QtWidgets.QApplication
 QDate = QtCore.QDate

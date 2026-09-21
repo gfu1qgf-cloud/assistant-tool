@@ -47,6 +47,16 @@ class Qt6MigrationTests(unittest.TestCase):
         self.assertNotIn("QMediaContent", source)
         self.assertNotIn("QMediaPlayer.VideoSurface", source)
 
+    def test_production_code_does_not_use_removed_exec_spelling(self):
+        offenders = []
+        for root_name in ("main.py", "PYUI", "QTUI", "QtPlus", "model", "app_plugins"):
+            root = PROJECT_ROOT / root_name
+            paths = [root] if root.is_file() else root.rglob("*.py")
+            for path in paths:
+                if ".exec_(" in path.read_text(encoding="utf-8-sig"):
+                    offenders.append(str(path.relative_to(PROJECT_ROOT)))
+        self.assertEqual([], offenders)
+
 
 if __name__ == "__main__":
     unittest.main()

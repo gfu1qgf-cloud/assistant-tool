@@ -259,7 +259,7 @@ class SmartVideoSourceDialog(QtWidgets.QDialog):
     @classmethod
     def get_jobs(cls, jobs, parent=None):
         dialog = cls(jobs, parent)
-        if dialog.exec_() == QtWidgets.QDialog.Accepted:
+        if dialog.exec() == QtWidgets.QDialog.Accepted:
             return dialog.selected_jobs
         return None
 
@@ -1666,7 +1666,7 @@ class SmartVideoReviewDialog(QtWidgets.QDialog):
             parent,
             save_subtitle_defaults=save_subtitle_defaults,
         )
-        if dialog.exec_() == QtWidgets.QDialog.Accepted:
+        if dialog.exec() == QtWidgets.QDialog.Accepted:
             return dialog.reviewed_bundle
         return None
 

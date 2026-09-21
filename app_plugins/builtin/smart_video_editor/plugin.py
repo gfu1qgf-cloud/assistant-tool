@@ -264,7 +264,7 @@ class SmartVideoEditorPlugin:
                 )
                 return
             dialog = SmartVideoPendingDialog(self.pending_reviews, self.parent)
-            if dialog.exec_() != QtWidgets.QDialog.Accepted:
+            if dialog.exec() != QtWidgets.QDialog.Accepted:
                 return
             selected = list(dialog.selected_records)
             if dialog.action == "remove":
@@ -415,7 +415,7 @@ class SmartVideoEditorPlugin:
             f"跳过 {len(skipped)}，失败 {len(failed)}。",
             level=logging.ERROR if failed else logging.INFO,
         )
-        BreathCutResultDialog(result, self.parent).exec_()
+        BreathCutResultDialog(result, self.parent).exec()
 
     def _remember_pending_reviews(self, bundle):
         self.pending_reviews = update_smart_video_pending_reviews(
@@ -518,4 +518,4 @@ class SmartVideoEditorPlugin:
             f"缺段暂缓 {len(skipped)}，失败 {len(failed)}。",
             level=logging.ERROR if failed else logging.INFO,
         )
-        SmartVideoExportResultDialog(result, self.parent).exec_()
+        SmartVideoExportResultDialog(result, self.parent).exec()

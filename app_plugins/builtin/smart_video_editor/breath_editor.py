@@ -168,7 +168,7 @@ class BreathCutSourceDialog(QtWidgets.QDialog):
     @classmethod
     def get_sources(cls, sources=(), parent=None):
         dialog = cls(sources, parent)
-        if dialog.exec_() == QtWidgets.QDialog.Accepted:
+        if dialog.exec() == QtWidgets.QDialog.Accepted:
             return dialog.selected_sources
         return None
 
@@ -239,7 +239,7 @@ class BreathCutReviewDialog(QtWidgets.QDialog):
     @classmethod
     def get_reviewed_bundle(cls, bundle, parent=None):
         dialog = cls(bundle, parent)
-        if dialog.exec_() == QtWidgets.QDialog.Accepted:
+        if dialog.exec() == QtWidgets.QDialog.Accepted:
             return dialog.reviewed_bundle
         return None
 

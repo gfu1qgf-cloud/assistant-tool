@@ -23,6 +23,7 @@ from app_plugins.builtin import (
     TaskAudioSubtitlePlugin,
 )
 from PYUI.main_setting_pyui import MainSettingDialog
+from model.AppTheme import UI_THEME_CONFIG_KEY, apply_ui_theme
 from PYUI.review_status_pyui import ReviewStatusDialog
 from PYUI.utility_managers_pyui import (
     AboutDialog,
@@ -1445,7 +1446,7 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
             end='',
         )
         config = load_task_result_config(self.load_config())
-        TaskSubmissionAuditDialog(result, config, self).exec_()
+        TaskSubmissionAuditDialog(result, config, self).exec()
 
     def onTaskSubmissionAuditFailed(self, message, traceback_text):
         self.appendLog(
@@ -1476,7 +1477,7 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
             )
         else:
             self.appendLog('[口播长度] 检测完成，没有需要修改的行。', end='')
-        OralDurationCheckResultDialog(result, self).exec_()
+        OralDurationCheckResultDialog(result, self).exec()
 
     def onOralDurationCheckFailed(self, message, traceback_text):
         self.appendLog(
@@ -1554,13 +1555,13 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
         self.verticalLayout.insertLayout(setting_index, self.footer_buttons_layout)
 
     def openAbout(self):
-        AboutDialog(self).exec_()
+        AboutDialog(self).exec()
 
     def _resetAuxClicks(self):
         self._aux_click_count = 0
 
     def _showAuxNotice(self):
-        IntervalPrompt(self).exec_()
+        IntervalPrompt(self).exec()
 
     def eventFilter(self, watched, event):
         if watched is getattr(self, 'about_btn', None) and event.type() in {
@@ -1593,9 +1594,9 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
             '黄色表示今天已有链接，红色表示还有待核对视频。'
         )
         if failure_count:
-            self.daily_links_btn.setStyleSheet('background-color: #FFD6D6;')
+            self.daily_links_btn.setStyleSheet('background-color:#FFD6D6;color:#202124;')
         elif link_count:
-            self.daily_links_btn.setStyleSheet('background-color: #FFF1B8;')
+            self.daily_links_btn.setStyleSheet('background-color:#FFF1B8;color:#202124;')
         else:
             self.daily_links_btn.setStyleSheet('')
 
@@ -1604,7 +1605,7 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
         if normalized != self.daily_link_history:
             self.daily_link_history = normalized
             self.saveCurrentConfig()
-        DailyLinksDialog(self.daily_link_history, self).exec_()
+        DailyLinksDialog(self.daily_link_history, self).exec()
 
     def updateReviewStatusButton(self, snapshot=None):
         if snapshot is None:
@@ -1630,14 +1631,14 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
             )
         )
         if changes_count:
-            self.review_status_btn.setStyleSheet('background-color: #FFD6D6;')
+            self.review_status_btn.setStyleSheet('background-color:#FFD6D6;color:#202124;')
         elif passed_count:
-            self.review_status_btn.setStyleSheet('background-color: #DDF3E4;')
+            self.review_status_btn.setStyleSheet('background-color:#DDF3E4;color:#202124;')
         else:
             self.review_status_btn.setStyleSheet('')
 
     def openReviewStatus(self):
-        ReviewStatusDialog(parent=self).exec_()
+        ReviewStatusDialog(parent=self).exec()
         self.updateReviewStatusButton()
 
     def startReviewStatusMonitor(self):
@@ -2138,7 +2139,7 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
         copy_name_action = menu.addAction("复制任务名称")
         copy_text_action = menu.addAction("复制语音文案")
 
-        selected = menu.exec_(
+        selected = menu.exec(
             self.task_table_widget.viewport().mapToGlobal(position)
         )
         if selected in plugin_actions:
@@ -2390,7 +2391,7 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
             menu.addSeparator()
             open_logs_action = menu.addAction("打开本地日志目录")
             open_logs_action.triggered.connect(self.openLocalLogDirectory)
-        menu.exec_(self.log_text_edit.mapToGlobal(position))
+        menu.exec(self.log_text_edit.mapToGlobal(position))
 
     def openLocalLogDirectory(self):
         if self.app_log_file is None:
@@ -2449,7 +2450,7 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
         selected_mode = 'cancel'
         try:
             dialog = UpdatedFilesDetectionDialog(updated_files, self)
-            if dialog.exec_() == QtWidgets.QDialog.Accepted:
+            if dialog.exec() == QtWidgets.QDialog.Accepted:
                 selected_mode = dialog.selected_mode
         except BaseException as error:
             self.appendLog(
@@ -2688,6 +2689,10 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
         """打开设置对话框"""
         settings = MainSettingDialog.get_settings(self, plugin_host=self.plugin_host)
         if settings:
+            apply_ui_theme(
+                QtWidgets.QApplication.instance(),
+                settings.get(UI_THEME_CONFIG_KEY),
+            )
             self.audio_settings = self._load_audio_settings()
             saved_config = self.load_config()
             self.review_status_settings = normalize_review_status_settings(

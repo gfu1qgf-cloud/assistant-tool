@@ -250,7 +250,7 @@ class MusicDuckerPlugin:
         buttons.accepted.connect(dialog.accept)
         buttons.rejected.connect(dialog.reject)
         layout.addWidget(buttons)
-        if dialog.exec_() != QtWidgets.QDialog.Accepted:
+        if dialog.exec() != QtWidgets.QDialog.Accepted:
             return
         previous = dict(self.settings)
         self.settings = page.settings()

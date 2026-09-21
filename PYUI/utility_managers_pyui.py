@@ -726,7 +726,7 @@ class MaterialGroupAssignmentDialog(QtWidgets.QDialog):
         self.distribution_label = QtWidgets.QLabel("", self)
         self.distribution_label.setWordWrap(True)
         self.distribution_label.setStyleSheet(
-            "background:#F4F6F8;border:1px solid #D8DDE3;padding:8px;"
+            "background:#F4F6F8;color:#202124;border:1px solid #D8DDE3;padding:8px;"
         )
         layout.addWidget(self.distribution_label)
 
@@ -1096,7 +1096,7 @@ class GoogleSheetMonitorDialog(QtWidgets.QDialog):
     @classmethod
     def get_settings(cls, settings, status_text="", parent=None):
         dialog = cls(settings, status_text, parent)
-        if dialog.exec_() != QtWidgets.QDialog.Accepted:
+        if dialog.exec() != QtWidgets.QDialog.Accepted:
             return None
         return dialog.settings(), dialog.reset_baseline_requested
 
@@ -1753,7 +1753,7 @@ class InventoryManagerDialog(QtWidgets.QDialog):
         if not material or self.material_copy_thread is not None:
             return
         dialog = AppendMaterialDialog(material, self)
-        if dialog.exec_() != QtWidgets.QDialog.Accepted:
+        if dialog.exec() != QtWidgets.QDialog.Accepted:
             return
         paths = dialog.source_paths()
         self._set_material_copying(True)
@@ -1802,7 +1802,7 @@ class InventoryManagerDialog(QtWidgets.QDialog):
         sync_action.setEnabled(monitored)
         menu.addSeparator()
         remove_action = menu.addAction("移除记录")
-        selected = menu.exec_(self.material_table.viewport().mapToGlobal(position))
+        selected = menu.exec(self.material_table.viewport().mapToGlobal(position))
         if selected == append_action:
             self.append_material()
         elif selected == open_action:
@@ -1931,7 +1931,7 @@ class InventoryManagerDialog(QtWidgets.QDialog):
         if self.material_copy_thread is not None:
             return
         dialog = PersonProfileDialog(parent=self)
-        if dialog.exec_() != QtWidgets.QDialog.Accepted:
+        if dialog.exec() != QtWidgets.QDialog.Accepted:
             return
         profile = dialog.values()
         self._set_material_copying(True)
@@ -1962,7 +1962,7 @@ class InventoryManagerDialog(QtWidgets.QDialog):
         if not person or self.material_copy_thread is not None:
             return
         dialog = PersonProfileDialog(person, self)
-        if dialog.exec_() != QtWidgets.QDialog.Accepted:
+        if dialog.exec() != QtWidgets.QDialog.Accepted:
             return
         values = dialog.values()
         try:
@@ -1989,7 +1989,7 @@ class InventoryManagerDialog(QtWidgets.QDialog):
             return
         dialog = AppendMaterialDialog(person, self)
         dialog.setWindowTitle("追加人物素材")
-        if dialog.exec_() != QtWidgets.QDialog.Accepted:
+        if dialog.exec() != QtWidgets.QDialog.Accepted:
             return
         paths = dialog.source_paths()
         self._set_material_copying(True)
@@ -2033,7 +2033,7 @@ class InventoryManagerDialog(QtWidgets.QDialog):
             )
             return
         dialog = ImportMaterialsToPersonDialog(person, materials, self)
-        if dialog.exec_() != QtWidgets.QDialog.Accepted:
+        if dialog.exec() != QtWidgets.QDialog.Accepted:
             return
         material_ids = dialog.selected_material_ids()
         remove_originals = dialog.remove_originals()
@@ -2130,7 +2130,7 @@ class InventoryManagerDialog(QtWidgets.QDialog):
             action = menu.addAction(f"表格 {index}")
             action.setToolTip(link)
             actions[action] = link
-        selected = menu.exec_(
+        selected = menu.exec(
             self.person_open_sheet_btn.mapToGlobal(
                 QtCore.QPoint(0, self.person_open_sheet_btn.height())
             )
@@ -2224,7 +2224,7 @@ class InventoryManagerDialog(QtWidgets.QDialog):
         copy_sheets_action = menu.addAction("复制表格链接")
         menu.addSeparator()
         remove_action = menu.addAction("移除人物记录")
-        selected = menu.exec_(self.people_table.viewport().mapToGlobal(position))
+        selected = menu.exec(self.people_table.viewport().mapToGlobal(position))
         if selected == edit_action:
             self.edit_person()
         elif selected == append_action:
@@ -2456,7 +2456,7 @@ class InventoryManagerDialog(QtWidgets.QDialog):
 
     def add_item(self):
         dialog = InventoryItemDialog("添加库存", parent=self)
-        if dialog.exec_() != QtWidgets.QDialog.Accepted:
+        if dialog.exec() != QtWidgets.QDialog.Accepted:
             return
         try:
             self.store.add_item(*dialog.values())
@@ -2470,7 +2470,7 @@ class InventoryManagerDialog(QtWidgets.QDialog):
         if not item:
             return
         dialog = InventoryItemDialog("修改库存", item, self)
-        if dialog.exec_() != QtWidgets.QDialog.Accepted:
+        if dialog.exec() != QtWidgets.QDialog.Accepted:
             return
         try:
             self.store.update_item(item["id"], *dialog.values())

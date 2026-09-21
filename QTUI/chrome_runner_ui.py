@@ -103,4 +103,4 @@ if __name__ == "__main__":
     ui = Ui_ChromeRunnerDialog()
     ui.setupUi(ChromeRunnerDialog)
     ChromeRunnerDialog.show()
-    sys.exit(app.exec_())
+    sys.exit(app.exec())
