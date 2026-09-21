@@ -661,37 +661,64 @@ class TestVideoAssignmentInteractiveCancellation(unittest.TestCase):
             def deleteLater(self):
                 pass
 
-        win = make_test_main_window()
-        try:
-            # Configure valid paths
-            win.getTodayDir = lambda: str(self.today_dir)
-            with patch("globalValue.globalValue.videoSortingStationPath", return_value=str(self.video_root)), \
-                 patch("PYUI.main_pyui.VideoAssignmentThread", FakeVideoAssignmentThread):
-                # 1st click -> Starts one worker
-                t1 = win.assignVideo()
-                self.assertIsNotNone(t1)
-                self.assertTrue(t1.isRunning())
-                self.assertEqual(win.assign_video_btn.text(), "停止分拣")
-                self.assertTrue(win.assign_video_btn.isEnabled())
+        class FakeButton:
+            def __init__(self):
+                self._text = "分拣视频"
+                self._enabled = True
 
-                # 2nd click -> Requests interruption
-                t2 = win.assignVideo()
-                self.assertIs(t1, t2)
-                self.assertTrue(t1.isInterruptionRequested())
-                self.assertEqual(win.assign_video_btn.text(), "正在停止…")
-                self.assertFalse(win.assign_video_btn.isEnabled())
+            def setText(self, text):
+                self._text = text
 
-                # 3rd click -> idempotent; no duplicate worker
-                t3 = win.assignVideo()
-                self.assertIs(t1, t3)
+            def text(self):
+                return self._text
 
-                # Completion restores the button and clears the worker reference.
-                t1.finish()
-                self.assertTrue(win.assign_video_btn.isEnabled())
-                self.assertEqual(win.assign_video_btn.text(), "分拣视频")
-                self.assertIsNone(win.assign_video_thread)
-        finally:
-            win.close()
+            def setEnabled(self, enabled):
+                self._enabled = bool(enabled)
+
+            def isEnabled(self):
+                return self._enabled
+
+        # A lightweight host exercises MainDialog.assignVideo directly.  The
+        # full native window is covered by local GUI tests and is unsafe to
+        # construct repeatedly with the offscreen Windows CI platform plugin.
+        win = MagicMock()
+        win.assign_video_thread = None
+        win.assign_video_btn = FakeButton()
+        win._assign_video_button_text = ""
+        win.getTodayDir.return_value = str(self.today_dir)
+        win.load_config.return_value = {"video_match_ratio_threshold": 0.03}
+        win.onAssignVideoCompleted.side_effect = (
+            lambda *args: MainDialog.onAssignVideoCompleted(win, *args)
+        )
+        win.onAssignVideoFinished.side_effect = (
+            lambda *args: MainDialog.onAssignVideoFinished(win, *args)
+        )
+
+        with patch("globalValue.globalValue.videoSortingStationPath", return_value=str(self.video_root)), \
+             patch("PYUI.main_pyui.VideoAssignmentThread", FakeVideoAssignmentThread):
+            # 1st click -> Starts one worker
+            t1 = MainDialog.assignVideo(win)
+            self.assertIsNotNone(t1)
+            self.assertTrue(t1.isRunning())
+            self.assertEqual(win.assign_video_btn.text(), "停止分拣")
+            self.assertTrue(win.assign_video_btn.isEnabled())
+
+            # 2nd click -> Requests interruption
+            t2 = MainDialog.assignVideo(win)
+            self.assertIs(t1, t2)
+            self.assertTrue(t1.isInterruptionRequested())
+            self.assertEqual(win.assign_video_btn.text(), "正在停止…")
+            self.assertFalse(win.assign_video_btn.isEnabled())
+
+            # 3rd click -> idempotent; no duplicate worker
+            t3 = MainDialog.assignVideo(win)
+            self.assertIs(t1, t3)
+
+            # Completion restores the button and clears the worker reference.
+            t1.finish()
+            self.assertTrue(win.assign_video_btn.isEnabled())
+            self.assertEqual(win.assign_video_btn.text(), "分拣视频")
+            self.assertIsNone(win.assign_video_thread)
 
     def test_close_event_cooperative_wait_success(self):
         """closeEvent interrupts running VideoAssignmentThread; clean shutdown if thread exits within 2s."""
