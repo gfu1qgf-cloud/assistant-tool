@@ -389,7 +389,8 @@ class SmartTimelineWidget(QtWidgets.QWidget):
         return min(candidates, default=(9999, None), key=lambda value: value[0])[1]
 
     def mousePressEvent(self, event):
-        marker = self._nearest_marker(event.pos())
+        point = event.position()
+        marker = self._nearest_marker(point)
         if marker is not None:
             self.markerActivated.emit(marker)
             self.seekRequested.emit(float(marker["time"]))
@@ -397,33 +398,34 @@ class SmartTimelineWidget(QtWidgets.QWidget):
                 self.clipActivated.emit(int(marker["clip_index"]))
             return
         for rect, block in self._subtitle_rects:
-            if rect.contains(event.pos()):
+            if rect.contains(point):
                 self.subtitleActivated.emit(block)
                 self.seekRequested.emit(float(block["timeline_start"]))
                 self.clipActivated.emit(int(block["clip_index"]))
                 return
-        seconds = self._time_for_x(event.x())
+        seconds = self._time_for_x(point.x())
         self.seekRequested.emit(seconds)
         for rect, segment in self._segment_rects:
-            if rect.contains(event.pos()):
+            if rect.contains(point):
                 clip_index = int(segment["clip_index"])
                 self.clipActivated.emit(clip_index)
                 if event.button() == QtCore.Qt.LeftButton:
                     self._drag_clip_index = clip_index
                     self._drag_target_index = clip_index
-                    self._drag_start = QtCore.QPoint(event.pos())
+                    self._drag_start = QtCore.QPointF(point)
                     self._dragging_clip = False
                 break
 
     def mouseMoveEvent(self, event):
+        point = event.position()
         if self._drag_clip_index is not None and self._drag_start is not None:
-            distance = (event.pos() - self._drag_start).manhattanLength()
+            distance = (point - self._drag_start).manhattanLength()
             if distance >= QtWidgets.QApplication.startDragDistance():
                 self._dragging_clip = True
                 self.setCursor(QtCore.Qt.ClosedHandCursor)
                 target = None
                 for rect, segment in self._segment_rects:
-                    if rect.contains(event.pos()):
+                    if rect.contains(point):
                         target = int(segment["clip_index"])
                         break
                 if target != self._drag_target_index:
@@ -433,7 +435,7 @@ class SmartTimelineWidget(QtWidgets.QWidget):
                     "拖到另一个视频块上松开，即可调整整段视频的导出顺序"
                 )
                 return
-        marker = self._nearest_marker(event.pos())
+        marker = self._nearest_marker(point)
         if marker is not None:
             self.setToolTip(
                 f"{format_time(marker['time'])} · {marker.get('title', '问题')}\n"
@@ -441,7 +443,7 @@ class SmartTimelineWidget(QtWidgets.QWidget):
             )
             return
         for rect, block in self._subtitle_rects:
-            if rect.contains(event.pos()):
+            if rect.contains(point):
                 if block.get("is_missing"):
                     label = "⛔ 缺段原文"
                 else:
@@ -456,7 +458,7 @@ class SmartTimelineWidget(QtWidgets.QWidget):
                 )
                 return
         for rect, segment in self._segment_rects:
-            if rect.contains(event.pos()):
+            if rect.contains(point):
                 if segment.get("auto_excluded_duplicate"):
                     state = "重复候选，当前未选（不会导出）"
                 elif segment.get("duplicate_group_id"):
@@ -482,12 +484,13 @@ class SmartTimelineWidget(QtWidgets.QWidget):
                     )
                 )
                 return
-        self.setToolTip(format_time(self._time_for_x(event.x())))
+        self.setToolTip(format_time(self._time_for_x(point.x())))
 
     def mouseDoubleClickEvent(self, event):
+        point = event.position()
         if event.button() == QtCore.Qt.LeftButton:
             for rect, segment in self._segment_rects:
-                if rect.contains(event.pos()) and segment.get("is_removed"):
+                if rect.contains(point) and segment.get("is_removed"):
                     self.removedSegmentRestoreRequested.emit(dict(segment))
                     event.accept()
                     return

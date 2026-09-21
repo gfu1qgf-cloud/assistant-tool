@@ -26,6 +26,9 @@ from app_plugins.builtin.smart_video_editor.engine import (
 from app_plugins.builtin.smart_video_editor.timeline_review import (
     SmartVideoTimelineReview,
 )
+from app_plugins.builtin.smart_video_editor.timeline_widget import (
+    SmartTimelineWidget,
+)
 from PYUI.main_setting_pyui import MainSettingDialog
 from PYUI.smart_video_editor_pyui import (
     SmartVideoExportResultDialog,
@@ -88,6 +91,35 @@ class _Segment:
 class _Info:
     language = "sk"
     duration = 3.0
+
+
+class _MouseMoveEvent:
+    def __init__(self, x, y):
+        self._point = QtCore.QPointF(x, y)
+
+    def position(self):
+        return QtCore.QPointF(self._point)
+
+
+class SmartTimelineQt6EventTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+
+    def test_mouse_move_uses_qpointf_for_qrectf_hit_testing(self):
+        widget = SmartTimelineWidget()
+        block = {
+            "timeline_start": 0.0,
+            "text": "subtitle",
+            "suggestion": "",
+            "kind": "recognized",
+        }
+        widget._subtitle_rects = [(QtCore.QRectF(0, 0, 80, 30), block)]
+
+        widget.mouseMoveEvent(_MouseMoveEvent(10, 10))
+
+        self.assertIn("subtitle", widget.toolTip())
+        widget.deleteLater()
 
 
 class _FakeWhisperModel:
