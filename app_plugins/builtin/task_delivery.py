@@ -96,6 +96,7 @@ class TaskDeliveryPlugin:
                 widget_id="quick_actions",
                 factory=self.create_quick_actions,
                 order=10,
+                title="任务交付",
             )
         )
 

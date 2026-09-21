@@ -2,7 +2,12 @@ import logging
 
 from qt_compat import QtGui, QtWidgets
 
-from app_plugins.api import MAIN_MENU, PluginCommand, PluginSettingsPage
+from app_plugins.api import (
+    MAIN_MENU,
+    PluginCommand,
+    PluginMainWidget,
+    PluginSettingsPage,
+)
 from model.GlobalHotkey import (
     CHROME_NEXT_HOTKEY_CONFIG_KEY,
     CHROME_NEXT_HOTKEY_ID,
@@ -11,6 +16,27 @@ from model.GlobalHotkey import (
     normalize_hotkey_sequence,
 )
 from PYUI.chrome_runner_pyui import ChromeRunnerDialog
+
+
+class ChromeLauncherQuickActions(QtWidgets.QWidget):
+    def __init__(self, plugin, parent=None):
+        super().__init__(parent)
+        self.plugin = plugin
+        layout = QtWidgets.QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+        self.open_button = QtWidgets.QPushButton("开启谷歌浏览器", self)
+        self.open_button.setObjectName("open_chrome_btn")
+        self.next_button = QtWidgets.QPushButton("启动下一个浏览器", self)
+        self.next_button.setObjectName("launch_next_chrome_btn")
+        layout.addWidget(self.open_button)
+        layout.addWidget(self.next_button)
+        self.open_button.clicked.connect(
+            lambda _checked=False: plugin.open_launcher()
+        )
+        self.next_button.clicked.connect(
+            lambda _checked=False: plugin.launch_next_profile()
+        )
 
 
 class ChromeLauncherSettingsPage:
@@ -83,6 +109,7 @@ class ChromeLauncherPlugin:
         self.dialog = None
         self.hotkey_manager = None
         self.global_hotkey = DEFAULT_CHROME_NEXT_HOTKEY
+        self.quick_actions = None
 
     def register(self, context):
         self.context = context
@@ -114,6 +141,16 @@ class ChromeLauncherPlugin:
                 order=210,
             )
         )
+        context.register_main_widget(PluginMainWidget(
+            widget_id="quick_actions",
+            factory=self.create_quick_actions,
+            order=20,
+            title="Chrome 浏览器",
+        ))
+
+    def create_quick_actions(self, parent=None):
+        self.quick_actions = ChromeLauncherQuickActions(self, parent)
+        return self.quick_actions
 
     def start(self):
         config = self.context.load_config()
@@ -177,13 +214,18 @@ class ChromeLauncherPlugin:
         return False
 
     def _update_host_button_tooltips(self):
-        window = self.context.parent_widget
-        open_button = getattr(window, "open_chrome_btn", None)
+        open_button = (
+            self.quick_actions.open_button if self.quick_actions is not None
+            else getattr(self.context.parent_widget, "open_chrome_btn", None)
+        )
         if open_button is not None:
             open_button.setToolTip(
                 "打开 Chrome 启动器；配置由 Chrome 插件管理。"
             )
-        next_button = getattr(window, "launch_next_chrome_btn", None)
+        next_button = (
+            self.quick_actions.next_button if self.quick_actions is not None
+            else getattr(self.context.parent_widget, "launch_next_chrome_btn", None)
+        )
         if next_button is not None:
             next_button.setToolTip(
                 "启动已保存迭代队列中的下一个 Chrome Profile。"

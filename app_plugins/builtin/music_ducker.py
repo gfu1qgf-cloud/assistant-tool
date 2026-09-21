@@ -2,7 +2,12 @@ import logging
 
 from qt_compat import QtCore, QtWidgets
 
-from app_plugins.api import MAIN_MENU, PluginCommand, PluginSettingsPage
+from app_plugins.api import (
+    MAIN_MENU,
+    PluginCommand,
+    PluginMainWidget,
+    PluginSettingsPage,
+)
 from model.MusicDucker import (
     DEFAULT_MUSIC_DUCKER_SETTINGS,
     MusicDuckerThread,
@@ -11,6 +16,21 @@ from model.MusicDucker import (
 
 
 MUSIC_DUCKER_CONFIG_KEY = "music_ducker_settings"
+
+
+class MusicDuckerQuickActions(QtWidgets.QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        layout = QtWidgets.QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+        self.checkbox = QtWidgets.QCheckBox("启用音乐压制", self)
+        self.checkbox.setObjectName("music_ducker_checkbox")
+        self.settings_button = QtWidgets.QPushButton("参数…", self)
+        self.settings_button.setObjectName("music_ducker_settings_btn")
+        layout.addWidget(self.checkbox)
+        layout.addStretch(1)
+        layout.addWidget(self.settings_button)
 
 
 def settings_from_config(config):
@@ -116,6 +136,7 @@ class MusicDuckerPlugin:
         self.settings = dict(DEFAULT_MUSIC_DUCKER_SETTINGS)
         self.thread = None
         self._bound = False
+        self.quick_actions = None
 
     def register(self, context):
         self.context = context
@@ -136,6 +157,16 @@ class MusicDuckerPlugin:
             factory=MusicDuckerSettingsPage,
             order=120,
         ))
+        context.register_main_widget(PluginMainWidget(
+            widget_id="quick_actions",
+            factory=self.create_quick_actions,
+            order=30,
+            title="音乐压制",
+        ))
+
+    def create_quick_actions(self, parent=None):
+        self.quick_actions = MusicDuckerQuickActions(parent)
+        return self.quick_actions
 
     def start(self):
         self.settings = settings_from_config(self.context.load_config())
@@ -145,9 +176,14 @@ class MusicDuckerPlugin:
     def _bind_main_controls(self):
         if self._bound:
             return
-        window = self.context.parent_widget
-        checkbox = getattr(window, "music_ducker_checkbox", None)
-        settings_button = getattr(window, "music_ducker_settings_btn", None)
+        checkbox = (
+            self.quick_actions.checkbox if self.quick_actions is not None
+            else getattr(self.context.parent_widget, "music_ducker_checkbox", None)
+        )
+        settings_button = (
+            self.quick_actions.settings_button if self.quick_actions is not None
+            else getattr(self.context.parent_widget, "music_ducker_settings_btn", None)
+        )
         if checkbox is not None:
             checkbox.toggled.connect(self._checkbox_toggled)
         if settings_button is not None:
@@ -201,9 +237,14 @@ class MusicDuckerPlugin:
 
     def _sync_controls(self, stopping=False):
         running = self.is_running()
-        window = self.context.parent_widget
-        checkbox = getattr(window, "music_ducker_checkbox", None)
-        settings_button = getattr(window, "music_ducker_settings_btn", None)
+        checkbox = (
+            self.quick_actions.checkbox if self.quick_actions is not None
+            else getattr(self.context.parent_widget, "music_ducker_checkbox", None)
+        )
+        settings_button = (
+            self.quick_actions.settings_button if self.quick_actions is not None
+            else getattr(self.context.parent_widget, "music_ducker_settings_btn", None)
+        )
         if checkbox is not None:
             checkbox.blockSignals(True)
             checkbox.setChecked(running)

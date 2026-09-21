@@ -6,7 +6,12 @@ from pathlib import Path
 
 from qt_compat import QtCore, QtWidgets
 
-from app_plugins.api import TASK_CONTEXT_MENU, PluginCommand, PluginSettingsPage
+from app_plugins.api import (
+    TASK_CONTEXT_MENU,
+    PluginCommand,
+    PluginMainWidget,
+    PluginSettingsPage,
+)
 from model.ApiKeyHelper import (
     API_KEY_STATUSES_CONFIG_KEY,
     format_unix_time,
@@ -452,6 +457,77 @@ class TaskAudioSubtitleWorker(QtCore.QThread):
             )
 
 
+class TaskAudioSubtitleQuickActions(QtWidgets.QWidget):
+    def __init__(self, plugin, config=None, parent=None):
+        super().__init__(parent)
+        self.plugin = plugin
+        config = config if isinstance(config, dict) else {}
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(5)
+
+        audio_row = QtWidgets.QHBoxLayout()
+        audio_row.addWidget(QtWidgets.QLabel("音频", self))
+        self.audio_button = QtWidgets.QPushButton("生成音频", self)
+        self.audio_button.setObjectName("gen_audio_btn")
+        self.use_task_name_checkbox = QtWidgets.QCheckBox("使用任务名", self)
+        self.use_task_name_checkbox.setObjectName(
+            "audio_use_task_name_checkbox"
+        )
+        self.use_task_name_checkbox.setToolTip(
+            "勾选后使用任务名称生成音频，并且不会联动生成字幕。"
+        )
+        self.use_task_name_checkbox.setChecked(
+            bool(config.get("audio_use_task_name", False))
+        )
+        audio_row.addWidget(self.audio_button)
+        audio_row.addWidget(self.use_task_name_checkbox)
+        audio_row.addStretch(1)
+        layout.addLayout(audio_row)
+
+        subtitle_row = QtWidgets.QHBoxLayout()
+        subtitle_row.addWidget(QtWidgets.QLabel("字幕", self))
+        self.subtitle_button = QtWidgets.QPushButton("生成字幕", self)
+        self.subtitle_button.setObjectName("gen_vtt_btn")
+        self.line_break_checkbox = QtWidgets.QCheckBox("字幕携带换行", self)
+        self.line_break_checkbox.setObjectName(
+            "subtitle_line_break_checkbox"
+        )
+        subtitle_row.addWidget(self.subtitle_button)
+        subtitle_row.addWidget(self.line_break_checkbox)
+        subtitle_row.addStretch(1)
+        layout.addLayout(subtitle_row)
+
+        options_row = QtWidgets.QHBoxLayout()
+        options_row.addWidget(QtWidgets.QLabel("每块最多单词", self))
+        self.max_words_spinbox = QtWidgets.QSpinBox(self)
+        self.max_words_spinbox.setObjectName("subtitle_max_words_spinbox")
+        self.max_words_spinbox.setRange(0, 50)
+        self.max_words_spinbox.setSpecialValueText("不限")
+        options_row.addWidget(self.max_words_spinbox)
+        options_row.addWidget(QtWidgets.QLabel("字幕块间隔", self))
+        self.gap_ms_spinbox = QtWidgets.QSpinBox(self)
+        self.gap_ms_spinbox.setObjectName("subtitle_gap_ms_spinbox")
+        self.gap_ms_spinbox.setRange(-1, 5000)
+        self.gap_ms_spinbox.setSpecialValueText("保留")
+        self.gap_ms_spinbox.setSuffix(" ms")
+        options_row.addWidget(self.gap_ms_spinbox)
+        options_row.addStretch(1)
+        layout.addLayout(options_row)
+
+        self.audio_button.clicked.connect(self._generate_audio)
+        self.subtitle_button.clicked.connect(
+            lambda _checked=False: plugin.generate_all_subtitles()
+        )
+
+    def _generate_audio(self, _checked=False):
+        use_task_name = self.use_task_name_checkbox.isChecked()
+        self.plugin.generate_all_audio(
+            use_task_name=use_task_name,
+            with_subtitles=not use_task_name,
+        )
+
+
 class TaskAudioSubtitlePlugin:
     plugin_id = "task_audio_subtitle"
     display_name = "任务音频与字幕"
@@ -466,6 +542,7 @@ class TaskAudioSubtitlePlugin:
         self.worker = None
         self._key_index = 0
         self._bound = False
+        self.quick_actions = None
 
     def register(self, context):
         self.context = context
@@ -497,6 +574,20 @@ class TaskAudioSubtitlePlugin:
             factory=TaskAudioSubtitleSettingsPage,
             order=105,
         ))
+        context.register_main_widget(PluginMainWidget(
+            widget_id="quick_actions",
+            factory=self.create_quick_actions,
+            order=40,
+            title="任务音频与字幕",
+        ))
+
+    def create_quick_actions(self, parent=None):
+        self.quick_actions = TaskAudioSubtitleQuickActions(
+            self,
+            self.context.load_config(),
+            parent,
+        )
+        return self.quick_actions
 
     @property
     def parent(self):
@@ -519,23 +610,22 @@ class TaskAudioSubtitlePlugin:
     def _bind_main_controls(self):
         if self._bound:
             return
-        window = self.parent
+        controls = self.quick_actions
         bindings = (
-            ("subtitle_line_break_checkbox", "toggled"),
-            ("subtitle_max_words_spinbox", "valueChanged"),
-            ("subtitle_gap_ms_spinbox", "valueChanged"),
+            (getattr(controls, "line_break_checkbox", None), "toggled"),
+            (getattr(controls, "max_words_spinbox", None), "valueChanged"),
+            (getattr(controls, "gap_ms_spinbox", None), "valueChanged"),
         )
-        for name, signal_name in bindings:
-            widget = getattr(window, name, None)
+        for widget, signal_name in bindings:
             if widget is not None:
                 getattr(widget, signal_name).connect(self._capture_main_controls)
         self._bound = True
 
     def _capture_main_controls(self, *_args):
-        window = self.parent
-        line_break = getattr(window, "subtitle_line_break_checkbox", None)
-        max_words = getattr(window, "subtitle_max_words_spinbox", None)
-        gap = getattr(window, "subtitle_gap_ms_spinbox", None)
+        controls = self.quick_actions
+        line_break = getattr(controls, "line_break_checkbox", None)
+        max_words = getattr(controls, "max_words_spinbox", None)
+        gap = getattr(controls, "gap_ms_spinbox", None)
         if line_break is not None:
             self.settings["subtitle_include_line_breaks"] = line_break.isChecked()
         if max_words is not None:
@@ -544,11 +634,11 @@ class TaskAudioSubtitlePlugin:
             self.settings["subtitle_block_gap_ms"] = gap.value()
 
     def _sync_main_controls(self):
-        window = self.parent
+        controls = self.quick_actions
         widgets = (
-            (getattr(window, "subtitle_line_break_checkbox", None), "setChecked", self.settings["subtitle_include_line_breaks"]),
-            (getattr(window, "subtitle_max_words_spinbox", None), "setValue", self.settings["subtitle_max_words_per_block"]),
-            (getattr(window, "subtitle_gap_ms_spinbox", None), "setValue", self.settings["subtitle_block_gap_ms"]),
+            (getattr(controls, "line_break_checkbox", None), "setChecked", self.settings["subtitle_include_line_breaks"]),
+            (getattr(controls, "max_words_spinbox", None), "setValue", self.settings["subtitle_max_words_per_block"]),
+            (getattr(controls, "gap_ms_spinbox", None), "setValue", self.settings["subtitle_block_gap_ms"]),
         )
         for widget, method, value in widgets:
             if widget is None:
@@ -565,6 +655,10 @@ class TaskAudioSubtitlePlugin:
 
     def update_config(self, config):
         self._capture_main_controls()
+        if self.quick_actions is not None:
+            config["audio_use_task_name"] = (
+                self.quick_actions.use_task_name_checkbox.isChecked()
+            )
         config[TASK_AUDIO_SUBTITLE_CONFIG_KEY] = dict(self.settings)
         if self._audio_settings_source_present or self.audio_settings:
             config["audio_settings"] = copy.deepcopy(self.audio_settings)
@@ -677,8 +771,11 @@ class TaskAudioSubtitlePlugin:
 
     def _sync_busy_controls(self):
         busy = self.is_running()
-        for name, normal_text in (("gen_audio_btn", "生成音频"), ("gen_vtt_btn", "生成字幕")):
-            button = getattr(self.parent, name, None)
+        controls = self.quick_actions
+        for button, normal_text in (
+            (getattr(controls, "audio_button", None), "生成音频"),
+            (getattr(controls, "subtitle_button", None), "生成字幕"),
+        ):
             if button is not None:
                 button.setEnabled(not busy)
                 button.setText("正在处理…" if busy else normal_text)

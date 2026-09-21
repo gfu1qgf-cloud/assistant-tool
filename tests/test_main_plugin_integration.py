@@ -82,6 +82,27 @@ class MainPluginIntegrationTests(unittest.TestCase):
                     ["整理任务结果", "查看每日链接", "审核提醒"],
                 )
                 self.assertIsNotNone(window.task_delivery_plugin.quick_actions)
+                self.assertIsNotNone(window.task_audio_subtitle_plugin.quick_actions)
+                self.assertIsNotNone(window.chrome_plugin.quick_actions)
+                self.assertIsNotNone(window.music_ducker_plugin.quick_actions)
+                self.assertEqual(len(window.plugin_host.main_widget_order()), 4)
+                self.assertTrue(all(
+                    window.plugin_host.main_widget_frame(*full_id.split(".", 1))
+                    is not None
+                    for full_id in window.plugin_host.main_widget_order()
+                ))
+                self.assertIs(
+                    window.gen_audio_btn,
+                    window.task_audio_subtitle_plugin.quick_actions.audio_button,
+                )
+                self.assertIs(
+                    window.open_chrome_btn,
+                    window.chrome_plugin.quick_actions.open_button,
+                )
+                self.assertIs(
+                    window.music_ducker_checkbox,
+                    window.music_ducker_plugin.quick_actions.checkbox,
+                )
                 self.assertIs(
                     window.tidy_task_result_btn,
                     window.task_delivery_plugin.quick_actions.organize_button,

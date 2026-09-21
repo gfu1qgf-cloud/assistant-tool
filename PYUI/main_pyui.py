@@ -843,12 +843,6 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
         )
         self.assign_video_btn.clicked.connect(lambda clicked:self.assignVideo())
         self._assign_video_button_text = self.assign_video_btn.text()
-        self.open_chrome_btn.clicked.connect(lambda clicked:self.chromeRunner())
-        self.launch_next_chrome_btn.clicked.connect(
-            lambda clicked: self.launchNextChromeProfile()
-        )
-        self.gen_audio_btn.clicked.connect(lambda clicked:self.genTaskAudio())
-        self.gen_vtt_btn.clicked.connect(lambda clicked:self.genAllTaskVtt())
         self.task_directory_toggle_btn.toggled.connect(
             self.toggleTaskDirectory
         )
@@ -1180,8 +1174,37 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
                 item.setText(field_label(schema, field_name))
 
     def setupUtilityManagerButtons(self):
+        insert_index = self.verticalLayout.indexOf(self.audio_generation_layout)
+
+        def remove_legacy_layout(layout):
+            self.verticalLayout.removeItem(layout)
+            while layout.count():
+                item = layout.takeAt(0)
+                child_layout = item.layout()
+                if child_layout is not None:
+                    while child_layout.count():
+                        child = child_layout.takeAt(0)
+                        if child.widget() is not None:
+                            child.widget().hide()
+                            child.widget().deleteLater()
+                    child_layout.deleteLater()
+                widget = item.widget()
+                if widget is not None:
+                    widget.hide()
+                    widget.deleteLater()
+            layout.deleteLater()
+
+        for legacy_layout in (
+            self.audio_generation_layout,
+            self.subtitle_generation_action_layout,
+            self.subtitle_word_options_layout,
+            self.subtitle_gap_options_layout,
+            self.chrome_buttons_layout,
+            self.music_ducker_layout,
+        ):
+            remove_legacy_layout(legacy_layout)
+
         legacy_tidy_button = self.tidy_task_result_btn
-        insert_index = self.verticalLayout.indexOf(legacy_tidy_button)
         self.verticalLayout.removeWidget(legacy_tidy_button)
         legacy_tidy_button.hide()
         legacy_tidy_button.deleteLater()
@@ -1197,9 +1220,28 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
             self.plugin_main_frame,
             self.plugin_main_layout,
         )
+
+        media_actions = self.task_audio_subtitle_plugin.quick_actions
+        chrome_actions = self.chrome_plugin.quick_actions
+        music_actions = self.music_ducker_plugin.quick_actions
         quick_actions = self.task_delivery_plugin.quick_actions
-        if quick_actions is None:
-            raise RuntimeError("任务交付插件没有创建主界面快捷控件。")
+        if any(item is None for item in (
+            media_actions, chrome_actions, music_actions, quick_actions
+        )):
+            raise RuntimeError("插件没有创建完整的主界面快捷控件。")
+
+        self.gen_audio_btn = media_actions.audio_button
+        self.audio_use_task_name_checkbox = (
+            media_actions.use_task_name_checkbox
+        )
+        self.gen_vtt_btn = media_actions.subtitle_button
+        self.subtitle_line_break_checkbox = media_actions.line_break_checkbox
+        self.subtitle_max_words_spinbox = media_actions.max_words_spinbox
+        self.subtitle_gap_ms_spinbox = media_actions.gap_ms_spinbox
+        self.open_chrome_btn = chrome_actions.open_button
+        self.launch_next_chrome_btn = chrome_actions.next_button
+        self.music_ducker_checkbox = music_actions.checkbox
+        self.music_ducker_settings_btn = music_actions.settings_button
         # Compatibility aliases keep existing host tests and external helpers
         # working while ownership of the buttons moves to the plugin.
         self.tidy_task_result_btn = quick_actions.organize_button

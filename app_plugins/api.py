@@ -41,3 +41,4 @@ class PluginMainWidget:
     widget_id: str
     factory: Callable
     order: int = 100
+    title: str = ""

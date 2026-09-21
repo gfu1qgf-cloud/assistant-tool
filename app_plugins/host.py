@@ -1,7 +1,7 @@
 import logging
 from collections import OrderedDict
 
-from qt_compat import QtWidgets
+from qt_compat import QtCore, QtGui, QtWidgets
 
 from app_plugins.api import (
     MAIN_MENU,
@@ -11,6 +11,133 @@ from app_plugins.api import (
     PluginMainWidget,
     PluginSettingsPage,
 )
+
+
+PLUGIN_MAIN_WIDGET_ORDER_CONFIG_KEY = "plugin_main_widget_order"
+PLUGIN_MAIN_WIDGET_MIME = "application/x-lzx-plugin-main-widget"
+
+
+class _PluginWidgetDragHandle(QtWidgets.QToolButton):
+    def __init__(self, card):
+        super().__init__(card)
+        self.card = card
+        self._press_position = None
+        self.setText("⠿")
+        self.setAutoRaise(True)
+        self.setFixedWidth(24)
+        self.setCursor(QtCore.Qt.CursorShape.OpenHandCursor)
+        self.setToolTip("按住并拖动，可调整插件卡片顺序")
+
+    def mousePressEvent(self, event):
+        if event.button() == QtCore.Qt.MouseButton.LeftButton:
+            self._press_position = event.position().toPoint()
+            self.setCursor(QtCore.Qt.CursorShape.ClosedHandCursor)
+        super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        self._press_position = None
+        self.setCursor(QtCore.Qt.CursorShape.OpenHandCursor)
+        super().mouseReleaseEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if (
+            self._press_position is None
+            or not event.buttons() & QtCore.Qt.MouseButton.LeftButton
+        ):
+            super().mouseMoveEvent(event)
+            return
+        distance = (
+            event.position().toPoint() - self._press_position
+        ).manhattanLength()
+        if distance < QtWidgets.QApplication.startDragDistance():
+            super().mouseMoveEvent(event)
+            return
+        mime = QtCore.QMimeData()
+        mime.setData(
+            PLUGIN_MAIN_WIDGET_MIME,
+            QtCore.QByteArray(self.card.full_id.encode("utf-8")),
+        )
+        drag = QtGui.QDrag(self)
+        drag.setMimeData(mime)
+        pixmap = self.card.grab()
+        if not pixmap.isNull():
+            drag.setPixmap(pixmap)
+        drag.exec(QtCore.Qt.DropAction.MoveAction)
+        self._press_position = None
+        self.setCursor(QtCore.Qt.CursorShape.OpenHandCursor)
+
+
+class PluginMainWidgetFrame(QtWidgets.QFrame):
+    """Host-owned draggable frame around one plugin-owned widget."""
+
+    reorderRequested = QtCore.pyqtSignal(str, str, bool)
+
+    def __init__(self, full_id, title, content, parent=None):
+        super().__init__(parent)
+        self.full_id = str(full_id)
+        self.content = content
+        self.setObjectName("plugin_card_" + self.full_id.replace(".", "_"))
+        self.setFrameShape(QtWidgets.QFrame.Shape.StyledPanel)
+        self.setFrameShadow(QtWidgets.QFrame.Shadow.Plain)
+        self.setAcceptDrops(True)
+        self.setLineWidth(1)
+
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(7, 5, 7, 7)
+        layout.setSpacing(4)
+        header = QtWidgets.QHBoxLayout()
+        header.setContentsMargins(0, 0, 0, 0)
+        self.drag_handle = _PluginWidgetDragHandle(self)
+        self.title_label = QtWidgets.QLabel(str(title or full_id), self)
+        self.title_label.setStyleSheet("font-weight:600;")
+        header.addWidget(self.drag_handle)
+        header.addWidget(self.title_label)
+        header.addStretch(1)
+        layout.addLayout(header)
+        layout.addWidget(content)
+
+    @staticmethod
+    def _point(event):
+        position = getattr(event, "position", None)
+        if callable(position):
+            return position().toPoint()
+        return event.pos()
+
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasFormat(PLUGIN_MAIN_WIDGET_MIME):
+            self.setLineWidth(2)
+            event.setDropAction(QtCore.Qt.DropAction.MoveAction)
+            event.accept()
+            return
+        event.ignore()
+
+    def dragMoveEvent(self, event):
+        if event.mimeData().hasFormat(PLUGIN_MAIN_WIDGET_MIME):
+            event.setDropAction(QtCore.Qt.DropAction.MoveAction)
+            event.accept()
+            return
+        event.ignore()
+
+    def dragLeaveEvent(self, event):
+        self.setLineWidth(1)
+        super().dragLeaveEvent(event)
+
+    def dropEvent(self, event):
+        self.setLineWidth(1)
+        try:
+            source_id = bytes(
+                event.mimeData().data(PLUGIN_MAIN_WIDGET_MIME)
+            ).decode("utf-8")
+        except (UnicodeError, ValueError):
+            event.ignore()
+            return
+        if not source_id or source_id == self.full_id:
+            event.ignore()
+            return
+        after = self._point(event).y() >= self.height() / 2
+        self.reorderRequested.emit(source_id, self.full_id, after)
+        event.setDropAction(QtCore.Qt.DropAction.MoveAction)
+        event.accept()
 
 
 class PluginContext:
@@ -139,6 +266,8 @@ class PluginHost:
         self._settings_controllers = []
         self._main_widgets = OrderedDict()
         self._main_widget_controllers = OrderedDict()
+        self._main_widget_frames = OrderedDict()
+        self._main_widget_order = []
         self._main_widget_layout = None
         self._main_actions = {}
         self._tool_actions = {}
@@ -246,10 +375,25 @@ class PluginHost:
             target_layout = QtWidgets.QVBoxLayout(container)
             target_layout.setContentsMargins(0, 0, 0, 0)
         self._main_widget_layout = target_layout
-        entries = sorted(
+        default_entries = sorted(
             self._main_widgets.items(),
             key=lambda item: (item[1][1].order, item[0]),
         )
+        config = self.main_window.load_config()
+        saved_order = config.get(PLUGIN_MAIN_WIDGET_ORDER_CONFIG_KEY, [])
+        if not isinstance(saved_order, list):
+            saved_order = []
+        known_ids = {full_id for full_id, _entry in default_entries}
+        ordered_ids = [
+            str(full_id) for full_id in saved_order
+            if str(full_id) in known_ids
+        ]
+        ordered_ids.extend(
+            full_id for full_id, _entry in default_entries
+            if full_id not in ordered_ids
+        )
+        entries_by_id = dict(default_entries)
+        entries = [(full_id, entries_by_id[full_id]) for full_id in ordered_ids]
         for full_id, (plugin_id, descriptor) in entries:
             if full_id in self._main_widget_controllers:
                 continue
@@ -260,14 +404,56 @@ class PluginHost:
                     raise TypeError(
                         "主界面控件工厂必须返回 QWidget 或含 widget 的控制器。"
                     )
-                target_layout.addWidget(widget)
+                plugin = self._plugins.get(plugin_id)
+                title = (
+                    str(descriptor.title or "").strip()
+                    or str(getattr(plugin, "display_name", "") or "").strip()
+                    or plugin_id
+                )
+                frame = PluginMainWidgetFrame(full_id, title, widget, container)
+                frame.reorderRequested.connect(self.move_main_widget)
+                target_layout.addWidget(frame)
                 self._main_widget_controllers[full_id] = controller
+                self._main_widget_frames[full_id] = frame
             except Exception as error:
                 self._report_error(plugin_id, descriptor.widget_id, error)
+        self._main_widget_order = [
+            full_id for full_id in ordered_ids
+            if full_id in self._main_widget_frames
+        ]
         return list(self._main_widget_controllers.items())
 
     def main_widget_controller(self, plugin_id, widget_id):
         return self._main_widget_controllers.get(f"{plugin_id}.{widget_id}")
+
+    def main_widget_frame(self, plugin_id, widget_id):
+        return self._main_widget_frames.get(f"{plugin_id}.{widget_id}")
+
+    def main_widget_order(self):
+        return list(self._main_widget_order)
+
+    def move_main_widget(self, source_id, target_id, after=False, persist=True):
+        source_id = str(source_id or "")
+        target_id = str(target_id or "")
+        if (
+            source_id == target_id
+            or source_id not in self._main_widget_order
+            or target_id not in self._main_widget_order
+        ):
+            return False
+        order = [item for item in self._main_widget_order if item != source_id]
+        target_index = order.index(target_id) + (1 if after else 0)
+        order.insert(target_index, source_id)
+        self._main_widget_order = order
+        if self._main_widget_layout is not None:
+            for full_id in order:
+                frame = self._main_widget_frames.get(full_id)
+                if frame is not None:
+                    self._main_widget_layout.removeWidget(frame)
+                    self._main_widget_layout.addWidget(frame)
+        if persist:
+            self.main_window.saveCurrentConfig()
+        return True
 
     def _sorted_commands(self, location):
         entries = [
@@ -501,6 +687,7 @@ class PluginHost:
         return results
 
     def update_runtime_config(self, config):
+        config[PLUGIN_MAIN_WIDGET_ORDER_CONFIG_KEY] = self.main_widget_order()
         for plugin_id, plugin in self._plugins.items():
             try:
                 callback = getattr(plugin, "update_config", None)

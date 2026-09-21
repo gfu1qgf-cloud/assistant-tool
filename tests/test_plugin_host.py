@@ -34,6 +34,10 @@ from app_plugins.builtin.smart_video_editor.engine import (
     SMART_VIDEO_PENDING_CONFIG_KEY,
 )
 from app_plugins.host import PluginHost
+from app_plugins.host import (
+    PLUGIN_MAIN_WIDGET_ORDER_CONFIG_KEY,
+    PluginMainWidgetFrame,
+)
 from model.GlobalHotkey import (
     CHROME_NEXT_HOTKEY_CONFIG_KEY,
     INVENTORY_MANAGER_HOTKEY_CONFIG_KEY,
@@ -255,11 +259,59 @@ class PluginHostTests(unittest.TestCase):
         mounted = self.host.attach_main_widget_area(frame, layout)
 
         self.assertEqual(len(mounted), 1)
-        self.assertIs(plugin.widget.parent(), frame)
-        self.assertIs(layout.itemAt(0).widget(), plugin.widget)
+        card = layout.itemAt(0).widget()
+        self.assertIsInstance(card, PluginMainWidgetFrame)
+        self.assertIs(plugin.widget.parent(), card)
+        self.assertIs(card.parent(), frame)
         self.assertIs(
             self.host.main_widget_controller("widget_plugin", "quick_actions"),
             plugin.widget,
+        )
+        self.assertIs(
+            self.host.main_widget_frame("widget_plugin", "quick_actions"),
+            card,
+        )
+
+    def test_plugin_widget_order_loads_moves_and_persists(self):
+        class WidgetPlugin:
+            required_api_version = 1
+
+            def __init__(self, plugin_id, title, order):
+                self.plugin_id = plugin_id
+                self.display_name = title
+                self.order = order
+
+            def register(self, context):
+                context.register_main_widget(PluginMainWidget(
+                    "quick_actions",
+                    lambda parent: QtWidgets.QPushButton(
+                        self.display_name, parent
+                    ),
+                    order=self.order,
+                ))
+
+        self.main.config[PLUGIN_MAIN_WIDGET_ORDER_CONFIG_KEY] = [
+            "second.quick_actions",
+            "first.quick_actions",
+        ]
+        self.host.install(WidgetPlugin("first", "第一项", 10))
+        self.host.install(WidgetPlugin("second", "第二项", 20))
+        frame = QtWidgets.QFrame(self.main)
+        layout = QtWidgets.QVBoxLayout(frame)
+        self.host.attach_main_widget_area(frame, layout)
+        self.assertEqual(self.host.main_widget_order(), [
+            "second.quick_actions",
+            "first.quick_actions",
+        ])
+        self.assertTrue(self.host.move_main_widget(
+            "first.quick_actions",
+            "second.quick_actions",
+        ))
+        config = {}
+        self.host.update_runtime_config(config)
+        self.assertEqual(
+            config[PLUGIN_MAIN_WIDGET_ORDER_CONFIG_KEY],
+            ["first.quick_actions", "second.quick_actions"],
         )
 
     def test_rejects_plugins_requiring_newer_api(self):
