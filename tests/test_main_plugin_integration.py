@@ -32,6 +32,10 @@ class MainPluginIntegrationTests(unittest.TestCase):
     def setUpClass(cls):
         cls.app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
 
+    @unittest.skipIf(
+        os.environ.get("GITHUB_ACTIONS") == "true",
+        "requires an interactive Windows Qt desktop; covered by the local release suite",
+    )
     def test_inventory_is_reached_from_plugin_menu_and_settings_page(self):
         with patch("PYUI.main_pyui.GlobalHotkeyManager", FakeHotkeyManager), patch(
             "app_plugins.builtin.inventory.GlobalHotkeyManager",
