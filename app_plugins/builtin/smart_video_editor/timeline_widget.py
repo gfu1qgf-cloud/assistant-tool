@@ -1,4 +1,4 @@
-from PyQt5 import QtCore, QtGui, QtWidgets
+from qt_compat import QtCore, QtGui, QtWidgets
 
 
 _STATUS_COLORS = {

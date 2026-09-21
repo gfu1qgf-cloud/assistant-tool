@@ -1,7 +1,7 @@
 import logging
 from collections import OrderedDict
 
-from PyQt5 import QtWidgets
+from qt_compat import QtWidgets
 
 from app_plugins.api import (
     MAIN_MENU,

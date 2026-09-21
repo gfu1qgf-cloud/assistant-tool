@@ -7,9 +7,9 @@ from unittest.mock import MagicMock, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PyQt5 import QtWidgets
-from PyQt5.QtCore import Qt
-from PyQt5.QtWidgets import QListWidgetItem
+from qt_compat import QtWidgets
+from qt_compat import Qt
+from qt_compat import QListWidgetItem
 
 from PYUI.chrome_runner_pyui import ChromeRunnerDialog
 

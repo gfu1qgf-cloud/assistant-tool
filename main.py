@@ -22,7 +22,7 @@ app_logger.info("程序启动，Python：%s", sys.version.replace("\n", " "))
 from globalValue import globalValue # 必须在PYQT5之前初始化，否则会出问题
 
 
-from PyQt5 import QtWidgets
+from qt_compat import QtWidgets
 
 from model.ComboBoxWheelGuard import ComboBoxWheelGuard
 

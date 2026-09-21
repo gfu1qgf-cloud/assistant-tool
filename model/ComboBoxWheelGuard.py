@@ -1,4 +1,4 @@
-from PyQt5 import QtCore, QtWidgets
+from qt_compat import QtCore, QtWidgets
 
 
 class ComboBoxWheelGuard(QtCore.QObject):

@@ -1,6 +1,6 @@
 from collections import defaultdict
 
-from PyQt5 import QtCore, QtGui, QtWidgets
+from qt_compat import QtCore, QtGui, QtWidgets
 
 from model.ClipboardHelper import set_internal_clipboard_text
 from model.ReviewSubmissionHistory import (

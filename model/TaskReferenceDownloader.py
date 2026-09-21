@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 
-from PyQt5 import QtCore
+from qt_compat import QtCore
 
 from app_paths import APP_ROOT
 from model.GoogleDriveDownloader import (

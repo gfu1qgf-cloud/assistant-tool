@@ -8,7 +8,7 @@ from unittest import mock
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PyQt5 import QtWidgets
+from qt_compat import QtWidgets
 
 from PYUI.review_status_pyui import ReviewStatusDialog
 

@@ -14,7 +14,7 @@ if str(_WORKSPACE_ROOT) not in sys.path:
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PyQt5 import QtCore, QtWidgets
+from qt_compat import QtCore, QtWidgets
 
 from app_plugins.api import MAIN_MENU
 from app_plugins.builtin.daily_tasks import (

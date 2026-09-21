@@ -4,7 +4,7 @@ from html import escape, unescape
 from datetime import datetime
 from pathlib import Path
 
-from PyQt5 import QtCore, QtGui, QtWidgets
+from qt_compat import QtCore, QtGui, QtWidgets
 
 from model.ClipboardHelper import set_internal_clipboard_text
 from model.GoogleSheetMonitor import (

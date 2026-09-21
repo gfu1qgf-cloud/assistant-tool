@@ -6,9 +6,9 @@ import subprocess
 import time
 import uuid
 
-from PyQt5 import QtWidgets, QtGui
-from PyQt5.QtCore import Qt
-from PyQt5.QtWidgets import QListWidgetItem, QMessageBox, QInputDialog
+from qt_compat import QtWidgets, QtGui
+from qt_compat import Qt
+from qt_compat import QListWidgetItem, QMessageBox, QInputDialog
 
 from QTUI.chrome_runner_ui import Ui_ChromeRunnerDialog
 

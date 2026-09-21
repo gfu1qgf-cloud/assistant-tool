@@ -3,7 +3,7 @@ import unittest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PyQt5 import QtWidgets
+from qt_compat import QtWidgets
 
 from app_plugins.api import (
     MAIN_MENU,

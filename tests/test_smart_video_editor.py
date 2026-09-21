@@ -10,7 +10,7 @@ from unittest import mock
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from globalValue import GlobalValue
-from PyQt5 import QtCore, QtWidgets
+from qt_compat import QtCore, QtWidgets
 
 from app_plugins.builtin.smart_video_editor.settings import (
     SmartVideoEditorSettingsPage,

@@ -10,7 +10,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
-from PyQt5 import QtCore
+from qt_compat import QtCore
 
 from app_paths import APP_ROOT
 from model.GoogleDriveHelper import (

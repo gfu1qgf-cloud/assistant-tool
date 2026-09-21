@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PyQt5 import QtWidgets
+from qt_compat import QtWidgets
 
 from PYUI.main_setting_pyui import _write_config_with_rolling_backups
 

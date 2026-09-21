@@ -70,6 +70,9 @@ a = Analysis(
     runtime_hooks=[],
     excludes=[
         "IPython",
+        "PyQt5",
+        "PyQt5_sip",
+        "PySide6",
         "jupyter",
         "jupyter_client",
         "jupyter_core",

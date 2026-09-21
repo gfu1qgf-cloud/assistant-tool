@@ -21,7 +21,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
-from PyQt5 import QtCore
+from qt_compat import QtCore
 
 
 CHATGPT_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage"

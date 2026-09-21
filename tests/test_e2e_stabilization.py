@@ -34,7 +34,7 @@ if str(_WORKSPACE_ROOT) not in sys.path:
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PyQt5 import QtCore, QtWidgets
+from qt_compat import QtCore, QtWidgets
 
 # Target modules
 from PYUI.main_pyui import MainDialog, VideoAssignmentThread

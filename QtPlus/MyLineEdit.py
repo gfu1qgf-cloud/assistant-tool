@@ -1,5 +1,5 @@
-from PyQt5.QtWidgets import QLineEdit, QApplication
-from PyQt5.QtCore import Qt, pyqtSignal
+from qt_compat import QLineEdit, QApplication
+from qt_compat import Qt, pyqtSignal
 import sys
 import os
 
@@ -79,7 +79,7 @@ if __name__ == '__main__':
     app = QApplication(sys.argv)
 
     # 创建主窗口
-    from PyQt5.QtWidgets import QWidget, QVBoxLayout, QLabel
+    from qt_compat import QWidget, QVBoxLayout, QLabel
 
     window = QWidget()
     window.setWindowTitle('拖放文件夹路径示例')

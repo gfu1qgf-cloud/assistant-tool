@@ -9,7 +9,7 @@ from datetime import datetime
 from html import escape
 from pathlib import Path
 
-from PyQt5 import QtCore, QtGui, QtWidgets
+from qt_compat import QtCore, QtGui, QtWidgets
 
 from app_paths import APP_ROOT
 from app_plugins.api import MAIN_MENU, PluginCommand

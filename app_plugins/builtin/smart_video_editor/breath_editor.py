@@ -5,7 +5,7 @@ from __future__ import annotations
 import copy
 from pathlib import Path
 
-from PyQt5 import QtCore, QtGui, QtWidgets
+from qt_compat import QtCore, QtGui, QtWidgets
 
 from .engine import VIDEO_SUFFIXES
 from .timeline_review import SmartVideoTimelineReview

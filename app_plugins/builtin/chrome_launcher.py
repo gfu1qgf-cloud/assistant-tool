@@ -1,6 +1,6 @@
 import logging
 
-from PyQt5 import QtGui, QtWidgets
+from qt_compat import QtGui, QtWidgets
 
 from app_plugins.api import MAIN_MENU, PluginCommand, PluginSettingsPage
 from model.GlobalHotkey import (

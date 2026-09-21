@@ -6,7 +6,7 @@ import shutil
 import time
 from pathlib import Path
 
-from PyQt5 import QtCore, QtGui, QtWidgets
+from qt_compat import QtCore, QtGui, QtWidgets
 
 from .engine import (
     apply_clip_review,

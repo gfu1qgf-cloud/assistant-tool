@@ -1,6 +1,6 @@
 import html
 
-from PyQt5 import QtCore, QtGui, QtWidgets
+from qt_compat import QtCore, QtGui, QtWidgets
 
 from .engine import (
     _combined_detection_error,

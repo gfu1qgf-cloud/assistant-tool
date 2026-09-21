@@ -1,7 +1,7 @@
 import threading
 import time
 
-from PyQt5.QtCore import QThread, pyqtSignal
+from qt_compat import QThread, pyqtSignal
 
 
 DEFAULT_MUSIC_DUCKER_SETTINGS = {

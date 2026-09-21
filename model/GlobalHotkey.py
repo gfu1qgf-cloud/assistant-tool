@@ -2,7 +2,7 @@ import ctypes
 import ctypes.wintypes
 import sys
 
-from PyQt5 import QtCore, QtGui
+from qt_compat import QtCore, QtGui
 
 
 CHROME_NEXT_HOTKEY_CONFIG_KEY = 'chrome_next_global_hotkey'
@@ -60,6 +60,11 @@ def _key_to_virtual_key(qt_key):
     return SPECIAL_KEY_TO_VK.get(qt_key)
 
 
+def _enum_value(value):
+    """Return a numeric value for both PyQt5 enums and PyQt6 flags."""
+    return int(value.value) if hasattr(value, 'value') else int(value)
+
+
 def parse_hotkey_sequence(sequence_text):
     """返回 (规范文本, Windows modifiers, virtual key)。"""
     sequence_text = str(sequence_text or '').strip()
@@ -70,23 +75,27 @@ def parse_hotkey_sequence(sequence_text):
         sequence_text,
         QtGui.QKeySequence.PortableText,
     )
-    active_keys = [
-        int(sequence[index])
-        for index in range(sequence.count())
-        if int(sequence[index])
-    ]
+    active_keys = []
+    for index in range(sequence.count()):
+        key_combination = sequence[index]
+        if hasattr(key_combination, 'toCombined'):
+            combined = int(key_combination.toCombined())
+        else:
+            combined = int(key_combination)
+        if combined:
+            active_keys.append(combined)
     if len(active_keys) != 1:
         raise ValueError('全局快捷键只能包含一个组合键，不能使用连续按键。')
 
     combined_key = active_keys[0]
     modifiers = 0
-    if combined_key & int(QtCore.Qt.ControlModifier):
+    if combined_key & _enum_value(QtCore.Qt.ControlModifier):
         modifiers |= MOD_CONTROL
-    if combined_key & int(QtCore.Qt.AltModifier):
+    if combined_key & _enum_value(QtCore.Qt.AltModifier):
         modifiers |= MOD_ALT
-    if combined_key & int(QtCore.Qt.ShiftModifier):
+    if combined_key & _enum_value(QtCore.Qt.ShiftModifier):
         modifiers |= MOD_SHIFT
-    if combined_key & int(QtCore.Qt.MetaModifier):
+    if combined_key & _enum_value(QtCore.Qt.MetaModifier):
         modifiers |= MOD_WIN
     if not modifiers:
         raise ValueError('快捷键至少需要 Ctrl、Alt、Shift 或 Win 中的一个修饰键。')

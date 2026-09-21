@@ -9,7 +9,7 @@ import shutil
 from array import array
 from pathlib import Path
 
-from PyQt5 import QtCore
+from qt_compat import QtCore
 
 
 _WAVEFORM_CACHE = {}

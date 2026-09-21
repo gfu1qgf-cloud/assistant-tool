@@ -2,8 +2,8 @@ import logging
 import os
 from pathlib import Path
 
-from PyQt5 import QtCore, QtWidgets
-from PyQt5.QtWidgets import QMessageBox
+from qt_compat import QtCore, QtWidgets
+from qt_compat import QMessageBox
 
 from app_plugins.api import (
     MAIN_MENU,

@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from PyQt5 import QtCore, QtWidgets
+from qt_compat import QtCore, QtWidgets
 
 from model.OdsHelper import ReadTaskOds2, format_task_table_report
 from model.TaskTableSchema import (

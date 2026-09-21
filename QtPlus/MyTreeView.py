@@ -1,8 +1,8 @@
 import os
 import sys
 
-from PyQt5.QtCore import QDir, Qt
-from PyQt5.QtWidgets import QTreeView, QApplication, QMessageBox, QMenu, QFileSystemModel
+from qt_compat import QDir, Qt
+from qt_compat import QTreeView, QApplication, QMessageBox, QMenu, QFileSystemModel
 
 
 class FileExplorerTreeView(QTreeView):

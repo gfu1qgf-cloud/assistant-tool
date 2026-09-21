@@ -2,7 +2,7 @@ import logging
 import os
 import pathlib
 
-from PyQt5 import QtCore, QtGui, QtWidgets
+from qt_compat import QtCore, QtGui, QtWidgets
 
 from app_plugins.api import MAIN_MENU, TASK_CONTEXT_MENU, PluginCommand, PluginSettingsPage
 from model.ClipboardHelper import is_internal_clipboard_content

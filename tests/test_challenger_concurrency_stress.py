@@ -34,8 +34,8 @@ from unittest.mock import MagicMock, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PyQt5 import QtCore, QtGui, QtWidgets
-from PyQt5.QtCore import QThread
+from qt_compat import QtCore, QtGui, QtWidgets
+from qt_compat import QThread
 
 import model.InventoryManager as InventoryManagerMod
 from model.InventoryManager import (
@@ -759,7 +759,7 @@ class TestVideoAssignmentInteractiveCancellation(unittest.TestCase):
         win.assign_video_thread = thread
 
         event = MagicMock()
-        with patch("PyQt5.QtWidgets.QMessageBox.warning") as mock_warn:
+        with patch("qt_compat.QtWidgets.QMessageBox.warning") as mock_warn:
             MainDialog.closeEvent(win, event)
 
         event.ignore.assert_called_once_with()

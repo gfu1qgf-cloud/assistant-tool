@@ -23,7 +23,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
-from PyQt5 import QtCore
+from qt_compat import QtCore
 
 
 SMART_VIDEO_EDITOR_CONFIG_KEY = "smart_video_editor"

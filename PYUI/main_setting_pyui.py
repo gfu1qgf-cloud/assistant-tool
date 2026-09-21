@@ -4,8 +4,8 @@ import os
 import shutil
 from datetime import datetime
 from pathlib import Path
-from PyQt5 import QtCore, QtGui, QtWidgets
-from PyQt5.QtWidgets import QMessageBox
+from qt_compat import QtCore, QtGui, QtWidgets
+from qt_compat import QMessageBox
 
 from QTUI.main_setting_ui import Ui_MainSettingDialog
 from PYUI.task_schema_pyui import TaskTableSchemaDialog

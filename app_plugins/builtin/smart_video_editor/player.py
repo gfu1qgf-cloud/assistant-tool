@@ -23,7 +23,7 @@ import time
 import uuid
 from pathlib import Path
 
-from PyQt5 import QtCore, QtGui, QtNetwork, QtWidgets
+from qt_compat import QtCore, QtGui, QtNetwork, QtWidgets
 
 
 _USER32 = None
@@ -731,7 +731,7 @@ class _EmbeddedMpvReviewSurface(QtWidgets.QFrame):
 
 
 class _QtMediaReviewSurface(QtWidgets.QFrame):
-    """PyQt5 multimedia player with optional low-cost standby decoder."""
+    """PyQt6 multimedia player with optional low-cost standby decoder."""
 
     positionChanged = QtCore.pyqtSignal(float)
     playingChanged = QtCore.pyqtSignal(bool)
@@ -740,7 +740,7 @@ class _QtMediaReviewSurface(QtWidgets.QFrame):
 
     def __init__(self, parent=None, preload_enabled=True):
         super().__init__(parent)
-        from PyQt5 import QtMultimedia, QtMultimediaWidgets
+        from qt_compat import QtMultimedia, QtMultimediaWidgets
 
         self._multimedia = QtMultimedia
         self.source = ""
@@ -780,6 +780,7 @@ class _QtMediaReviewSurface(QtWidgets.QFrame):
         self.stack.addWidget(self.placeholder)
 
         self.players = []
+        self.audio_outputs = []
         self.video_widgets = []
         self.video_probes = []
         for index in range(decoder_count):
@@ -795,49 +796,46 @@ class _QtMediaReviewSurface(QtWidgets.QFrame):
                 QtWidgets.QSizePolicy.Expanding,
             )
             self.stack.addWidget(video)
-            player = QtMultimedia.QMediaPlayer(
-                self, QtMultimedia.QMediaPlayer.VideoSurface
-            )
+            player = QtMultimedia.QMediaPlayer(self)
+            audio_output = QtMultimedia.QAudioOutput(self)
+            player.setAudioOutput(audio_output)
             player.setVideoOutput(video)
-            # 15-17 UI updates per second are enough for a review playhead and
-            # avoid repainting a long waveform 30+ times per second.
-            player.setNotifyInterval(60)
             player.positionChanged.connect(
                 lambda milliseconds, slot=index: self._position_changed(
                     slot, milliseconds
                 )
             )
-            player.stateChanged.connect(
+            player.playbackStateChanged.connect(
                 lambda state, slot=index: self._state_changed(slot, state)
             )
             player.mediaStatusChanged.connect(
                 lambda status, slot=index: self._media_status_changed(slot, status)
             )
             try:
-                player.error.connect(
-                    lambda _error, slot=index: self._player_error(slot)
+                player.errorOccurred.connect(
+                    lambda _error, _message="", slot=index: self._player_error(slot)
                 )
             except (AttributeError, TypeError):
                 pass
-            probe = QtMultimedia.QVideoProbe(self)
+            probe = video.videoSink()
             try:
-                if probe.setSource(player):
-                    probe.videoFrameProbed.connect(
-                        lambda frame, slot=index: self._frame_probed(slot, frame)
-                    )
+                probe.videoFrameChanged.connect(
+                    lambda frame, slot=index: self._frame_probed(slot, frame)
+                )
             except (AttributeError, RuntimeError, TypeError):
                 pass
             self.players.append(player)
+            self.audio_outputs.append(audio_output)
             self.video_widgets.append(video)
             self.video_probes.append(probe)
 
     def is_available(self):
-        return bool(self.players and self.players[0].isAvailable())
+        return bool(self.players)
 
     def is_playing(self):
         return (
-            self.players[self._active].state()
-            == self._multimedia.QMediaPlayer.PlayingState
+            self.players[self._active].playbackState()
+            == self._multimedia.QMediaPlayer.PlaybackState.PlayingState
         )
 
     def configure_ffplay(self, _ffmpeg_path=""):
@@ -852,10 +850,7 @@ class _QtMediaReviewSurface(QtWidgets.QFrame):
             player.stop()
             self._sources[slot] = source
             self._pending_positions[slot] = position_ms
-            content = self._multimedia.QMediaContent(
-                QtCore.QUrl.fromLocalFile(source)
-            )
-            player.setMedia(content)
+            player.setSource(QtCore.QUrl.fromLocalFile(source))
         else:
             self._pending_positions[slot] = None
             player.setPosition(position_ms)
@@ -965,10 +960,9 @@ class _QtMediaReviewSurface(QtWidgets.QFrame):
         self._play_requested = False
         self._display_generation += 1
         self._queued = None
-        empty_media = self._multimedia.QMediaContent()
         for index, player in enumerate(self.players):
             player.stop()
-            player.setMedia(empty_media)
+            player.setSource(QtCore.QUrl())
             self._sources[index] = ""
             self._pending_positions[index] = None
             self.video_widgets[index].hide()
@@ -1001,8 +995,8 @@ class _QtMediaReviewSurface(QtWidgets.QFrame):
 
     def _media_status_changed(self, slot, status):
         ready_states = {
-            self._multimedia.QMediaPlayer.LoadedMedia,
-            self._multimedia.QMediaPlayer.BufferedMedia,
+            self._multimedia.QMediaPlayer.MediaStatus.LoadedMedia,
+            self._multimedia.QMediaPlayer.MediaStatus.BufferedMedia,
         }
         if status in ready_states:
             pending = self._pending_positions[slot]
@@ -1014,12 +1008,12 @@ class _QtMediaReviewSurface(QtWidgets.QFrame):
                 if self._play_requested:
                     self.players[slot].play()
         elif (
-            status == self._multimedia.QMediaPlayer.InvalidMedia
+            status == self._multimedia.QMediaPlayer.MediaStatus.InvalidMedia
             and slot == self._active
         ):
             self._player_error(slot)
         elif (
-            status == self._multimedia.QMediaPlayer.EndOfMedia
+            status == self._multimedia.QMediaPlayer.MediaStatus.EndOfMedia
             and slot == self._active
             and self._play_requested
             and not self._finishing_range
@@ -1058,7 +1052,9 @@ class _QtMediaReviewSurface(QtWidgets.QFrame):
     def _state_changed(self, slot, state):
         if slot != self._active:
             return
-        playing = state == self._multimedia.QMediaPlayer.PlayingState
+        playing = (
+            state == self._multimedia.QMediaPlayer.PlaybackState.PlayingState
+        )
         if playing:
             self._schedule_reveal(slot, delay=100)
         self.playingChanged.emit(playing)

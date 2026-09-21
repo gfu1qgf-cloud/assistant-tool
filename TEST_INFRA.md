@@ -25,7 +25,7 @@ The testing strategy is structured into four distinct verification tiers:
 
 ## 3. Test Harness Architecture & Test Doubles
 
-### 3.1 Headless PyQt5 Execution
+### 3.1 Headless PyQt6 Execution
 - **Environment Isolation:** Configured with `os.environ["QT_QPA_PLATFORM"] = "offscreen"`.
 - **GUI Event Lifecycle:** `QtWidgets.QApplication.instance() or QtWidgets.QApplication([])` initializes an offscreen Qt application.
 - **`create_test_main_window()` Context Manager:** Safely stubs system-level tray notifications (`setupNotificationTray`), global hotkey registrations (`FakeHotkeyManager`), and config persistence during window initialization and teardown. Ensures any background threads are interrupted and cleanly waited on (`thread.wait()`) prior to window closure.

@@ -1,7 +1,7 @@
 import ssl
 import threading
 
-from PyQt5 import QtCore
+from qt_compat import QtCore
 
 from model.GoogleSheetsHelper import (
     extract_sheet_gid,

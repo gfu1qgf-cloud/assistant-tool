@@ -1,4 +1,4 @@
-from PyQt5 import QtWidgets
+from qt_compat import QtWidgets
 
 from .engine import (
     SMART_VIDEO_EDITOR_CONFIG_KEY,

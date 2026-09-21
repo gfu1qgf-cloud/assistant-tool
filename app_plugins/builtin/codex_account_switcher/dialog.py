@@ -1,10 +1,10 @@
-"""PyQt5 dialog version of the standalone Codex account switcher UI."""
+"""PyQt6 dialog version of the standalone Codex account switcher UI."""
 
 from __future__ import annotations
 
 from datetime import datetime
 
-from PyQt5 import QtCore, QtGui, QtWidgets
+from qt_compat import QtCore, QtGui, QtWidgets
 
 from .launcher import (
     LaunchError,

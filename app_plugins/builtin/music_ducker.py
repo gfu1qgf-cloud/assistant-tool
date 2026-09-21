@@ -1,6 +1,6 @@
 import logging
 
-from PyQt5 import QtCore, QtWidgets
+from qt_compat import QtCore, QtWidgets
 
 from app_plugins.api import MAIN_MENU, PluginCommand, PluginSettingsPage
 from model.MusicDucker import (

@@ -7,9 +7,9 @@ import shutil
 import traceback
 from datetime import date
 
-from PyQt5 import QtWidgets, QtCore, QtGui
-from PyQt5.QtCore import QDate, pyqtSignal
-from PyQt5.QtWidgets import QMessageBox, QHeaderView
+from qt_compat import QtWidgets, QtCore, QtGui
+from qt_compat import QDate, pyqtSignal
+from qt_compat import QMessageBox, QHeaderView
 
 from app_plugins import PluginHost
 from app_plugins.builtin import (

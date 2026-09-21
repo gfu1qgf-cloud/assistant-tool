@@ -5,7 +5,7 @@ import threading
 import time
 from ctypes import wintypes
 
-from PyQt5 import QtCore
+from qt_compat import QtCore
 
 
 FLOW_GUARD_CONFIG_KEY = "flow_parameter_guard"

@@ -4,7 +4,7 @@ import random
 import traceback
 from pathlib import Path
 
-from PyQt5 import QtCore, QtWidgets
+from qt_compat import QtCore, QtWidgets
 
 from app_plugins.api import TASK_CONTEXT_MENU, PluginCommand, PluginSettingsPage
 from model.ApiKeyHelper import (

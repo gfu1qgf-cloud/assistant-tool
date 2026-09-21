@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from PyQt5 import QtCore
+from qt_compat import QtCore
 
 from app_plugins.api import MAIN_MENU, PluginCommand
 
@@ -55,7 +55,7 @@ class CodexAccountSwitcherPlugin:
                 self.dialog.refresh_all()
         except (AccountSwitcherError, OSError) as error:
             self.context.log(f"无法打开账号切换器：{error}")
-            from PyQt5 import QtWidgets
+            from qt_compat import QtWidgets
 
             QtWidgets.QMessageBox.critical(
                 self.context.parent_widget, "账号切换器无法打开", str(error)

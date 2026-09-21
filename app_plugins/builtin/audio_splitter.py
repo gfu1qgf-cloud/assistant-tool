@@ -3,7 +3,7 @@ import os
 import re
 from pathlib import Path
 
-from PyQt5 import QtCore, QtGui, QtWidgets
+from qt_compat import QtCore, QtGui, QtWidgets
 from pydub import AudioSegment, silence
 
 from app_plugins.api import TASK_CONTEXT_MENU, TOOLS_MENU, PluginCommand, PluginSettingsPage
