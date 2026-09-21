@@ -690,23 +690,24 @@ class TestVideoAssignmentInteractiveCancellation(unittest.TestCase):
         """closeEvent ignores close and warns user if thread does not stop within 2s."""
         win = make_test_main_window()
         try:
-            thread = VideoAssignmentThread(str(self.today_dir), str(self.video_root), parent=win)
+            # This test only verifies the closeEvent decision.  A real QThread is
+            # unnecessary here and can make Qt tear down a native thread object
+            # while its methods are monkey-patched on headless CI runners.
+            thread = MagicMock()
+            thread.isRunning.return_value = True
+            thread.wait.return_value = False
             win.assign_video_thread = thread
-
-            # Stub wait(2000) to return False (thread stubborn / not exiting in time)
-            thread.isRunning = lambda: True
-            thread.requestInterruption = MagicMock()
-            thread.wait = MagicMock(return_value=False)
 
             event = QtGui.QCloseEvent()
             with patch("PyQt5.QtWidgets.QMessageBox.warning") as mock_warn:
                 win.closeEvent(event)
                 self.assertFalse(event.isAccepted(), "closeEvent must be ignored when wait() times out")
+                thread.requestInterruption.assert_called_once_with()
+                thread.wait.assert_called_once_with(2000)
                 mock_warn.assert_called_once()
                 self.assertIn("视频分拣仍在运行", mock_warn.call_args[0][1])
         finally:
-            # Restore to allow cleanup
-            thread.isRunning = lambda: False
+            win.assign_video_thread = None
             win.close()
 
 
