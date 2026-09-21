@@ -63,6 +63,7 @@ class MainPluginIntegrationTests(unittest.TestCase):
                 self.assertIn("任务提交表自查", tool_titles)
                 self.assertIn("批量切分音频…", tool_titles)
                 self.assertIn("库存与素材管理器", plugin_titles)
+                self.assertIn("素材整理…", plugin_titles)
                 self.assertIn("监听剪贴板中的 Google 链接", plugin_titles)
                 self.assertIn("Chrome 启动器", plugin_titles)
                 self.assertIn("启动下一个 Chrome", plugin_titles)
@@ -97,6 +98,7 @@ class MainPluginIntegrationTests(unittest.TestCase):
                 self.assertFalse(hasattr(window, "split_audio_btn"))
                 self.assertFalse(hasattr(window, "split_len_sbox"))
                 self.assertFalse(hasattr(window, "smart_video_editor_thread"))
+                self.assertIsNone(window.material_organizer_plugin.store)
                 self.assertIsNotNone(window.chrome_plugin.dialog)
                 self.assertIsNotNone(window.audio_splitter_plugin.dialog)
 
@@ -153,6 +155,7 @@ class MainPluginIntegrationTests(unittest.TestCase):
                         for index in range(settings.settingTabWidget.count())
                     ]
                     self.assertIn("库存插件", tab_titles)
+                    self.assertIn("素材整理", tab_titles)
                     self.assertIn("智能剪辑", tab_titles)
                     self.assertIn("Chrome 插件", tab_titles)
                     self.assertIn("切分音频插件", tab_titles)

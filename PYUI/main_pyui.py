@@ -17,6 +17,7 @@ from app_plugins.builtin import (
     CodexAccountSwitcherPlugin,
     DailyTasksPlugin,
     InventoryPlugin,
+    MaterialOrganizerPlugin,
     MusicDuckerPlugin,
     SmartVideoEditorPlugin,
     TaskAudioSubtitlePlugin,
@@ -799,6 +800,9 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
         self.setupNotificationTray()
         self.plugin_host = PluginHost(self)
         self.inventory_plugin = self.plugin_host.install(InventoryPlugin())
+        self.material_organizer_plugin = self.plugin_host.install(
+            MaterialOrganizerPlugin()
+        )
         self.task_delivery_plugin = self.plugin_host.install(TaskDeliveryPlugin())
         self.chrome_plugin = self.plugin_host.install(ChromeLauncherPlugin())
         self.codex_account_switcher_plugin = self.plugin_host.install(
