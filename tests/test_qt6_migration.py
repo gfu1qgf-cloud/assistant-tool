@@ -57,6 +57,23 @@ class Qt6MigrationTests(unittest.TestCase):
                     offenders.append(str(path.relative_to(PROJECT_ROOT)))
         self.assertEqual([], offenders)
 
+    def test_production_qt_constants_exist_at_runtime(self):
+        """Catch Qt5-style enum references that qt_compat forgot to expose."""
+        pattern = re.compile(r"(?<![A-Za-z0-9_])Qt\.([A-Za-z_][A-Za-z0-9_]*)")
+        missing = []
+        roots = ("main.py", "PYUI", "QTUI", "QtPlus", "model", "app_plugins")
+        for root_name in roots:
+            root = PROJECT_ROOT / root_name
+            paths = [root] if root.is_file() else root.rglob("*.py")
+            for path in paths:
+                source = path.read_text(encoding="utf-8-sig")
+                for name in sorted(set(pattern.findall(source))):
+                    if not hasattr(qt_compat.Qt, name):
+                        missing.append(
+                            f"{path.relative_to(PROJECT_ROOT)}: Qt.{name}"
+                        )
+        self.assertEqual([], missing)
+
 
 if __name__ == "__main__":
     unittest.main()

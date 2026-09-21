@@ -98,6 +98,24 @@ class ChromeProfileGroupTests(unittest.TestCase):
             self.assertIsNone(dialog.active_iterator_group_id)
             self.assertEqual(dialog.profile_groups[0]["future_metadata"], {"color": "blue"})
 
+    def test_iterator_real_launch_path_reads_configured_websites(self):
+        """Exercise the real launch path instead of mocking launch_profile."""
+        with tempfile.TemporaryDirectory() as directory:
+            config_path = Path(directory) / "config.json"
+            dialog = self.create_dialog(config_path)
+            dialog.web_list_widget.clear()
+            dialog.web_list_widget.addItem("https://flow.google.com/")
+            dialog.iterator_profile_directories = ["Profile 1"]
+
+            with patch("PYUI.chrome_runner_pyui.subprocess.Popen") as popen:
+                launched = dialog.launch_next_profile()
+
+            self.assertEqual(launched["directory"], "Profile 1")
+            popen.assert_called_once()
+            command = popen.call_args.args[0]
+            self.assertIn("--profile-directory=Profile 1", command)
+            self.assertIn("https://flow.google.com/", command)
+
     def test_each_group_keeps_its_own_next_profile_across_switch_and_restart(self):
         with tempfile.TemporaryDirectory() as directory:
             config_path = Path(directory) / "config.json"

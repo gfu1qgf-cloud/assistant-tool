@@ -23,6 +23,7 @@ def _alias(owner, old_name, enum_owner, new_name=None):
 
 
 _QT_ENUMS = {
+    "DisplayRole": QtCore.Qt.ItemDataRole,
     "UserRole": QtCore.Qt.ItemDataRole,
     "Checked": QtCore.Qt.CheckState,
     "Unchecked": QtCore.Qt.CheckState,
@@ -70,7 +71,7 @@ for _name, _enum in _QT_ENUMS.items():
     _alias(QtCore.Qt, _name, _enum)
 for _name in (
     "Key_Backspace", "Key_Delete", "Key_Down", "Key_End", "Key_Enter",
-    "Key_Escape", "Key_F", "Key_Home", "Key_Insert", "Key_Left",
+    "Key_Escape", "Key_F", "Key_F1", "Key_F24", "Key_Home", "Key_Insert", "Key_Left",
     "Key_PageDown", "Key_PageUp", "Key_Return", "Key_Right", "Key_Space",
     "Key_Tab", "Key_Up",
 ):
