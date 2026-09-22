@@ -385,6 +385,20 @@ def discover_images(paths, output_dir="", recursive=True):
         path = Path(raw_path)
         if not path.exists():
             continue
+        try:
+            source_root = path.resolve()
+        except OSError:
+            source_root = path
+        # Only exclude an output tree that is nested *inside* this input
+        # directory.  If the user explicitly selects a folder below an output
+        # or library root, excluding every file would incorrectly report that
+        # the folder contains no supported images.
+        exclude_nested_output = bool(
+            output is not None
+            and path.is_dir()
+            and source_root != output
+            and source_root in output.parents
+        )
         candidates = (
             path.rglob("*") if path.is_dir() and recursive
             else path.glob("*") if path.is_dir()
@@ -397,7 +411,9 @@ def discover_images(paths, output_dir="", recursive=True):
                 continue
             if not resolved.is_file() or resolved.suffix.lower() not in IMAGE_SUFFIXES:
                 continue
-            if output is not None and (resolved == output or output in resolved.parents):
+            if exclude_nested_output and (
+                resolved == output or output in resolved.parents
+            ):
                 continue
             key = os.path.normcase(str(resolved))
             if key not in seen:

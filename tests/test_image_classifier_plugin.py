@@ -90,6 +90,20 @@ class ImageClassifierCoreTests(unittest.TestCase):
             self.assertEqual({path.name for path in recursive}, {"one.jfif", "two.png"})
             self.assertEqual([path.name for path in flat], ["one.jfif"])
 
+    def test_discovery_does_not_exclude_explicit_folder_below_output_root(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            library = Path(temporary) / "image_library"
+            selected = library / "new" / "batch"
+            selected.mkdir(parents=True)
+            image = selected / "photo.jpeg"
+            image.write_bytes(b"image")
+
+            discovered = discover_images(
+                [selected], output_dir=library, recursive=True
+            )
+
+            self.assertEqual(discovered, [image.resolve()])
+
     def test_apply_copies_safely_and_generates_unique_names(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
