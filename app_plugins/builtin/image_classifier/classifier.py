@@ -20,6 +20,10 @@ IMAGE_SUFFIXES = {
     ".jpg", ".jpeg", ".jfif", ".png", ".webp", ".bmp", ".gif",
     ".tif", ".tiff", ".avif",
 }
+VIDEO_SUFFIXES = {
+    ".mp4", ".mov", ".m4v", ".avi", ".mkv", ".webm", ".mts", ".m2ts"
+}
+MEDIA_SUFFIXES = IMAGE_SUFFIXES | VIDEO_SUFFIXES
 MODEL_CHOICES = {
     "large": "openai/clip-vit-large-patch14",
     "base": "openai/clip-vit-base-patch32",
@@ -260,11 +264,14 @@ DEFAULT_SETTINGS = {
     "minimum_similarity": 0.20,
     "minimum_margin": 0.020,
     "parent_weight": 0.15,
+    "video_sample_frames": 3,
+    "maximum_examples_per_category": 24,
     "recursive": True,
     "operation": "copy",
     "last_sources": [],
     "last_output_dir": "",
     "categories": DEFAULT_CATEGORY_TREE,
+    "category_examples": {},
 }
 
 
@@ -315,11 +322,35 @@ def normalize_category_tree(value=None):
                 if description and key not in seen:
                     seen.add(key)
                     descriptions.append(description)
-            if descriptions:
-                children[sub] = descriptions
+            children[sub] = descriptions
         if children:
             result[main] = children
     return result or copy.deepcopy(DEFAULT_CATEGORY_TREE)
+
+
+def normalize_category_examples(value, categories):
+    source = value if isinstance(value, dict) else {}
+    valid_paths = {
+        f"{main}/{sub}"
+        for main, children in categories.items()
+        for sub in children
+    }
+    result = {}
+    for raw_category, raw_paths in source.items():
+        category = str(raw_category or "").replace("\\", "/").strip("/")
+        if category not in valid_paths:
+            continue
+        paths = []
+        seen = set()
+        for raw_path in raw_paths if isinstance(raw_paths, (list, tuple)) else [raw_paths]:
+            path = str(raw_path or "").strip()
+            key = os.path.normcase(path)
+            if path and key not in seen:
+                seen.add(key)
+                paths.append(path)
+        if paths:
+            result[category] = paths[:100]
+    return result
 
 
 def normalize_image_classifier_settings(value=None):
@@ -338,6 +369,7 @@ def normalize_image_classifier_settings(value=None):
         path = str(value or "").strip()
         if path and path not in sources:
             sources.append(path)
+    categories = normalize_category_tree(source.get("categories"))
     return {
         "model": model,
         "device": device,
@@ -351,15 +383,25 @@ def normalize_image_classifier_settings(value=None):
         "parent_weight": _float(
             source.get("parent_weight"), 0.15, 0.0, 0.5
         ),
+        "video_sample_frames": _integer(
+            source.get("video_sample_frames"), 3, 1, 8
+        ),
+        "maximum_examples_per_category": _integer(
+            source.get("maximum_examples_per_category"), 24, 1, 100
+        ),
         "recursive": bool(source.get("recursive", True)),
         "operation": operation,
         "last_sources": sources[-20:],
         "last_output_dir": str(source.get("last_output_dir") or ""),
-        "categories": normalize_category_tree(source.get("categories")),
+        "categories": categories,
+        "category_examples": normalize_category_examples(
+            source.get("category_examples"), categories
+        ),
     }
 
 
-def flatten_categories(tree):
+def flatten_categories(tree, examples=None):
+    examples = examples if isinstance(examples, dict) else {}
     result = []
     for main, children in normalize_category_tree(tree).items():
         for sub, descriptions in children.items():
@@ -368,11 +410,13 @@ def flatten_categories(tree):
                 "parent": main,
                 "name": sub,
                 "descriptions": list(descriptions),
+                "examples": list(examples.get(f"{main}/{sub}", []) or []),
             })
     return result
 
 
-def discover_images(paths, output_dir="", recursive=True):
+def discover_media(paths, output_dir="", recursive=True, suffixes=None):
+    suffixes = set(suffixes or MEDIA_SUFFIXES)
     output = None
     if output_dir:
         try:
@@ -409,7 +453,7 @@ def discover_images(paths, output_dir="", recursive=True):
                 resolved = candidate.resolve()
             except OSError:
                 continue
-            if not resolved.is_file() or resolved.suffix.lower() not in IMAGE_SUFFIXES:
+            if not resolved.is_file() or resolved.suffix.lower() not in suffixes:
                 continue
             if exclude_nested_output and (
                 resolved == output or output in resolved.parents
@@ -420,6 +464,14 @@ def discover_images(paths, output_dir="", recursive=True):
                 seen.add(key)
                 result.append(resolved)
     return sorted(result, key=lambda item: os.path.normcase(str(item)))
+
+
+def discover_images(paths, output_dir="", recursive=True):
+    """Backward-compatible image-only scanner used by older callers/tests."""
+    return discover_media(
+        paths, output_dir=output_dir, recursive=recursive,
+        suffixes=IMAGE_SUFFIXES,
+    )
 
 
 def choose_category(category_paths, scores, minimum_similarity, minimum_margin):
@@ -453,6 +505,7 @@ def choose_category(category_paths, scores, minimum_similarity, minimum_margin):
 
 _MODEL_CACHE = {}
 _MODEL_LOCK = threading.Lock()
+_REFERENCE_FEATURE_CACHE = {}
 
 
 class ImageClassifierEngine:
@@ -510,7 +563,10 @@ class ImageClassifierEngine:
         description_categories = []
         prompts = []
         for category_index, category in enumerate(categories):
-            for description in category["descriptions"]:
+            descriptions = category["descriptions"] or [
+                f"{category['parent']} {category['name']}"
+            ]
+            for description in descriptions:
                 description_index = len(description_categories)
                 description_categories.append(category_index)
                 for template in PROMPT_TEMPLATES:
@@ -567,13 +623,186 @@ class ImageClassifierEngine:
             parent_features,
         )
 
+    def _embed_images(self, torch, model, processor, device, images):
+        rows = []
+        chunk_size = max(1, self.settings["batch_size"])
+        with torch.inference_mode():
+            for offset in range(0, len(images), chunk_size):
+                pixels = processor(
+                    images=images[offset:offset + chunk_size],
+                    return_tensors="pt",
+                ).pixel_values.to(device)
+                features = model.get_image_features(pixel_values=pixels)
+                rows.append(features / features.norm(p=2, dim=-1, keepdim=True))
+        return torch.cat(rows, dim=0)
+
+    @staticmethod
+    def _useful_video_frame(frame):
+        try:
+            import cv2
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            brightness = float(gray.mean())
+            contrast = float(gray.std())
+            return 10.0 < brightness < 247.0 and contrast >= 6.0
+        except Exception:
+            return False
+
+    def _video_frames(self, path, Image):
+        try:
+            import cv2
+        except ImportError as error:
+            raise RuntimeError("视频分类需要 OpenCV。") from error
+        capture = cv2.VideoCapture(str(path))
+        if not capture.isOpened():
+            capture.release()
+            raise RuntimeError("无法打开视频")
+        total = max(1, int(capture.get(cv2.CAP_PROP_FRAME_COUNT) or 1))
+        fps = float(capture.get(cv2.CAP_PROP_FPS) or 25.0)
+        wanted = self.settings["video_sample_frames"]
+        probe_step = max(1, int(round(max(1.0, fps * 0.5))))
+        first_limit = min(total, max(probe_step, int(round(fps * 30.0))))
+        frames = []
+        used_positions = set()
+
+        def read_useful(target, attempts=6):
+            for attempt in range(attempts):
+                position = min(total - 1, target + attempt * probe_step)
+                if position in used_positions:
+                    continue
+                used_positions.add(position)
+                capture.set(cv2.CAP_PROP_POS_FRAMES, position)
+                ok, frame = capture.read()
+                if ok and self._useful_video_frame(frame):
+                    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                    return Image.fromarray(rgb).convert("RGB")
+            return None
+
+        try:
+            # First find the real beginning of the content instead of blindly
+            # classifying a black title/fade frame.
+            for target in range(0, first_limit, probe_step):
+                frame = read_useful(target, attempts=1)
+                if frame is not None:
+                    frames.append(frame)
+                    break
+            # Remaining samples deliberately cover the body and ending.  This
+            # avoids three near-identical frames from the first second.
+            remaining = max(0, wanted - len(frames))
+            if remaining:
+                fractions = (
+                    [0.60] if remaining == 1
+                    else [0.25 + (0.70 * i / (remaining - 1))
+                          for i in range(remaining)]
+                )
+                for fraction in fractions:
+                    frame = read_useful(int(round((total - 1) * fraction)))
+                    if frame is not None:
+                        frames.append(frame)
+            if not frames:
+                capture.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                ok, frame = capture.read()
+                if ok:
+                    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                    frames.append(Image.fromarray(rgb).convert("RGB"))
+        finally:
+            capture.release()
+        if not frames:
+            raise RuntimeError("视频中没有可读取的画面")
+        return frames
+
+    def _media_frames(self, path, Image, ImageOps):
+        if path.suffix.lower() in VIDEO_SUFFIXES:
+            return self._video_frames(path, Image)
+        with Image.open(path) as source:
+            image = ImageOps.exif_transpose(source).convert("RGB")
+            return [image.copy()]
+
+    def _media_feature(
+        self, path, torch, Image, ImageOps, model, processor, device
+    ):
+        frames = self._media_frames(path, Image, ImageOps)
+        try:
+            features = self._embed_images(
+                torch, model, processor, device, frames
+            )
+            vector = features.mean(dim=0)
+            return vector / vector.norm(p=2, dim=-1)
+        finally:
+            for frame in frames:
+                frame.close()
+
+    def _reference_features(
+        self, categories, torch, Image, ImageOps, model, processor, device
+    ):
+        references = [None] * len(categories)
+        maximum = self.settings["maximum_examples_per_category"]
+        total_categories = sum(bool(item.get("examples")) for item in categories)
+        completed = 0
+        for category_index, category in enumerate(categories):
+            if self.cancelled():
+                break
+            example_files = discover_media(
+                category.get("examples", []), recursive=True
+            )[:maximum]
+            if not example_files:
+                continue
+            vectors = []
+            for path in example_files:
+                if self.cancelled():
+                    break
+                try:
+                    stat = path.stat()
+                    key = (
+                        self.settings["model"], device,
+                        str(path), int(stat.st_size), int(stat.st_mtime_ns),
+                        self.settings["video_sample_frames"],
+                    )
+                    cached = _REFERENCE_FEATURE_CACHE.get(key)
+                    if cached is None:
+                        cached = self._media_feature(
+                            path, torch, Image, ImageOps,
+                            model, processor, device,
+                        ).detach().cpu()
+                        _REFERENCE_FEATURE_CACHE[key] = cached
+                    vectors.append(cached.to(device))
+                except Exception:
+                    continue
+            if vectors:
+                vector = torch.stack(vectors).mean(dim=0)
+                references[category_index] = vector / vector.norm(p=2, dim=-1)
+            completed += 1
+            self.progress(
+                completed,
+                max(1, total_categories),
+                f"正在学习参考素材：{completed}/{total_categories} 个分类",
+            )
+        return references
+
+    @staticmethod
+    def _parent_features(torch, categories, category_features):
+        parent_vectors = {}
+        for parent in {category["parent"] for category in categories}:
+            indices = [
+                index for index, category in enumerate(categories)
+                if category["parent"] == parent
+            ]
+            vector = category_features[indices].mean(dim=0)
+            parent_vectors[parent] = vector / vector.norm(p=2, dim=-1)
+        return torch.stack([
+            parent_vectors[category["parent"]] for category in categories
+        ])
+
     def classify(self, paths):
-        categories = flatten_categories(self.settings["categories"])
+        categories = flatten_categories(
+            self.settings["categories"], self.settings["category_examples"]
+        )
         if not categories:
-            raise ValueError("分类设置中没有包含描述词的子类别。")
-        images = [Path(path) for path in paths]
+            raise ValueError("分类设置中没有可用的子类别。")
+        media_files = [Path(path) for path in paths]
         torch, Image, ImageOps, model, processor, device = self._load_runtime()
-        self.progress(0, len(images), f"模型已加载，正在 {device.upper()} 上分析…")
+        self.progress(
+            0, len(media_files), f"模型已加载，正在 {device.upper()} 上分析…"
+        )
         features = self._category_features(
             torch, model, processor, device, categories
         )
@@ -583,24 +812,49 @@ class ImageClassifierEngine:
             description_features,
             description_categories,
             category_features,
-            parent_features,
+            _text_parent_features,
         ) = features
+        reference_features = self._reference_features(
+            categories, torch, Image, ImageOps, model, processor, device
+        )
+        blended_categories = []
+        for text_vector, reference_vector in zip(
+            category_features, reference_features
+        ):
+            if reference_vector is None:
+                blended_categories.append(text_vector)
+            else:
+                vector = text_vector * 0.25 + reference_vector * 0.75
+                blended_categories.append(vector / vector.norm(p=2, dim=-1))
+        category_features = torch.stack(blended_categories)
+        parent_features = self._parent_features(
+            torch, categories, category_features
+        )
+        reference_matrix = torch.stack([
+            vector if vector is not None else category_features[index]
+            for index, vector in enumerate(reference_features)
+        ])
+        reference_mask = torch.tensor(
+            [1.0 if vector is not None else 0.0 for vector in reference_features],
+            dtype=category_features.dtype,
+            device=device,
+        ).unsqueeze(0)
         category_paths = [category["path"] for category in categories]
         results = []
         batch_size = self.settings["batch_size"]
         parent_weight = self.settings["parent_weight"]
 
-        for offset in range(0, len(images), batch_size):
+        for offset in range(0, len(media_files), batch_size):
             if self.cancelled():
                 break
-            batch_paths = images[offset:offset + batch_size]
-            opened = []
+            batch_paths = media_files[offset:offset + batch_size]
+            media_vectors = []
             valid_paths = []
             for path in batch_paths:
                 try:
-                    with Image.open(path) as source:
-                        image = ImageOps.exif_transpose(source).convert("RGB")
-                        opened.append(image.copy())
+                    media_vectors.append(self._media_feature(
+                        path, torch, Image, ImageOps, model, processor, device
+                    ))
                     valid_paths.append(path)
                 except Exception as error:
                     results.append({
@@ -610,53 +864,49 @@ class ImageClassifierEngine:
                         "similarity": 0.0,
                         "margin": 0.0,
                         "status": "error",
-                        "reason": f"读取失败：{error}",
+                        "reason": f"媒体读取失败：{error}",
                     })
-            if opened:
-                try:
-                    pixel_values = processor(
-                        images=opened, return_tensors="pt"
-                    ).pixel_values.to(device)
-                    with torch.inference_mode():
-                        image_features = model.get_image_features(pixel_values)
-                        image_features = image_features / image_features.norm(
-                            p=2, dim=-1, keepdim=True
-                        )
-                        description_scores = image_features @ description_features.T
-                        detail_scores = torch.stack([
-                            description_scores[:, [
-                                index for index, owner in enumerate(
-                                    description_categories
-                                ) if owner == category_index
-                            ]].max(dim=1).values
-                            for category_index in range(len(categories))
-                        ], dim=1)
-                        sub_scores = image_features @ category_features.T
-                        parent_scores = image_features @ parent_features.T
-                        broad_scores = (
-                            sub_scores * (1.0 - parent_weight)
-                            + parent_scores * parent_weight
-                        )
-                        # The strongest concrete description preserves visual
-                        # detail (cross, tomb, flood), while the averaged leaf
-                        # and parent prototypes suppress lucky one-prompt hits.
-                        scores = (
-                            detail_scores * 0.60 + broad_scores * 0.40
-                        ).detach().cpu().tolist()
-                    for path, row in zip(valid_paths, scores):
-                        decision = choose_category(
-                            category_paths,
-                            row,
-                            self.settings["minimum_similarity"],
-                            self.settings["minimum_margin"],
-                        )
-                        decision["source"] = str(path)
-                        results.append(decision)
-                finally:
-                    for image in opened:
-                        image.close()
-            current = min(len(images), offset + len(batch_paths))
-            self.progress(current, len(images), f"已分析 {current}/{len(images)} 张")
+            if media_vectors:
+                with torch.inference_mode():
+                    image_features = torch.stack(media_vectors)
+                    description_scores = image_features @ description_features.T
+                    detail_scores = torch.stack([
+                        description_scores[:, [
+                            index for index, owner in enumerate(
+                                description_categories
+                            ) if owner == category_index
+                        ]].max(dim=1).values
+                        for category_index in range(len(categories))
+                    ], dim=1)
+                    sub_scores = image_features @ category_features.T
+                    parent_scores = image_features @ parent_features.T
+                    broad_scores = (
+                        sub_scores * (1.0 - parent_weight)
+                        + parent_scores * parent_weight
+                    )
+                    # The strongest concrete description preserves visual
+                    # detail (cross, tomb, flood), while the averaged leaf
+                    # and parent prototypes suppress lucky one-prompt hits.
+                    scores = detail_scores * 0.60 + broad_scores * 0.40
+                    reference_scores = image_features @ reference_matrix.T
+                    scores = (
+                        scores * (1.0 - reference_mask * 0.70)
+                        + reference_scores * (reference_mask * 0.70)
+                    ).detach().cpu().tolist()
+                for path, row in zip(valid_paths, scores):
+                    decision = choose_category(
+                        category_paths,
+                        row,
+                        self.settings["minimum_similarity"],
+                        self.settings["minimum_margin"],
+                    )
+                    decision["source"] = str(path)
+                    results.append(decision)
+            current = min(len(media_files), offset + len(batch_paths))
+            self.progress(
+                current, len(media_files),
+                f"已分析 {current}/{len(media_files)} 个图片/视频素材",
+            )
         return results
 
 
@@ -696,7 +946,7 @@ def apply_classification_results(
         ]
         try:
             if not source.is_file():
-                raise FileNotFoundError("源图片已不存在")
+                raise FileNotFoundError("源素材已不存在")
             target_dir = output.joinpath(*category_parts)
             target_dir.mkdir(parents=True, exist_ok=True)
             target = unique_destination(target_dir / source.name)
@@ -707,5 +957,5 @@ def apply_classification_results(
             completed.append({**result, "target": str(target)})
         except Exception as error:
             failed.append({**result, "error": str(error)})
-        progress(index, len(candidates), f"已整理 {index}/{len(candidates)} 张")
+        progress(index, len(candidates), f"已整理 {index}/{len(candidates)} 个素材")
     return {"completed": completed, "failed": failed}

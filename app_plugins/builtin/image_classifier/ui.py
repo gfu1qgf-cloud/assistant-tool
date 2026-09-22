@@ -6,13 +6,16 @@ from pathlib import Path
 from qt_compat import QtCore, QtGui, QtWidgets
 
 from .classifier import (
+    IMAGE_CLASSIFIER_CONFIG_KEY,
     PENDING_CATEGORY,
+    VIDEO_SUFFIXES,
     ImageClassifierEngine,
     apply_classification_results,
-    discover_images,
+    discover_media,
     flatten_categories,
     normalize_image_classifier_settings,
 )
+from .settings import ImageClassifierSettingsPage
 
 
 class _PathDropList(QtWidgets.QListWidget):
@@ -22,7 +25,7 @@ class _PathDropList(QtWidgets.QListWidget):
         super().__init__(parent)
         self.setAcceptDrops(True)
         self.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
-        self.setToolTip("可把图片、一个或多个文件夹直接拖到这里")
+        self.setToolTip("可把图片、视频、一个或多个文件夹直接拖到这里")
 
     def dragEnterEvent(self, event):
         if event.mimeData().hasUrls():
@@ -107,7 +110,7 @@ class ImageClassifierDialog(QtWidgets.QDialog):
 
     def __init__(self, settings, logger=None, notifier=None, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("图片智能分类")
+        self.setWindowTitle("图片/视频素材分类")
         self.resize(1180, 760)
         self.settings = normalize_image_classifier_settings(settings)
         self.logger = logger or (lambda _message: None)
@@ -117,13 +120,13 @@ class ImageClassifierDialog(QtWidgets.QDialog):
         self.results = []
 
         root = QtWidgets.QVBoxLayout(self)
-        source_group = QtWidgets.QGroupBox("待分类图片", self)
+        source_group = QtWidgets.QGroupBox("待分类图片/视频", self)
         source_layout = QtWidgets.QVBoxLayout(source_group)
         self.source_list = _PathDropList(source_group)
         self.source_list.pathsDropped.connect(self.add_paths)
         source_layout.addWidget(self.source_list)
         source_actions = QtWidgets.QHBoxLayout()
-        self.add_files_button = QtWidgets.QPushButton("添加图片…", source_group)
+        self.add_files_button = QtWidgets.QPushButton("添加图片/视频…", source_group)
         self.add_folder_button = QtWidgets.QPushButton("添加文件夹…", source_group)
         self.remove_button = QtWidgets.QPushButton("移除选中", source_group)
         self.clear_button = QtWidgets.QPushButton("清空", source_group)
@@ -144,7 +147,7 @@ class ImageClassifierDialog(QtWidgets.QDialog):
         output_row.addWidget(self.output_button)
         output_row.addWidget(QtWidgets.QLabel("执行方式：", self))
         self.operation_combo = QtWidgets.QComboBox(self)
-        self.operation_combo.addItem("复制（保留原图）", "copy")
+        self.operation_combo.addItem("复制（保留原素材）", "copy")
         self.operation_combo.addItem("移动", "move")
         output_row.addWidget(self.operation_combo)
 
@@ -161,13 +164,15 @@ class ImageClassifierDialog(QtWidgets.QDialog):
         self.filter_combo.addItem("只看可自动分类", "ready")
         self.filter_combo.addItem("只看读取失败", "error")
         self.change_category_button = QtWidgets.QPushButton("修改选中分类…", self)
-        self.open_source_button = QtWidgets.QPushButton("打开原图", self)
+        self.category_settings_button = QtWidgets.QPushButton("管理分类…", self)
+        self.open_source_button = QtWidgets.QPushButton("打开原素材", self)
         controls.addWidget(self.analyze_button)
         controls.addWidget(self.stop_button)
         controls.addSpacing(20)
         controls.addWidget(QtWidgets.QLabel("结果筛选：", self))
         controls.addWidget(self.filter_combo)
         controls.addWidget(self.change_category_button)
+        controls.addWidget(self.category_settings_button)
         controls.addWidget(self.open_source_button)
         controls.addStretch(1)
         root.addLayout(controls)
@@ -176,7 +181,7 @@ class ImageClassifierDialog(QtWidgets.QDialog):
         self.result_table = QtWidgets.QTableWidget(result_splitter)
         self.result_table.setColumnCount(6)
         self.result_table.setHorizontalHeaderLabels([
-            "图片", "AI 建议", "最终分类", "相似度", "领先差距", "状态",
+            "素材", "AI 建议", "最终分类", "相似度", "领先差距", "状态",
         ])
         self.result_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
         self.result_table.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
@@ -193,7 +198,7 @@ class ImageClassifierDialog(QtWidgets.QDialog):
 
         preview_panel = QtWidgets.QWidget(result_splitter)
         preview_layout = QtWidgets.QVBoxLayout(preview_panel)
-        self.preview_label = QtWidgets.QLabel("选择一条结果查看图片", preview_panel)
+        self.preview_label = QtWidgets.QLabel("选择一条结果查看素材", preview_panel)
         self.preview_label.setAlignment(QtCore.Qt.AlignCenter)
         self.preview_label.setMinimumSize(260, 300)
         self.preview_label.setStyleSheet(
@@ -214,7 +219,7 @@ class ImageClassifierDialog(QtWidgets.QDialog):
         self.progress.setRange(0, 1)
         self.progress.setValue(0)
         self.status_label = QtWidgets.QLabel(
-            "先分析并核对结果，再执行复制或移动。原图不会在分析阶段改变。", self
+            "先分析并核对结果，再执行复制或移动。原素材不会在分析阶段改变。", self
         )
         root.addWidget(self.progress)
         root.addWidget(self.status_label)
@@ -236,6 +241,7 @@ class ImageClassifierDialog(QtWidgets.QDialog):
         self.stop_button.clicked.connect(self.stop_current_work)
         self.filter_combo.currentIndexChanged.connect(self._render_results)
         self.change_category_button.clicked.connect(self._change_selected_categories)
+        self.category_settings_button.clicked.connect(self._open_category_settings)
         self.open_source_button.clicked.connect(self._open_selected_source)
         self.apply_button.clicked.connect(self.apply_results)
         self.close_button.clicked.connect(self.close)
@@ -294,14 +300,15 @@ class ImageClassifierDialog(QtWidgets.QDialog):
     def _choose_files(self):
         files, _selected_filter = QtWidgets.QFileDialog.getOpenFileNames(
             self,
-            "选择图片",
+            "选择图片或视频",
             "",
-            "图片 (*.jpg *.jpeg *.jfif *.png *.webp *.bmp *.gif *.tif *.tiff *.avif);;所有文件 (*)",
+            "素材 (*.jpg *.jpeg *.jfif *.png *.webp *.bmp *.gif *.tif *.tiff *.avif "
+            "*.mp4 *.mov *.m4v *.avi *.mkv *.webm *.mts *.m2ts);;所有文件 (*)",
         )
         self.add_paths(files)
 
     def _choose_folder(self):
-        folder = QtWidgets.QFileDialog.getExistingDirectory(self, "选择图片文件夹")
+        folder = QtWidgets.QFileDialog.getExistingDirectory(self, "选择素材文件夹")
         if folder:
             self.add_paths([folder])
 
@@ -330,12 +337,12 @@ class ImageClassifierDialog(QtWidgets.QDialog):
         if self._busy():
             return
         output_dir = self.output_edit.text().strip()
-        paths = discover_images(
+        paths = discover_media(
             self.source_paths(), output_dir, self.recursive_checkbox.isChecked()
         )
         if not paths:
             QtWidgets.QMessageBox.information(
-                self, "图片智能分类", "没有找到支持的图片文件。"
+                self, "素材智能分类", "没有找到支持的图片或视频文件。"
             )
             return
         self._save_runtime_choices()
@@ -345,9 +352,9 @@ class ImageClassifierDialog(QtWidgets.QDialog):
         self.progress.setRange(0, len(paths))
         self.progress.setValue(0)
         self.status_label.setText(
-            f"发现 {len(paths)} 张图片，正在后台加载模型并分析…"
+            f"发现 {len(paths)} 个素材，正在后台加载模型并分析…"
         )
-        self.logger(f"开始分析 {len(paths)} 张图片。")
+        self.logger(f"开始分析 {len(paths)} 个图片/视频素材。")
         self.worker = _ClassificationWorker(paths, self.settings, self)
         self.worker.progressChanged.connect(self._progress_changed)
         self.worker.completed.connect(self._analysis_completed)
@@ -372,16 +379,16 @@ class ImageClassifierDialog(QtWidgets.QDialog):
         )
         errors = sum(result.get("status") == "error" for result in self.results)
         self.status_label.setText(
-            f"分析完成：{len(self.results)} 张；待人工确认 {pending} 张；"
-            f"读取失败 {errors} 张。双击结果可打开原图。"
+            f"分析完成：{len(self.results)} 个；待人工确认 {pending} 个；"
+            f"读取失败 {errors} 个。双击结果可打开原素材。"
         )
         self.logger(
-            f"图片分类分析完成：{len(self.results)} 张，待确认 {pending} 张，"
-            f"失败 {errors} 张。"
+            f"素材分类分析完成：{len(self.results)} 个，待确认 {pending} 个，"
+            f"失败 {errors} 个。"
         )
         self.notifier(
-            "图片智能分类",
-            f"分析完成：{len(self.results)} 张，待人工确认 {pending} 张。",
+            "素材智能分类",
+            f"分析完成：{len(self.results)} 个，待人工确认 {pending} 个。",
             False,
         )
         self.apply_button.setEnabled(self._has_unapplied_results())
@@ -462,7 +469,7 @@ class ImageClassifierDialog(QtWidgets.QDialog):
         ]
         categories.append(PENDING_CATEGORY)
         value, accepted = QtWidgets.QInputDialog.getItem(
-            self, "修改分类", f"将选中的 {len(selected)} 张图片设为：",
+            self, "修改分类", f"将选中的 {len(selected)} 个素材设为：",
             categories, 0, False,
         )
         if not accepted or not value:
@@ -477,17 +484,94 @@ class ImageClassifierDialog(QtWidgets.QDialog):
         selected = self._selected_results()
         return selected[0] if selected else None
 
+    def _open_category_settings(self):
+        if self._busy():
+            return
+        dialog = QtWidgets.QDialog(self)
+        dialog.setWindowTitle("管理素材分类")
+        dialog.resize(760, 680)
+        layout = QtWidgets.QVBoxLayout(dialog)
+        page = ImageClassifierSettingsPage(dialog)
+        page.load_config({IMAGE_CLASSIFIER_CONFIG_KEY: dict(self.settings)})
+        layout.addWidget(page.widget, 1)
+        buttons = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel,
+            parent=dialog,
+        )
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        if dialog.exec() != QtWidgets.QDialog.Accepted:
+            return
+        config = {IMAGE_CLASSIFIER_CONFIG_KEY: dict(self.settings)}
+        try:
+            page.validate()
+            page.update_config(config)
+        except Exception as error:
+            QtWidgets.QMessageBox.warning(dialog, "分类设置", str(error))
+            return
+        self.settings = normalize_image_classifier_settings(
+            config.get(IMAGE_CLASSIFIER_CONFIG_KEY, {})
+        )
+        self.update_settings(self.settings)
+        self.settingsChanged.emit(dict(self.settings))
+        self.status_label.setText("分类设置已保存；下次分析会使用新的类别与参考素材。")
+
+    @staticmethod
+    def _video_preview_pixmap(path):
+        try:
+            import cv2
+
+            capture = cv2.VideoCapture(path)
+            if not capture.isOpened():
+                return QtGui.QPixmap()
+            total = max(1, int(capture.get(cv2.CAP_PROP_FRAME_COUNT) or 1))
+            positions = [
+                *range(0, min(total, 120), max(1, min(10, total // 20 or 1))),
+                int(total * 0.35),
+                int(total * 0.6),
+            ]
+            fallback = None
+            for position in positions:
+                capture.set(cv2.CAP_PROP_POS_FRAMES, max(0, min(total - 1, position)))
+                ok, frame = capture.read()
+                if not ok or frame is None:
+                    continue
+                fallback = frame
+                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                if float(gray.mean()) >= 12.0 and float(gray.std()) >= 3.0:
+                    break
+            capture.release()
+            if fallback is None:
+                return QtGui.QPixmap()
+            rgb = cv2.cvtColor(fallback, cv2.COLOR_BGR2RGB)
+            height, width, channels = rgb.shape
+            image = QtGui.QImage(
+                rgb.data,
+                width,
+                height,
+                channels * width,
+                QtGui.QImage.Format_RGB888,
+            ).copy()
+            return QtGui.QPixmap.fromImage(image)
+        except Exception:
+            return QtGui.QPixmap()
+
     def _update_preview(self):
         result = self._first_selected_result()
         if result is None:
             self.preview_label.setPixmap(QtGui.QPixmap())
-            self.preview_label.setText("选择一条结果查看图片")
+            self.preview_label.setText("选择一条结果查看素材")
             self.preview_detail.clear()
             return
-        pixmap = QtGui.QPixmap(result.get("source", ""))
+        source = result.get("source", "")
+        if Path(source).suffix.lower() in VIDEO_SUFFIXES:
+            pixmap = self._video_preview_pixmap(source)
+        else:
+            pixmap = QtGui.QPixmap(source)
         if pixmap.isNull():
             self.preview_label.setPixmap(QtGui.QPixmap())
-            self.preview_label.setText("图片预览失败")
+            self.preview_label.setText("素材预览失败")
         else:
             self.preview_label.setText("")
             self.preview_label.setPixmap(pixmap.scaled(
@@ -514,7 +598,7 @@ class ImageClassifierDialog(QtWidgets.QDialog):
         try:
             os.startfile(path)
         except Exception as error:
-            QtWidgets.QMessageBox.warning(self, "打开原图", str(error))
+            QtWidgets.QMessageBox.warning(self, "打开原素材", str(error))
 
     def apply_results(self):
         if self._busy() or not self._has_unapplied_results():
@@ -527,7 +611,7 @@ class ImageClassifierDialog(QtWidgets.QDialog):
         if operation == "move":
             answer = QtWidgets.QMessageBox.question(
                 self,
-                "移动原图片",
+                "移动原素材",
                 "移动会改变原文件位置。已经核对分类结果，确定继续吗？",
             )
             if answer != QtWidgets.QMessageBox.Yes:
@@ -556,14 +640,14 @@ class ImageClassifierDialog(QtWidgets.QDialog):
         self._render_results()
         action = "移动" if self.operation_combo.currentData() == "move" else "复制"
         self.status_label.setText(
-            f"整理完成：已{action} {len(completed)} 张，失败 {len(failed)} 张。"
+            f"整理完成：已{action} {len(completed)} 个，失败 {len(failed)} 个。"
         )
         self.logger(
-            f"图片分类整理完成：已{action} {len(completed)} 张，失败 {len(failed)} 张。"
+            f"素材分类整理完成：已{action} {len(completed)} 个，失败 {len(failed)} 个。"
         )
         self.notifier(
-            "图片智能分类",
-            f"已{action} {len(completed)} 张图片；失败 {len(failed)} 张。",
+            "素材智能分类",
+            f"已{action} {len(completed)} 个素材；失败 {len(failed)} 个。",
             bool(failed),
         )
         if failed:
@@ -572,7 +656,7 @@ class ImageClassifierDialog(QtWidgets.QDialog):
                 for item in failed[:20]
             )
             QtWidgets.QMessageBox.warning(
-                self, "部分图片整理失败", details
+                self, "部分素材整理失败", details
             )
 
     def _apply_worker_finished(self):
@@ -581,9 +665,9 @@ class ImageClassifierDialog(QtWidgets.QDialog):
 
     def _work_failed(self, message):
         self.status_label.setText(f"失败：{message}")
-        self.logger(f"图片分类失败：{message}")
-        self.notifier("图片智能分类失败", message, True)
-        QtWidgets.QMessageBox.critical(self, "图片智能分类", message)
+        self.logger(f"素材分类失败：{message}")
+        self.notifier("素材智能分类失败", message, True)
+        QtWidgets.QMessageBox.critical(self, "素材智能分类", message)
 
     def _set_busy(self, busy):
         self.analyze_button.setEnabled(not busy)
@@ -591,6 +675,7 @@ class ImageClassifierDialog(QtWidgets.QDialog):
         self.stop_button.setEnabled(busy)
         self.add_files_button.setEnabled(not busy)
         self.add_folder_button.setEnabled(not busy)
+        self.category_settings_button.setEnabled(not busy)
         self.output_button.setEnabled(not busy)
 
     def stop_current_work(self):
@@ -603,7 +688,7 @@ class ImageClassifierDialog(QtWidgets.QDialog):
         if self._busy():
             QtWidgets.QMessageBox.information(
                 self,
-                "图片智能分类",
+                "素材智能分类",
                 "任务仍在后台运行。窗口会暂时隐藏，完成后将发送桌面提醒。",
             )
         event.accept()

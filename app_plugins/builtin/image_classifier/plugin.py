@@ -12,7 +12,7 @@ from .ui import ImageClassifierDialog
 
 class ImageClassifierPlugin:
     plugin_id = "image_classifier"
-    display_name = "图片智能分类"
+    display_name = "素材智能分类"
     version = "1.0"
     required_api_version = 1
 
@@ -28,15 +28,15 @@ class ImageClassifierPlugin:
         )
         context.register_command(PluginCommand(
             command_id="open",
-            title="图片智能分类…",
+            title="图片/视频素材分类…",
             callback=lambda _rows: self.open_dialog(),
             locations=frozenset({MAIN_MENU}),
-            tooltip="用 CLIP 将图片分类；先预览核对，再复制或移动",
+            tooltip="用 CLIP 将图片和视频分类；先预览核对，再复制或移动",
             order=13,
         ))
         context.register_settings_page(PluginSettingsPage(
             page_id="settings",
-            title="图片智能分类",
+            title="素材智能分类",
             factory=ImageClassifierSettingsPage,
             order=215,
         ))
@@ -89,9 +89,8 @@ class ImageClassifierPlugin:
     def can_close(self):
         if self.dialog is None or self.dialog.can_close():
             return True, ""
-        return False, "图片智能分类仍在后台运行，请先停止任务。"
+        return False, "素材智能分类仍在后台运行，请先停止任务。"
 
     def stop(self):
         if self.dialog is not None:
             self.dialog.stop_current_work()
-

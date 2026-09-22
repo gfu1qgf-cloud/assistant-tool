@@ -10,9 +10,11 @@ from qt_compat import QtWidgets
 from app_plugins.api import MAIN_MENU
 from app_plugins.builtin.image_classifier.classifier import (
     DEFAULT_CATEGORY_TREE,
+    ImageClassifierEngine,
     PENDING_CATEGORY,
     apply_classification_results,
     choose_category,
+    discover_media,
     discover_images,
     flatten_categories,
     normalize_category_tree,
@@ -90,6 +92,83 @@ class ImageClassifierCoreTests(unittest.TestCase):
             self.assertEqual({path.name for path in recursive}, {"one.jfif", "two.png"})
             self.assertEqual([path.name for path in flat], ["one.jfif"])
 
+    def test_media_discovery_includes_video_without_changing_image_scanner(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            image = root / "still.png"
+            video = root / "clip.mp4"
+            image.write_bytes(b"image")
+            video.write_bytes(b"video")
+
+            self.assertEqual(
+                {path.name for path in discover_media([root])},
+                {"still.png", "clip.mp4"},
+            )
+            self.assertEqual([path.name for path in discover_images([root])], ["still.png"])
+
+    def test_user_category_can_use_reference_material_without_prompt(self):
+        settings = normalize_image_classifier_settings({
+            "categories": {"人物": {"天使": []}},
+            "category_examples": {"人物/天使": [r"C:\references\angels"]},
+            "video_sample_frames": 4,
+        })
+        flattened = flatten_categories(
+            settings["categories"], settings["category_examples"]
+        )
+
+        self.assertEqual(flattened[0]["descriptions"], [])
+        self.assertEqual(flattened[0]["examples"], [r"C:\references\angels"])
+        self.assertEqual(settings["video_sample_frames"], 4)
+
+    def test_video_frame_filter_rejects_black_and_accepts_content(self):
+        try:
+            import cv2
+            import numpy as np
+        except ImportError:
+            self.skipTest("OpenCV/NumPy unavailable")
+        engine = ImageClassifierEngine({})
+        black = np.zeros((32, 32, 3), dtype=np.uint8)
+        content = np.zeros((32, 32, 3), dtype=np.uint8)
+        content[:, :16] = 40
+        content[:, 16:] = 220
+
+        self.assertFalse(engine._useful_video_frame(black))
+        self.assertTrue(engine._useful_video_frame(content))
+
+    def test_video_sampling_skips_black_intro(self):
+        try:
+            import cv2
+            import numpy as np
+            from PIL import Image
+        except ImportError:
+            self.skipTest("OpenCV/NumPy/Pillow unavailable")
+        with tempfile.TemporaryDirectory() as temporary:
+            video = Path(temporary) / "black_intro.avi"
+            writer = cv2.VideoWriter(
+                str(video), cv2.VideoWriter_fourcc(*"MJPG"), 10.0, (64, 64)
+            )
+            if not writer.isOpened():
+                self.skipTest("No usable OpenCV test video encoder")
+            black = np.zeros((64, 64, 3), dtype=np.uint8)
+            content = np.zeros((64, 64, 3), dtype=np.uint8)
+            content[:, :32] = 40
+            content[:, 32:] = 220
+            for _index in range(5):
+                writer.write(black)
+            for _index in range(15):
+                writer.write(content)
+            writer.release()
+
+            frames = ImageClassifierEngine({
+                "video_sample_frames": 3
+            })._video_frames(video, Image)
+            try:
+                self.assertGreaterEqual(len(frames), 1)
+                self.assertGreater(float(np.asarray(frames[0]).mean()), 20.0)
+            finally:
+                for frame in frames:
+                    frame.close()
+
     def test_discovery_does_not_exclude_explicit_folder_below_output_root(self):
         with tempfile.TemporaryDirectory() as temporary:
             library = Path(temporary) / "image_library"
@@ -148,7 +227,7 @@ class ImageClassifierCoreTests(unittest.TestCase):
 
         self.assertEqual(len(context.commands), 1)
         self.assertIn(MAIN_MENU, context.commands[0].locations)
-        self.assertEqual(context.commands[0].title, "图片智能分类…")
+        self.assertEqual(context.commands[0].title, "图片/视频素材分类…")
         self.assertEqual(len(context.pages), 1)
 
 
@@ -164,7 +243,9 @@ class ImageClassifierSettingsTests(unittest.TestCase):
                 "model": "base",
                 "minimum_similarity": 0.25,
                 "minimum_margin": 0.02,
-                "categories": {"Main": {"Sub": ["a visible subject"]}},
+                "video_sample_frames": 4,
+                "categories": {"Main": {"Sub": []}},
+                "category_examples": {"Main/Sub": [r"C:\references\sub"]},
             }
         }
         page.load_config(config)
@@ -177,7 +258,12 @@ class ImageClassifierSettingsTests(unittest.TestCase):
         self.assertEqual(settings["model"], "base")
         self.assertAlmostEqual(settings["minimum_similarity"], 0.25)
         self.assertAlmostEqual(settings["minimum_margin"], 0.02)
+        self.assertEqual(settings["video_sample_frames"], 4)
         self.assertEqual(settings["categories"], config["image_classifier_settings"]["categories"])
+        self.assertEqual(
+            settings["category_examples"],
+            config["image_classifier_settings"]["category_examples"],
+        )
         page.widget.deleteLater()
 
 
