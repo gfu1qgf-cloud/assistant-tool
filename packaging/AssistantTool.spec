@@ -46,6 +46,8 @@ for package_name in (
     "tokenizers",
     "av",
     "elevenlabs",
+    "PIL",
+    "transformers",
     "pycaw",
     "comtypes",
 ):

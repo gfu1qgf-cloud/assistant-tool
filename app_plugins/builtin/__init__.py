@@ -3,6 +3,7 @@ from .chrome_launcher import ChromeLauncherPlugin
 from .codex_account_switcher import CodexAccountSwitcherPlugin
 from .daily_tasks import DailyTasksPlugin
 from .inventory import InventoryPlugin
+from .image_classifier import ImageClassifierPlugin
 from .material_organizer import MaterialOrganizerPlugin
 from .music_ducker import MusicDuckerPlugin
 from .smart_video_editor import SmartVideoEditorPlugin
@@ -15,6 +16,7 @@ __all__ = [
     "CodexAccountSwitcherPlugin",
     "DailyTasksPlugin",
     "InventoryPlugin",
+    "ImageClassifierPlugin",
     "MaterialOrganizerPlugin",
     "MusicDuckerPlugin",
     "SmartVideoEditorPlugin",

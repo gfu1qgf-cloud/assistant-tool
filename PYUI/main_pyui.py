@@ -16,6 +16,7 @@ from app_plugins.builtin import (
     ChromeLauncherPlugin,
     CodexAccountSwitcherPlugin,
     DailyTasksPlugin,
+    ImageClassifierPlugin,
     InventoryPlugin,
     MaterialOrganizerPlugin,
     MusicDuckerPlugin,
@@ -800,6 +801,9 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
         self.setupNotificationTray()
         self.plugin_host = PluginHost(self)
         self.inventory_plugin = self.plugin_host.install(InventoryPlugin())
+        self.image_classifier_plugin = self.plugin_host.install(
+            ImageClassifierPlugin()
+        )
         self.material_organizer_plugin = self.plugin_host.install(
             MaterialOrganizerPlugin()
         )
