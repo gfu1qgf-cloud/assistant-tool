@@ -1,5 +1,6 @@
 import os
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -194,7 +195,7 @@ class ClipboardInventoryBridgeTests(unittest.TestCase):
         finally:
             edit.close()
 
-    def test_material_auto_name_checkbox_allows_blank_name_and_reaches_worker(self):
+    def test_material_auto_name_previews_folder_name_and_allows_edit(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             store = InventoryStore(
@@ -203,25 +204,62 @@ class ClipboardInventoryBridgeTests(unittest.TestCase):
             )
             dialog = InventoryManagerDialog(store)
             try:
-                checkbox = dialog.material_use_drive_folder_name_checkbox
-                checkbox.setChecked(True)
                 dialog.material_sources_edit.setPlainText(
                     "https://drive.google.com/drive/folders/folder-456"
                 )
-                self.assertFalse(dialog.material_name_edit.isEnabled())
-                self.assertIn("自动读取", dialog.material_name_edit.placeholderText())
+                with patch(
+                    "PYUI.utility_managers_pyui.resolve_google_drive_folder_name",
+                    return_value="预览到的素材名",
+                ) as resolver:
+                    checkbox = dialog.material_use_drive_folder_name_checkbox
+                    checkbox.setChecked(True)
+                    dialog._start_material_name_lookup()
+                    deadline = time.monotonic() + 2.0
+                    while dialog.material_name_resolved_url == "" and time.monotonic() < deadline:
+                        self.app.processEvents()
+                        time.sleep(0.01)
+                    self.app.processEvents()
 
+                resolver.assert_called_once()
+                self.assertEqual(dialog.material_name_edit.text(), "预览到的素材名")
+                self.assertTrue(dialog.material_name_edit.isEnabled())
+                dialog.material_name_edit.setText("我确认后的素材名")
                 with patch.object(MaterialCopyThread, "start"):
                     dialog.add_material()
 
                 self.assertIsNotNone(dialog.material_copy_thread)
-                self.assertTrue(dialog.material_copy_thread.use_drive_folder_name)
-                self.assertEqual(dialog.material_copy_thread.name, "")
+                self.assertFalse(dialog.material_copy_thread.use_drive_folder_name)
+                self.assertEqual(dialog.material_copy_thread.name, "我确认后的素材名")
             finally:
+                dialog.material_use_drive_folder_name_checkbox.setChecked(False)
                 thread = dialog.material_copy_thread
                 dialog.material_copy_thread = None
                 if thread is not None:
                     thread.deleteLater()
+                dialog.close()
+
+    def test_changing_folder_invalidates_the_previously_previewed_name(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            dialog = InventoryManagerDialog(InventoryStore(
+                root / "inventory.json", material_root=root / "library"
+            ))
+            try:
+                first = "https://drive.google.com/drive/folders/first-folder"
+                second = "https://drive.google.com/drive/folders/second-folder"
+                dialog.material_sources_edit.setPlainText(first)
+                dialog.material_use_drive_folder_name_checkbox.setChecked(True)
+                dialog._material_name_resolved(first, "第一个文件夹")
+                self.assertEqual(dialog.material_name_edit.text(), "第一个文件夹")
+
+                dialog.material_sources_edit.setPlainText(second)
+                self.assertEqual(dialog.material_name_edit.text(), "")
+                with patch("PYUI.utility_managers_pyui.QtWidgets.QMessageBox.warning") as warning:
+                    dialog.add_material()
+                warning.assert_called_once()
+                self.assertIsNone(dialog.material_copy_thread)
+            finally:
+                dialog.material_use_drive_folder_name_checkbox.setChecked(False)
                 dialog.close()
 
     def test_material_drive_monitor_is_part_of_material_add_form(self):

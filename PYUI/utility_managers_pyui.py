@@ -26,7 +26,10 @@ from model.InventoryManager import (
     STATUS_MODERATE,
     material_directory_stats,
 )
-from model.MaterialSourceDownloader import parse_material_drive_link
+from model.MaterialSourceDownloader import (
+    parse_material_drive_link,
+    resolve_google_drive_folder_name,
+)
 
 
 STATUS_COLORS = {
@@ -646,6 +649,22 @@ class MaterialCopyThread(QtCore.QThread):
             self.failed.emit(str(error))
 
 
+class MaterialFolderNameThread(QtCore.QThread):
+    resolved = QtCore.pyqtSignal(str, str)
+    failed = QtCore.pyqtSignal(str, str)
+
+    def __init__(self, folder_url, parent=None):
+        super().__init__(parent)
+        self.folder_url = folder_url
+
+    def run(self):
+        try:
+            name = resolve_google_drive_folder_name(self.folder_url)
+            self.resolved.emit(self.folder_url, name)
+        except Exception as error:
+            self.failed.emit(self.folder_url, str(error))
+
+
 
 
 class MaterialGroupAssignmentDialog(QtWidgets.QDialog):
@@ -1169,6 +1188,11 @@ class InventoryManagerDialog(QtWidgets.QDialog):
         self.store = store
         self.material_copy_thread = None
         self.material_copy_operation = None
+        self.material_name_lookup_thread = None
+        self.material_name_resolved_url = ""
+        self.material_name_lookup_error_url = ""
+        self.material_auto_name_value = ""
+        self.material_name_lookup_original = ""
         self.pending_material_sources = []
         self.material_sync_settings = dict(material_sync_settings or {})
         self.setWindowTitle("库存与素材管理器")
@@ -1257,8 +1281,8 @@ class InventoryManagerDialog(QtWidgets.QDialog):
             name_row,
         )
         self.material_use_drive_folder_name_checkbox.setToolTip(
-            "保存时读取第一个 Google Drive 文件夹的真实名称；"
-            "多个来源时仍使用第一个谷歌文件夹命名"
+            "勾选后读取第一个 Google Drive 文件夹的真实名称并填入左侧；"
+            "可在保存前修改，多个来源时以第一个谷歌文件夹为准"
         )
         self.material_drive_monitor_checkbox = QtWidgets.QCheckBox(
             "持续监视网盘",
@@ -1342,6 +1366,15 @@ class InventoryManagerDialog(QtWidgets.QDialog):
         self.material_submit_btn.clicked.connect(self.add_material)
         self.material_use_drive_folder_name_checkbox.toggled.connect(
             self._update_material_name_mode
+        )
+        self.material_sources_edit.textChanged.connect(
+            self._material_sources_changed
+        )
+        self.material_name_lookup_timer = QtCore.QTimer(self)
+        self.material_name_lookup_timer.setSingleShot(True)
+        self.material_name_lookup_timer.setInterval(350)
+        self.material_name_lookup_timer.timeout.connect(
+            self._start_material_name_lookup
         )
         self.material_check_btn.clicked.connect(self.check_materials)
         self.material_append_btn.clicked.connect(self.append_material)
@@ -1533,15 +1566,106 @@ class InventoryManagerDialog(QtWidgets.QDialog):
             return
         self.material_sources_edit.add_paths(links)
 
+    def _material_folder_url(self):
+        for source in self.material_sources_edit.paths():
+            try:
+                if parse_material_drive_link(source).is_folder:
+                    return source
+            except Exception:
+                continue
+        return ""
+
+    def _material_sources_changed(self):
+        if (not self.material_use_drive_folder_name_checkbox.isChecked()
+                or self.material_copy_thread is not None):
+            return
+        folder_url = self._material_folder_url()
+        if folder_url != self.material_name_resolved_url:
+            self.material_name_resolved_url = ""
+            if self.material_name_edit.text() == self.material_auto_name_value:
+                self.material_name_edit.clear()
+                self.material_auto_name_value = ""
+            if folder_url:
+                if folder_url == self.material_name_lookup_error_url:
+                    return
+                self.material_status_label.setText("正在读取谷歌文件夹名称…")
+                self.material_name_lookup_timer.start()
+            else:
+                self.material_name_lookup_timer.stop()
+                self.material_status_label.setText(
+                    "请在素材来源中添加 Google Drive 文件夹链接。"
+                )
+
     def _update_material_name_mode(self, _checked=None, copying=None):
         automatic = self.material_use_drive_folder_name_checkbox.isChecked()
         if copying is None:
             copying = self.material_copy_thread is not None
-        self.material_name_edit.setEnabled(not copying and not automatic)
+        self.material_name_edit.setEnabled(not copying)
         self.material_name_edit.setPlaceholderText(
-            "保存时自动读取第一个谷歌文件夹名称"
+            "读取后会填入文件夹名称，可自行修改"
             if automatic else "例如：常用片头、客户 Logo"
         )
+        if automatic and not copying:
+            self._material_sources_changed()
+        elif not automatic:
+            self.material_name_lookup_timer.stop()
+            self.material_name_resolved_url = ""
+            self.material_name_lookup_error_url = ""
+
+    def _start_material_name_lookup(self):
+        if (not self.material_use_drive_folder_name_checkbox.isChecked()
+                or self.material_copy_thread is not None):
+            return
+        folder_url = self._material_folder_url()
+        if (not folder_url or folder_url == self.material_name_resolved_url
+                or folder_url == self.material_name_lookup_error_url):
+            return
+        if self.material_name_lookup_thread is not None:
+            return
+        self.material_name_lookup_original = self.material_name_edit.text()
+        thread = MaterialFolderNameThread(folder_url, self)
+        self.material_name_lookup_thread = thread
+        thread.resolved.connect(self._material_name_resolved)
+        thread.failed.connect(self._material_name_lookup_failed)
+        thread.finished.connect(self._material_name_lookup_finished)
+        thread.start()
+
+    def _material_name_resolved(self, folder_url, name):
+        if not self.material_use_drive_folder_name_checkbox.isChecked():
+            return
+        if folder_url != self._material_folder_url():
+            return
+        self.material_name_resolved_url = folder_url
+        self.material_name_lookup_error_url = ""
+        current = self.material_name_edit.text()
+        if current == self.material_name_lookup_original or current == self.material_auto_name_value:
+            self.material_name_edit.setText(name)
+            self.material_auto_name_value = name
+            self.material_status_label.setText(
+                f"已读取文件夹名称“{name}”；可修改名称后保存。"
+            )
+        else:
+            self.material_status_label.setText(
+                f"已读取文件夹名称“{name}”；保留了你手动输入的名称。"
+            )
+
+    def _material_name_lookup_failed(self, folder_url, message):
+        if self.material_use_drive_folder_name_checkbox.isChecked() and folder_url == self._material_folder_url():
+            self.material_name_lookup_error_url = folder_url
+            self.material_status_label.setText(
+                f"读取谷歌文件夹名称失败：{message}；可取消自动命名后手动填写。"
+            )
+
+    def _material_name_lookup_finished(self):
+        thread = self.material_name_lookup_thread
+        self.material_name_lookup_thread = None
+        if thread is not None:
+            thread.deleteLater()
+        if (self.material_use_drive_folder_name_checkbox.isChecked()
+                and self._material_folder_url()
+                and self._material_folder_url() != self.material_name_resolved_url
+                and self._material_folder_url() != self.material_name_lookup_error_url):
+            self.material_name_lookup_timer.start()
 
     def _set_material_copying(self, copying):
         for widget in (
@@ -1585,6 +1709,12 @@ class InventoryManagerDialog(QtWidgets.QDialog):
         use_drive_folder_name = (
             self.material_use_drive_folder_name_checkbox.isChecked()
         )
+        if use_drive_folder_name and self.material_name_resolved_url != self._material_folder_url():
+            QtWidgets.QMessageBox.warning(
+                self, "名称尚未确认",
+                "请等待谷歌文件夹名称显示在名称框中；读取失败时可取消勾选并手动命名。",
+            )
+            return
         monitor_folder_url = ""
         if self.material_drive_monitor_checkbox.isChecked():
             folder_sources = []
@@ -1603,7 +1733,7 @@ class InventoryManagerDialog(QtWidgets.QDialog):
                 )
                 return
             monitor_folder_url = folder_sources[0]
-        if not name and not use_drive_folder_name:
+        if not name:
             QtWidgets.QMessageBox.warning(self, "缺少名称", "请输入素材名称。")
             return
         if not paths:
@@ -1617,7 +1747,7 @@ class InventoryManagerDialog(QtWidgets.QDialog):
             return
 
         self._set_material_copying(True)
-        display_name = name if not use_drive_folder_name else "谷歌文件夹原名"
+        display_name = name
         self.material_status_label.setText(
             f"正在把“{display_name}”复制到素材库……"
         )
@@ -1625,7 +1755,7 @@ class InventoryManagerDialog(QtWidgets.QDialog):
             "kind": "material_add",
             "name": name,
             "sources": list(paths),
-            "use_drive_folder_name": use_drive_folder_name,
+            "use_drive_folder_name": False,
             "monitor_folder_url": monitor_folder_url,
         }
         thread = MaterialCopyThread(
@@ -1633,7 +1763,7 @@ class InventoryManagerDialog(QtWidgets.QDialog):
             name,
             paths,
             self,
-            use_drive_folder_name=use_drive_folder_name,
+            use_drive_folder_name=False,
         )
         self.material_copy_thread = thread
         thread.completed.connect(self._material_copy_completed)
