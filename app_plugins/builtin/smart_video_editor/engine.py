@@ -18,6 +18,7 @@ import shutil
 import subprocess
 import tempfile
 import time
+import traceback
 import unicodedata
 from collections import Counter
 from pathlib import Path
@@ -5123,7 +5124,9 @@ def export_breath_cut_bundle(
             result["failed"].append({
                 "task_id": task.get("task_id", ""),
                 "label": task.get("label", ""),
+                "task_dir": task.get("task_dir", ""),
                 "error": f"{type(error).__name__}: {error}",
+                "traceback": traceback.format_exc(),
             })
         else:
             target = "skipped" if item.get("status") == "skipped" else "completed"
@@ -5183,7 +5186,9 @@ def export_smart_video_bundle(
             result["failed"].append({
                 "task_id": task.get("task_id", ""),
                 "label": task.get("label", ""),
+                "task_dir": task.get("task_dir", ""),
                 "error": f"{type(error).__name__}: {error}",
+                "traceback": traceback.format_exc(),
             })
         else:
             result["completed"].append(item)
@@ -5265,8 +5270,6 @@ class SmartVideoEditorThread(QtCore.QThread):
             else:
                 raise ValueError(f"未知的智能剪辑阶段：{self.mode}")
         except (Exception, SystemExit) as error:
-            import traceback
-
             self.failed.emit(
                 f"{type(error).__name__}: {error}",
                 traceback.format_exc(),

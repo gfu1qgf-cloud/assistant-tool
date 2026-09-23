@@ -15,6 +15,7 @@ from qt_compat import QtCore, QtWidgets
 from app_plugins.builtin.smart_video_editor.settings import (
     SmartVideoEditorSettingsPage,
 )
+from app_plugins.builtin.smart_video_editor.plugin import SmartVideoEditorPlugin
 from app_plugins.builtin.smart_video_editor.breath_editor import (
     BreathCutReviewDialog,
     BreathCutSourceDialog,
@@ -1891,6 +1892,35 @@ class SmartVideoEditorTests(unittest.TestCase):
         resolve.assert_not_called()
         self.assertFalse(result["completed"])
         self.assertEqual(len(result["skipped"]), 1)
+
+    def test_export_failure_keeps_traceback_and_logs_it(self):
+        bundle = {"tasks": [{
+            "task_id": "145",
+            "label": "145",
+            "task_dir": "C:/task/145",
+        }]}
+        with mock.patch(
+            "model.SmartVideoEditor.validate_smart_video_bundle_for_export"
+        ), mock.patch(
+            "model.SmartVideoEditor._resolve_ffmpeg", return_value="ffmpeg"
+        ), mock.patch(
+            "model.SmartVideoEditor._export_task",
+            side_effect=AttributeError("missing_attribute"),
+        ):
+            result = export_smart_video_bundle(bundle)
+
+        failure = result["failed"][0]
+        self.assertEqual(failure["task_id"], "145")
+        self.assertIn("AttributeError: missing_attribute", failure["traceback"])
+        context = mock.Mock()
+        plugin = SmartVideoEditorPlugin()
+        plugin.context = context
+        plugin._log_export_failures("智能剪辑", result["failed"])
+        message = context.log.call_args.args[0]
+        self.assertIn("任务 145", message)
+        self.assertIn("C:/task/145", message)
+        self.assertIn("AttributeError: missing_attribute", message)
+        self.assertEqual(context.log.call_args.kwargs["level"], 40)
 
     def test_pending_review_records_are_persistent_and_reopenable(self):
         with tempfile.TemporaryDirectory() as temporary:

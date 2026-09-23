@@ -353,6 +353,18 @@ class SmartVideoEditorPlugin:
             f"[{prefix}] {message}\n{details}", level=logging.ERROR
         )
 
+    def _log_export_failures(self, label, failed):
+        for item in failed:
+            task = str(item.get("task_id") or item.get("label") or "未知任务")
+            task_dir = str(item.get("task_dir") or "")
+            detail = str(item.get("traceback") or "").strip()
+            message = f"[{label}导出失败] 任务 {task}: {item.get('error') or '未知错误'}"
+            if task_dir:
+                message += f"\n任务目录：{task_dir}"
+            if detail:
+                message += f"\n{detail}"
+            self.context.log(message, level=logging.ERROR)
+
     def _on_finished(self):
         thread = self.worker
         phase = self.phase
@@ -410,6 +422,7 @@ class SmartVideoEditorPlugin:
         completed = result.get("completed", [])
         failed = result.get("failed", [])
         skipped = result.get("skipped", [])
+        self._log_export_failures("气口剪辑", failed)
         self.context.log(
             f"[气口剪辑] 导出结束：成功 {len(completed)}，"
             f"跳过 {len(skipped)}，失败 {len(failed)}。",
@@ -513,6 +526,7 @@ class SmartVideoEditorPlugin:
         completed = result.get("completed", [])
         failed = result.get("failed", [])
         skipped = result.get("skipped", [])
+        self._log_export_failures("智能剪辑", failed)
         self.context.log(
             f"[智能剪辑] 导出结束：成功 {len(completed)}，"
             f"缺段暂缓 {len(skipped)}，失败 {len(failed)}。",

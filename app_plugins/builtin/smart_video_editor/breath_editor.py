@@ -255,7 +255,8 @@ class BreathCutResultDialog(QtWidgets.QDialog):
         skipped = list(result.get("skipped", []) or [])
         layout.addWidget(QtWidgets.QLabel(
             f"成功 {len(completed)}，跳过 {len(skipped)}，失败 {len(failed)}。"
-            "双击成功项可打开成片。",
+            "双击成功项可打开成片。"
+            + ("失败详情已写入程序日志。" if failed else ""),
             self,
         ))
         self.tree = QtWidgets.QTreeWidget(self)

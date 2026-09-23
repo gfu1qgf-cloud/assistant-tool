@@ -1683,7 +1683,8 @@ class SmartVideoExportResultDialog(QtWidgets.QDialog):
         label = QtWidgets.QLabel(
             f"成功 {len(completed)} 个任务，暂缓 {len(skipped)} 个任务，"
             f"失败 {len(failed)} 个任务。"
-            "双击成功项可打开视频，双击暂缓项可打开任务目录。",
+            "双击成功项可打开视频，双击暂缓项可打开任务目录。"
+            + ("失败详情已写入程序日志。" if failed else ""),
             self,
         )
         layout.addWidget(label)
