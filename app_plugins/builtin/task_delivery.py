@@ -4,6 +4,7 @@ from qt_compat import QtWidgets
 
 from app_plugins.api import MAIN_MENU, PluginCommand, PluginMainWidget
 from app_plugins.builtin.task_delivery_controller import TaskDeliveryController
+from app_plugins.builtin.task_delivery_gemini import GeminiKeysDialog
 
 
 class TaskDeliveryQuickActions(QtWidgets.QWidget):
@@ -79,6 +80,13 @@ class TaskDeliveryPlugin:
                 30,
                 "查看审核通过、需要修改和历史提交记录",
             ),
+            (
+                "gemini_keys",
+                "管理 AI 检测 Gemini Key…",
+                self.open_gemini_keys,
+                40,
+                "添加或删除整理任务结果 AI 检测使用的 Gemini Key",
+            ),
         ):
             context.register_command(
                 PluginCommand(
@@ -112,6 +120,20 @@ class TaskDeliveryPlugin:
 
     def open_review_status(self):
         return self.controller.open_review_status()
+
+    def open_gemini_keys(self):
+        dialog = GeminiKeysDialog(
+            self.controller.gemini_api_keys, self.context.parent_widget
+        )
+        if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
+            return False
+        previous = self.controller.gemini_api_keys
+        self.controller.gemini_api_keys = dialog.keys()
+        if not self.context.save_config():
+            self.controller.gemini_api_keys = previous
+            return False
+        self.context.log(f"AI 检测 Gemini Key 已保存，共 {len(dialog.keys())} 个。")
+        return True
 
     @property
     def global_hotkey(self):

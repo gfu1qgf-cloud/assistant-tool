@@ -30,6 +30,7 @@ from model.ReviewStatusMonitor import (
 from model.ReviewSubmissionHistory import review_history_snapshot
 from model.TaskResultOrganizer import (
     TaskResultOrganizerThread,
+    config_list,
     load_effective_config as load_task_result_config,
 )
 from PYUI.daily_links_pyui import DailyLinksDialog
@@ -48,6 +49,7 @@ class TaskDeliveryController:
         self.review_status_state = "未启动"
         self.daily_link_history = normalize_daily_link_history({})
         self.global_hotkey = DEFAULT_TASK_RESULT_HOTKEY
+        self.gemini_api_keys = []
         self.hotkey_manager = None
 
     @property
@@ -76,6 +78,7 @@ class TaskDeliveryController:
         )
         self.review_status_settings = normalize_review_status_settings(config)
         self.review_status_config = load_task_result_config(config)
+        self.gemini_api_keys = config_list(config, "gemini_api_keys")
         try:
             self.global_hotkey = normalize_hotkey_sequence(
                 config.get(
@@ -97,6 +100,7 @@ class TaskDeliveryController:
         self.start_review_status_monitor()
 
     def update_config(self, config):
+        config["gemini_api_keys"] = list(self.gemini_api_keys)
         config[TASK_RESULT_HOTKEY_CONFIG_KEY] = self.global_hotkey
         config[DAILY_LINK_HISTORY_CONFIG_KEY] = normalize_daily_link_history(
             self.daily_link_history
@@ -104,6 +108,7 @@ class TaskDeliveryController:
         return config
 
     def apply_settings(self, config):
+        self.gemini_api_keys = config_list(config, "gemini_api_keys")
         previous_settings = dict(self.review_status_settings)
         previous_config = dict(self.review_status_config)
         self.review_status_settings = normalize_review_status_settings(config)
