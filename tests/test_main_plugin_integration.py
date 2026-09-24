@@ -79,7 +79,7 @@ class MainPluginIntegrationTests(unittest.TestCase):
                 )
                 self.assertEqual(
                     [action.text() for action in delivery_action.menu().actions()],
-                    ["整理任务结果", "查看每日链接", "审核提醒", "管理 AI 检测 Gemini Key…"],
+                    ["整理任务结果", "查看每日链接", "审核提醒", "管理 AI 检测 Gemini Key…", "简易上传…"],
                 )
                 self.assertIsNotNone(window.task_delivery_plugin.quick_actions)
                 self.assertIsNotNone(window.task_audio_subtitle_plugin.quick_actions)
