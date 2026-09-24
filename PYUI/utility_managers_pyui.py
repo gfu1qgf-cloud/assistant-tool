@@ -39,6 +39,27 @@ STATUS_COLORS = {
 }
 
 
+_SORT_VALUE_ROLE = int(QtCore.Qt.UserRole) + 1
+
+
+class _SortableTableItem(QtWidgets.QTableWidgetItem):
+    """Keep formatted cell text while sorting quantities as numbers."""
+
+    def __lt__(self, other):
+        left = self.data(_SORT_VALUE_ROLE)
+        right = other.data(_SORT_VALUE_ROLE)
+        if left is not None and right is not None:
+            return left < right
+        return super().__lt__(other)
+
+
+def _date_sort_value(value):
+    try:
+        return datetime.fromisoformat(str(value)).timestamp()
+    except (TypeError, ValueError, OverflowError, OSError):
+        return 0.0
+
+
 def google_drive_urls_from_mime_data(mime_data):
     """Extract visible or embedded Google links from clipboard/drop data."""
     if mime_data is None:
@@ -1196,7 +1217,7 @@ class InventoryManagerDialog(QtWidgets.QDialog):
         self.pending_material_sources = []
         self.material_sync_settings = dict(material_sync_settings or {})
         self.setWindowTitle("库存与素材管理器")
-        self.resize(900, 620)
+        self.resize(1000, 620)
 
         layout = QtWidgets.QVBoxLayout(self)
         self.tabs = QtWidgets.QTabWidget(self)
@@ -1212,17 +1233,22 @@ class InventoryManagerDialog(QtWidgets.QDialog):
         toolbar.addStretch()
         inventory_layout.addLayout(toolbar)
 
-        self.table = QtWidgets.QTableWidget(0, 6)
+        self.table = QtWidgets.QTableWidget(0, 7)
         self.table.setHorizontalHeaderLabels(
-            ["库存名称", "估算剩余", "每日消耗", "预计可用", "报警状态", "估算时间"]
+            ["库存名称", "估算剩余", "每日消耗", "预计可用", "报警状态", "估算时间", "更新时间"]
+        )
+        self.table.horizontalHeaderItem(6).setToolTip(
+            "添加、修改或补充该库存的时间；旧版记录未保存该时间时留空"
         )
         self.table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
         self.table.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
         self.table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
         self.table.verticalHeader().setVisible(False)
         self.table.horizontalHeader().setSectionResizeMode(0, QtWidgets.QHeaderView.Stretch)
-        for column in range(1, 6):
+        for column in range(1, 7):
             self.table.horizontalHeader().setSectionResizeMode(column, QtWidgets.QHeaderView.ResizeToContents)
+        self.table.setSortingEnabled(True)
+        self.table.sortItems(6, QtCore.Qt.SortOrder.DescendingOrder)
         self.table.doubleClicked.connect(self.edit_item)
         inventory_layout.addWidget(self.table)
 
@@ -1258,6 +1284,27 @@ class InventoryManagerDialog(QtWidgets.QDialog):
         self.refresh()
         self.refresh_materials()
         self.refresh_people()
+
+    @staticmethod
+    def _begin_table_refresh(table):
+        header = table.horizontalHeader()
+        sort_state = (header.sortIndicatorSection(), header.sortIndicatorOrder())
+        table.setSortingEnabled(False)
+        return sort_state
+
+    @staticmethod
+    def _finish_table_refresh(table, sort_state, selected_id):
+        table.setSortingEnabled(True)
+        column, order = sort_state
+        if 0 <= column < table.columnCount():
+            table.sortItems(column, order)
+        if selected_id:
+            for row in range(table.rowCount()):
+                cell = table.item(row, 0)
+                data = cell.data(QtCore.Qt.UserRole) if cell else None
+                if isinstance(data, dict) and data.get("id") == selected_id:
+                    table.selectRow(row)
+                    break
 
     def _build_material_tab(self):
         layout = QtWidgets.QVBoxLayout(self.material_tab)
@@ -1328,9 +1375,9 @@ class InventoryManagerDialog(QtWidgets.QDialog):
         library_toolbar.addStretch(1)
         layout.addLayout(library_toolbar)
 
-        self.material_table = QtWidgets.QTableWidget(0, 7, self.material_tab)
+        self.material_table = QtWidgets.QTableWidget(0, 8, self.material_tab)
         self.material_table.setHorizontalHeaderLabels(
-            ["素材名称", "状态", "来源", "文件数", "占用空间", "添加时间", "保存位置"]
+            ["素材名称", "状态", "来源", "文件数", "占用空间", "添加时间", "更新时间", "保存位置"]
         )
         self.material_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
         self.material_table.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
@@ -1341,15 +1388,17 @@ class InventoryManagerDialog(QtWidgets.QDialog):
             0,
             QtWidgets.QHeaderView.ResizeToContents,
         )
-        for column in range(1, 6):
+        for column in range(1, 7):
             self.material_table.horizontalHeader().setSectionResizeMode(
                 column,
                 QtWidgets.QHeaderView.ResizeToContents,
             )
         self.material_table.horizontalHeader().setSectionResizeMode(
-            6,
+            7,
             QtWidgets.QHeaderView.Stretch,
         )
+        self.material_table.setSortingEnabled(True)
+        self.material_table.sortItems(6, QtCore.Qt.SortOrder.DescendingOrder)
         layout.addWidget(self.material_table, 1)
 
         self.material_status_label = QtWidgets.QLabel(
@@ -1490,6 +1539,8 @@ class InventoryManagerDialog(QtWidgets.QDialog):
             6,
             QtWidgets.QHeaderView.Stretch,
         )
+        self.people_table.setSortingEnabled(True)
+        self.people_table.sortItems(5, QtCore.Qt.SortOrder.DescendingOrder)
         layout.addWidget(self.people_table, 1)
 
         self.person_status_label = QtWidgets.QLabel(
@@ -2004,8 +2055,8 @@ class InventoryManagerDialog(QtWidgets.QDialog):
             self._handle_person_error(error)
             return
 
+        sort_state = self._begin_table_refresh(self.people_table)
         self.people_table.setRowCount(len(people))
-        selected_row = -1
         default_icon = self.style().standardIcon(QtWidgets.QStyle.SP_DirHomeIcon)
         for row, person in enumerate(people):
             material_path = person.get("material_path") or person.get("path")
@@ -2028,7 +2079,7 @@ class InventoryManagerDialog(QtWidgets.QDialog):
                 else None
             )
             for column, value in enumerate(values):
-                cell = QtWidgets.QTableWidgetItem(str(value))
+                cell = _SortableTableItem(str(value))
                 if column == 0:
                     cell.setData(QtCore.Qt.UserRole, person)
                     avatar_path = Path(str(person.get("avatar_path") or ""))
@@ -2048,14 +2099,19 @@ class InventoryManagerDialog(QtWidgets.QDialog):
                             sources.append(str(source.get("value")))
                     if sources:
                         cell.setToolTip("\n".join(sources))
+                elif column == 3:
+                    cell.setData(_SORT_VALUE_ROLE, stats["file_count"])
+                elif column == 4:
+                    cell.setData(_SORT_VALUE_ROLE, stats["size_bytes"])
+                if column == 1:
+                    cell.setData(_SORT_VALUE_ROLE, len(links))
+                elif column == 5:
+                    cell.setData(_SORT_VALUE_ROLE, _date_sort_value(person.get("updated_at")))
                 if warning_color is not None:
                     cell.setBackground(warning_color)
                 self.people_table.setItem(row, column, cell)
             self.people_table.setRowHeight(row, 64)
-            if person.get("id") == selected_id:
-                selected_row = row
-        if selected_row >= 0:
-            self.people_table.selectRow(selected_row)
+        self._finish_table_refresh(self.people_table, sort_state, selected_id)
 
     def add_person(self):
         if self.material_copy_thread is not None:
@@ -2394,11 +2450,12 @@ class InventoryManagerDialog(QtWidgets.QDialog):
             self._handle_material_error(error)
             return
 
+        sort_state = self._begin_table_refresh(self.material_table)
         self.material_table.setRowCount(len(materials))
-        selected_row = -1
         for row, material in enumerate(materials):
             stats = material_directory_stats(material["path"])
             created_at = str(material.get("created_at", "")).replace("T", " ")[:16]
+            updated_at = str(material.get("updated_at", "")).replace("T", " ")[:16]
             values = [
                 material["name"],
                 (
@@ -2410,6 +2467,7 @@ class InventoryManagerDialog(QtWidgets.QDialog):
                 stats["file_count"],
                 _format_file_size(stats["size_bytes"]),
                 created_at,
+                updated_at,
                 material["path"],
             ]
             warning_color = (
@@ -2418,9 +2476,20 @@ class InventoryManagerDialog(QtWidgets.QDialog):
                 else None
             )
             for column, value in enumerate(values):
-                cell = QtWidgets.QTableWidgetItem(str(value))
+                cell = _SortableTableItem(str(value))
                 if column == 0:
                     cell.setData(QtCore.Qt.UserRole, material)
+                elif column == 3:
+                    cell.setData(_SORT_VALUE_ROLE, stats["file_count"])
+                elif column == 4:
+                    cell.setData(_SORT_VALUE_ROLE, stats["size_bytes"])
+                elif column in (5, 6):
+                    cell.setData(
+                        _SORT_VALUE_ROLE,
+                        _date_sort_value(
+                            material.get("created_at" if column == 5 else "updated_at")
+                        ),
+                    )
                 if column == 2:
                     source_lines = [
                         str(source.get("value", ""))
@@ -2432,10 +2501,7 @@ class InventoryManagerDialog(QtWidgets.QDialog):
                 if warning_color is not None:
                     cell.setBackground(warning_color)
                 self.material_table.setItem(row, column, cell)
-            if material["id"] == selected_id:
-                selected_row = row
-        if selected_row >= 0:
-            self.material_table.selectRow(selected_row)
+        self._finish_table_refresh(self.material_table, sort_state, selected_id)
 
     def check_materials(self):
         if self.material_copy_thread is not None:
@@ -2550,11 +2616,19 @@ class InventoryManagerDialog(QtWidgets.QDialog):
             return
         selected_id = self._selected_id_without_message()
         rows = summary["items"]
+        sort_state = self._begin_table_refresh(self.table)
         self.table.setRowCount(len(rows))
         now_text = datetime.now().strftime("%m-%d %H:%M")
-        selected_row = -1
         for row, item in enumerate(rows):
             days_left = item["days_left"]
+            modified_at = item.get("modified_at") or 0
+            try:
+                modified_text = (
+                    datetime.fromtimestamp(modified_at).strftime("%Y-%m-%d %H:%M")
+                    if modified_at else ""
+                )
+            except (OverflowError, OSError, ValueError):
+                modified_text = ""
             values = [
                 item["name"],
                 _format_quantity(item["current_quantity"]),
@@ -2562,19 +2636,29 @@ class InventoryManagerDialog(QtWidgets.QDialog):
                 "不自动消耗" if math.isinf(days_left) else "{:.2f} 天".format(days_left),
                 STATUS_LABELS[item["status"]],
                 now_text,
+                modified_text,
             ]
             color = STATUS_COLORS.get(item["status"])
             for column, value in enumerate(values):
-                cell = QtWidgets.QTableWidgetItem(str(value))
+                cell = _SortableTableItem(str(value))
                 if column == 0:
                     cell.setData(QtCore.Qt.UserRole, item)
+                elif column in (1, 2, 3):
+                    cell.setData(
+                        _SORT_VALUE_ROLE,
+                        (
+                            item["current_quantity"] if column == 1 else
+                            item["daily_usage"] if column == 2 else days_left
+                        ),
+                    )
+                elif column == 6 and not modified_text:
+                    cell.setToolTip("旧版库存未记录独立的更新时间")
+                if column == 6:
+                    cell.setData(_SORT_VALUE_ROLE, modified_at)
                 if color is not None:
                     cell.setBackground(color)
                 self.table.setItem(row, column, cell)
-            if item["id"] == selected_id:
-                selected_row = row
-        if selected_row >= 0:
-            self.table.selectRow(selected_row)
+        self._finish_table_refresh(self.table, sort_state, selected_id)
 
     def _selected_id_without_message(self):
         row = self.table.currentRow()

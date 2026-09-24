@@ -188,6 +188,9 @@ class InventoryStore:
                         "quantity": _number(raw.get("quantity")),
                         "daily_usage": _number(raw.get("daily_usage")),
                         "updated_at": _number(raw.get("updated_at"), now),
+                        # updated_at is the consumption baseline and may change
+                        # when a different item is edited. It is not an edit time.
+                        "modified_at": _number(raw.get("modified_at")),
                     }
                 )
             materials = []
@@ -327,6 +330,19 @@ class InventoryStore:
 
     def list_materials(self):
         return self.load()["materials"]
+
+    def touch_material(self, material_id):
+        """Record a successful monitored download as a material update."""
+        with self.lock:
+            state = self.load()
+            for material in state["materials"]:
+                if material["id"] == material_id:
+                    material["updated_at"] = datetime.now().astimezone().isoformat(
+                        timespec="seconds"
+                    )
+                    self._write(state)
+                    return material
+            raise KeyError("找不到要更新时间的素材")
 
     @staticmethod
     def _images_for_source(source_kind, source, root_text, seen_paths):
@@ -585,6 +601,7 @@ class InventoryStore:
                 "quantity": _number(quantity),
                 "daily_usage": _number(daily_usage),
                 "updated_at": now,
+                "modified_at": now,
             }
             state["items"].append(item)
             self._write(state)
@@ -610,6 +627,7 @@ class InventoryStore:
                         quantity=_number(quantity),
                         daily_usage=_number(daily_usage),
                         updated_at=now,
+                        modified_at=now,
                     )
                     self._write(state)
                     return item
@@ -626,6 +644,7 @@ class InventoryStore:
             for item in state["items"]:
                 if item["id"] == item_id:
                     item["quantity"] += amount
+                    item["modified_at"] = now
                     self._write(state)
                     return item
             raise KeyError("找不到要补充的库存")

@@ -472,6 +472,12 @@ class InventoryPlugin:
     def _material_sync_completed(self, result):
         count = int(result.get("downloaded_count", 0))
         errors = list(result.get("errors", []))
+        material_id = str(self.material_sync_settings.get("material_id") or "")
+        if count and material_id and self.store is not None:
+            try:
+                self.store.touch_material(material_id)
+            except (KeyError, OSError, ValueError) as error:
+                self.context.log(f"更新素材时间失败：{error}", logging.WARNING)
         message = f"检查完成，新下载或更新 {count} 个文件"
         if errors:
             message += f"，{len(errors)} 个失败"
