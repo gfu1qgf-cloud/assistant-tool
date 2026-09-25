@@ -166,14 +166,14 @@ class SmartVideoEditorSettingsPage:
         self.whisper_model_combo.addItem("large-v3（最高精度，最慢）", "large-v3")
         self.whisper_model_combo.setToolTip(
             "同时用于视频内容识别和最终字幕强制对齐。首次选择未缓存模型时"
-            "需要下载；修改后会在下一次分析或导出时于后台动态切换。"
+            "需要下载；切换模型后请重启程序，避免同时加载两份模型。"
         )
         form.addRow("任务识别/对齐模型：", self.whisper_model_combo)
 
         model_note = QtWidgets.QLabel(
             "模型越大，外语短词和词尾时间通常越准确，但 CPU 用时和内存占用"
             "也会明显增加。程序会优先复用本机缓存；未缓存模型首次使用需要"
-            "下载，不需要重启程序。",
+            "下载；切换模型后需要重启程序。",
             content,
         )
         model_note.setWordWrap(True)

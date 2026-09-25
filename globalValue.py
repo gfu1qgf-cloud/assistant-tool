@@ -8,6 +8,10 @@ from faster_whisper import WhisperModel
 from app_paths import APP_ROOT
 
 
+class WhisperModelRestartRequired(RuntimeError):
+    """A different Whisper model is already resident in this process."""
+
+
 class GlobalValue:
     def __init__(self):
         self.__whisper_model = None
@@ -85,14 +89,17 @@ class GlobalValue:
             model_name or self._configured_whisper_model_name()
         )
         with self.__whisper_model_lock:
-            if (
-                self.__whisper_model is not None
-                and requested == self.__whisper_model_name
-            ):
-                return self.__whisper_model
-
-            previous_model = self.__whisper_model
-            previous_name = self.__whisper_model_name
+            if self.__whisper_model is not None:
+                if requested == self.__whisper_model_name or model_name is None:
+                    return self.__whisper_model
+                # CTranslate2 can keep allocations and worker references alive
+                # after Python drops the old object.  Never load a second model
+                # into the same process; the saved preference takes effect next
+                # launch instead of risking a native crash.
+                raise WhisperModelRestartRequired(
+                    f"当前已加载 {self.__whisper_model_name}，已选择 {requested}。"
+                    "请保存设置并重启程序后使用新模型。"
+                )
             source = self._model_source(requested)
             try:
                 replacement = WhisperModel(
@@ -104,9 +111,6 @@ class GlobalValue:
                 self.__whisper_model_error = (
                     f"{requested} 加载失败：{type(error).__name__}: {error}"
                 )
-                if previous_model is not None:
-                    self.__whisper_model = previous_model
-                    self.__whisper_model_name = previous_name
                 raise RuntimeError(self.__whisper_model_error) from error
 
             self.__whisper_model = replacement
@@ -122,6 +126,11 @@ class GlobalValue:
 
     def whisper_model_name(self):
         return self.__whisper_model_name or self._configured_whisper_model_name()
+
+    def loaded_whisper_model_name(self):
+        """Return the actual model in memory, not the saved next-launch choice."""
+        with self.__whisper_model_lock:
+            return self.__whisper_model_name
 
 
 globalValue = GlobalValue()

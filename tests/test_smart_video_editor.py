@@ -9,7 +9,7 @@ from unittest import mock
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from globalValue import GlobalValue
+from globalValue import GlobalValue, WhisperModelRestartRequired
 from qt_compat import QtCore, QtWidgets
 
 from app_plugins.builtin.smart_video_editor.settings import (
@@ -212,7 +212,7 @@ class SmartVideoEditorTests(unittest.TestCase):
         )
         self.assertEqual(text_units("你好，世界！"), ["你", "好", "世", "界"])
 
-    def test_whisper_model_can_switch_without_restarting_process(self):
+    def test_whisper_model_switch_requires_restart_without_double_loading(self):
         created = []
 
         def fake_model(source, **options):
@@ -223,13 +223,39 @@ class SmartVideoEditorTests(unittest.TestCase):
         values = GlobalValue()
         with mock.patch("globalValue.WhisperModel", side_effect=fake_model):
             base = values.get_whisper_model("base")
-            medium = values.get_whisper_model("medium")
-            repeated = values.get_whisper_model("medium")
+            with self.assertRaisesRegex(WhisperModelRestartRequired, "重启"):
+                values.get_whisper_model("medium")
+            with mock.patch.object(values, "_configured_whisper_model_name", return_value="medium"):
+                repeated = values.get_whisper_model()
 
-        self.assertIsNot(base, medium)
-        self.assertIs(medium, repeated)
-        self.assertEqual([item["source"] for item in created], ["base", "medium"])
-        self.assertEqual(values.whisper_model_name(), "medium")
+        self.assertIs(base, repeated)
+        self.assertEqual([item["source"] for item in created], ["base"])
+        self.assertEqual(values.loaded_whisper_model_name(), "base")
+
+    def test_runtime_autosave_does_not_revert_new_model_choice(self):
+        plugin = SmartVideoEditorPlugin()
+        plugin.settings = normalize_smart_video_editor_settings({
+            "whisper_model_size": "base"
+        })
+        config = {"smart_video_editor": {"whisper_model_size": "large-v3"}}
+        plugin.update_config(config)
+        self.assertEqual(config["smart_video_editor"]["whisper_model_size"], "large-v3")
+        plugin.settings["whisper_model_size"] = "medium"
+        plugin._settings_dirty = True
+        plugin.update_config(config)
+        self.assertEqual(config["smart_video_editor"]["whisper_model_size"], "medium")
+
+    def test_smart_editor_prompts_for_restart_before_new_model_work(self):
+        plugin = SmartVideoEditorPlugin()
+        context = mock.Mock()
+        context.loaded_whisper_model_name.return_value = "base"
+        plugin.context = context
+        with mock.patch(
+            "app_plugins.builtin.smart_video_editor.plugin.QMessageBox.information"
+        ) as notice:
+            self.assertFalse(plugin._model_ready({"whisper_model_size": "large-v3"}))
+        self.assertIn("重启", notice.call_args.args[2])
+        self.assertTrue(plugin._model_ready({"whisper_model_size": "base"}))
 
     def test_standalone_breath_ui_reuses_timeline_and_keeps_full_frame_mode(self):
         with tempfile.TemporaryDirectory() as temporary:

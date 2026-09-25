@@ -113,7 +113,21 @@ class TaskDeliveryController:
         previous_config = dict(self.review_status_config)
         self.review_status_settings = normalize_review_status_settings(config)
         self.review_status_config = load_task_result_config(config)
-        review_ok = self.restart_review_status_monitor()
+        monitor_keys = (
+            "review_sheet_url",
+            "review_sheet_credentials_file",
+            "review_sheet_token_file",
+        )
+        monitor_changed = (
+            self.review_status_settings != previous_settings
+            or any(
+                self.review_status_config.get(key) != previous_config.get(key)
+                for key in monitor_keys
+            )
+        )
+        review_ok = (
+            self.restart_review_status_monitor() if monitor_changed else True
+        )
         hotkey_ok = self.register_hotkey(
             config.get(TASK_RESULT_HOTKEY_CONFIG_KEY, self.global_hotkey)
         )

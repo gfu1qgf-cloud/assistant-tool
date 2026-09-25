@@ -58,6 +58,7 @@ class SmartVideoEditorPlugin:
         self.phase = None
         self.result = None
         self.error = None
+        self._settings_dirty = False
 
     @property
     def parent(self):
@@ -112,12 +113,16 @@ class SmartVideoEditorPlugin:
         self.settings = normalize_smart_video_editor_settings(
             config.get(SMART_VIDEO_EDITOR_CONFIG_KEY)
         )
+        self._settings_dirty = False
         return True
 
     def update_config(self, config):
-        config[SMART_VIDEO_EDITOR_CONFIG_KEY] = (
-            normalize_smart_video_editor_settings(self.settings)
-        )
+        # Main-window autosaves (including pending-review changes) must not
+        # replace a newer settings-dialog choice with stale runtime settings.
+        if self._settings_dirty or SMART_VIDEO_EDITOR_CONFIG_KEY not in config:
+            config[SMART_VIDEO_EDITOR_CONFIG_KEY] = (
+                normalize_smart_video_editor_settings(self.settings)
+            )
         config[SMART_VIDEO_PENDING_CONFIG_KEY] = (
             normalize_smart_video_pending_reviews(self.pending_reviews)
         )
@@ -167,6 +172,19 @@ class SmartVideoEditorPlugin:
             "智能剪辑或气口剪辑正在分析/导出，请等待当前任务完成。",
         )
         return True
+
+    def _model_ready(self, settings):
+        loaded = self.context.loaded_whisper_model_name()
+        selected = str(settings.get("whisper_model_size") or "base")
+        if not loaded or loaded == selected:
+            return True
+        message = (
+            f"当前运行的是 {loaded}，设置选择的是 {selected}。"
+            "为避免模型切换时程序崩溃，请先重启程序；本次没有开始处理。"
+        )
+        self.context.log(f"[智能剪辑] {message}")
+        QMessageBox.information(self.parent, "模型切换需重启", message)
+        return False
 
     def start_editor(self, rows=()):
         if self._is_running():
@@ -230,6 +248,8 @@ class SmartVideoEditorPlugin:
     def _confirm_and_analyze(self, jobs, settings):
         if not jobs:
             QMessageBox.information(self.parent, "智能剪辑", "没有可以分析的任务。")
+            return
+        if not self._model_ready(settings):
             return
         selected_jobs = SmartVideoSourceDialog.get_jobs(jobs, self.parent)
         if selected_jobs is None:
@@ -446,11 +466,17 @@ class SmartVideoEditorPlugin:
         merged["use_main_subtitle_settings"] = True
         self.settings = normalize_smart_video_editor_settings(merged)
         self.context.set_subtitle_generation_settings(self.settings)
+        self._settings_dirty = True
         saved = self.context.save_config()
         if saved:
+            self._settings_dirty = False
             self.context.log(
                 "[智能剪辑] 已从时间线保存全局字幕参数。"
             )
+            loaded = self.context.loaded_whisper_model_name()
+            selected = self.settings["whisper_model_size"]
+            if loaded and loaded != selected:
+                return True, f"已保存 {selected}；请重启程序后生效（当前仍为 {loaded}）"
             return True, "已保存为全局默认"
         return False, "保存失败，请查看程序日志"
 
@@ -514,6 +540,8 @@ class SmartVideoEditorPlugin:
             )
             bundle["settings"] = settings
         self._remember_pending_reviews(bundle)
+        if not self._model_ready(settings):
+            return
         self.context.log("[智能剪辑] 核对已确认，开始生成视频与 SRT。")
         self._start_worker(
             "export",

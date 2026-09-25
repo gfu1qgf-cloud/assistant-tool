@@ -234,6 +234,11 @@ class PluginContext:
 
         return globalValue.get_whisper_model(model_name)
 
+    def loaded_whisper_model_name(self):
+        from globalValue import globalValue
+
+        return globalValue.loaded_whisper_model_name()
+
     def update_command(
         self,
         command_id,

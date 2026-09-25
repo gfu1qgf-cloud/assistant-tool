@@ -366,7 +366,7 @@ class SmartVideoTimelineReview(QtWidgets.QWidget):
         self.subtitle_model_combo.addItem("medium", "medium")
         self.subtitle_model_combo.addItem("large-v3", "large-v3")
         self.subtitle_model_combo.setToolTip(
-            "无需重启。模型会在下一次重新分析或最终字幕对齐时于后台切换；"
+            "选择不同模型后需要保存并重启程序，再重新分析；"
             "已经生成的识别轨不会凭空改变。"
         )
         self.subtitle_max_words_spinbox = QtWidgets.QSpinBox(
@@ -792,7 +792,7 @@ class SmartVideoTimelineReview(QtWidgets.QWidget):
         self.timeline.set_playhead(self.output_position)
         if values["whisper_model_size"] != previous_model:
             self.subtitle_settings_status.setText(
-                f"已选择 {values['whisper_model_size']}；最终对齐会在后台切换模型。"
+                f"已选择 {values['whisper_model_size']}；请保存并重启后再分析或导出。"
             )
         else:
             self.subtitle_settings_status.setText(

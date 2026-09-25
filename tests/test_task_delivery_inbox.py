@@ -1,17 +1,31 @@
 import os
 import unittest
+from types import SimpleNamespace
+from unittest import mock
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from qt_compat import QtWidgets
 
 from app_plugins.builtin.task_delivery_inbox import DeliveryInboxDialog, build_delivery_rows
+from app_plugins.builtin.task_delivery_controller import TaskDeliveryController
 
 
 class DeliveryInboxTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+
+    def test_unrelated_model_setting_does_not_restart_review_monitor(self):
+        context = mock.Mock()
+        controller = TaskDeliveryController(
+            SimpleNamespace(quick_actions=None), context
+        )
+        with mock.patch.object(controller, "restart_review_status_monitor") as restart:
+            self.assertTrue(controller.apply_settings({
+                "smart_video_editor": {"whisper_model_size": "large-v3"}
+            }))
+        restart.assert_not_called()
 
     def test_joins_exact_drive_file_and_keeps_current_upload(self):
         records = [

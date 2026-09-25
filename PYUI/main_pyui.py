@@ -2147,6 +2147,7 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
 
     def openSettings(self):
         """打开设置对话框"""
+        loaded_whisper_model = globalValue.loaded_whisper_model_name()
         settings = MainSettingDialog.get_settings(self, plugin_host=self.plugin_host)
         if settings:
             apply_ui_theme(
@@ -2158,10 +2159,12 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
             self.flow_guard_settings = normalize_flow_guard_settings(
                 settings.get(FLOW_GUARD_CONFIG_KEY)
             )
-            self._set_flow_guard_action_checked(
-                self.flow_guard_settings["enabled"]
-            )
-            flow_guard_restarted = self.restartFlowParameterGuard()
+            flow_guard_restarted = True
+            if self.flow_guard_settings != previous_flow_guard_settings:
+                self._set_flow_guard_action_checked(
+                    self.flow_guard_settings["enabled"]
+                )
+                flow_guard_restarted = self.restartFlowParameterGuard()
             if not flow_guard_restarted:
                 self.flow_guard_settings = previous_flow_guard_settings
                 self._set_flow_guard_action_checked(
@@ -2184,6 +2187,18 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
                 all(registration_results)
                 and flow_guard_restarted
             ):
+                selected_whisper_model = str(
+                    (settings.get("smart_video_editor") or {}).get(
+                        "whisper_model_size"
+                    ) or "base"
+                )
+                restart_note = (
+                    f"\n智能剪辑模型已选择 {selected_whisper_model}；"
+                    f"请重启程序后生效（当前仍为 {loaded_whisper_model}）。"
+                    if loaded_whisper_model
+                    and selected_whisper_model != loaded_whisper_model
+                    else ""
+                )
                 QMessageBox.information(
                     self,
                     '设置',
@@ -2192,9 +2207,10 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
                     f'整理任务结果：{self.task_delivery_plugin.global_hotkey}\n'
                     f'加载当前任务：{self.load_task_global_hotkey}\n'
                     f'库存与素材管理器：{self.inventory_plugin.global_hotkey}\n'
-                    'Flow 参数守卫：{}（{}）'.format(
+                    'Flow 参数守卫：{}（{}）{}'.format(
                         '已启用' if self.flow_guard_settings['enabled'] else '已关闭',
                         format_flow_guard_targets(self.flow_guard_settings),
+                        restart_note,
                     ),
                 )
             else:
