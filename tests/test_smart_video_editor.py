@@ -1687,6 +1687,35 @@ class SmartVideoEditorTests(unittest.TestCase):
             finally:
                 dialog.close()
 
+    def test_review_dialog_names_source_video_from_reviewed_order(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "first_words.mp4"
+            source.write_bytes(b"first")
+            bundle = analyze_smart_video_jobs([{
+                "task_id": "T-rename",
+                "label": "T-rename",
+                "task_dir": str(root),
+                "script": "first words",
+                "language": "en",
+                "sources": [str(source)],
+            }], _MappingWhisperModel(), {"silence_detection_enabled": False})
+            dialog = SmartVideoReviewDialog(bundle)
+            try:
+                with mock.patch.object(
+                    QtWidgets.QMessageBox,
+                    "question",
+                    return_value=QtWidgets.QMessageBox.Yes,
+                ), mock.patch.object(QtWidgets.QMessageBox, "information"):
+                    dialog.rename_videos_button.click()
+                renamed = root / "[01] first_words.mp4"
+                self.assertTrue(renamed.is_file())
+                self.assertFalse(source.exists())
+                self.assertEqual(dialog.bundle["tasks"][0]["clips"][0]["source"], str(renamed))
+                self.assertEqual(dialog.table.item(0, dialog.COL_FILE).text(), renamed.name)
+            finally:
+                dialog.close()
+
     def test_human_approval_allows_export_and_expires_after_edit_change(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

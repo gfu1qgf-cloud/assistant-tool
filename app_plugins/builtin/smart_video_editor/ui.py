@@ -19,6 +19,11 @@ from .engine import (
     smart_video_missing_findings,
 )
 from .timeline_review import SmartVideoTimelineReview
+from .renaming import (
+    apply_video_rename_plan,
+    build_video_rename_plan,
+    update_bundle_video_paths,
+)
 
 
 STATUS_TEXT = {
@@ -720,6 +725,10 @@ class SmartVideoReviewDialog(QtWidgets.QDialog):
 
         button_layout = QtWidgets.QHBoxLayout()
         open_button = QtWidgets.QPushButton("打开所选视频", self)
+        self.rename_videos_button = QtWidgets.QPushButton("按顺序命名原视频…", self)
+        self.rename_videos_button.setToolTip(
+            "按当前“顺序”列给原视频文件加上 [01]、[02] 等前缀；会真正修改磁盘文件名。"
+        )
         report_button = QtWidgets.QPushButton("打开可读问题报告", self)
         copy_report_button = QtWidgets.QPushButton("复制全部问题", self)
         save_button = QtWidgets.QPushButton("保存核对结果", self)
@@ -727,12 +736,14 @@ class SmartVideoReviewDialog(QtWidgets.QDialog):
         self.export_button = QtWidgets.QPushButton("确认并生成视频与 SRT", self)
         self.export_button.setDefault(True)
         open_button.clicked.connect(self.open_selected_video)
+        self.rename_videos_button.clicked.connect(self.rename_source_videos)
         report_button.clicked.connect(self.open_selected_report)
         copy_report_button.clicked.connect(self.copy_problem_report)
         save_button.clicked.connect(self.save_review)
         cancel_button.clicked.connect(self.reject)
         self.export_button.clicked.connect(self.accept)
         button_layout.addWidget(open_button)
+        button_layout.addWidget(self.rename_videos_button)
         button_layout.addWidget(report_button)
         button_layout.addWidget(copy_report_button)
         button_layout.addWidget(save_button)
@@ -1578,6 +1589,54 @@ class SmartVideoReviewDialog(QtWidgets.QDialog):
             QtWidgets.QMessageBox.information(self, "打开视频", "请先选中一个片段。")
             return
         self.open_video_for_row(row)
+
+    def rename_source_videos(self):
+        try:
+            self.collect()
+            plan = build_video_rename_plan(self.bundle)
+        except (OSError, TypeError, ValueError) as error:
+            QtWidgets.QMessageBox.warning(self, "视频命名", str(error))
+            return
+        if not plan:
+            QtWidgets.QMessageBox.information(self, "视频命名", "原视频已经按当前顺序命名。")
+            return
+        examples = "\n".join(
+            f"{source.name} → {target.name}" for source, target in plan[:5]
+        )
+        if len(plan) > 5:
+            examples += f"\n……另有 {len(plan) - 5} 个视频"
+        answer = QtWidgets.QMessageBox.question(
+            self,
+            "确认命名原视频",
+            f"将重命名 {len(plan)} 个磁盘上的原视频（不改视频内容）：\n\n"
+            f"{examples}\n\n继续吗？",
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+            QtWidgets.QMessageBox.No,
+        )
+        if answer != QtWidgets.QMessageBox.Yes:
+            return
+        self.timeline_review.close_player()
+        try:
+            apply_video_rename_plan(plan)
+        except OSError as error:
+            QtWidgets.QMessageBox.warning(self, "视频命名失败", str(error))
+            return
+        update_bundle_video_paths(self.bundle, plan)
+        for row in range(self.table.rowCount()):
+            clip = self._clip_for_row(row)
+            if clip is not None:
+                item = self.table.item(row, self.COL_FILE)
+                item.setText(str(clip.get("file_name") or ""))
+                item.setToolTip(str(clip.get("source") or ""))
+        self.timeline_review.refresh(self.bundle, preserve_time=True)
+        try:
+            save_analysis_reports(self.bundle)
+        except OSError as error:
+            QtWidgets.QMessageBox.warning(
+                self, "视频已命名", f"原视频已完成命名，但保存分析报告失败：\n{error}"
+            )
+            return
+        QtWidgets.QMessageBox.information(self, "视频命名", f"已命名 {len(plan)} 个原视频。")
 
     def collect(self):
         self.timeline_review.apply_pending_subtitle_settings()

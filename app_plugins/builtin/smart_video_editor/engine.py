@@ -293,6 +293,8 @@ def _explicit_sequence_number(path):
     stem = Path(path).stem.strip()
     match = re.match(r"^(\d{1,3})(?=$|[\s_.()（）\-\[\]])", stem)
     if match is None:
+        match = re.match(r"^\[(\d{1,3})\]\s", stem)
+    if match is None:
         match = re.match(r"^第\s*(\d{1,3})(?:段|条|个|集|部分|片)?", stem)
     return int(match.group(1)) if match is not None else None
 
