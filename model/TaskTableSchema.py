@@ -23,11 +23,17 @@ FIELD_ORDER = (
     "task_audio_type",
     "review_required",
     "subcategory",
+    "daily_stat_sheet",
+    "daily_stat_category",
 )
 
 # User-facing labels and real spreadsheet aliases belong in the ignored local
 # config.  Canonical field names are deliberately neutral and safe to publish.
 FIELD_LABELS = {field_name: field_name for field_name in FIELD_ORDER}
+FIELD_LABELS.update({
+    "daily_stat_sheet": "每日统计分页",
+    "daily_stat_category": "每日统计类别",
+})
 
 SUBMISSION_REQUIRED_FIELDS = (
     "requester",
@@ -75,6 +81,8 @@ DEFAULT_TASK_TABLE_SCHEMA = {
         "task_audio_type": {"aliases": [], "default": ""},
         "review_required": {"aliases": [], "default": ""},
         "subcategory": {"aliases": [], "default": ""},
+        "daily_stat_sheet": {"aliases": ["每日统计分页"], "default": ""},
+        "daily_stat_category": {"aliases": ["每日统计类别"], "default": ""},
     },
     "submission_sheet": {
         "header_row": 0,

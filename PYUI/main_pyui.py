@@ -1542,6 +1542,8 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
                 today_dir,
                 table_file_name,
                 template_candidates,
+                add_daily_stat_headers=True,
+                task_schema=load_task_table_schema(),
             )
             if result.get("missing_template"):
                 self.Critical(
@@ -1558,7 +1560,8 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
             self.file_explorer_tree_view.load_directory(today_dir)
             self.appendLog(f"项目目录初始化完成：{today_dir}")
             return today_dir
-        except OSError as error:
+        except Exception as error:
+            logging.exception("初始化项目目录失败")
             self.Critical(f"初始化项目目录失败：{error}")
             self.appendLog(f"初始化项目目录失败：{error}", level=logging.ERROR)
             return None
@@ -1616,9 +1619,17 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
         task: TaskData
         for index, task in enumerate(self.task_list):
             data_col = [task.task_id, task.admin, task.task_type, task.task_date, task.task_audio_type]
+            stat_sheet = task.daily_stat_sheet
+            stat_category = task.daily_stat_category
+            stat_tooltip = (
+                "每日统计：{} / {}".format(stat_sheet or "未填写分页", stat_category or "未填写类别")
+                if stat_sheet or stat_category else "每日统计：未分类（不影响原有任务处理）"
+            )
             for c_i,c_a in enumerate(data_col):
                 item = QtWidgets.QTableWidgetItem(str(c_a or ""))
                 item.setFlags(item.flags() & ~QtCore.Qt.ItemIsEditable)
+                if c_i == 0:
+                    item.setToolTip(stat_tooltip)
                 self.task_table_widget.setItem(index, c_i, item)
 
         # 加载完成后立即标记异常语言，不需要再手动点击检测按钮。

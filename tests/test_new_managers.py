@@ -1415,6 +1415,8 @@ class TaskTableSchemaTests(unittest.TestCase):
             self.assertTrue(tasks[0].review_required)
             self.assertTrue(tasks[0].task_type_from_table)
             self.assertEqual(tasks[0].subcategory, "类别A/大")
+            self.assertEqual(tasks[0].daily_stat_sheet, "")
+            self.assertEqual(tasks[0].daily_stat_category, "")
             self.assertIn("https://drive.google.com/file/d/ref123/view", tasks[0].task_reference_link)
             self.assertEqual(tasks[1].task_id, "3")
             self.assertEqual(tasks[1].task_audio_text, "fallback draft")
@@ -1448,6 +1450,35 @@ class TaskTableSchemaTests(unittest.TestCase):
             self.assertEqual(tasks[0].task_audio_type, "voice-a")
             self.assertIsNone(tasks[0].review_required)
             self.assertEqual(tasks[0].subcategory, "")
+            self.assertEqual(tasks[0].daily_stat_sheet, "")
+            self.assertEqual(tasks[0].daily_stat_category, "")
+
+    def test_daily_statistics_columns_are_optional_and_independent(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "statistics.ods"
+            document = OpenDocumentSpreadsheet()
+            table = OdfTable(name="sample")
+            document.spreadsheet.addElement(table)
+            self._add_row(table, [
+                "owner", "title", "record_id", "category", "submission_category",
+                "每日统计分页", "每日统计类别",
+            ])
+            self._add_row(table, [
+                "Alice", "task-a", "10", "routing-reels", "client-type-a",
+                "（效果视频组）", "常规短reels",
+            ])
+            document.save(str(path))
+
+            tasks, report = ReadTaskOds2(
+                path, schema=TEST_TASK_TABLE_SCHEMA, return_report=True,
+            )
+            self.assertEqual(len(tasks), 1)
+            self.assertEqual(tasks[0].task_type, "routing-reels")
+            self.assertEqual(tasks[0].submission_task_type, "client-type-a")
+            self.assertEqual(tasks[0].daily_stat_sheet, "（效果视频组）")
+            self.assertEqual(tasks[0].daily_stat_category, "常规短reels")
+            self.assertEqual(report["matched_headers"]["daily_stat_sheet"], ["每日统计分页"])
+            self.assertEqual(report["matched_headers"]["daily_stat_category"], ["每日统计类别"])
 
     def test_default_task_type_is_not_marked_as_local_override(self):
         with tempfile.TemporaryDirectory() as directory:

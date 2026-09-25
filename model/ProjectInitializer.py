@@ -5,8 +5,13 @@ import shutil
 import uuid
 from pathlib import Path
 
+from model.TaskTableAugment import add_daily_stat_headers_to_new_copy
 
-def initialize_project_directory(project_dir, table_file_name, template_candidates):
+
+def initialize_project_directory(
+    project_dir, table_file_name, template_candidates, *,
+    add_daily_stat_headers=False, task_schema=None,
+):
     project_dir = Path(project_dir)
     table_name = str(table_file_name or "").strip()
     if not table_name or Path(table_name).name != table_name:
@@ -41,6 +46,8 @@ def initialize_project_directory(project_dir, table_file_name, template_candidat
     )
     try:
         shutil.copy2(str(template), str(temporary))
+        if add_daily_stat_headers:
+            add_daily_stat_headers_to_new_copy(temporary, schema=task_schema)
         os.replace(str(temporary), str(destination))
     finally:
         try:

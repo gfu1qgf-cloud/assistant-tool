@@ -27,6 +27,8 @@ class TaskTableSchemaDialog(QtWidgets.QDialog):
         intro = QtWidgets.QLabel(
             "程序按别名自动识别表头。多个别名按从左到右的顺序尝试；同一行前面的列为空时，"
             "会继续使用后面的列。以后表格改名时，只需在这里增加新表头。"
+            "每日统计可在本地表末尾增添“每日统计分页”“每日统计类别”两列；"
+            "原有“类型”“任务类型”及旧表格保持不变。"
         )
         intro.setWordWrap(True)
         layout.addWidget(intro)

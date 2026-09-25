@@ -897,6 +897,9 @@ class MainSettingDialog(QtWidgets.QDialog, Ui_MainSettingDialog):
         self.task_result_submission_sheet_checkbox = QtWidgets.QCheckBox('写入任务提交表格')
         self.task_result_submission_sheet_url_edit = QtWidgets.QLineEdit()
         self.task_result_submission_creator_edit = QtWidgets.QLineEdit()
+        self.task_result_submission_creator_edit.setToolTip(
+            '每日数量统计会沿用这里的制作人名称；不另建一份容易不一致的姓名设置。'
+        )
         self.task_result_creator_marker_edit = QtWidgets.QLineEdit()
         form.addRow('', self.task_result_review_sheet_checkbox)
         form.addRow('审核表格链接：', self.task_result_review_sheet_url_edit)

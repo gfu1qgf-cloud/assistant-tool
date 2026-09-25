@@ -213,6 +213,10 @@ class TaskData:
         self.review_required = normalize_review_required(self.review_required_text)
         self.subcategory_text = str(value("subcategory") or "").strip()
         self.subcategory = normalize_subcategory_path(self.subcategory_text)
+        # Independent of the routing and submission types; older task tables
+        # simply leave both optional statistics fields empty.
+        self.daily_stat_sheet = str(value("daily_stat_sheet") or "").strip()
+        self.daily_stat_category = str(value("daily_stat_category") or "").strip()
         self.source_row = task_info.get("_source_row")
         self.raw = dict(task_info.get("_raw", {}))
 
