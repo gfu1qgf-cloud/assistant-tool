@@ -47,6 +47,7 @@ class MaterialSyncThread(QtCore.QThread):
         state_store,
         force_ids=None,
         adopt_existing=False,
+        material_root=None,
         parent=None,
     ):
         super().__init__(parent)
@@ -54,6 +55,7 @@ class MaterialSyncThread(QtCore.QThread):
         self.state_store = state_store
         self.force_ids = tuple(force_ids or ())
         self.adopt_existing = bool(adopt_existing)
+        self.material_root = material_root
 
     def run(self):
         try:
@@ -63,6 +65,7 @@ class MaterialSyncThread(QtCore.QThread):
                 force_ids=self.force_ids,
                 adopt_existing=self.adopt_existing,
                 progress_callback=self.progress.emit,
+                material_root=self.material_root,
             )
         except (Exception, SystemExit) as error:
             self.failed.emit(f"{type(error).__name__}: {error}")
@@ -381,6 +384,7 @@ class InventoryPlugin:
         )
         labels = {
             "present": "本地可用",
+            "duplicate": "重复，已跳过",
             "consumed": "已使用/移走",
             "remote_removed": "网盘已移除",
             "unsupported": "不支持下载",
@@ -425,6 +429,7 @@ class InventoryPlugin:
             self.material_sync_state_store,
             force_ids=force_ids,
             adopt_existing=adopt_existing,
+            material_root=self.store.material_root,
             parent=self.context.parent_widget,
         )
         self.material_sync_thread = thread
@@ -479,6 +484,9 @@ class InventoryPlugin:
             except (KeyError, OSError, ValueError) as error:
                 self.context.log(f"更新素材时间失败：{error}", logging.WARNING)
         message = f"检查完成，新下载或更新 {count} 个文件"
+        duplicate_count = int(result.get("duplicate_count", 0))
+        if duplicate_count:
+            message += f"，去重跳过 {duplicate_count} 个"
         if errors:
             message += f"，{len(errors)} 个失败"
         if self.material_sync_status_label is not None:

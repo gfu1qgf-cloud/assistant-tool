@@ -138,7 +138,7 @@ def _load_authenticated_service(service_factory):
 def _metadata(service, file_id):
     return service.files().get(
         fileId=file_id,
-        fields="id,name,mimeType,size,shortcutDetails(targetId,targetMimeType)",
+        fields="id,name,mimeType,size,md5Checksum,shortcutDetails(targetId,targetMimeType)",
         supportsAllDrives=True,
     ).execute()
 
@@ -151,7 +151,7 @@ def _folder_children(service, folder_id):
             q=f"'{folder_id}' in parents and trashed = false",
             fields=(
                 "nextPageToken,files("
-                "id,name,mimeType,size,shortcutDetails(targetId,targetMimeType))"
+                "id,name,mimeType,size,md5Checksum,shortcutDetails(targetId,targetMimeType))"
             ),
             pageSize=1000,
             pageToken=page_token,
@@ -195,12 +195,19 @@ def resolve_google_drive_folder_name(url, service_factory=load_drive_service):
     return name
 
 
-def _download_api_file(service, metadata, output_dir, progress_callback):
+def _download_api_file(service, metadata, output_dir, progress_callback, duplicate_index=None):
     from googleapiclient.http import MediaIoBaseDownload
 
     mime_type = str(metadata.get("mimeType") or "")
     name = str(metadata.get("name") or metadata.get("id") or "素材")
     was_jfif = Path(name).suffix.casefold() == ".jfif"
+    if duplicate_index is not None and not mime_type.startswith(GOOGLE_NATIVE_PREFIX):
+        duplicate = duplicate_index.find_remote_md5(
+            metadata.get("size"), metadata.get("md5Checksum")
+        )
+        if duplicate is not None:
+            _report(progress_callback, f"跳过重复素材：{name}（已存在：{duplicate.name}）")
+            return None
     if mime_type.startswith(GOOGLE_NATIVE_PREFIX):
         export = NATIVE_EXPORTS.get(mime_type)
         if export is None:
@@ -234,6 +241,12 @@ def _download_api_file(service, metadata, output_dir, progress_callback):
                     if percent >= last_percent + 10 or percent >= 100:
                         _report(progress_callback, f"正在下载 {target.name}：{percent}%")
                         last_percent = percent
+        if duplicate_index is not None:
+            duplicate = duplicate_index.find_same_content(part)
+            if duplicate is not None:
+                part.unlink()
+                _report(progress_callback, f"跳过重复素材：{name}（已存在：{duplicate.name}）")
+                return None
         final_target = target
         if was_jfif:
             desired = target.with_suffix(jfif_content_extension(part))
@@ -246,6 +259,8 @@ def _download_api_file(service, metadata, output_dir, progress_callback):
         except OSError:
             pass
         raise
+    if duplicate_index is not None:
+        duplicate_index.register(final_target)
     if was_jfif:
         _report(
             progress_callback,
@@ -263,6 +278,7 @@ def _download_api_item(
     progress_callback,
     active_folder_ids,
     preferred_name=None,
+    duplicate_index=None,
 ):
     mime_type = str(metadata.get("mimeType") or "")
     if mime_type == GOOGLE_SHORTCUT_MIME:
@@ -278,6 +294,7 @@ def _download_api_item(
             progress_callback,
             active_folder_ids,
             preferred_name=preferred_name or metadata.get("name"),
+            duplicate_index=duplicate_index,
         )
 
     if mime_type != GOOGLE_FOLDER_MIME:
@@ -289,6 +306,7 @@ def _download_api_item(
             metadata,
             output_dir,
             progress_callback,
+            duplicate_index,
         )
         return ([target] if target else []), (0 if target else 1)
 
@@ -311,6 +329,7 @@ def _download_api_item(
                 target_dir,
                 progress_callback,
                 active_folder_ids,
+                duplicate_index=duplicate_index,
             )
             downloaded.extend(child_files)
             skipped += child_skipped
@@ -324,6 +343,7 @@ def download_google_drive_source(
     output_dir,
     progress_callback: Callable[[str], None] | None = None,
     service_factory=load_drive_service,
+    duplicate_index=None,
 ):
     """Download one Drive file/folder and return a structured result.
 
@@ -339,15 +359,27 @@ def download_google_drive_source(
         _report(progress_callback, f"正在尝试直接下载网盘文件：{link.file_id}")
         try:
             parsed_file = parse_drive_link(link.original_url)
-            _status, target = download_one(
+            status, target = download_one(
                 parsed_file,
                 output_dir,
                 overwrite=False,
                 timeout=60,
                 export_formats=DEFAULT_EXPORT_FORMATS,
             )
-            _report(progress_callback, f"网盘文件下载完成：{target.name}")
-            return MaterialDownloadResult((target,), 1, 0, False)
+            if status == "downloaded" and duplicate_index is not None:
+                duplicate = duplicate_index.find_same_content(target)
+                if duplicate is not None:
+                    target.unlink()
+                    _report(progress_callback, f"跳过重复素材：{target.name}（已存在：{duplicate.name}）")
+                    return MaterialDownloadResult((), 0, 1, False)
+                duplicate_index.register(target)
+            if status == "downloaded":
+                _report(progress_callback, f"网盘文件下载完成：{target.name}")
+            else:
+                _report(progress_callback, f"网盘文件已存在，跳过：{target.name}")
+            return MaterialDownloadResult(
+                (target,), int(status == "downloaded"), int(status != "downloaded"), False
+            )
         except (DownloadError, HTTPError, URLError, TimeoutError, OSError) as error:
             public_error = error
             _report(progress_callback, "直接下载失败，尝试使用已有 Google 授权…")
@@ -361,18 +393,19 @@ def download_google_drive_source(
             output_dir,
             progress_callback,
             set(),
+            duplicate_index=duplicate_index,
         )
     except Exception as error:
         detail = f"；直接下载错误：{public_error}" if public_error else ""
         raise DownloadError(f"Google Drive 下载失败：{error}{detail}") from error
 
     downloaded = [path for path in downloaded if path is not None]
-    if not downloaded:
+    if not downloaded and not skipped:
         raise DownloadError("网盘来源中没有可下载的文件，或文件夹为空")
     roots = tuple(path for path in output_dir.iterdir() if path.name != ".part")
     _report(
         progress_callback,
         f"网盘来源处理完成：下载 {len(downloaded)} 个文件"
-        + (f"，跳过 {skipped} 个不支持项目" if skipped else ""),
+        + (f"，跳过 {skipped} 个重复或不支持项目" if skipped else ""),
     )
     return MaterialDownloadResult(roots, len(downloaded), skipped, True)

@@ -441,7 +441,7 @@ class InventoryTests(unittest.TestCase):
             drive_url = "https://drive.google.com/file/d/drive-file-123/view"
             progress = []
 
-            def fake_download(url, output_dir, progress_callback=None):
+            def fake_download(url, output_dir, progress_callback=None, duplicate_index=None):
                 self.assertEqual(url, drive_url)
                 target = Path(output_dir) / "cloud.mp4"
                 target.write_bytes(b"cloud")

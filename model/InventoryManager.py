@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Dict, Optional
 
 from app_paths import APP_ROOT
+from model.MaterialDuplicateIndex import MaterialDuplicateIndex
 from model.MaterialSourceDownloader import (
     DownloadError,
     download_google_drive_source,
@@ -789,6 +790,7 @@ class InventoryStore:
         return path.resolve()
 
     def _copy_material_sources(self, sources, staging_dir, progress_callback=None):
+        duplicate_index = None
         for index, source_info in enumerate(sources, 1):
             if progress_callback is not None:
                 progress_callback(
@@ -801,18 +803,31 @@ class InventoryStore:
                     shutil.copytree(str(source), str(target))
                 else:
                     shutil.copy2(str(source), str(target))
+                if duplicate_index is not None:
+                    duplicate_index.register_tree(target)
                 continue
 
+            if duplicate_index is None:
+                duplicate_index = MaterialDuplicateIndex(
+                    [self.material_root, staging_dir]
+                )
             download_dir = staging_dir / f".drive-source-{index}"
             download_dir.mkdir()
             download_google_drive_source(
                 source_info["value"],
                 download_dir,
                 progress_callback=progress_callback,
+                duplicate_index=duplicate_index,
             )
             for downloaded in list(download_dir.iterdir()):
+                if downloaded.is_dir() and not material_directory_has_files(downloaded):
+                    if downloaded.is_symlink() or downloaded.parent != download_dir:
+                        raise ValueError("网盘下载目录异常，已停止入库")
+                    shutil.rmtree(downloaded)
+                    continue
                 target = self._unique_copy_target(staging_dir, downloaded.name)
                 shutil.move(str(downloaded), str(target))
+                duplicate_index.register_tree(target)
             download_dir.rmdir()
 
     @staticmethod
@@ -880,7 +895,7 @@ class InventoryStore:
                 progress_callback=progress_callback,
             )
             if not material_directory_has_files(staging_dir):
-                raise ValueError("拖入的文件夹中没有可保存的文件")
+                raise ValueError("没有可保存的新文件；重复的网盘素材已自动跳过")
 
             with self.lock:
                 state = self.load()
@@ -944,7 +959,7 @@ class InventoryStore:
                 progress_callback=progress_callback,
             )
             if not material_directory_has_files(staging_dir):
-                raise ValueError("追加的文件夹中没有可保存的文件")
+                raise ValueError("没有可追加的新文件；重复的网盘素材已自动跳过")
 
             with self.lock:
                 state = self.load()
@@ -1032,7 +1047,7 @@ class InventoryStore:
                     progress_callback=progress_callback,
                 )
                 if not material_directory_has_files(staging_material_dir):
-                    raise ValueError("导入的人物素材中没有可保存的文件")
+                    raise ValueError("没有可保存的人物素材；重复的网盘素材已自动跳过")
 
             with self.lock:
                 state = self.load()
@@ -1096,7 +1111,7 @@ class InventoryStore:
                 progress_callback=progress_callback,
             )
             if not material_directory_has_files(staging_dir):
-                raise ValueError("追加的人物素材中没有可保存的文件")
+                raise ValueError("没有可追加的人物素材；重复的网盘素材已自动跳过")
 
             with self.lock:
                 state = self.load()

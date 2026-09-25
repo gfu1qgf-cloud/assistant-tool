@@ -22,6 +22,7 @@ from model.GoogleDriveHelper import (
     load_drive_service,
     retry_sleep_seconds,
 )
+from model.MaterialDuplicateIndex import MaterialDuplicateIndex
 from model.MaterialSourceDownloader import (
     GOOGLE_FOLDER_MIME,
     GOOGLE_NATIVE_PREFIX,
@@ -287,6 +288,7 @@ def sync_material_drive_folder(
     adopt_existing=False,
     service_factory=load_drive_service,
     progress_callback=None,
+    material_root=None,
 ):
     settings = normalize_material_sync_settings({
         MATERIAL_SYNC_CONFIG_KEYS[key]: value for key, value in settings.items()
@@ -296,6 +298,9 @@ def sync_material_drive_folder(
         raise ValueError("持续同步来源必须是 Google Drive 文件夹链接。")
     local_root = Path(settings["local_dir"])
     local_root.mkdir(parents=True, exist_ok=True)
+    # Most polls find no changed remote files. Build the size index only when
+    # an automatic download is actually needed.
+    duplicate_index = None
     resolved_local_root = str(local_root.resolve())
     state_store = state_store or MaterialSyncStateStore()
     state = state_store.load()
@@ -337,6 +342,7 @@ def sync_material_drive_folder(
     current_ids = set()
     downloaded = []
     skipped = 0
+    duplicates = 0
     errors = []
     now = time.time()
 
@@ -382,11 +388,39 @@ def sync_material_drive_folder(
         })
         if not should_download:
             local_path = Path(str(previous.get("local_path") or ""))
-            previous["local_status"] = "present" if local_path.is_file() else "consumed"
+            if local_path.is_file():
+                previous["local_status"] = (
+                    "duplicate" if previous.get("local_status") == "duplicate" else "present"
+                )
+            else:
+                previous["local_status"] = "consumed"
             state["files"][file_id] = previous
             skipped += 1
             continue
         try:
+            if file_id not in force_ids:
+                if duplicate_index is None:
+                    duplicate_index = MaterialDuplicateIndex(
+                        [local_root, material_root]
+                        if material_root is not None else [local_root]
+                    )
+                duplicate = duplicate_index.find_remote_md5(
+                    item.get("size"), item.get("md5Checksum")
+                )
+                if duplicate is not None:
+                    previous["local_path"] = str(duplicate.resolve())
+                    previous["local_status"] = "duplicate"
+                    previous["remote_signature"] = signature
+                    previous["deduplicated_at"] = now
+                    previous.pop("last_error", None)
+                    state["files"][file_id] = previous
+                    skipped += 1
+                    duplicates += 1
+                    if progress_callback:
+                        progress_callback(
+                            f"跳过重复素材：{previous['name']}（已存在：{duplicate.name}）"
+                        )
+                    continue
             target = _download_item(
                 service,
                 item,
@@ -398,6 +432,27 @@ def sync_material_drive_folder(
                 previous["remote_signature"] = signature
                 skipped += 1
             else:
+                duplicate = (
+                    duplicate_index.find_same_content(target)
+                    if file_id not in force_ids else None
+                )
+                if duplicate is not None:
+                    target.unlink()
+                    previous["local_path"] = str(duplicate.resolve())
+                    previous["local_status"] = "duplicate"
+                    previous["deduplicated_at"] = now
+                    previous["remote_signature"] = signature
+                    previous.pop("last_error", None)
+                    skipped += 1
+                    duplicates += 1
+                    if progress_callback:
+                        progress_callback(
+                            f"跳过重复素材：{previous['name']}（已存在：{duplicate.name}）"
+                        )
+                    state["files"][file_id] = previous
+                    continue
+                if duplicate_index is not None:
+                    duplicate_index.register(target)
                 previous["local_path"] = str(target.resolve())
                 previous["local_status"] = "present"
                 previous["downloaded_at"] = now
@@ -420,6 +475,7 @@ def sync_material_drive_folder(
         "downloaded": downloaded,
         "downloaded_count": len(downloaded),
         "skipped_count": skipped,
+        "duplicate_count": duplicates,
         "errors": errors,
         "state": state,
         "local_dir": str(local_root.resolve()),
