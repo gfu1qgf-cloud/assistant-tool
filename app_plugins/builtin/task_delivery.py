@@ -10,6 +10,10 @@ from app_plugins.builtin.task_delivery_quick_upload import (
     QuickUploadDialog,
     QuickUploadThread,
 )
+from app_plugins.builtin.task_delivery_daily_quantity import (
+    DailyQuantityDialog,
+    DailyQuantityThread,
+)
 from model.TaskResultOrganizer import load_effective_config
 
 
@@ -62,6 +66,8 @@ class TaskDeliveryPlugin:
         self.controller = None
         self.quick_upload_dialog = None
         self.quick_upload_thread = None
+        self.daily_quantity_dialog = None
+        self.daily_quantity_thread = None
 
     def register(self, context):
         self.context = context
@@ -108,6 +114,13 @@ class TaskDeliveryPlugin:
                 self.open_quick_upload,
                 50,
                 "直接上传零散文件到当前日期和批次下的自定文件夹",
+            ),
+            (
+                "daily_quantity",
+                "每日数量统计…",
+                self.open_daily_quantity,
+                55,
+                "查看漏填分类并刷新每日数量统计",
             ),
         ):
             context.register_command(
@@ -174,6 +187,75 @@ class TaskDeliveryPlugin:
         self.quick_upload_dialog.raise_()
         self.quick_upload_dialog.activateWindow()
         return self.quick_upload_dialog
+
+    def open_daily_quantity(self):
+        if self.daily_quantity_dialog is None:
+            dialog = DailyQuantityDialog(self.context.parent_widget)
+            dialog.refresh_requested.connect(self.refresh_daily_quantity)
+            self.daily_quantity_dialog = dialog
+        self.daily_quantity_dialog.show()
+        self.daily_quantity_dialog.raise_()
+        self.daily_quantity_dialog.activateWindow()
+        self.refresh_daily_quantity()
+        return self.daily_quantity_dialog
+
+    def refresh_daily_quantity(self):
+        if self.daily_quantity_thread is not None and self.daily_quantity_thread.isRunning():
+            return False
+        root = self.context.parent_widget.task_path_edit.text().strip()
+        config = self.context.load_config()
+        from pathlib import Path
+        if not Path(root).is_dir():
+            if self.daily_quantity_dialog is not None:
+                self.daily_quantity_dialog.show_error("请先选择有效的任务根目录。")
+            return False
+        if not str(config.get("daily_quantity_sheet_url") or "").strip():
+            if self.daily_quantity_dialog is not None:
+                self.daily_quantity_dialog.show_error(
+                    "请先在程序设置 → 整理任务结果填写每日数量表格链接。"
+                )
+            return False
+        thread = DailyQuantityThread(config, root, self.context.parent_widget)
+        self.daily_quantity_thread = thread
+        thread.completed.connect(self._daily_quantity_completed)
+        thread.failed.connect(self._daily_quantity_failed)
+        thread.finished.connect(self._daily_quantity_finished)
+        if self.daily_quantity_dialog is not None:
+            self.daily_quantity_dialog.set_busy(True)
+        thread.start()
+        return True
+
+    def _daily_quantity_completed(self, result):
+        if self.daily_quantity_dialog is not None:
+            self.daily_quantity_dialog.set_busy(False)
+            self.daily_quantity_dialog.show_result(result)
+        warnings = result.get("warnings", [])
+        self.context.log(
+            f"每日数量统计：已归类 {result.get('counted', 0)} 个视频，"
+            f"更新 {len(result.get('updated', []))} 格，待处理 {len(warnings)} 条。"
+        )
+        if warnings:
+            self.context.notify(
+                "每日数量统计待核对",
+                f"有 {len(warnings)} 条漏填分类或表格冲突；在任务交付 → 每日数量统计中查看并刷新。",
+                critical=False,
+            )
+            if self.daily_quantity_dialog is not None:
+                self.daily_quantity_dialog.show()
+                self.daily_quantity_dialog.raise_()
+
+    def _daily_quantity_failed(self, error):
+        self.context.log(f"每日数量统计失败：{error}")
+        self.context.notify("每日数量统计失败", error, critical=True)
+        if self.daily_quantity_dialog is not None:
+            self.daily_quantity_dialog.set_busy(False)
+            self.daily_quantity_dialog.show_error(error)
+
+    def _daily_quantity_finished(self):
+        thread = self.daily_quantity_thread
+        self.daily_quantity_thread = None
+        if thread is not None:
+            thread.deleteLater()
 
     def start_quick_upload(self, name, sources):
         if self.quick_upload_thread is not None and self.quick_upload_thread.isRunning():
@@ -254,6 +336,8 @@ class TaskDeliveryPlugin:
         return self.controller.update_config(config)
 
     def can_close(self):
+        if self.daily_quantity_thread is not None and self.daily_quantity_thread.isRunning():
+            return False, "每日数量统计正在更新，请稍等。"
         if self.quick_upload_thread is not None and self.quick_upload_thread.isRunning():
             return False, "简易上传仍在进行，请等待上传完成。"
         return self.controller.can_close()

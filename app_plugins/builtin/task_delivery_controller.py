@@ -268,6 +268,10 @@ class TaskDeliveryController:
                     except OSError as error:
                         self.context.log(f"打开结果目录失败：{error}", logging.ERROR)
         saved_link_count, failed_file_count = self.record_task_result_history(result)
+        if result.get("uploaded_file_count") and self.context.load_config().get(
+            "daily_quantity_sheet_url"
+        ):
+            self.plugin.refresh_daily_quantity()
         self.request_review_status_check()
         message = str(result.get("message") or "整理完成")
         details = "{}\n本次新增/更新：{} 个文件".format(

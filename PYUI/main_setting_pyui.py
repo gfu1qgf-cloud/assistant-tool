@@ -897,6 +897,13 @@ class MainSettingDialog(QtWidgets.QDialog, Ui_MainSettingDialog):
         self.task_result_submission_sheet_checkbox = QtWidgets.QCheckBox('写入任务提交表格')
         self.task_result_submission_sheet_url_edit = QtWidgets.QLineEdit()
         self.task_result_submission_creator_edit = QtWidgets.QLineEdit()
+        self.daily_quantity_sheet_url_edit = QtWidgets.QLineEdit()
+        self.daily_quantity_sheet_url_edit.setPlaceholderText(
+            'https://docs.google.com/spreadsheets/d/…/edit'
+        )
+        self.daily_quantity_sheet_url_edit.setToolTip(
+            '每日数量统计目标表；只写日期下 12/18/24 点的分类数字格，不修改定额与合计。'
+        )
         self.task_result_submission_creator_edit.setToolTip(
             '每日数量统计会沿用这里的制作人名称；不另建一份容易不一致的姓名设置。'
         )
@@ -909,6 +916,7 @@ class MainSettingDialog(QtWidgets.QDialog, Ui_MainSettingDialog):
         form.addRow('', self.task_result_submission_sheet_checkbox)
         form.addRow('任务表格链接：', self.task_result_submission_sheet_url_edit)
         form.addRow('任务制作人：', self.task_result_submission_creator_edit)
+        form.addRow('每日数量表格：', self.daily_quantity_sheet_url_edit)
         form.addRow('文件名制作人标记：', self.task_result_creator_marker_edit)
 
         note = QtWidgets.QLabel(
@@ -1146,6 +1154,7 @@ class MainSettingDialog(QtWidgets.QDialog, Ui_MainSettingDialog):
         self.task_result_submission_sheet_checkbox.setChecked(task_result_config_bool(config, 'task_submission_sheet_enabled', True))
         self.task_result_submission_sheet_url_edit.setText(task_result_config_str(config, 'task_submission_sheet_url'))
         self.task_result_submission_creator_edit.setText(task_result_config_str(config, 'task_submission_creator'))
+        self.daily_quantity_sheet_url_edit.setText(task_result_config_str(config, 'daily_quantity_sheet_url'))
         self.task_result_creator_marker_edit.setText(task_result_config_str(config, 'task_submission_creator_marker'))
         self._update_task_result_enabled_state()
 
@@ -1249,6 +1258,7 @@ class MainSettingDialog(QtWidgets.QDialog, Ui_MainSettingDialog):
             'task_submission_sheet_enabled': self.task_result_submission_sheet_checkbox.isChecked(),
             'task_submission_sheet_url': self.task_result_submission_sheet_url_edit.text().strip(),
             'task_submission_creator': self.task_result_submission_creator_edit.text().strip(),
+            'daily_quantity_sheet_url': self.daily_quantity_sheet_url_edit.text().strip(),
             'task_submission_creator_marker': self.task_result_creator_marker_edit.text().strip(),
             'video_filename_creator_marker': self.task_result_creator_marker_edit.text().strip(),
         }
