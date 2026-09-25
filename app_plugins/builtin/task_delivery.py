@@ -12,7 +12,13 @@ from app_plugins.builtin.task_delivery_quick_upload import (
 )
 from app_plugins.builtin.task_delivery_daily_quantity import (
     DailyQuantityDialog,
+    DailyQuantityFolderThread,
     DailyQuantityThread,
+)
+from model.DailyQuantityStats import (
+    external_video_records,
+    external_video_sources,
+    update_external_video_records,
 )
 from model.TaskResultOrganizer import load_effective_config
 
@@ -68,6 +74,7 @@ class TaskDeliveryPlugin:
         self.quick_upload_thread = None
         self.daily_quantity_dialog = None
         self.daily_quantity_thread = None
+        self.daily_quantity_folder_thread = None
 
     def register(self, context):
         self.context = context
@@ -192,7 +199,19 @@ class TaskDeliveryPlugin:
         if self.daily_quantity_dialog is None:
             dialog = DailyQuantityDialog(self.context.parent_widget)
             dialog.refresh_requested.connect(self.refresh_daily_quantity)
+            dialog.scan_requested.connect(self.scan_daily_quantity_folder)
             self.daily_quantity_dialog = dialog
+            try:
+                dialog.show_external_records(external_video_records(
+                    self.context.load_config(),
+                    self.context.parent_widget.task_path_edit.text().strip(),
+                ))
+                dialog.show_external_sources(external_video_sources(
+                    self.context.load_config(),
+                    self.context.parent_widget.task_path_edit.text().strip(),
+                ))
+            except ValueError:
+                pass
         self.daily_quantity_dialog.show()
         self.daily_quantity_dialog.raise_()
         self.daily_quantity_dialog.activateWindow()
@@ -201,6 +220,8 @@ class TaskDeliveryPlugin:
 
     def refresh_daily_quantity(self):
         if self.daily_quantity_thread is not None and self.daily_quantity_thread.isRunning():
+            return False
+        if self.daily_quantity_folder_thread is not None and self.daily_quantity_folder_thread.isRunning():
             return False
         root = self.context.parent_widget.task_path_edit.text().strip()
         config = self.context.load_config()
@@ -215,6 +236,8 @@ class TaskDeliveryPlugin:
                     "请先在程序设置 → 整理任务结果填写每日数量表格链接。"
                 )
             return False
+        if not self._save_daily_quantity_external_edits(config, root):
+            return False
         thread = DailyQuantityThread(config, root, self.context.parent_widget)
         self.daily_quantity_thread = thread
         thread.completed.connect(self._daily_quantity_completed)
@@ -224,6 +247,67 @@ class TaskDeliveryPlugin:
             self.daily_quantity_dialog.set_busy(True)
         thread.start()
         return True
+
+    def _save_daily_quantity_external_edits(self, config, root):
+        dialog = self.daily_quantity_dialog
+        if dialog is None or not dialog.external_table.rowCount():
+            return True
+        try:
+            update_external_video_records(config, root, dialog.external_edits())
+        except (OSError, ValueError) as error:
+            dialog.show_error(f"保存流程外视频分类失败：{error}")
+            return False
+        return True
+
+    def scan_daily_quantity_folder(self, link, day, slot):
+        if self.daily_quantity_folder_thread is not None and self.daily_quantity_folder_thread.isRunning():
+            return False
+        if self.daily_quantity_thread is not None and self.daily_quantity_thread.isRunning():
+            return False
+        root = self.context.parent_widget.task_path_edit.text().strip()
+        config = self.context.load_config()
+        from pathlib import Path
+        if not Path(root).is_dir() or not str(config.get("daily_quantity_sheet_url") or "").strip():
+            self.daily_quantity_dialog.show_error("请先选择任务根目录并设置每日数量表格链接。")
+            return False
+        if not self._save_daily_quantity_external_edits(config, root):
+            return False
+        thread = DailyQuantityFolderThread(
+            config, root, link, day, slot, self.context.parent_widget
+        )
+        self.daily_quantity_folder_thread = thread
+        thread.completed.connect(self._daily_quantity_folder_completed)
+        thread.failed.connect(self._daily_quantity_folder_failed)
+        thread.finished.connect(self._daily_quantity_folder_finished)
+        self.daily_quantity_dialog.set_folder_busy(True)
+        thread.start()
+        return True
+
+    def _daily_quantity_folder_completed(self, result):
+        dialog = self.daily_quantity_dialog
+        if dialog is not None:
+            dialog.set_folder_busy(False)
+            dialog.show_external_records(result["records"])
+            dialog.show_external_sources(result["sources"])
+            dialog.folder_status.setText(
+                f"扫描到 {result['found']} 个视频；新增 {result['added']} 个，"
+                f"同名替换 {result['replaced']} 个。请填写统计分页和类别后刷新。"
+            )
+        self.context.log(
+            f"每日数量：扫描网盘文件夹，视频 {result['found']}，新增 {result['added']}。"
+        )
+
+    def _daily_quantity_folder_failed(self, error):
+        self.context.log(f"每日数量文件夹扫描失败：{error}")
+        if self.daily_quantity_dialog is not None:
+            self.daily_quantity_dialog.set_folder_busy(False)
+            self.daily_quantity_dialog.folder_status.setText(f"扫描失败：{error}")
+
+    def _daily_quantity_folder_finished(self):
+        thread = self.daily_quantity_folder_thread
+        self.daily_quantity_folder_thread = None
+        if thread is not None:
+            thread.deleteLater()
 
     def _daily_quantity_completed(self, result):
         if self.daily_quantity_dialog is not None:
@@ -336,6 +420,8 @@ class TaskDeliveryPlugin:
         return self.controller.update_config(config)
 
     def can_close(self):
+        if self.daily_quantity_folder_thread is not None and self.daily_quantity_folder_thread.isRunning():
+            return False, "每日数量文件夹正在扫描，请稍等。"
         if self.daily_quantity_thread is not None and self.daily_quantity_thread.isRunning():
             return False, "每日数量统计正在更新，请稍等。"
         if self.quick_upload_thread is not None and self.quick_upload_thread.isRunning():

@@ -4,10 +4,141 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from model.DailyQuantityStats import _find_cell, collect_assignments, reconcile_daily_quantity
+from model.DailyQuantityStats import (
+    _find_cell,
+    _external_assignments,
+    collect_assignments,
+    external_video_records,
+    external_video_sources,
+    reconcile_daily_quantity,
+    scan_external_video_folder,
+    update_external_video_records,
+)
 
 
 class DailyQuantityTests(unittest.TestCase):
+    def test_external_folder_does_not_double_count_a_normal_upload(self):
+        key = ("统计", "2026-09-25", "02", "短口播", "本人")
+        local = {key: [{"drive_file_id": "video-id-1"}]}
+        scope = {"external_videos": [{
+            "id": "entry-1", "drive_file_id": "video-id-1", "file_name": "a.mp4",
+            "batch_date": "2026-09-25", "batch_slot": "02",
+            "sheet": "统计", "category": "短口播", "included": True,
+        }]}
+        groups, warnings = _external_assignments(scope, "本人", local)
+        self.assertFalse(groups)
+        self.assertFalse(warnings)
+
+    def test_folder_import_preserves_first_delivery_and_allows_later_classification(self):
+        config = {"daily_quantity_sheet_url": "fake-id", "task_submission_creator": "本人"}
+        folder_id = "exampleFolderId12345"
+        service = MagicMock()
+        service.files.return_value.get.return_value.execute.return_value = {
+            "id": folder_id, "name": "零散任务", "mimeType": "application/vnd.google-apps.folder"
+        }
+        video = {"id": "video-id-1", "name": "a.mp4", "mimeType": "video/mp4",
+                 "relative_parts": ("a.mp4",)}
+        with tempfile.TemporaryDirectory() as directory:
+            state_path = Path(directory) / "state.json"
+            with patch("model.MaterialDriveSync._collect_remote_files", return_value=[video]):
+                first = scan_external_video_folder(
+                    config, directory, f"https://drive.google.com/drive/folders/{folder_id}",
+                    "2026-09-24", "02", service=service, state_path=state_path
+                )
+            self.assertEqual((first["found"], first["added"]), (1, 1))
+            self.assertEqual(external_video_sources(config, directory, state_path)[0]["id"], folder_id)
+            entry = first["records"][0]
+            update_external_video_records(config, directory, [{
+                "id": entry["id"], "batch_date": "2026-09-24", "batch_slot": "02",
+                "sheet": "统计", "category": "短口播", "included": True,
+            }], state_path=state_path)
+            with patch("model.MaterialDriveSync._collect_remote_files", return_value=[video]):
+                second = scan_external_video_folder(
+                    config, directory, folder_id, "2026-09-25", "03",
+                    service=service, state_path=state_path
+                )
+            self.assertEqual(second["added"], 0)
+            self.assertEqual(second["records"][0]["batch_date"], "2026-09-24")
+            self.assertEqual(second["records"][0]["category"], "短口播")
+            replacement = dict(video, id="video-id-2")
+            with patch("model.MaterialDriveSync._collect_remote_files", return_value=[replacement]):
+                third = scan_external_video_folder(
+                    config, directory, folder_id, "2026-09-25", "03",
+                    service=service, state_path=state_path
+                )
+            self.assertEqual(third["replaced"], 1)
+            self.assertEqual(len(third["records"]), 1)
+            self.assertEqual(third["records"][0]["id"], entry["id"])
+            with patch("model.MaterialDriveSync._collect_remote_files", return_value=[]):
+                scan_external_video_folder(config, directory, folder_id,
+                                           "2026-09-25", "03", service=service,
+                                           state_path=state_path)
+            historical = external_video_records(config, directory, state_path)
+            self.assertTrue(historical[0]["missing_from_folder"])
+            self.assertTrue(historical[0]["included"])
+
+    def test_external_video_reconciles_without_local_task_table(self):
+        config = {"daily_quantity_sheet_url": "fake-id", "task_submission_creator": "本人"}
+        day = "2026-09-25"
+        grid = [["", "", "", "", 46290, "", "", ""],
+                ["组别", "名字", "尽本分时间", "定额", "一天总数", "中午12点", "中午18点", "晚上24点"],
+                [], ["AI组", "本人"],
+                ["", "", "短口播", 50, "=SUM(F5:H5)", "", "", ""],
+                ["", "", "长口播", 20, "=SUM(F6:H6)", "", "", ""]]
+        service = MagicMock()
+        service.spreadsheets.return_value.get.return_value.execute.return_value = {
+            "sheets": [{"properties": {"title": "统计", "gridProperties": {
+                "rowCount": len(grid), "columnCount": len(grid[1])}}}]
+        }
+        service.spreadsheets.return_value.values.return_value.batchGet.return_value.execute.side_effect = (
+            lambda: {"valueRanges": [{"values": grid}]}
+        )
+        def write():
+            body = service.spreadsheets.return_value.values.return_value.batchUpdate.call_args.kwargs["body"]
+            for item in body["data"]:
+                address = item["range"].split("!")[1]
+                row = int("".join(char for char in address if char.isdigit())) - 1
+                col = ord(address[0]) - ord("A")
+                grid[row][col] = item["values"][0][0]
+            return {"totalUpdatedCells": len(body["data"])}
+        service.spreadsheets.return_value.values.return_value.batchUpdate.return_value.execute.side_effect = write
+        with tempfile.TemporaryDirectory() as directory:
+            state_path = Path(directory) / "state.json"
+            folder_id = "exampleFolderId12345"
+            drive = MagicMock()
+            drive.files.return_value.get.return_value.execute.return_value = {
+                "id": folder_id, "name": "零散任务", "mimeType": "application/vnd.google-apps.folder"
+            }
+            with patch("model.MaterialDriveSync._collect_remote_files", return_value=[{
+                "id": "video-id-1", "name": "a.mp4", "mimeType": "video/mp4",
+                "relative_parts": ("a.mp4",),
+            }]):
+                imported = scan_external_video_folder(
+                    config, directory, folder_id, day, "02", service=drive,
+                    state_path=state_path
+                )
+            entry = imported["records"][0]
+            update_external_video_records(config, directory, [{
+                "id": entry["id"], "batch_date": day, "batch_slot": "02",
+                "sheet": "统计", "category": "短口播", "included": True,
+            }], state_path=state_path)
+            first = reconcile_daily_quantity(config, directory, service=service,
+                                             records=[], state_path=state_path)
+            second = reconcile_daily_quantity(config, directory, service=service,
+                                              records=[], state_path=state_path)
+            self.assertEqual(first["counted"], 1)
+            self.assertEqual(grid[4][6], 1)
+            self.assertFalse(second["updated"])
+            self.assertEqual(external_video_records(config, directory, state_path)[0]["category"], "短口播")
+            update_external_video_records(config, directory, [{
+                "id": entry["id"], "batch_date": day, "batch_slot": "02",
+                "sheet": "统计", "category": "长口播", "included": True,
+            }], state_path=state_path)
+            corrected = reconcile_daily_quantity(config, directory, service=service,
+                                                 records=[], state_path=state_path)
+            self.assertEqual(len(corrected["updated"]), 2)
+            self.assertEqual((grid[4][6], grid[5][6]), (0, 1))
+
     def test_finds_person_category_and_period_without_touching_quota_or_sum(self):
         rows = [
             ["", "", "", "", 46290, "", "", ""],

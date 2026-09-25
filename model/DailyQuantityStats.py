@@ -10,6 +10,7 @@ import json
 import os
 import re
 import threading
+import uuid
 from collections import defaultdict
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -23,7 +24,10 @@ from model.GoogleSheetsHelper import (
 )
 from model.OdsHelper import ReadTaskOds2
 from model.TaskTableSchema import load_task_table_schema
-from model.VideoUploadHistory import all_video_upload_records
+from model.VideoUploadHistory import (
+    VIDEO_SUFFIXES,
+    all_video_upload_records,
+)
 
 
 STATE_FILE = APP_ROOT / "DailyQuantityStats.json"
@@ -158,6 +162,7 @@ def collect_assignments(config, root, records=None, allowed_dates=None):
             "identity": identity,
             "file_name": label,
             "event_id": str(record.get("event_id") or ""),
+            "drive_file_id": str(record.get("drive_file_id") or ""),
         })
     return groups, warnings
 
@@ -212,18 +217,199 @@ def _save_state(path, data):
     os.replace(temporary, path)
 
 
+def _scope_key(config, root):
+    url = str(config.get("daily_quantity_sheet_url") or "").strip()
+    if not url:
+        raise ValueError("请先在程序设置 → 整理任务结果填写每日数量表格链接")
+    return f"{extract_spreadsheet_id(url)}|{Path(root).resolve()}"
+
+
+def external_video_records(config, root, state_path=None):
+    """Return copies of folder-imported videos for the editor."""
+    with _LOCK:
+        scope = _load_state(state_path or STATE_FILE).get(_scope_key(config, root), {})
+        return [dict(item) for item in scope.get("external_videos", [])]
+
+
+def external_video_sources(config, root, state_path=None):
+    """Return saved folder links so a previously imported source is easy to rescan."""
+    with _LOCK:
+        scope = _load_state(state_path or STATE_FILE).get(_scope_key(config, root), {})
+        return [dict(item) for item in scope.get("external_folders", [])]
+
+
+def scan_external_video_folder(
+    config, root, folder_link, batch_date, batch_slot, service=None, state_path=None
+):
+    """Snapshot successful videos in a Drive folder; never delete old deliveries."""
+    from model.GoogleDriveHelper import (
+        GOOGLE_FOLDER_MIME,
+        extract_drive_folder_id,
+        load_drive_service,
+    )
+    from model.MaterialDriveSync import _collect_remote_files, _execute_with_retry
+
+    folder_id = extract_drive_folder_id(str(folder_link or "").strip())
+    if not re.fullmatch(r"[A-Za-z0-9_-]{10,}", folder_id):
+        raise ValueError("请粘贴有效的 Google Drive 文件夹链接。")
+    day = _date(batch_date)
+    slot = str(batch_slot or "").zfill(2)
+    if not day or slot not in _PERIOD_LABELS:
+        raise ValueError("请选择有效的交付日期和时段。")
+    service = service or load_drive_service()
+    folder = _execute_with_retry(lambda: service.files().get(
+        fileId=folder_id, fields="id,name,mimeType,trashed", supportsAllDrives=True
+    ))
+    if folder.get("mimeType") != GOOGLE_FOLDER_MIME or folder.get("trashed"):
+        raise ValueError("链接指向的不是可用的 Google Drive 文件夹。")
+    remote = [item for item in _collect_remote_files(service, folder_id)
+              if str(item.get("mimeType") or "").startswith("video/")
+              or Path(str(item.get("name") or "")).suffix.casefold() in VIDEO_SUFFIXES]
+    remote_ids = {str(item.get("id") or "") for item in remote}
+    state_path = Path(state_path or STATE_FILE)
+    with _LOCK:
+        state = _load_state(state_path)
+        scope_key = _scope_key(config, root)
+        scope = dict(state.get(scope_key, {}))
+        videos = [dict(item) for item in scope.get("external_videos", [])]
+        by_id = {(str(item.get("folder_id")), str(item.get("drive_file_id"))): item
+                 for item in videos
+                 if item.get("drive_file_id")}
+        added = replaced = 0
+        now = datetime.now().astimezone().isoformat(timespec="seconds")
+        for item in remote:
+            drive_id = str(item.get("id") or "").strip()
+            if not drive_id:
+                continue
+            relative = "/".join(item.get("relative_parts") or (item.get("name") or drive_id,))
+            entry = by_id.get((folder_id, drive_id))
+            if entry is None:
+                # A same-name replacement gets the old delivery identity only
+                # when its previous Drive file is no longer in the folder.
+                entry = next((old for old in videos
+                              if old.get("folder_id") == folder_id
+                              and _key(old.get("relative_path")) == _key(relative)
+                              and old.get("drive_file_id") not in remote_ids), None)
+                if entry is not None:
+                    replaced += 1
+                else:
+                    entry = {
+                        "id": uuid.uuid4().hex,
+                        "folder_id": folder_id,
+                        "batch_date": day,
+                        "batch_slot": slot,
+                        "sheet": "",
+                        "category": "",
+                        "included": True,
+                        "first_seen_at": now,
+                    }
+                    videos.append(entry)
+                    added += 1
+            entry.update({
+                "drive_file_id": drive_id,
+                "drive_link": f"https://drive.google.com/file/d/{drive_id}/view",
+                "folder_name": str(folder.get("name") or folder_id),
+                "file_name": str(item.get("name") or ""),
+                "relative_path": relative,
+                "missing_from_folder": False,
+            })
+            by_id[(folder_id, drive_id)] = entry
+        for entry in videos:
+            if entry.get("folder_id") == folder_id and entry.get("drive_file_id") not in remote_ids:
+                entry["missing_from_folder"] = True
+        scope["external_videos"] = videos
+        folders = [dict(item) for item in scope.get("external_folders", [])]
+        saved_folder = next((item for item in folders if item.get("id") == folder_id), None)
+        if saved_folder is None:
+            saved_folder = {"id": folder_id}
+            folders.append(saved_folder)
+        saved_folder.update({
+            "name": str(folder.get("name") or folder_id),
+            "link": f"https://drive.google.com/drive/folders/{folder_id}",
+            "last_scan_at": now,
+        })
+        scope["external_folders"] = folders
+        state[scope_key] = scope
+        _save_state(state_path, state)
+        return {"found": len(remote), "added": added, "replaced": replaced,
+                "records": [dict(item) for item in videos], "sources": folders}
+
+
+def update_external_video_records(config, root, edits, state_path=None):
+    """Apply explicit classification/date/include edits by stable local ID."""
+    state_path = Path(state_path or STATE_FILE)
+    with _LOCK:
+        state = _load_state(state_path)
+        scope_key = _scope_key(config, root)
+        scope = dict(state.get(scope_key, {}))
+        videos = [dict(item) for item in scope.get("external_videos", [])]
+        pending = {str(item.get("id")): item for item in edits}
+        known = {str(item.get("id")) for item in videos}
+        if set(pending) - known:
+            raise ValueError("补录记录已经变化，请重新打开后再保存。")
+        for item in videos:
+            edit = pending.get(str(item.get("id")))
+            if edit is None:
+                continue
+            day = _date(edit.get("batch_date"))
+            slot = str(edit.get("batch_slot") or "").zfill(2)
+            if not day or slot not in _PERIOD_LABELS:
+                raise ValueError(f"{item.get('file_name')}：日期或时段无效")
+            item.update({
+                "batch_date": day,
+                "batch_slot": slot,
+                "sheet": str(edit.get("sheet") or "").strip(),
+                "category": str(edit.get("category") or "").strip(),
+                "included": bool(edit.get("included", True)),
+            })
+        scope["external_videos"] = videos
+        state[scope_key] = scope
+        _save_state(state_path, state)
+        return len(pending)
+
+
+def _external_assignments(scope, creator, local_groups):
+    groups = defaultdict(list)
+    warnings = []
+    counted_ids = {str(video.get("drive_file_id") or "") for videos in local_groups.values()
+                   for video in videos}
+    seen_ids = set()
+    for item in scope.get("external_videos", []):
+        if not item.get("included", True):
+            continue
+        file_id = str(item.get("drive_file_id") or "")
+        if not file_id or file_id in counted_ids or file_id in seen_ids:
+            continue
+        label = str(item.get("file_name") or file_id)
+        sheet = str(item.get("sheet") or "").strip()
+        category = str(item.get("category") or "").strip()
+        if not sheet or not category:
+            warnings.append(f"流程外视频 {label}：统计分页/类别待填写")
+            continue
+        day = _date(item.get("batch_date"))
+        slot = str(item.get("batch_slot") or "").zfill(2)
+        if not day or slot not in _PERIOD_LABELS:
+            warnings.append(f"流程外视频 {label}：交付日期/时段无效")
+            continue
+        seen_ids.add(file_id)
+        groups[(sheet, day, slot, category, creator)].append({
+            "identity": str(item.get("id") or file_id),
+            "file_name": label,
+            "drive_file_id": file_id,
+            "source": "external_folder",
+        })
+    return groups, warnings
+
+
 def reconcile_daily_quantity(
     config, root, service=None, records=None, state_path=None, dry_run=False
 ):
     """Apply verified absolute counts; never guess over a nonempty manual cell."""
-    url = str(config.get("daily_quantity_sheet_url") or "").strip()
-    if not url:
-        raise ValueError("请先在程序设置 → 整理任务结果填写每日数量表格链接")
-    spreadsheet_id = extract_spreadsheet_id(url)
+    scope = _scope_key(config, root)
+    spreadsheet_id = scope.split("|", 1)[0]
     state_path = Path(state_path or STATE_FILE)
     with _LOCK:
         state = _load_state(state_path)
-        scope = f"{spreadsheet_id}|{Path(root).resolve()}"
         previous = state.get(scope, {})
         old_cells = previous.get("cells", {}) if isinstance(previous, dict) else {}
         service = service or load_sheets_service(config, "task_submission_sheet")
@@ -255,9 +441,16 @@ def reconcile_daily_quantity(
             for raw in (rows[0] if rows else [])
             if (parsed := _date(raw))
         }
+        records = all_video_upload_records(config) if records is None else records
         groups, warnings = collect_assignments(
             config, root, records, allowed_dates=allowed_dates
         )
+        external_groups, external_warnings = _external_assignments(
+            previous, str(config.get("task_submission_creator") or "").strip(), groups
+        )
+        for key, videos in external_groups.items():
+            groups.setdefault(key, []).extend(videos)
+        warnings.extend(external_warnings)
         desired = {
             json.dumps(key, ensure_ascii=False): videos for key, videos in groups.items()
         }
@@ -316,7 +509,8 @@ def reconcile_daily_quantity(
         for key, entry, _, _ in pending:
             next_cells[key] = entry
         if not dry_run:
-            state[scope] = {"updated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+            state[scope] = {**previous,
+                            "updated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
                             "cells": next_cells}
             _save_state(state_path, state)
         return {"updated": [{"range": a1, "count": number}
