@@ -1,6 +1,8 @@
 import tempfile
 import unittest
 from pathlib import Path
+from xml.etree import ElementTree
+from zipfile import ZipFile
 
 from odf import teletype
 from odf.opendocument import OpenDocumentSpreadsheet, load
@@ -12,6 +14,40 @@ from model.TaskTableAugment import add_daily_stat_headers_to_new_copy
 
 
 class ProjectInitializerTests(unittest.TestCase):
+    def test_bundled_template_has_native_daily_stat_dropdowns(self):
+        template = Path(__file__).resolve().parents[1] / "任务登记表格.ods"
+        with ZipFile(template) as archive:
+            root = ElementTree.fromstring(archive.read("content.xml"))
+        ns = {
+            "table": "urn:oasis:names:tc:opendocument:xmlns:table:1.0",
+        }
+        attr = "{" + ns["table"] + "}"
+        validations = {
+            item.get(attr + "name"): item
+            for item in root.findall(".//table:content-validation", ns)
+        }
+        self.assertIn("DailyStatSheet", validations)
+        self.assertIn("DailyStatCategory", validations)
+        self.assertEqual(validations["DailyStatSheet"].get(attr + "display-list"), "unsorted")
+        self.assertIn("FL 短口播", validations["DailyStatCategory"].get(attr + "condition"))
+
+        sheet = root.find(".//table:table", ns)
+        rows = sheet.findall("table:table-row", ns)
+
+        def cell_at(row, column):
+            position = 1
+            for cell in row.findall("table:table-cell", ns):
+                repeated = int(cell.get(attr + "number-columns-repeated", "1"))
+                if position <= column < position + repeated:
+                    return cell
+                position += repeated
+            self.fail(f"Missing column {column}")
+
+        self.assertEqual("".join(cell_at(rows[0], 19).itertext()), "每日统计分页")
+        self.assertEqual("".join(cell_at(rows[0], 20).itertext()), "每日统计类别")
+        self.assertEqual(cell_at(rows[1], 19).get(attr + "content-validation-name"), "DailyStatSheet")
+        self.assertEqual(cell_at(rows[1], 20).get(attr + "content-validation-name"), "DailyStatCategory")
+
     def test_new_project_only_appends_daily_statistics_headers(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
