@@ -5,6 +5,7 @@ from qt_compat import QtWidgets
 from app_plugins.api import MAIN_MENU, PluginCommand, PluginMainWidget
 from app_plugins.builtin.task_delivery_controller import TaskDeliveryController
 from app_plugins.builtin.task_delivery_gemini import GeminiKeysDialog
+from app_plugins.builtin.task_delivery_inbox import DeliveryInboxDialog
 from app_plugins.builtin.task_delivery_quick_upload import (
     QuickUploadDialog,
     QuickUploadThread,
@@ -88,6 +89,13 @@ class TaskDeliveryPlugin:
                 "查看审核通过、需要修改和历史提交记录",
             ),
             (
+                "delivery_inbox",
+                "交付待办…",
+                self.open_delivery_inbox,
+                35,
+                "汇总本地上传、任务表待核对和审核待办记录",
+            ),
+            (
                 "gemini_keys",
                 "管理 AI 检测 Gemini Key…",
                 self.open_gemini_keys,
@@ -134,6 +142,13 @@ class TaskDeliveryPlugin:
 
     def open_review_status(self):
         return self.controller.open_review_status()
+
+    def open_delivery_inbox(self):
+        return DeliveryInboxDialog(
+            self.context.load_config(),
+            self.controller.daily_link_history,
+            self.context.parent_widget,
+        ).exec()
 
     def open_gemini_keys(self):
         dialog = GeminiKeysDialog(
