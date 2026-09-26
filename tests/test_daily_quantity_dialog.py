@@ -104,13 +104,15 @@ class DailyQuantityDialogTests(unittest.TestCase):
                 "batch_date": "2026-09-26", "batch_slot": "00",
                 "daily_scan_date": "2026-09-26", "included": False,
             }])
-            self.assertEqual(dialog.external_table.item(0, 4).text(), "")
+            slot = dialog.external_table.cellWidget(0, 4)
+            self.assertEqual(slot.currentData(), "")
             self.assertIn("时段待确认", dialog.external_table.item(0, 7).text())
             self.assertEqual(dialog.changed_external_edits(), [])
             dialog.external_table.cellWidget(0, 5).setCurrentIndex(0)
             self.assertEqual(dialog.changed_external_edits(), [])
-            dialog.external_table.item(0, 4).setText("02")
+            slot.setCurrentIndex(slot.findData("02"))
             self.assertEqual(dialog.changed_external_edits()[0]["batch_slot"], "02")
+            self.assertTrue(dialog.external_edits()[0]["included"])
         finally:
             dialog.close()
 
@@ -154,9 +156,56 @@ class DailyQuantityDialogTests(unittest.TestCase):
             self.assertIn("缺少有效时段", dialog.folder_status.text())
             menu = dialog._external_context_menu([0])
             count_menu = next(action.menu() for action in menu.actions()
-                              if action.menu() is not None)
+                              if action.text().startswith("计入每日数量"))
             count_menu.actions()[2].trigger()
             self.assertFalse(dialog.external_edits()[0]["included"])
+        finally:
+            dialog.close()
+
+    def test_view_saved_day_previews_counts_and_slot_change_updates_total(self):
+        dialog = DailyQuantityDialog()
+        try:
+            dialog.folder_day.setDate(QtCore.QDate(2026, 9, 25))
+            dialog.show_external_records([
+                {"id": "a", "drive_file_id": "a", "file_name": "a.mp4",
+                 "batch_date": "2026-09-25", "batch_slot": "01", "included": True,
+                 "sheet": "口播", "category": "短"},
+                {"id": "b", "drive_file_id": "b", "file_name": "b.mp4",
+                 "batch_date": "2026-09-25", "batch_slot": "02", "included": True,
+                 "sheet": "口播", "category": "短"},
+                {"id": "c", "drive_file_id": "c", "file_name": "c.mp4",
+                 "batch_date": "2026-09-25", "batch_slot": "", "included": False,
+                 "sheet": "口播", "category": "短"},
+            ], day="2026-09-25")
+            self.assertIn("合计 2 个", dialog.summary_heading.text())
+            self.assertIn("已存清单 3 条", dialog.summary_heading.text())
+            self.assertIn("缺时段 1", dialog.summary_heading.text())
+            slot = dialog.external_table.cellWidget(2, 4)
+            slot.setCurrentIndex(slot.findData("03"))
+            self.assertIn("合计 3 个", dialog.summary_heading.text())
+            self.assertEqual(dialog.summary_table.item(1, 5).text(), "3")
+        finally:
+            dialog.close()
+
+    def test_bulk_slot_menu_assigns_missing_period_but_keeps_folder_period(self):
+        dialog = DailyQuantityDialog()
+        try:
+            dialog.show_external_records([
+                {"id": "a", "file_name": "a.mp4", "batch_date": "2026-09-26",
+                 "batch_slot": "", "daily_scan_date": "2026-09-26", "included": False},
+                {"id": "b", "file_name": "b.mp4", "batch_date": "2026-09-26",
+                 "batch_slot": "02", "detected_batch_slot": "02",
+                 "daily_scan_date": "2026-09-26", "included": True},
+            ])
+            menu = dialog._external_context_menu([0, 1])
+            slot_menu = next(action.menu() for action in menu.actions()
+                             if action.text().startswith("设置交付时段"))
+            slot_menu.actions()[0].trigger()
+            edits = dialog.external_edits()
+            self.assertEqual(edits[0]["batch_slot"], "01")
+            self.assertTrue(edits[0]["included"])
+            self.assertEqual(edits[1]["batch_slot"], "02")
+            self.assertIn("由网盘目录确定", dialog.folder_status.text())
         finally:
             dialog.close()
 

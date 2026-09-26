@@ -12,6 +12,7 @@ from model.DailyQuantityStats import (
     collect_assignments,
     external_video_records,
     external_video_sources,
+    preview_external_day,
     reconcile_daily_quantity,
     scan_daily_drive_date,
     scan_external_video_folder,
@@ -20,6 +21,55 @@ from model.DailyQuantityStats import (
 
 
 class DailyQuantityTests(unittest.TestCase):
+    def test_saved_day_preview_counts_included_videos_without_sheet_refresh(self):
+        records = [
+            {"id": str(index), "drive_file_id": str(index),
+             "batch_date": "2026-09-25", "batch_slot": "02",
+             "included": index < 68, "sheet": "口播", "category": "短口播"}
+            for index in range(81)
+        ]
+        preview = preview_external_day(records, "2026-09-25")
+        self.assertEqual(preview["total_files"], 81)
+        self.assertEqual(preview["counted"], 68)
+        self.assertEqual(preview["not_counted"], 13)
+        self.assertEqual(preview["daily_counts"][0]["02"], 68)
+
+    def test_manual_slot_survives_rescanning_nonperiod_folder(self):
+        config = {"daily_quantity_sheet_url": "fake-id",
+                  "drive_parent_folder_id": "parentFolderId12345",
+                  "task_submission_creator": "本人"}
+        day = "2026-09-26"
+        def children(_service, folder_id):
+            if folder_id == "parentFolderId12345":
+                return [{"id": "dateFolderId123456", "name": "0926",
+                         "mimeType": "application/vnd.google-apps.folder"}]
+            return [{"id": "personFolderId1234", "name": "人物素材",
+                     "mimeType": "application/vnd.google-apps.folder"}]
+        video = {"id": "video-id", "name": "video.mp4", "mimeType": "video/mp4",
+                 "relative_parts": ("人物素材", "video.mp4")}
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "state.json"
+            with patch("model.MaterialDriveSync._folder_children", side_effect=children), patch(
+                "model.MaterialDriveSync._collect_remote_files", return_value=[video]
+            ):
+                first = scan_daily_drive_date(config, directory, day,
+                                              service=MagicMock(), state_path=path,
+                                              records=[])
+                entry = first["records"][0]
+                self.assertFalse(entry["included"])
+                self.assertEqual(entry["batch_slot"], "")
+                update_external_video_records(config, directory, [{
+                    "id": entry["id"], "batch_date": day, "batch_slot": "02",
+                    "included": True, "sheet": "口播", "category": "短口播",
+                }], state_path=path)
+                second = scan_daily_drive_date(config, directory, day,
+                                               service=MagicMock(), state_path=path,
+                                               records=[])
+            saved = second["records"][0]
+            self.assertEqual(saved["batch_slot"], "02")
+            self.assertEqual(saved["manual_batch_slot"], "02")
+            self.assertTrue(saved["included"])
+
     def test_daily_count_summary_groups_categories_slots_and_dates(self):
         groups = {
             ("口播视频组", "2026-09-26", "01", "短口播", "本人"): [1, 2],

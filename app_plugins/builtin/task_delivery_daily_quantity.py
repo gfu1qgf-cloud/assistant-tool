@@ -4,6 +4,7 @@ from qt_compat import QtCore, QtGui, QtWidgets
 
 from model.ClipboardHelper import set_internal_clipboard_text
 from model.DailyQuantityStats import (
+    preview_external_day,
     reconcile_daily_quantity,
     scan_daily_drive_date,
     scan_external_video_folder,
@@ -96,10 +97,16 @@ class DailyQuantityDialog(QtWidgets.QDialog):
         self._daily_counts = []
         self._overall_count = 0
         self._has_summary = False
+        self._inventory_preview = None
+        self._preview_day = ""
+        self._show_preview = False
+        self._visible_records = []
+        self._populating_records = False
         self.summary_heading = QtWidgets.QLabel("尚无统计结果；点击“刷新并自动修正”后显示所选日期的数量。")
         heading_font = self.summary_heading.font()
         heading_font.setBold(True)
         self.summary_heading.setFont(heading_font)
+        self.summary_heading.setWordWrap(True)
         layout.addWidget(self.summary_heading)
         self.summary_table = QtWidgets.QTableWidget(0, 6)
         self.summary_table.setHorizontalHeaderLabels([
@@ -192,10 +199,11 @@ class DailyQuantityDialog(QtWidgets.QDialog):
         self.external_table.setColumnWidth(0, 52)
         self.external_table.setColumnWidth(2, 250)
         self.external_table.setColumnWidth(3, 105)
-        self.external_table.setColumnWidth(4, 55)
+        self.external_table.setColumnWidth(4, 105)
         self.external_table.setColumnWidth(5, 125)
         self.external_table.setColumnWidth(6, 155)
         self.external_table.cellDoubleClicked.connect(self._open_external_video)
+        self.external_table.itemChanged.connect(self._refresh_inventory_preview)
         self.external_table.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
         self.external_table.customContextMenuRequested.connect(self._show_external_context_menu)
         source_layout.addWidget(self.external_table, 1)
@@ -251,12 +259,15 @@ class DailyQuantityDialog(QtWidgets.QDialog):
             self.folder_link.setCurrentIndex(0)
 
     def show_external_records(self, records, day=None):
+        self._populating_records = True
         self.external_table.setRowCount(0)
         if day:
             records = [item for item in records if str(item.get("batch_date") or "") == day]
-        for record in sorted(records, key=lambda item: (
+        self._visible_records = sorted(records, key=lambda item: (
             str(item.get("batch_date") or ""), str(item.get("file_name") or "")
-        )):
+        ))
+        self._preview_day = day or self.folder_day.date().toString("yyyy-MM-dd")
+        for record in self._visible_records:
             row = self.external_table.rowCount()
             self.external_table.insertRow(row)
             include = QtWidgets.QTableWidgetItem()
@@ -267,29 +278,39 @@ class DailyQuantityDialog(QtWidgets.QDialog):
             include.setToolTip("勾选表示计入每日数量；请先确认交付时段为 01、02 或 03。")
             include.setData(QtCore.Qt.UserRole, str(record.get("id") or ""))
             self.external_table.setItem(row, 0, include)
-            for col, key in ((1, "folder_name"), (2, "file_name"), (3, "batch_date"),
-                             (4, "batch_slot")):
+            for col, key in ((1, "folder_name"), (2, "file_name"), (3, "batch_date")):
                 display = record.get("relative_path") if col == 2 else record.get(key)
-                if col == 4 and display == "00":
-                    display = ""
-                item = QtWidgets.QTableWidgetItem(
-                    str(display or "") if col == 4
-                    else str(display or record.get(key) or "")
-                )
+                item = QtWidgets.QTableWidgetItem(str(display or record.get(key) or ""))
                 if col in (1, 2):
                     item.setFlags(item.flags() & ~QtCore.Qt.ItemIsEditable)
-                if record.get("daily_scan_date") and col in (3, 4) and (
-                    col == 3 or record.get("batch_slot") in {"01", "02", "03"}
-                ):
+                if record.get("daily_scan_date") and col == 3:
                     item.setFlags(item.flags() & ~QtCore.Qt.ItemIsEditable)
                 if col == 2:
                     item.setToolTip(str(record.get("drive_link") or ""))
                     item.setData(QtCore.Qt.UserRole, str(record.get("drive_link") or ""))
                     item.setData(QtCore.Qt.UserRole + 1, str(record.get("file_name") or ""))
                 self.external_table.setItem(row, col, item)
+            slot_combo = _NoWheelComboBox(self.external_table)
+            slot_combo.addItem("选择时段", "")
+            for slot, label in (("01", "01 · 12点"), ("02", "02 · 18点"),
+                                ("03", "03 · 24点")):
+                slot_combo.addItem(label, slot)
+            saved_slot = str(record.get("batch_slot") or "")
+            slot_combo.setCurrentIndex(max(slot_combo.findData(saved_slot), 0))
+            detected_slot = record.get(
+                "detected_batch_slot",
+                "" if record.get("manual_batch_slot") else saved_slot,
+            )
+            locked = bool(record.get("daily_scan_date") and detected_slot in {"01", "02", "03"})
+            slot_combo.setEnabled(not locked)
+            slot_combo.setToolTip(
+                "由网盘 01/02/03 目录确定，不能在此修改" if locked
+                else "选择时段后自动计入数量；审核暂存和疑似旧任务修订版除外"
+            )
+            self.external_table.setCellWidget(row, 4, slot_combo)
             sheet_combo = _NoWheelComboBox(self.external_table)
             category_combo = _NoWheelComboBox(self.external_table)
-            for combo in (sheet_combo, category_combo):
+            for combo in (slot_combo, sheet_combo, category_combo):
                 combo.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
                 combo.customContextMenuRequested.connect(
                     lambda position, widget=combo: self._show_external_context_menu(
@@ -315,6 +336,9 @@ class DailyQuantityDialog(QtWidgets.QDialog):
             category_combo.currentIndexChanged.connect(
                 lambda _index, selected_row=row: self._update_row_status(selected_row)
             )
+            slot_combo.currentIndexChanged.connect(
+                lambda _index, selected_row=row: self._row_slot_changed(selected_row)
+            )
             state = "待分类" if not record.get("sheet") or not record.get("category") else "已分类"
             if record.get("missing_from_folder"):
                 state += " · 历史保留"
@@ -334,7 +358,9 @@ class DailyQuantityDialog(QtWidgets.QDialog):
             status_item.setFlags(status_item.flags() & ~QtCore.Qt.ItemIsEditable)
             status_item.setData(QtCore.Qt.UserRole, state.partition(" · ")[2])
             self.external_table.setItem(row, 7, status_item)
+        self._populating_records = False
         self.mark_external_edits_saved()
+        self._refresh_inventory_preview()
 
     @staticmethod
     def _set_combo_choices(combo, choices, selected, placeholder):
@@ -369,19 +395,34 @@ class DailyQuantityDialog(QtWidgets.QDialog):
             )
         self._update_row_status(row)
 
+    def _row_slot_changed(self, row):
+        include = self.external_table.item(row, 0)
+        record = self._visible_records[row]
+        slot = self._combo_value(row, 4)
+        blocked = any(record.get(flag) for flag in (
+            "review_path", "possible_revision", "missing_from_daily", "outside_daily_scan"
+        ))
+        include.setCheckState(
+            QtCore.Qt.Checked if slot and not blocked else QtCore.Qt.Unchecked
+        )
+        self._update_row_status(row)
+
     def _update_row_status(self, row):
         item = self.external_table.item(row, 7)
         if item is None:
             return
         state = "已分类" if self._combo_value(row, 5) and self._combo_value(row, 6) else "待分类"
-        suffix = str(item.data(QtCore.Qt.UserRole) or "")
-        item.setText(state + (" · " + suffix if suffix else ""))
+        suffixes = [part for part in str(item.data(QtCore.Qt.UserRole) or "").split(" · ")
+                    if part and part != "时段待确认"]
+        if not self._combo_value(row, 4):
+            suffixes.append("时段待确认")
+        item.setText(state + (" · " + " · ".join(suffixes) if suffixes else ""))
 
     def external_edits(self):
         result = []
         for row in range(self.external_table.rowCount()):
             def value(col):
-                if col in (5, 6):
+                if col in (4, 5, 6):
                     return self._combo_value(row, col)
                 item = self.external_table.item(row, col)
                 return item.text().strip() if item else ""
@@ -403,6 +444,17 @@ class DailyQuantityDialog(QtWidgets.QDialog):
         self._saved_external_edits = {
             str(edit["id"]): edit for edit in self.external_edits()
         }
+
+    def _refresh_inventory_preview(self, _item=None):
+        if self._populating_records:
+            return
+        records = [
+            {**record, **edit}
+            for record, edit in zip(self._visible_records, self.external_edits())
+        ]
+        self._inventory_preview = preview_external_day(records, self._preview_day)
+        self._show_preview = True
+        self._show_daily_summary()
 
     def _apply_bulk_category(self):
         sheet = str(self.bulk_sheet.currentData() or "").strip()
@@ -497,6 +549,16 @@ class DailyQuantityDialog(QtWidgets.QDialog):
         clear.triggered.connect(self.external_table.clearSelection)
         clear.setEnabled(bool(rows))
         select_all.setEnabled(bool(self.external_table.rowCount()))
+        slot_menu = menu.addMenu("设置交付时段并计数（选中行）")
+        for slot, label in (("01", "01 · 12点"), ("02", "02 · 18点"),
+                            ("03", "03 · 24点")):
+            action = slot_menu.addAction(label)
+            action.setEnabled(bool(rows))
+            action.triggered.connect(
+                lambda _checked=False, selected_slot=slot: self._set_external_slot(
+                    rows, selected_slot
+                )
+            )
         count_menu = menu.addMenu("计入每日数量（操作选中行）")
         for label, mode in (("勾选计数", "check"), ("取消计数", "uncheck"),
                             ("反选计数", "invert")):
@@ -508,6 +570,21 @@ class DailyQuantityDialog(QtWidgets.QDialog):
                 )
             )
         return menu
+
+    def _set_external_slot(self, rows, slot):
+        changed = locked = 0
+        for row in rows:
+            combo = self.external_table.cellWidget(row, 4)
+            if combo is None or not combo.isEnabled():
+                locked += 1
+                continue
+            if self._combo_value(row, 4) != slot:
+                combo.setCurrentIndex(combo.findData(slot))
+                changed += 1
+        message = f"已为 {changed} 条视频设置时段 {slot}。"
+        if locked:
+            message += f"另有 {locked} 条时段由网盘目录确定，未修改。"
+        self.folder_status.setText(message + " 点击“保存分类并刷新数量”后生效。")
 
     def _copy_external_values(self, rows, kind):
         lines = []
@@ -533,12 +610,12 @@ class DailyQuantityDialog(QtWidgets.QDialog):
         changed = skipped = 0
         for row in rows:
             item = self.external_table.item(row, 0)
-            slot_item = self.external_table.item(row, 4)
+            slot = self._combo_value(row, 4)
             if item is None:
                 continue
             current = item.checkState() == QtCore.Qt.Checked
             target = mode == "check" or mode == "invert" and not current
-            if target and (slot_item is None or slot_item.text().strip().zfill(2) not in {"01", "02", "03"}):
+            if target and slot not in {"01", "02", "03"}:
                 skipped += 1
                 continue
             if current != target:
@@ -558,7 +635,7 @@ class DailyQuantityDialog(QtWidgets.QDialog):
             include = self.external_table.item(row, 0)
             values = ["是" if include.checkState() == QtCore.Qt.Checked else "否"]
             values.extend(
-                self._combo_value(row, col) if col in (5, 6)
+                self._combo_value(row, col) if col in (4, 5, 6)
                 else self.external_table.item(row, col).text()
                 for col in range(1, 8)
             )
@@ -588,6 +665,7 @@ class DailyQuantityDialog(QtWidgets.QDialog):
         self._daily_counts = list(result.get("daily_counts", []))
         self._overall_count = int(result.get("counted", 0))
         self._has_summary = True
+        self._show_preview = False
         self._show_daily_summary()
         self.status.setText(
             f"全部日期已归类视频 {self._overall_count} 个；本次更新数字格 {len(updated)} 个；"
@@ -608,17 +686,44 @@ class DailyQuantityDialog(QtWidgets.QDialog):
         self.details.setPlainText("\n".join(lines))
 
     def _show_daily_summary(self, _date=None):
-        if not self._has_summary:
-            return
         day = self.folder_day.date().toString("yyyy-MM-dd")
-        rows = [item for item in self._daily_counts if item.get("date") == day]
+        preview = self._inventory_preview if self._show_preview and self._preview_day == day else None
+        if preview:
+            rows = preview["daily_counts"]
+            self.status.setText(
+                f"{day} 已存清单预览：{preview['counted']} 个计数，"
+                f"{preview['not_counted']} 个未计数；尚未核对谷歌表格"
+            )
+            suffix = (f"｜已存清单 {preview['total_files']} 条，未计入 {preview['not_counted']} 条"
+                      f"（缺时段 {preview['missing_slot']}、缺分类 {preview['missing_category']}）"
+                      "；这是本地预览，尚未核对谷歌表格")
+            self.summary_note.setText(
+                "本地清单预览会随勾选、时段和分类变化；点击“保存分类并刷新数量”后核对并同步谷歌表格。"
+            )
+        elif self._has_summary:
+            rows = [item for item in self._daily_counts if item.get("date") == day]
+            suffix = f"｜全部日期总合计 {self._overall_count} 个（上次刷新）"
+            self.status.setText(
+                f"上次刷新：全部日期已归类视频 {self._overall_count} 个；"
+                "切换日期不会自动重读谷歌表格"
+            )
+            self.summary_note.setText(
+                "这里显示上次刷新时已归类、参与计数的视频；有待处理提示时，部分数字可能尚未写入表格。"
+            )
+        else:
+            self.status.setText("尚未刷新")
+            self.summary_heading.setText(
+                f"{day}：尚无统计结果；点击“查看已存清单”或“刷新并自动修正”。"
+            )
+            self.summary_table.setRowCount(0)
+            return
         slots = {slot: sum(int(item.get(slot, 0)) for item in rows)
                  for slot in ("01", "02", "03")}
         daily_total = sum(slots.values())
         self.summary_heading.setText(
             f"{day}：合计 {daily_total} 个  ·  12点 {slots['01']} / "
             f"18点 {slots['02']} / 24点 {slots['03']}"
-            f"  ｜  全部日期总合计 {self._overall_count} 个（上次刷新）"
+            f"  {suffix}"
         )
         self.summary_table.setRowCount(len(rows) + 1)
         for row_number, item in enumerate(rows):

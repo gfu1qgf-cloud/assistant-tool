@@ -351,7 +351,7 @@ def scan_daily_drive_date(
         duplicate_ids = {file_id for group in duplicates.values() if len(set(group)) > 1
                          for file_id in group}
         added = replaced = pending = review = 0
-        for item, slot in remote:
+        for item, detected_slot in remote:
             drive_id = str(item.get("id") or "").strip()
             if not drive_id or drive_id in seen_ids:
                 continue
@@ -373,13 +373,17 @@ def scan_daily_drive_date(
                     "id": uuid.uuid4().hex,
                     "folder_id": date_folder_id,
                     "first_seen_at": datetime.now().astimezone().isoformat(timespec="seconds"),
-                    "included": bool(slot and not is_review and not is_revision),
+                    "included": bool(detected_slot and not is_review and not is_revision),
                     "sheet": "", "category": "",
                 }
                 videos.append(entry)
                 added += 1
-            elif (is_review or not slot) and entry.get("daily_scan_date") != day:
+            elif (is_review or not detected_slot) and entry.get("daily_scan_date") != day:
                 entry["included"] = False
+            manual_slot = str(entry.get("manual_batch_slot") or "")
+            slot = detected_slot or (manual_slot if manual_slot in _PERIOD_LABELS else "")
+            if detected_slot:
+                entry.pop("manual_batch_slot", None)
             if not entry.get("sheet") or not entry.get("category"):
                 possible = by_drive_id.get(drive_id) or by_name.get(
                     normalize_video_identity(item.get("name")), set()
@@ -398,6 +402,7 @@ def scan_daily_drive_date(
                 "relative_path": relative,
                 "batch_date": day,
                 "batch_slot": slot,
+                "detected_batch_slot": detected_slot,
                 "daily_scan_date": day,
                 "missing_from_daily": False,
                 "outside_daily_scan": False,
@@ -560,9 +565,12 @@ def update_external_video_records(config, root, edits, state_path=None):
                     "请填写 01/02/03，或取消计数。"
                 )
             if item.get("daily_scan_date"):
+                detected_slot = item.get(
+                    "detected_batch_slot",
+                    "" if item.get("manual_batch_slot") else item.get("batch_slot"),
+                )
                 if day != item["daily_scan_date"] or (
-                    item.get("batch_slot") in _PERIOD_LABELS
-                    and slot != item["batch_slot"]
+                    detected_slot in _PERIOD_LABELS and slot != detected_slot
                 ):
                     raise ValueError(
                         f"{item.get('file_name')}：日期和时段由网盘目录确定，"
@@ -575,6 +583,11 @@ def update_external_video_records(config, root, edits, state_path=None):
                 "category": str(edit.get("category") or "").strip(),
                 "included": included,
             })
+            if item.get("daily_scan_date") and detected_slot not in _PERIOD_LABELS:
+                if slot in _PERIOD_LABELS:
+                    item["manual_batch_slot"] = slot
+                else:
+                    item.pop("manual_batch_slot", None)
         scope["external_videos"] = videos
         state[scope_key] = scope
         _save_state(state_path, state)
@@ -631,6 +644,38 @@ def _daily_count_rows(groups):
         row[slot] += count
         row["total"] += count
     return [rows[key] for key in sorted(rows)]
+
+
+def preview_external_day(records, day):
+    """Show a local inventory preview without claiming Google Sheet sync succeeded."""
+    day = _date(day)
+    items = [item for item in records if _date(item.get("batch_date")) == day]
+    groups = defaultdict(list)
+    seen = set()
+    missing_slot = missing_category = 0
+    for item in items:
+        slot = str(item.get("batch_slot") or "").zfill(2)
+        sheet = str(item.get("sheet") or "").strip()
+        category = str(item.get("category") or "").strip()
+        if slot not in _PERIOD_LABELS:
+            missing_slot += 1
+        if not sheet or not category:
+            missing_category += 1
+        if (not item.get("included", True) or item.get("missing_from_daily")
+                or item.get("outside_daily_scan") or slot not in _PERIOD_LABELS
+                or not sheet or not category):
+            continue
+        identity = str(item.get("drive_file_id") or item.get("id") or "")
+        if not identity or identity in seen:
+            continue
+        seen.add(identity)
+        groups[(sheet, day, slot, category, "")].append(item)
+    daily_counts = _daily_count_rows(groups)
+    counted = sum(row["total"] for row in daily_counts)
+    return {"date": day, "total_files": len(items), "counted": counted,
+            "not_counted": len(items) - counted,
+            "missing_slot": missing_slot, "missing_category": missing_category,
+            "daily_counts": daily_counts}
 
 
 def reconcile_daily_quantity(
