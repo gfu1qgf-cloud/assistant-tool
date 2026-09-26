@@ -19,6 +19,28 @@ from model.DailyQuantityStats import (
 
 
 class DailyQuantityTests(unittest.TestCase):
+    def test_excluded_video_outside_period_can_be_classified_without_counting(self):
+        config = {"daily_quantity_sheet_url": "fake-id"}
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "state.json"
+            scope = f"fake-id|{Path(directory).resolve()}"
+            path.write_text(json.dumps({scope: {"external_videos": [{
+                "id": "outside", "file_name": "outside.mp4",
+                "batch_date": "2026-09-26", "batch_slot": "00",
+                "daily_scan_date": "2026-09-26", "included": False,
+            }]}}), encoding="utf-8")
+            edit = {"id": "outside", "batch_date": "2026-09-26",
+                    "batch_slot": "", "included": False,
+                    "sheet": "统计", "category": "短口播"}
+            update_external_video_records(config, directory, [edit], state_path=path)
+            saved = external_video_records(config, directory, path)[0]
+            self.assertEqual(saved["batch_slot"], "")
+            self.assertEqual(saved["category"], "短口播")
+            with self.assertRaisesRegex(ValueError, "已勾选计数"):
+                update_external_video_records(
+                    config, directory, [dict(edit, included=True)], state_path=path
+                )
+
     def test_old_task_revision_is_listed_but_not_counted_automatically(self):
         config = {"daily_quantity_sheet_url": "fake-id",
                   "drive_parent_folder_id": "parentFolderId12345",

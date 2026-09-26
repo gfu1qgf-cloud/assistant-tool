@@ -258,11 +258,17 @@ class TaskDeliveryPlugin:
         dialog = self.daily_quantity_dialog
         if dialog is None or not dialog.external_table.rowCount():
             return True
+        edits = dialog.changed_external_edits()
+        if not edits:
+            return True
         try:
-            update_external_video_records(config, root, dialog.external_edits())
+            update_external_video_records(config, root, edits)
         except (OSError, ValueError) as error:
-            dialog.show_error(f"保存流程外视频分类失败：{error}")
+            message = f"保存视频分类失败：{error}。当前清单未切换，修改仍保留在窗口中。"
+            dialog.show_error(message)
+            dialog.folder_status.setText(message)
             return False
+        dialog.mark_external_edits_saved()
         return True
 
     def scan_daily_quantity_folder(self, link, day, slot):

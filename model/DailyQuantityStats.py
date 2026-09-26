@@ -549,10 +549,16 @@ def update_external_video_records(config, root, edits, state_path=None):
             if edit is None:
                 continue
             day = _date(edit.get("batch_date"))
-            slot = str(edit.get("batch_slot") or "").zfill(2)
+            raw_slot = str(edit.get("batch_slot") or "").strip()
+            slot = raw_slot.zfill(2) if raw_slot and raw_slot != "00" else ""
             included = bool(edit.get("included", True))
-            if not day or included and slot not in _PERIOD_LABELS:
-                raise ValueError(f"{item.get('file_name')}：日期或时段无效")
+            if not day:
+                raise ValueError(f"{item.get('file_name')}：交付日期无效，请填写 YYYY-MM-DD")
+            if included and slot not in _PERIOD_LABELS:
+                raise ValueError(
+                    f"{item.get('file_name')}：已勾选计数，但时段为空或无效；"
+                    "请填写 01/02/03，或取消计数。"
+                )
             if item.get("daily_scan_date"):
                 if day != item["daily_scan_date"] or (
                     item.get("batch_slot") in _PERIOD_LABELS

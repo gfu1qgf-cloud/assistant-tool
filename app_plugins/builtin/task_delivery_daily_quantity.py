@@ -232,7 +232,12 @@ class DailyQuantityDialog(QtWidgets.QDialog):
             for col, key in ((1, "folder_name"), (2, "file_name"), (3, "batch_date"),
                              (4, "batch_slot")):
                 display = record.get("relative_path") if col == 2 else record.get(key)
-                item = QtWidgets.QTableWidgetItem(str(display or record.get(key) or ""))
+                if col == 4 and display == "00":
+                    display = ""
+                item = QtWidgets.QTableWidgetItem(
+                    str(display or "") if col == 4
+                    else str(display or record.get(key) or "")
+                )
                 if col in (1, 2):
                     item.setFlags(item.flags() & ~QtCore.Qt.ItemIsEditable)
                 if record.get("daily_scan_date") and col in (3, 4) and (
@@ -271,7 +276,7 @@ class DailyQuantityDialog(QtWidgets.QDialog):
                 state += " · 不在日期目录，停计"
             if record.get("review_path"):
                 state += " · 审核暂存"
-            if record.get("daily_scan_date") and not record.get("batch_slot"):
+            if record.get("daily_scan_date") and record.get("batch_slot") not in {"01", "02", "03"}:
                 state += " · 时段待确认"
             if record.get("possible_duplicate"):
                 state += " · 疑似重复"
@@ -281,6 +286,7 @@ class DailyQuantityDialog(QtWidgets.QDialog):
             status_item.setFlags(status_item.flags() & ~QtCore.Qt.ItemIsEditable)
             status_item.setData(QtCore.Qt.UserRole, state.partition(" · ")[2])
             self.external_table.setItem(row, 7, status_item)
+        self.mark_external_edits_saved()
 
     @staticmethod
     def _set_combo_choices(combo, choices, selected, placeholder):
@@ -339,6 +345,16 @@ class DailyQuantityDialog(QtWidgets.QDialog):
                 "sheet": value(5), "category": value(6),
             })
         return result
+
+    def changed_external_edits(self):
+        """Navigation must not resave every unchanged (possibly incomplete) row."""
+        return [edit for edit in self.external_edits()
+                if edit != self._saved_external_edits.get(str(edit["id"]))]
+
+    def mark_external_edits_saved(self):
+        self._saved_external_edits = {
+            str(edit["id"]): edit for edit in self.external_edits()
+        }
 
     def _apply_bulk_category(self):
         sheet = str(self.bulk_sheet.currentData() or "").strip()

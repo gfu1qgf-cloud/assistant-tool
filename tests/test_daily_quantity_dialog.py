@@ -70,6 +70,24 @@ class DailyQuantityDialogTests(unittest.TestCase):
         finally:
             dialog.close()
 
+    def test_unmodified_no_slot_video_does_not_block_day_switch(self):
+        dialog = DailyQuantityDialog()
+        try:
+            dialog.show_external_records([{
+                "id": "outside-slot", "file_name": "outside.mp4",
+                "batch_date": "2026-09-26", "batch_slot": "00",
+                "daily_scan_date": "2026-09-26", "included": False,
+            }])
+            self.assertEqual(dialog.external_table.item(0, 4).text(), "")
+            self.assertIn("时段待确认", dialog.external_table.item(0, 7).text())
+            self.assertEqual(dialog.changed_external_edits(), [])
+            dialog.external_table.cellWidget(0, 5).setCurrentIndex(0)
+            self.assertEqual(dialog.changed_external_edits(), [])
+            dialog.external_table.item(0, 4).setText("02")
+            self.assertEqual(dialog.changed_external_edits()[0]["batch_slot"], "02")
+        finally:
+            dialog.close()
+
 
 if __name__ == "__main__":
     unittest.main()
