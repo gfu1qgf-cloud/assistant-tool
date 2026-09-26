@@ -88,6 +88,52 @@ class DailyQuantityDialogTests(unittest.TestCase):
         finally:
             dialog.close()
 
+    def test_context_menu_copies_file_names_and_links(self):
+        dialog = DailyQuantityDialog()
+        try:
+            dialog.show_external_records([
+                {"id": "one", "file_name": "one.mp4", "relative_path": "01/one.mp4",
+                 "drive_link": "https://drive.google.com/file/d/one/view"},
+                {"id": "two", "file_name": "two.mp4", "relative_path": "01/two.mp4",
+                 "drive_link": "https://drive.google.com/file/d/two/view"},
+            ])
+            menu = dialog._external_context_menu([0, 1])
+            self.assertIn("复制文件名", [action.text() for action in menu.actions()])
+            self.assertIn("复制网盘链接", [action.text() for action in menu.actions()])
+            menu.actions()[0].trigger()
+            self.assertEqual(
+                self.app.clipboard().text(), "one.mp4\ntwo.mp4"
+            )
+            menu.actions()[1].trigger()
+            self.assertEqual(
+                self.app.clipboard().text(),
+                "https://drive.google.com/file/d/one/view\n"
+                "https://drive.google.com/file/d/two/view",
+            )
+        finally:
+            dialog.close()
+
+    def test_bulk_count_actions_skip_videos_without_period(self):
+        dialog = DailyQuantityDialog()
+        try:
+            dialog.show_external_records([
+                {"id": "one", "file_name": "one.mp4", "batch_slot": "01",
+                 "batch_date": "2026-09-26", "included": False},
+                {"id": "two", "file_name": "two.mp4", "batch_slot": "",
+                 "batch_date": "2026-09-26", "included": False},
+            ])
+            dialog._set_external_inclusion([0, 1], "check")
+            self.assertTrue(dialog.external_edits()[0]["included"])
+            self.assertFalse(dialog.external_edits()[1]["included"])
+            self.assertIn("缺少有效时段", dialog.folder_status.text())
+            menu = dialog._external_context_menu([0])
+            count_menu = next(action.menu() for action in menu.actions()
+                              if action.menu() is not None)
+            count_menu.actions()[2].trigger()
+            self.assertFalse(dialog.external_edits()[0]["included"])
+        finally:
+            dialog.close()
+
 
 if __name__ == "__main__":
     unittest.main()

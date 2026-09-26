@@ -104,6 +104,7 @@ class DailyQuantityDialog(QtWidgets.QDialog):
         source_layout = QtWidgets.QVBoxLayout(source_box)
         source_note = QtWidgets.QLabel(
             "扫描所选日期会核对网盘实有视频；已保存的分类不变，未分类的可在清单中选择。"
+            "最左侧勾选框表示计入数量，和选中表格行是两回事；可右键批量操作。"
             "审核暂存和疑似旧任务修订版默认不计数；重复内容会标出供你核对。"
             "日期目录目前只按月日命名，跨年复用时请留意旧视频。只读取清单，不下载。"
         )
@@ -161,6 +162,8 @@ class DailyQuantityDialog(QtWidgets.QDialog):
         self.external_table.setColumnWidth(5, 125)
         self.external_table.setColumnWidth(6, 155)
         self.external_table.cellDoubleClicked.connect(self._open_external_video)
+        self.external_table.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+        self.external_table.customContextMenuRequested.connect(self._show_external_context_menu)
         source_layout.addWidget(self.external_table, 1)
         bulk_row = QtWidgets.QHBoxLayout()
         self._category_options = {}
@@ -227,6 +230,7 @@ class DailyQuantityDialog(QtWidgets.QDialog):
                              & ~QtCore.Qt.ItemIsEditable)
             include.setCheckState(QtCore.Qt.Checked if record.get("included", True)
                                   else QtCore.Qt.Unchecked)
+            include.setToolTip("勾选表示计入每日数量；请先确认交付时段为 01、02 或 03。")
             include.setData(QtCore.Qt.UserRole, str(record.get("id") or ""))
             self.external_table.setItem(row, 0, include)
             for col, key in ((1, "folder_name"), (2, "file_name"), (3, "batch_date"),
@@ -247,9 +251,19 @@ class DailyQuantityDialog(QtWidgets.QDialog):
                 if col == 2:
                     item.setToolTip(str(record.get("drive_link") or ""))
                     item.setData(QtCore.Qt.UserRole, str(record.get("drive_link") or ""))
+                    item.setData(QtCore.Qt.UserRole + 1, str(record.get("file_name") or ""))
                 self.external_table.setItem(row, col, item)
             sheet_combo = _NoWheelComboBox(self.external_table)
             category_combo = _NoWheelComboBox(self.external_table)
+            for combo in (sheet_combo, category_combo):
+                combo.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+                combo.customContextMenuRequested.connect(
+                    lambda position, widget=combo: self._show_external_context_menu(
+                        self.external_table.viewport().mapFromGlobal(
+                            widget.mapToGlobal(position)
+                        )
+                    )
+                )
             self.external_table.setCellWidget(row, 5, sheet_combo)
             self.external_table.setCellWidget(row, 6, category_combo)
             self._set_combo_choices(
@@ -413,6 +427,93 @@ class DailyQuantityDialog(QtWidgets.QDialog):
         link = str(item.data(QtCore.Qt.UserRole) or "") if item else ""
         if link:
             QtGui.QDesktopServices.openUrl(QtCore.QUrl(link))
+
+    def _selected_external_rows(self):
+        return sorted(index.row() for index in self.external_table.selectionModel().selectedRows())
+
+    def _show_external_context_menu(self, position):
+        table = self.external_table
+        index = table.indexAt(position)
+        if index.isValid() and index.row() not in self._selected_external_rows():
+            table.clearSelection()
+            table.selectRow(index.row())
+        menu = self._external_context_menu(self._selected_external_rows())
+        menu.exec(table.viewport().mapToGlobal(position))
+
+    def _external_context_menu(self, rows):
+        menu = QtWidgets.QMenu(self)
+        copy_name = menu.addAction("复制文件名")
+        copy_name.triggered.connect(lambda: self._copy_external_values(rows, "name"))
+        copy_link = menu.addAction("复制网盘链接")
+        copy_link.triggered.connect(lambda: self._copy_external_values(rows, "link"))
+        copy_both = menu.addAction("复制文件名和链接")
+        copy_both.triggered.connect(lambda: self._copy_external_values(rows, "both"))
+        for action in (copy_name, copy_link, copy_both):
+            action.setEnabled(bool(rows))
+        open_video = menu.addAction("在浏览器打开网盘视频")
+        open_video.setEnabled(
+            len(rows) == 1 and bool(self.external_table.item(rows[0], 2).data(QtCore.Qt.UserRole))
+        )
+        if len(rows) == 1:
+            open_video.triggered.connect(lambda: self._open_external_video(rows[0], 2))
+        menu.addSeparator()
+        select_all = menu.addAction("选中全部可见行")
+        select_all.triggered.connect(self.external_table.selectAll)
+        clear = menu.addAction("清除行选择")
+        clear.triggered.connect(self.external_table.clearSelection)
+        clear.setEnabled(bool(rows))
+        select_all.setEnabled(bool(self.external_table.rowCount()))
+        count_menu = menu.addMenu("计入每日数量（操作选中行）")
+        for label, mode in (("勾选计数", "check"), ("取消计数", "uncheck"),
+                            ("反选计数", "invert")):
+            action = count_menu.addAction(label)
+            action.setEnabled(bool(rows))
+            action.triggered.connect(
+                lambda _checked=False, selected_mode=mode: self._set_external_inclusion(
+                    rows, selected_mode
+                )
+            )
+        return menu
+
+    def _copy_external_values(self, rows, kind):
+        lines = []
+        for row in rows:
+            item = self.external_table.item(row, 2)
+            if item is None:
+                continue
+            name = str(item.data(QtCore.Qt.UserRole + 1) or "").strip()
+            link = str(item.data(QtCore.Qt.UserRole) or "").strip()
+            if kind == "name" and name:
+                lines.append(name)
+            elif kind == "link" and link:
+                lines.append(link)
+            elif kind == "both" and name and link:
+                lines.append(f"{name}\t{link}")
+        if lines:
+            set_internal_clipboard_text("\n".join(lines))
+            self.folder_status.setText(f"已复制 {len(lines)} 条{'文件名' if kind == 'name' else '网盘链接' if kind == 'link' else '文件名和链接'}。")
+        else:
+            self.folder_status.setText("所选视频没有可复制的文件名或网盘链接。")
+
+    def _set_external_inclusion(self, rows, mode):
+        changed = skipped = 0
+        for row in rows:
+            item = self.external_table.item(row, 0)
+            slot_item = self.external_table.item(row, 4)
+            if item is None:
+                continue
+            current = item.checkState() == QtCore.Qt.Checked
+            target = mode == "check" or mode == "invert" and not current
+            if target and (slot_item is None or slot_item.text().strip().zfill(2) not in {"01", "02", "03"}):
+                skipped += 1
+                continue
+            if current != target:
+                item.setCheckState(QtCore.Qt.Checked if target else QtCore.Qt.Unchecked)
+                changed += 1
+        message = f"已修改 {changed} 条视频的计数状态。"
+        if skipped:
+            message += f"另有 {skipped} 条缺少有效时段（01/02/03），未勾选。"
+        self.folder_status.setText(message + " 点击“保存分类并刷新数量”后生效。")
 
     def _copy_current_list(self):
         if not self.external_table.rowCount():
