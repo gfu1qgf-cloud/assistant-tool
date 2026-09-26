@@ -27,6 +27,7 @@ from model.TaskTableSchema import load_task_table_schema
 from model.VideoUploadHistory import (
     VIDEO_SUFFIXES,
     all_video_upload_records,
+    normalize_video_identity,
 )
 
 
@@ -201,6 +202,26 @@ def _find_cell(rows, day, slot, creator, category):
     return row, col
 
 
+def _category_options(snapshots, creator):
+    """Read only category labels inside the configured creator's block."""
+    result = {}
+    for sheet, rows in snapshots.items():
+        people = [row for row in range(2, len(rows))
+                  if _key(_value(rows, row, 1)) == _key(creator)]
+        if len(people) != 1:
+            continue
+        start = people[0] + 1
+        end = next((row for row in range(start, len(rows))
+                    if str(_value(rows, row, 0)).strip()
+                    or str(_value(rows, row, 1)).strip()), len(rows))
+        categories = sorted({str(_value(rows, row, 2)).strip()
+                             for row in range(start, end)
+                             if str(_value(rows, row, 2)).strip()})
+        if categories:
+            result[sheet] = categories
+    return result
+
+
 def _load_state(path):
     try:
         data = json.loads(Path(path).read_text(encoding="utf-8"))
@@ -236,6 +257,182 @@ def external_video_sources(config, root, state_path=None):
     with _LOCK:
         scope = _load_state(state_path or STATE_FILE).get(_scope_key(config, root), {})
         return [dict(item) for item in scope.get("external_folders", [])]
+
+
+def scan_daily_drive_date(
+    config, root, batch_date, service=None, state_path=None, records=None
+):
+    """Reconcile a delivery day against the videos physically in Drive."""
+    from model.GoogleDriveHelper import (
+        GOOGLE_FOLDER_MIME,
+        extract_drive_folder_id,
+        load_drive_service,
+    )
+    from model.MaterialDriveSync import _collect_remote_files, _folder_children
+
+    day = _date(batch_date)
+    if not day:
+        raise ValueError("请选择有效的交付日期。")
+    parent_id = extract_drive_folder_id(
+        str(config.get("drive_parent_folder_id") or "").strip()
+    )
+    if not re.fullmatch(r"[A-Za-z0-9_-]{10,}", parent_id):
+        raise ValueError("请先在程序设置 → 整理任务结果填写网盘父目录链接。")
+    service = service or load_drive_service()
+    folder_name = date.fromisoformat(day).strftime("%m%d")
+    date_folders = [item for item in _folder_children(service, parent_id)
+                    if item.get("name") == folder_name
+                    and item.get("mimeType") == GOOGLE_FOLDER_MIME]
+    if len(date_folders) != 1:
+        raise ValueError(
+            f"网盘父目录下找到 {len(date_folders)} 个名为 {folder_name} 的日期文件夹；"
+            "为避免统计错目录，本次没有修改记录。"
+        )
+    date_folder_id = str(date_folders[0]["id"])
+    remote = []
+    for child in _folder_children(service, date_folder_id):
+        name = str(child.get("name") or "")
+        mime = str(child.get("mimeType") or "")
+        if mime == GOOGLE_FOLDER_MIME:
+            slot = name if name in _PERIOD_LABELS else ""
+            for file_item in _collect_remote_files(
+                service, str(child.get("id") or ""), relative=(name,)
+            ):
+                remote.append((file_item, slot))
+        else:
+            item = dict(child)
+            item["relative_parts"] = (name,)
+            remote.append((item, ""))
+    remote = [(item, slot) for item, slot in remote
+              if str(item.get("mimeType") or "").startswith("video/")
+              or Path(str(item.get("name") or "")).suffix.casefold() in VIDEO_SUFFIXES]
+    if not remote:
+        raise ValueError(f"{folder_name} 日期目录中没有视频；未覆盖已有数量记录。")
+    remote_ids = {str(item.get("id") or "") for item, _ in remote}
+
+    # The existing ODS remains a convenient classification hint, not the
+    # authority on which files physically exist in a scanned date folder.
+    records = all_video_upload_records(config) if records is None else records
+    scanned_names = {normalize_video_identity(item.get("name")) for item, _ in remote}
+    relevant_records = [item for item in records
+                        if normalize_video_identity(item.get("file_name")) in scanned_names]
+    known_groups, hint_warnings = collect_assignments(
+        config, root, relevant_records
+    )
+    by_drive_id = {}
+    by_name = defaultdict(set)
+    prior_names = set()
+    for (sheet, delivery_day, _slot, category, _creator), videos in known_groups.items():
+        for video in videos:
+            classification = (sheet, category)
+            drive_id = str(video.get("drive_file_id") or "")
+            if drive_id:
+                by_drive_id.setdefault(drive_id, set()).add(classification)
+            name_key = normalize_video_identity(video.get("file_name"))
+            by_name[name_key].add(classification)
+            if delivery_day < day:
+                prior_names.add(name_key)
+
+    state_path = Path(state_path or STATE_FILE)
+    with _LOCK:
+        state = _load_state(state_path)
+        scope_key = _scope_key(config, root)
+        scope = dict(state.get(scope_key, {}))
+        videos = [dict(item) for item in scope.get("external_videos", [])]
+        by_id = {str(item.get("drive_file_id")): item for item in videos
+                 if item.get("drive_file_id")}
+        seen_ids = set()
+        duplicates = defaultdict(list)
+        for item, _slot in remote:
+            checksum = str(item.get("md5Checksum") or "")
+            size = str(item.get("size") or "")
+            if checksum and size:
+                duplicates[(checksum, size)].append(str(item.get("id") or ""))
+        duplicate_ids = {file_id for group in duplicates.values() if len(set(group)) > 1
+                         for file_id in group}
+        added = replaced = pending = review = 0
+        for item, slot in remote:
+            drive_id = str(item.get("id") or "").strip()
+            if not drive_id or drive_id in seen_ids:
+                continue
+            seen_ids.add(drive_id)
+            relative = "/".join(item.get("relative_parts") or (item.get("name") or drive_id,))
+            is_revision = normalize_video_identity(item.get("name")) in prior_names
+            is_review = any(_key(part) == _key(config.get("review_folder_name") or "review")
+                            for part in relative.split("/"))
+            entry = by_id.get(drive_id)
+            if entry is None:
+                entry = next((old for old in videos
+                              if old.get("daily_scan_date") == day
+                              and _key(old.get("relative_path")) == _key(relative)
+                              and old.get("drive_file_id") not in remote_ids), None)
+                if entry is not None:
+                    replaced += 1
+            if entry is None:
+                entry = {
+                    "id": uuid.uuid4().hex,
+                    "folder_id": date_folder_id,
+                    "first_seen_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+                    "included": bool(slot and not is_review and not is_revision),
+                    "sheet": "", "category": "",
+                }
+                videos.append(entry)
+                added += 1
+            elif (is_review or not slot) and entry.get("daily_scan_date") != day:
+                entry["included"] = False
+            if not entry.get("sheet") or not entry.get("category"):
+                possible = by_drive_id.get(drive_id) or by_name.get(
+                    normalize_video_identity(item.get("name")), set()
+                )
+                if len(possible) == 1:
+                    entry["sheet"], entry["category"] = next(iter(possible))
+            if not entry.get("sheet") or not entry.get("category"):
+                pending += 1
+            if is_review:
+                review += 1
+            entry.update({
+                "drive_file_id": drive_id,
+                "drive_link": f"https://drive.google.com/file/d/{drive_id}/view",
+                "folder_name": folder_name,
+                "file_name": str(item.get("name") or ""),
+                "relative_path": relative,
+                "batch_date": day,
+                "batch_slot": slot,
+                "daily_scan_date": day,
+                "missing_from_daily": False,
+                "outside_daily_scan": False,
+                "possible_duplicate": drive_id in duplicate_ids,
+                "possible_revision": is_revision,
+                "review_path": is_review,
+            })
+            by_id[drive_id] = entry
+        for entry in videos:
+            if entry.get("daily_scan_date") == day and entry.get("drive_file_id") not in seen_ids:
+                entry["missing_from_daily"] = True
+            if entry.get("batch_date") == day and entry.get("daily_scan_date") != day:
+                entry["outside_daily_scan"] = True
+        scans = dict(scope.get("daily_scans", {}))
+        scans[day] = {
+            "folder_id": date_folder_id,
+            "scanned_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+            "video_count": len(seen_ids),
+        }
+        scope["daily_scans"] = scans
+        scope["external_videos"] = videos
+        state[scope_key] = scope
+        _save_state(state_path, state)
+        return {
+            "date": day, "folder_link": f"https://drive.google.com/drive/folders/{date_folder_id}",
+            "found": len(seen_ids), "added": added, "replaced": replaced,
+            "pending": pending,
+            "review": review, "possible_duplicates": len(duplicate_ids),
+            "possible_revisions": sum(1 for entry in videos
+                                      if entry.get("daily_scan_date") == day
+                                      and not entry.get("missing_from_daily")
+                                      and entry.get("possible_revision")),
+            "records": [dict(entry) for entry in videos if entry.get("batch_date") == day],
+            "warnings": hint_warnings,
+        }
 
 
 def scan_external_video_folder(
@@ -353,14 +550,24 @@ def update_external_video_records(config, root, edits, state_path=None):
                 continue
             day = _date(edit.get("batch_date"))
             slot = str(edit.get("batch_slot") or "").zfill(2)
-            if not day or slot not in _PERIOD_LABELS:
+            included = bool(edit.get("included", True))
+            if not day or included and slot not in _PERIOD_LABELS:
                 raise ValueError(f"{item.get('file_name')}：日期或时段无效")
+            if item.get("daily_scan_date"):
+                if day != item["daily_scan_date"] or (
+                    item.get("batch_slot") in _PERIOD_LABELS
+                    and slot != item["batch_slot"]
+                ):
+                    raise ValueError(
+                        f"{item.get('file_name')}：日期和时段由网盘目录确定，"
+                        "请修改分类或重新扫描正确的日期目录。"
+                    )
             item.update({
                 "batch_date": day,
                 "batch_slot": slot,
                 "sheet": str(edit.get("sheet") or "").strip(),
                 "category": str(edit.get("category") or "").strip(),
-                "included": bool(edit.get("included", True)),
+                "included": included,
             })
         scope["external_videos"] = videos
         state[scope_key] = scope
@@ -374,6 +581,7 @@ def _external_assignments(scope, creator, local_groups):
     counted_ids = {str(video.get("drive_file_id") or "") for videos in local_groups.values()
                    for video in videos}
     seen_ids = set()
+    scanned_days = set(scope.get("daily_scans", {}))
     for item in scope.get("external_videos", []):
         if not item.get("included", True):
             continue
@@ -381,12 +589,16 @@ def _external_assignments(scope, creator, local_groups):
         if not file_id or file_id in counted_ids or file_id in seen_ids:
             continue
         label = str(item.get("file_name") or file_id)
+        day = _date(item.get("batch_date"))
+        if day in scanned_days and (
+            item.get("daily_scan_date") != day or item.get("missing_from_daily")
+        ):
+            continue
         sheet = str(item.get("sheet") or "").strip()
         category = str(item.get("category") or "").strip()
         if not sheet or not category:
             warnings.append(f"流程外视频 {label}：统计分页/类别待填写")
             continue
-        day = _date(item.get("batch_date"))
         slot = str(item.get("batch_slot") or "").zfill(2)
         if not day or slot not in _PERIOD_LABELS:
             warnings.append(f"流程外视频 {label}：交付日期/时段无效")
@@ -435,6 +647,9 @@ def reconcile_daily_quantity(
             name: item.get("values", [])
             for name, item in zip(names, response.get("valueRanges", []))
         }
+        category_options = _category_options(
+            snapshots, str(config.get("task_submission_creator") or "").strip()
+        )
         allowed_dates = {
             parsed
             for rows in snapshots.values()
@@ -445,6 +660,22 @@ def reconcile_daily_quantity(
         groups, warnings = collect_assignments(
             config, root, records, allowed_dates=allowed_dates
         )
+        scanned_days = set(previous.get("daily_scans", {}))
+        scanned_ids = {
+            str(item.get("drive_file_id") or "")
+            for item in previous.get("external_videos", [])
+            if item.get("daily_scan_date") in scanned_days
+            and not item.get("missing_from_daily")
+        }
+        remaining_groups = {}
+        for key, videos in groups.items():
+            if key[1] in scanned_days:
+                continue
+            kept = [video for video in videos
+                    if str(video.get("drive_file_id") or "") not in scanned_ids]
+            if kept:
+                remaining_groups[key] = kept
+        groups = remaining_groups
         external_groups, external_warnings = _external_assignments(
             previous, str(config.get("task_submission_creator") or "").strip(), groups
         )
@@ -456,7 +687,8 @@ def reconcile_daily_quantity(
         }
         relevant = set(desired) | set(old_cells)
         if not relevant:
-            return {"updated": [], "warnings": warnings, "counted": 0}
+            return {"updated": [], "warnings": warnings, "counted": 0,
+                    "category_options": category_options}
 
         updates = []
         pending = []
@@ -516,4 +748,5 @@ def reconcile_daily_quantity(
         return {"updated": [{"range": a1, "count": number}
                             for _, _, a1, number in pending],
                 "warnings": warnings,
-                "counted": sum(len(v) for v in desired.values())}
+                "counted": sum(len(v) for v in desired.values()),
+                "category_options": category_options}

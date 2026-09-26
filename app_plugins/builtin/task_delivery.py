@@ -11,6 +11,7 @@ from app_plugins.builtin.task_delivery_quick_upload import (
     QuickUploadThread,
 )
 from app_plugins.builtin.task_delivery_daily_quantity import (
+    DailyQuantityDateThread,
     DailyQuantityDialog,
     DailyQuantityFolderThread,
     DailyQuantityThread,
@@ -75,6 +76,7 @@ class TaskDeliveryPlugin:
         self.daily_quantity_dialog = None
         self.daily_quantity_thread = None
         self.daily_quantity_folder_thread = None
+        self.daily_quantity_date_thread = None
 
     def register(self, context):
         self.context = context
@@ -200,12 +202,14 @@ class TaskDeliveryPlugin:
             dialog = DailyQuantityDialog(self.context.parent_widget)
             dialog.refresh_requested.connect(self.refresh_daily_quantity)
             dialog.scan_requested.connect(self.scan_daily_quantity_folder)
+            dialog.scan_date_requested.connect(self.scan_daily_quantity_date)
+            dialog.view_date_requested.connect(self.view_daily_quantity_date)
             self.daily_quantity_dialog = dialog
             try:
                 dialog.show_external_records(external_video_records(
                     self.context.load_config(),
                     self.context.parent_widget.task_path_edit.text().strip(),
-                ))
+                ), day=dialog.folder_day.date().toString("yyyy-MM-dd"))
                 dialog.show_external_sources(external_video_sources(
                     self.context.load_config(),
                     self.context.parent_widget.task_path_edit.text().strip(),
@@ -222,6 +226,8 @@ class TaskDeliveryPlugin:
         if self.daily_quantity_thread is not None and self.daily_quantity_thread.isRunning():
             return False
         if self.daily_quantity_folder_thread is not None and self.daily_quantity_folder_thread.isRunning():
+            return False
+        if self.daily_quantity_date_thread is not None and self.daily_quantity_date_thread.isRunning():
             return False
         root = self.context.parent_widget.task_path_edit.text().strip()
         config = self.context.load_config()
@@ -264,6 +270,8 @@ class TaskDeliveryPlugin:
             return False
         if self.daily_quantity_thread is not None and self.daily_quantity_thread.isRunning():
             return False
+        if self.daily_quantity_date_thread is not None and self.daily_quantity_date_thread.isRunning():
+            return False
         root = self.context.parent_widget.task_path_edit.text().strip()
         config = self.context.load_config()
         from pathlib import Path
@@ -287,7 +295,9 @@ class TaskDeliveryPlugin:
         dialog = self.daily_quantity_dialog
         if dialog is not None:
             dialog.set_folder_busy(False)
-            dialog.show_external_records(result["records"])
+            dialog.show_external_records(
+                result["records"], day=dialog.folder_day.date().toString("yyyy-MM-dd")
+            )
             dialog.show_external_sources(result["sources"])
             dialog.folder_status.setText(
                 f"扫描到 {result['found']} 个视频；新增 {result['added']} 个，"
@@ -306,6 +316,78 @@ class TaskDeliveryPlugin:
     def _daily_quantity_folder_finished(self):
         thread = self.daily_quantity_folder_thread
         self.daily_quantity_folder_thread = None
+        if thread is not None:
+            thread.deleteLater()
+
+    def view_daily_quantity_date(self, day):
+        dialog = self.daily_quantity_dialog
+        if dialog is None:
+            return False
+        config = self.context.load_config()
+        root = self.context.parent_widget.task_path_edit.text().strip()
+        if not self._save_daily_quantity_external_edits(config, root):
+            return False
+        try:
+            rows = external_video_records(config, root)
+        except (OSError, ValueError) as error:
+            dialog.show_error(str(error))
+            return False
+        dialog.show_external_records(rows, day=day)
+        dialog.folder_status.setText(
+            f"{day} 已保存 {dialog.external_table.rowCount()} 个视频。"
+        )
+        return True
+
+    def scan_daily_quantity_date(self, day):
+        if any(thread is not None and thread.isRunning() for thread in (
+            self.daily_quantity_thread,
+            self.daily_quantity_folder_thread,
+            self.daily_quantity_date_thread,
+        )):
+            return False
+        dialog = self.daily_quantity_dialog
+        root = self.context.parent_widget.task_path_edit.text().strip()
+        config = self.context.load_config()
+        from pathlib import Path
+        if not Path(root).is_dir() or not str(config.get("daily_quantity_sheet_url") or "").strip():
+            dialog.show_error("请先选择任务根目录并设置每日数量表格链接。")
+            return False
+        if not self._save_daily_quantity_external_edits(config, root):
+            return False
+        thread = DailyQuantityDateThread(config, root, day, self.context.parent_widget)
+        self.daily_quantity_date_thread = thread
+        thread.completed.connect(self._daily_quantity_date_completed)
+        thread.failed.connect(self._daily_quantity_date_failed)
+        thread.finished.connect(self._daily_quantity_date_finished)
+        dialog.set_folder_busy(True)
+        thread.start()
+        return True
+
+    def _daily_quantity_date_completed(self, result):
+        dialog = self.daily_quantity_dialog
+        if dialog is not None:
+            dialog.set_folder_busy(False)
+            dialog.show_external_records(result["records"], day=result["date"])
+            dialog.folder_status.setText(
+                f"{result['date']}：网盘视频 {result['found']} 个，新增 {result['added']} 个，"
+                f"同路径替换 {result['replaced']} 个，"
+                f"待分类 {result['pending']} 个，审核暂存 {result['review']} 个，"
+                f"疑似重复 {result['possible_duplicates']} 个，"
+                f"疑似旧任务修订 {result['possible_revisions']} 个。"
+            )
+        self.context.log(
+            f"每日数量：已扫描 {result['date']} 网盘目录，共 {result['found']} 个视频。"
+        )
+
+    def _daily_quantity_date_failed(self, error):
+        self.context.log(f"每日数量日期目录扫描失败：{error}")
+        if self.daily_quantity_dialog is not None:
+            self.daily_quantity_dialog.set_folder_busy(False)
+            self.daily_quantity_dialog.folder_status.setText(f"日期目录扫描失败：{error}")
+
+    def _daily_quantity_date_finished(self):
+        thread = self.daily_quantity_date_thread
+        self.daily_quantity_date_thread = None
         if thread is not None:
             thread.deleteLater()
 
@@ -420,6 +502,8 @@ class TaskDeliveryPlugin:
         return self.controller.update_config(config)
 
     def can_close(self):
+        if self.daily_quantity_date_thread is not None and self.daily_quantity_date_thread.isRunning():
+            return False, "每日数量日期目录正在扫描，请稍等。"
         if self.daily_quantity_folder_thread is not None and self.daily_quantity_folder_thread.isRunning():
             return False, "每日数量文件夹正在扫描，请稍等。"
         if self.daily_quantity_thread is not None and self.daily_quantity_thread.isRunning():

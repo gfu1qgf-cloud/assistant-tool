@@ -7,16 +7,155 @@ from unittest.mock import MagicMock, patch
 from model.DailyQuantityStats import (
     _find_cell,
     _external_assignments,
+    _category_options,
     collect_assignments,
     external_video_records,
     external_video_sources,
     reconcile_daily_quantity,
+    scan_daily_drive_date,
     scan_external_video_folder,
     update_external_video_records,
 )
 
 
 class DailyQuantityTests(unittest.TestCase):
+    def test_old_task_revision_is_listed_but_not_counted_automatically(self):
+        config = {"daily_quantity_sheet_url": "fake-id",
+                  "drive_parent_folder_id": "parentFolderId12345",
+                  "task_submission_creator": "本人"}
+        def children(_service, folder_id):
+            if folder_id == "parentFolderId12345":
+                return [{"id": "dateFolderId123456", "name": "0925",
+                         "mimeType": "application/vnd.google-apps.folder"}]
+            return [{"id": "slotFolderId123456", "name": "02",
+                     "mimeType": "application/vnd.google-apps.folder"}]
+        prior = {("统计", "2026-09-24", "02", "短口播", "本人"): [
+            {"drive_file_id": "old-id", "file_name": "same.mp4"}
+        ]}
+        video = {"id": "new-id", "name": "same.mp4", "mimeType": "video/mp4",
+                 "relative_parts": ("02", "Alice", "same.mp4")}
+        with tempfile.TemporaryDirectory() as directory:
+            with patch("model.MaterialDriveSync._folder_children", side_effect=children), patch(
+                "model.MaterialDriveSync._collect_remote_files", return_value=[video]
+            ), patch("model.DailyQuantityStats.collect_assignments", return_value=(prior, [])):
+                result = scan_daily_drive_date(
+                    config, directory, "2026-09-25", service=MagicMock(),
+                    state_path=Path(directory) / "state.json", records=[]
+                )
+        self.assertEqual(result["possible_revisions"], 1)
+        self.assertFalse(result["records"][0]["included"])
+        self.assertEqual(result["records"][0]["category"], "短口播")
+
+    def test_date_scan_refuses_ambiguous_mmdd_folder(self):
+        config = {"daily_quantity_sheet_url": "fake-id",
+                  "drive_parent_folder_id": "parentFolderId12345"}
+        folders = [{"id": "one", "name": "0925",
+                    "mimeType": "application/vnd.google-apps.folder"},
+                   {"id": "two", "name": "0925",
+                    "mimeType": "application/vnd.google-apps.folder"}]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "state.json"
+            with patch("model.MaterialDriveSync._folder_children", return_value=folders):
+                with self.assertRaisesRegex(ValueError, "找到 2 个"):
+                    scan_daily_drive_date(config, directory, "2026-09-25",
+                                          service=MagicMock(), state_path=path,
+                                          records=[])
+            self.assertFalse(path.exists())
+
+    def test_category_choices_are_limited_to_my_block(self):
+        rows = [[], [], ["AI组", "他人"], ["", "", "他人类别"],
+                ["AI组", "本人"], ["", "", "短口播"], ["", "", "长口播"]]
+        self.assertEqual(
+            _category_options({"统计": rows}, "本人"),
+            {"统计": ["短口播", "长口播"]},
+        )
+
+    def test_date_scan_lists_physical_videos_prefills_and_reconciles(self):
+        day = "2026-09-25"
+        parent_id = "parentFolderId12345"
+        date_id = "dateFolderId123456"
+        slot_id = "slotFolderId123456"
+        config = {
+            "daily_quantity_sheet_url": "fake-id", "task_submission_creator": "本人",
+            "drive_parent_folder_id": parent_id, "review_folder_name": "review",
+        }
+        normal = {"id": "normal-video-id", "name": "a.mp4", "mimeType": "video/mp4",
+                  "relative_parts": ("02", "Alice", "a.mp4")}
+        review = {"id": "review-video-id", "name": "b.mp4", "mimeType": "video/mp4",
+                  "relative_parts": ("02", "review", "b.mp4")}
+        def children(_service, folder_id):
+            if folder_id == parent_id:
+                return [{"id": date_id, "name": "0925",
+                         "mimeType": "application/vnd.google-apps.folder"}]
+            if folder_id == date_id:
+                return [{"id": slot_id, "name": "02",
+                         "mimeType": "application/vnd.google-apps.folder"}]
+            return []
+        local_key = ("统计", day, "02", "短口播", "本人")
+        local = {local_key: [{"file_name": "a.mp4", "drive_file_id": "normal-video-id"}]}
+        grid = [["", "", "", "", 46290, "", "", ""],
+                ["组别", "名字", "尽本分时间", "定额", "一天总数", "中午12点", "中午18点", "晚上24点"],
+                [], ["AI组", "本人"],
+                ["", "", "短口播", 50, "=SUM(F5:H5)", "", "", ""]]
+        sheet = MagicMock()
+        sheet.spreadsheets.return_value.get.return_value.execute.return_value = {
+            "sheets": [{"properties": {"title": "统计", "gridProperties": {
+                "rowCount": len(grid), "columnCount": len(grid[1])}}}]
+        }
+        sheet.spreadsheets.return_value.values.return_value.batchGet.return_value.execute.side_effect = (
+            lambda: {"valueRanges": [{"values": grid}]}
+        )
+        def write():
+            body = sheet.spreadsheets.return_value.values.return_value.batchUpdate.call_args.kwargs["body"]
+            for item in body["data"]:
+                grid[4][6] = item["values"][0][0]
+            return {"totalUpdatedCells": len(body["data"])}
+        sheet.spreadsheets.return_value.values.return_value.batchUpdate.return_value.execute.side_effect = write
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "state.json"
+            with patch("model.MaterialDriveSync._folder_children", side_effect=children), patch(
+                "model.MaterialDriveSync._collect_remote_files", return_value=[normal, review]
+            ), patch("model.DailyQuantityStats.collect_assignments", return_value=(local, [])):
+                scanned = scan_daily_drive_date(config, directory, day, service=MagicMock(),
+                                               state_path=path, records=[])
+                first = reconcile_daily_quantity(config, directory, service=sheet,
+                                                 records=[], state_path=path)
+            self.assertEqual((scanned["found"], scanned["pending"], scanned["review"]), (2, 1, 1))
+            by_name = {item["file_name"]: item for item in scanned["records"]}
+            self.assertEqual(by_name["a.mp4"]["category"], "短口播")
+            self.assertTrue(by_name["a.mp4"]["included"])
+            self.assertFalse(by_name["b.mp4"]["included"])
+            self.assertEqual(first["counted"], 1)
+            self.assertEqual(grid[4][6], 1)
+            update_external_video_records(config, directory, [{
+                "id": by_name["a.mp4"]["id"], "batch_date": day,
+                "batch_slot": "02", "sheet": "统计",
+                "category": "人工改过的类别", "included": True,
+            }], state_path=path)
+            replacement = dict(normal, id="replacement-video-id")
+            with patch("model.MaterialDriveSync._folder_children", side_effect=children), patch(
+                "model.MaterialDriveSync._collect_remote_files", return_value=[replacement, review]
+            ), patch("model.DailyQuantityStats.collect_assignments", return_value=(local, [])):
+                replaced = scan_daily_drive_date(config, directory, day, service=MagicMock(),
+                                                 state_path=path, records=[])
+            self.assertEqual(replaced["replaced"], 1)
+            updated = next(item for item in replaced["records"] if item["file_name"] == "a.mp4")
+            self.assertEqual(updated["id"], by_name["a.mp4"]["id"])
+            self.assertEqual(updated["category"], "人工改过的类别")
+            with patch("model.MaterialDriveSync._folder_children", side_effect=children), patch(
+                "model.MaterialDriveSync._collect_remote_files", return_value=[review]
+            ), patch("model.DailyQuantityStats.collect_assignments", return_value=(local, [])):
+                rescanned = scan_daily_drive_date(config, directory, day, service=MagicMock(),
+                                                 state_path=path, records=[])
+                second = reconcile_daily_quantity(config, directory, service=sheet,
+                                                  records=[], state_path=path)
+            removed = next(item for item in rescanned["records"]
+                           if item["file_name"] == "a.mp4")
+            self.assertTrue(removed["missing_from_daily"])
+            self.assertEqual(removed["category"], "人工改过的类别")
+            self.assertEqual(second["counted"], 0)
+            self.assertEqual(grid[4][6], 0)
+
     def test_external_folder_does_not_double_count_a_normal_upload(self):
         key = ("统计", "2026-09-25", "02", "短口播", "本人")
         local = {key: [{"drive_file_id": "video-id-1"}]}

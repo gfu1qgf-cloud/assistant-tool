@@ -2,7 +2,12 @@
 
 from qt_compat import QtCore, QtGui, QtWidgets
 
-from model.DailyQuantityStats import reconcile_daily_quantity, scan_external_video_folder
+from model.ClipboardHelper import set_internal_clipboard_text
+from model.DailyQuantityStats import (
+    reconcile_daily_quantity,
+    scan_daily_drive_date,
+    scan_external_video_folder,
+)
 from model.TaskResultOrganizer import get_upload_batch
 
 
@@ -43,9 +48,30 @@ class DailyQuantityFolderThread(QtCore.QThread):
             self.failed.emit(f"{type(exc).__name__}: {exc}")
 
 
+class DailyQuantityDateThread(QtCore.QThread):
+    completed = QtCore.pyqtSignal(object)
+    failed = QtCore.pyqtSignal(str)
+
+    def __init__(self, config, root, day, parent=None):
+        super().__init__(parent)
+        self.config = dict(config)
+        self.root = str(root)
+        self.day = day
+
+    def run(self):
+        try:
+            self.completed.emit(scan_daily_drive_date(
+                self.config, self.root, self.day
+            ))
+        except (Exception, SystemExit) as exc:
+            self.failed.emit(f"{type(exc).__name__}: {exc}")
+
+
 class DailyQuantityDialog(QtWidgets.QDialog):
     refresh_requested = QtCore.pyqtSignal()
     scan_requested = QtCore.pyqtSignal(str, str, str)
+    scan_date_requested = QtCore.pyqtSignal(str)
+    view_date_requested = QtCore.pyqtSignal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -67,15 +93,16 @@ class DailyQuantityDialog(QtWidgets.QDialog):
         self.refresh_button.clicked.connect(self.refresh_requested.emit)
         layout.addWidget(self.refresh_button)
 
-        source_box = QtWidgets.QGroupBox("流程外视频 · Google Drive 文件夹")
+        source_box = QtWidgets.QGroupBox("网盘视频清单")
         source_layout = QtWidgets.QVBoxLayout(source_box)
         source_note = QtWidgets.QLabel(
-            "只登记视频，不下载；首次扫描的交付日期会保留。再次扫描只补充新视频，"
-            "移出文件夹的历史视频不会自动扣除，可取消其“计数”勾选。"
+            "扫描所选日期会核对网盘实有视频；已保存的分类不变，未分类的可在下方填写。"
+            "审核暂存和疑似旧任务修订版默认不计数；重复内容会标出供你核对。"
+            "日期目录目前只按月日命名，跨年复用时请留意旧视频。只读取清单，不下载。"
         )
         source_note.setWordWrap(True)
         source_layout.addWidget(source_note)
-        source_row = QtWidgets.QHBoxLayout()
+        date_row = QtWidgets.QHBoxLayout()
         self.folder_link = QtWidgets.QComboBox()
         self.folder_link.setEditable(True)
         self.folder_link.setInsertPolicy(QtWidgets.QComboBox.InsertPolicy.NoInsert)
@@ -85,14 +112,28 @@ class DailyQuantityDialog(QtWidgets.QDialog):
         self.folder_day.setDisplayFormat("yyyy-MM-dd")
         self.folder_day.setCalendarPopup(True)
         self.folder_day.setDate(QtCore.QDate(batch_date.year, batch_date.month, batch_date.day))
+        self.scan_date_button = QtWidgets.QPushButton("扫描日期目录")
+        self.scan_date_button.clicked.connect(lambda: self.scan_date_requested.emit(
+            self.folder_day.date().toString("yyyy-MM-dd")
+        ))
+        self.view_date_button = QtWidgets.QPushButton("查看已存清单")
+        self.view_date_button.clicked.connect(lambda: self.view_date_requested.emit(
+            self.folder_day.date().toString("yyyy-MM-dd")
+        ))
+        date_row.addWidget(QtWidgets.QLabel("交付日期："))
+        date_row.addWidget(self.folder_day)
+        date_row.addWidget(self.scan_date_button)
+        date_row.addWidget(self.view_date_button)
+        date_row.addStretch(1)
+        source_layout.addLayout(date_row)
+        source_row = QtWidgets.QHBoxLayout()
         self.folder_slot = QtWidgets.QComboBox()
         for slot, label in (("01", "12点"), ("02", "18点"), ("03", "24点")):
             self.folder_slot.addItem(label, slot)
         self.folder_slot.setCurrentIndex(self.folder_slot.findData(batch_slot))
-        self.scan_button = QtWidgets.QPushButton("扫描文件夹")
+        self.scan_button = QtWidgets.QPushButton("导入指定文件夹")
         self.scan_button.clicked.connect(self._request_scan)
         source_row.addWidget(self.folder_link, 1)
-        source_row.addWidget(self.folder_day)
         source_row.addWidget(self.folder_slot)
         source_row.addWidget(self.scan_button)
         source_layout.addLayout(source_row)
@@ -115,10 +156,16 @@ class DailyQuantityDialog(QtWidgets.QDialog):
         self.external_table.cellDoubleClicked.connect(self._open_external_video)
         source_layout.addWidget(self.external_table, 1)
         bulk_row = QtWidgets.QHBoxLayout()
-        self.bulk_sheet = QtWidgets.QLineEdit()
-        self.bulk_sheet.setPlaceholderText("统计分页")
-        self.bulk_category = QtWidgets.QLineEdit()
-        self.bulk_category.setPlaceholderText("统计类别")
+        self._category_options = {}
+        self.bulk_sheet = QtWidgets.QComboBox()
+        self.bulk_sheet.setEditable(True)
+        self.bulk_sheet.setInsertPolicy(QtWidgets.QComboBox.InsertPolicy.NoInsert)
+        self.bulk_sheet.lineEdit().setPlaceholderText("统计分页")
+        self.bulk_category = QtWidgets.QComboBox()
+        self.bulk_category.setEditable(True)
+        self.bulk_category.setInsertPolicy(QtWidgets.QComboBox.InsertPolicy.NoInsert)
+        self.bulk_category.lineEdit().setPlaceholderText("统计类别")
+        self.bulk_sheet.currentTextChanged.connect(self._refresh_bulk_categories)
         self.apply_bulk_button = QtWidgets.QPushButton("应用到选中视频")
         self.apply_bulk_button.clicked.connect(self._apply_bulk_category)
         bulk_row.addWidget(QtWidgets.QLabel("批量分类："))
@@ -128,7 +175,12 @@ class DailyQuantityDialog(QtWidgets.QDialog):
         source_layout.addLayout(bulk_row)
         self.save_external_button = QtWidgets.QPushButton("保存分类并刷新数量")
         self.save_external_button.clicked.connect(self.refresh_requested.emit)
-        source_layout.addWidget(self.save_external_button)
+        self.copy_list_button = QtWidgets.QPushButton("复制当前清单")
+        self.copy_list_button.clicked.connect(self._copy_current_list)
+        action_row = QtWidgets.QHBoxLayout()
+        action_row.addWidget(self.copy_list_button)
+        action_row.addWidget(self.save_external_button, 1)
+        source_layout.addLayout(action_row)
         layout.addWidget(source_box, 2)
 
     def _request_scan(self):
@@ -158,8 +210,10 @@ class DailyQuantityDialog(QtWidgets.QDialog):
         elif self.folder_link.count():
             self.folder_link.setCurrentIndex(0)
 
-    def show_external_records(self, records):
+    def show_external_records(self, records, day=None):
         self.external_table.setRowCount(0)
+        if day:
+            records = [item for item in records if str(item.get("batch_date") or "") == day]
         for record in sorted(records, key=lambda item: (
             str(item.get("batch_date") or ""), str(item.get("file_name") or "")
         )):
@@ -178,6 +232,10 @@ class DailyQuantityDialog(QtWidgets.QDialog):
                 item = QtWidgets.QTableWidgetItem(str(display or record.get(key) or ""))
                 if col in (1, 2):
                     item.setFlags(item.flags() & ~QtCore.Qt.ItemIsEditable)
+                if record.get("daily_scan_date") and col in (3, 4) and (
+                    col == 3 or record.get("batch_slot") in {"01", "02", "03"}
+                ):
+                    item.setFlags(item.flags() & ~QtCore.Qt.ItemIsEditable)
                 if col == 2:
                     item.setToolTip(str(record.get("drive_link") or ""))
                     item.setData(QtCore.Qt.UserRole, str(record.get("drive_link") or ""))
@@ -185,6 +243,18 @@ class DailyQuantityDialog(QtWidgets.QDialog):
             state = "待分类" if not record.get("sheet") or not record.get("category") else "已分类"
             if record.get("missing_from_folder"):
                 state += " · 历史保留"
+            if record.get("missing_from_daily"):
+                state += " · 已移出日期目录，停计"
+            if record.get("outside_daily_scan"):
+                state += " · 不在日期目录，停计"
+            if record.get("review_path"):
+                state += " · 审核暂存"
+            if record.get("daily_scan_date") and not record.get("batch_slot"):
+                state += " · 时段待确认"
+            if record.get("possible_duplicate"):
+                state += " · 疑似重复"
+            if record.get("possible_revision"):
+                state += " · 疑似旧任务修订版"
             status_item = QtWidgets.QTableWidgetItem(state)
             status_item.setFlags(status_item.flags() & ~QtCore.Qt.ItemIsEditable)
             self.external_table.setItem(row, 7, status_item)
@@ -205,8 +275,8 @@ class DailyQuantityDialog(QtWidgets.QDialog):
         return result
 
     def _apply_bulk_category(self):
-        sheet = self.bulk_sheet.text().strip()
-        category = self.bulk_category.text().strip()
+        sheet = self.bulk_sheet.currentText().strip()
+        category = self.bulk_category.currentText().strip()
         rows = sorted({index.row() for index in self.external_table.selectedIndexes()})
         if not rows or not sheet and not category:
             QtWidgets.QMessageBox.information(
@@ -219,6 +289,28 @@ class DailyQuantityDialog(QtWidgets.QDialog):
             if category:
                 self.external_table.item(row, 6).setText(category)
 
+    def set_category_options(self, options):
+        self._category_options = dict(options or {})
+        current = self.bulk_sheet.currentText().strip()
+        self.bulk_sheet.blockSignals(True)
+        self.bulk_sheet.clear()
+        self.bulk_sheet.addItems(sorted(self._category_options))
+        if current:
+            self.bulk_sheet.setCurrentText(current)
+        self.bulk_sheet.blockSignals(False)
+        self._refresh_bulk_categories()
+
+    def _refresh_bulk_categories(self, _text=None):
+        current = self.bulk_category.currentText().strip()
+        self.bulk_category.clear()
+        self.bulk_category.addItems(
+            self._category_options.get(self.bulk_sheet.currentText().strip(), [])
+        )
+        if current and current in self._category_options.get(
+            self.bulk_sheet.currentText().strip(), []
+        ):
+            self.bulk_category.setCurrentText(current)
+
     def _open_external_video(self, row, column):
         if column != 2:
             return
@@ -227,8 +319,23 @@ class DailyQuantityDialog(QtWidgets.QDialog):
         if link:
             QtGui.QDesktopServices.openUrl(QtCore.QUrl(link))
 
+    def _copy_current_list(self):
+        if not self.external_table.rowCount():
+            QtWidgets.QMessageBox.information(self, "复制清单", "当前日期没有已列出的视频。")
+            return
+        lines = ["计数\t文件夹\t视频\t交付日期\t时段\t统计分页\t统计类别\t状态\t网盘链接"]
+        for row in range(self.external_table.rowCount()):
+            include = self.external_table.item(row, 0)
+            values = ["是" if include.checkState() == QtCore.Qt.Checked else "否"]
+            values.extend(self.external_table.item(row, col).text() for col in range(1, 8))
+            values.append(str(self.external_table.item(row, 2).data(QtCore.Qt.UserRole) or ""))
+            lines.append("\t".join(values))
+        set_internal_clipboard_text("\n".join(lines))
+
     def set_folder_busy(self, busy):
         self.scan_button.setEnabled(not busy)
+        self.scan_date_button.setEnabled(not busy)
+        self.view_date_button.setEnabled(not busy)
         self.save_external_button.setEnabled(not busy)
         self.apply_bulk_button.setEnabled(not busy)
         if busy:
@@ -241,6 +348,7 @@ class DailyQuantityDialog(QtWidgets.QDialog):
             self.status.setText("正在读取上传历史、本地任务表和 Google 表格…")
 
     def show_result(self, result):
+        self.set_category_options(result.get("category_options", {}))
         warnings = result.get("warnings", [])
         updated = result.get("updated", [])
         self.status.setText(
