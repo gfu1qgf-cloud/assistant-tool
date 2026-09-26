@@ -11,6 +11,13 @@ from model.DailyQuantityStats import (
 from model.TaskResultOrganizer import get_upload_batch
 
 
+class _NoWheelComboBox(QtWidgets.QComboBox):
+    """Scrolling the inventory must not silently change a classification."""
+
+    def wheelEvent(self, event):
+        event.ignore()
+
+
 class DailyQuantityThread(QtCore.QThread):
     completed = QtCore.pyqtSignal(object)
     failed = QtCore.pyqtSignal(str)
@@ -96,7 +103,7 @@ class DailyQuantityDialog(QtWidgets.QDialog):
         source_box = QtWidgets.QGroupBox("网盘视频清单")
         source_layout = QtWidgets.QVBoxLayout(source_box)
         source_note = QtWidgets.QLabel(
-            "扫描所选日期会核对网盘实有视频；已保存的分类不变，未分类的可在下方填写。"
+            "扫描所选日期会核对网盘实有视频；已保存的分类不变，未分类的可在清单中选择。"
             "审核暂存和疑似旧任务修订版默认不计数；重复内容会标出供你核对。"
             "日期目录目前只按月日命名，跨年复用时请留意旧视频。只读取清单，不下载。"
         )
@@ -157,15 +164,11 @@ class DailyQuantityDialog(QtWidgets.QDialog):
         source_layout.addWidget(self.external_table, 1)
         bulk_row = QtWidgets.QHBoxLayout()
         self._category_options = {}
-        self.bulk_sheet = QtWidgets.QComboBox()
-        self.bulk_sheet.setEditable(True)
-        self.bulk_sheet.setInsertPolicy(QtWidgets.QComboBox.InsertPolicy.NoInsert)
-        self.bulk_sheet.lineEdit().setPlaceholderText("统计分页")
-        self.bulk_category = QtWidgets.QComboBox()
-        self.bulk_category.setEditable(True)
-        self.bulk_category.setInsertPolicy(QtWidgets.QComboBox.InsertPolicy.NoInsert)
-        self.bulk_category.lineEdit().setPlaceholderText("统计类别")
-        self.bulk_sheet.currentTextChanged.connect(self._refresh_bulk_categories)
+        self.bulk_sheet = _NoWheelComboBox()
+        self.bulk_category = _NoWheelComboBox()
+        self.bulk_sheet.addItem("选择统计分页", "")
+        self.bulk_category.addItem("选择统计类别", "")
+        self.bulk_sheet.currentIndexChanged.connect(self._refresh_bulk_categories)
         self.apply_bulk_button = QtWidgets.QPushButton("应用到选中视频")
         self.apply_bulk_button.clicked.connect(self._apply_bulk_category)
         bulk_row.addWidget(QtWidgets.QLabel("批量分类："))
@@ -227,7 +230,7 @@ class DailyQuantityDialog(QtWidgets.QDialog):
             include.setData(QtCore.Qt.UserRole, str(record.get("id") or ""))
             self.external_table.setItem(row, 0, include)
             for col, key in ((1, "folder_name"), (2, "file_name"), (3, "batch_date"),
-                             (4, "batch_slot"), (5, "sheet"), (6, "category")):
+                             (4, "batch_slot")):
                 display = record.get("relative_path") if col == 2 else record.get(key)
                 item = QtWidgets.QTableWidgetItem(str(display or record.get(key) or ""))
                 if col in (1, 2):
@@ -240,6 +243,25 @@ class DailyQuantityDialog(QtWidgets.QDialog):
                     item.setToolTip(str(record.get("drive_link") or ""))
                     item.setData(QtCore.Qt.UserRole, str(record.get("drive_link") or ""))
                 self.external_table.setItem(row, col, item)
+            sheet_combo = _NoWheelComboBox(self.external_table)
+            category_combo = _NoWheelComboBox(self.external_table)
+            self.external_table.setCellWidget(row, 5, sheet_combo)
+            self.external_table.setCellWidget(row, 6, category_combo)
+            self._set_combo_choices(
+                sheet_combo, sorted(self._category_options),
+                str(record.get("sheet") or ""), "选择统计分页",
+            )
+            self._set_combo_choices(
+                category_combo,
+                self._category_options.get(str(record.get("sheet") or ""), []),
+                str(record.get("category") or ""), "选择统计类别",
+            )
+            sheet_combo.currentIndexChanged.connect(
+                lambda _index, selected_row=row: self._row_sheet_changed(selected_row)
+            )
+            category_combo.currentIndexChanged.connect(
+                lambda _index, selected_row=row: self._update_row_status(selected_row)
+            )
             state = "待分类" if not record.get("sheet") or not record.get("category") else "已分类"
             if record.get("missing_from_folder"):
                 state += " · 历史保留"
@@ -257,12 +279,56 @@ class DailyQuantityDialog(QtWidgets.QDialog):
                 state += " · 疑似旧任务修订版"
             status_item = QtWidgets.QTableWidgetItem(state)
             status_item.setFlags(status_item.flags() & ~QtCore.Qt.ItemIsEditable)
+            status_item.setData(QtCore.Qt.UserRole, state.partition(" · ")[2])
             self.external_table.setItem(row, 7, status_item)
+
+    @staticmethod
+    def _set_combo_choices(combo, choices, selected, placeholder):
+        selected = str(selected or "").strip()
+        combo.blockSignals(True)
+        combo.clear()
+        combo.addItem(placeholder, "")
+        for choice in choices:
+            choice = str(choice).strip()
+            if choice and combo.findData(choice) < 0:
+                combo.addItem(choice, choice)
+        index = combo.findData(selected)
+        if selected and index < 0:
+            combo.addItem(f"⚠ 未找到：{selected}", selected)
+            index = combo.count() - 1
+            combo.setItemData(index, "当前表格中未找到此项；选择有效分类后再保存。",
+                              QtCore.Qt.ItemDataRole.ToolTipRole)
+        combo.setCurrentIndex(max(index, 0))
+        combo.blockSignals(False)
+
+    def _combo_value(self, row, column):
+        combo = self.external_table.cellWidget(row, column)
+        return str(combo.currentData() or "").strip() if combo else ""
+
+    def _row_sheet_changed(self, row):
+        sheet = self._combo_value(row, 5)
+        category_combo = self.external_table.cellWidget(row, 6)
+        if category_combo is not None:
+            self._set_combo_choices(
+                category_combo, self._category_options.get(sheet, []),
+                "", "选择统计类别",
+            )
+        self._update_row_status(row)
+
+    def _update_row_status(self, row):
+        item = self.external_table.item(row, 7)
+        if item is None:
+            return
+        state = "已分类" if self._combo_value(row, 5) and self._combo_value(row, 6) else "待分类"
+        suffix = str(item.data(QtCore.Qt.UserRole) or "")
+        item.setText(state + (" · " + suffix if suffix else ""))
 
     def external_edits(self):
         result = []
         for row in range(self.external_table.rowCount()):
             def value(col):
+                if col in (5, 6):
+                    return self._combo_value(row, col)
                 item = self.external_table.item(row, col)
                 return item.text().strip() if item else ""
             include = self.external_table.item(row, 0)
@@ -275,41 +341,54 @@ class DailyQuantityDialog(QtWidgets.QDialog):
         return result
 
     def _apply_bulk_category(self):
-        sheet = self.bulk_sheet.currentText().strip()
-        category = self.bulk_category.currentText().strip()
+        sheet = str(self.bulk_sheet.currentData() or "").strip()
+        category = str(self.bulk_category.currentData() or "").strip()
         rows = sorted({index.row() for index in self.external_table.selectedIndexes()})
-        if not rows or not sheet and not category:
+        if not rows or not sheet or not category:
             QtWidgets.QMessageBox.information(
-                self, "批量分类", "请先选中视频，并填写统计分页或类别。"
+                self, "批量分类", "请先选中视频，并选择统计分页及类别。"
             )
             return
         for row in rows:
-            if sheet:
-                self.external_table.item(row, 5).setText(sheet)
-            if category:
-                self.external_table.item(row, 6).setText(category)
+            self._set_combo_choices(
+                self.external_table.cellWidget(row, 5), sorted(self._category_options),
+                sheet, "选择统计分页",
+            )
+            self._set_combo_choices(
+                self.external_table.cellWidget(row, 6),
+                self._category_options.get(sheet, []), category, "选择统计类别",
+            )
+            self._update_row_status(row)
 
     def set_category_options(self, options):
         self._category_options = dict(options or {})
-        current = self.bulk_sheet.currentText().strip()
-        self.bulk_sheet.blockSignals(True)
-        self.bulk_sheet.clear()
-        self.bulk_sheet.addItems(sorted(self._category_options))
-        if current:
-            self.bulk_sheet.setCurrentText(current)
-        self.bulk_sheet.blockSignals(False)
+        current = self.bulk_sheet.currentData()
+        self._set_combo_choices(
+            self.bulk_sheet, sorted(self._category_options), current, "选择统计分页"
+        )
         self._refresh_bulk_categories()
 
-    def _refresh_bulk_categories(self, _text=None):
-        current = self.bulk_category.currentText().strip()
-        self.bulk_category.clear()
-        self.bulk_category.addItems(
-            self._category_options.get(self.bulk_sheet.currentText().strip(), [])
+        for row in range(self.external_table.rowCount()):
+            sheet_combo = self.external_table.cellWidget(row, 5)
+            category_combo = self.external_table.cellWidget(row, 6)
+            sheet = self._combo_value(row, 5)
+            category = self._combo_value(row, 6)
+            self._set_combo_choices(
+                sheet_combo, sorted(self._category_options), sheet, "选择统计分页"
+            )
+            self._set_combo_choices(
+                category_combo, self._category_options.get(sheet, []),
+                category, "选择统计类别",
+            )
+
+    def _refresh_bulk_categories(self, _index=None):
+        sheet = str(self.bulk_sheet.currentData() or "").strip()
+        current = str(self.bulk_category.currentData() or "").strip()
+        choices = self._category_options.get(sheet, [])
+        self._set_combo_choices(
+            self.bulk_category, choices, current if current in choices else "",
+            "选择统计类别",
         )
-        if current and current in self._category_options.get(
-            self.bulk_sheet.currentText().strip(), []
-        ):
-            self.bulk_category.setCurrentText(current)
 
     def _open_external_video(self, row, column):
         if column != 2:
@@ -327,7 +406,11 @@ class DailyQuantityDialog(QtWidgets.QDialog):
         for row in range(self.external_table.rowCount()):
             include = self.external_table.item(row, 0)
             values = ["是" if include.checkState() == QtCore.Qt.Checked else "否"]
-            values.extend(self.external_table.item(row, col).text() for col in range(1, 8))
+            values.extend(
+                self._combo_value(row, col) if col in (5, 6)
+                else self.external_table.item(row, col).text()
+                for col in range(1, 8)
+            )
             values.append(str(self.external_table.item(row, 2).data(QtCore.Qt.UserRole) or ""))
             lines.append("\t".join(values))
         set_internal_clipboard_text("\n".join(lines))
