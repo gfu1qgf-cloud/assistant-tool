@@ -141,7 +141,7 @@ class PluginHostTests(unittest.TestCase):
         self.main.deleteLater()
 
     def test_main_card_colors_are_distinct_stable_and_readable(self):
-        ids = [f"plugin_{index}.quick_actions" for index in range(4)]
+        ids = [f"plugin_{index}.quick_actions" for index in range(20)]
         first = _card_color_indices(ids)
         self.assertEqual(first, _card_color_indices(reversed(ids)))
         self.assertEqual(len(set(first.values())), len(ids))

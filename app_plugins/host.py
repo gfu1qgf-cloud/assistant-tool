@@ -17,43 +17,31 @@ from app_plugins.api import (
 PLUGIN_MAIN_WIDGET_ORDER_CONFIG_KEY = "plugin_main_widget_order"
 PLUGIN_MAIN_WIDGET_MIME = "application/x-lzx-plugin-main-widget"
 
-# Muted, distinguishable card colors. Each pair is (background, outline).
-# Keep light and dark variants at the same index so a theme change preserves identity.
-_CARD_LIGHT_COLORS = (
-    ("#DFEDFA", "#6C9BC9"),  # blue
-    ("#EDE2F8", "#9B7CC6"),  # violet
-    ("#DEF0E5", "#6DA987"),  # green
-    ("#FBE7D9", "#CB936C"),  # peach
-    ("#F8E0EA", "#C67E9E"),  # rose
-    ("#F8EFCF", "#B5A05B"),  # gold
-    ("#DDEFF1", "#6E9FA9"),  # teal
-    ("#E6E9FA", "#7F90C5"),  # indigo
-)
-_CARD_DARK_COLORS = (
-    ("#293B4E", "#719FCB"),
-    ("#3B304D", "#A48ACA"),
-    ("#2B4237", "#77AF8D"),
-    ("#49372D", "#CE9A74"),
-    ("#49313D", "#CA89A5"),
-    ("#47412B", "#C2AD67"),
-    ("#2B4146", "#79A9B1"),
-    ("#30394E", "#8999C9"),
-)
-
-
 def _card_color_indices(full_ids):
-    """Stable varied colors, independent of user-chosen card order."""
+    """Generate separated hues for any registered cards, independent of drag order."""
     assigned = {}
-    used = set()
-    count = len(_CARD_LIGHT_COLORS)
-    for full_id in sorted(full_ids):
+    used = []
+    for full_id in sorted(set(full_ids)):
         seed = int.from_bytes(
             hashlib.blake2s(full_id.encode("utf-8"), digest_size=2).digest(), "big"
-        ) % count
-        index = next(((seed + offset) % count for offset in range(count)
-                      if (seed + offset) % count not in used), seed)
-        assigned[full_id] = index
-        used.add(index)
+        ) % 360
+        if not used:
+            hue = seed
+        else:
+            def distance(first, second):
+                gap = abs(first - second)
+                return min(gap, 360 - gap)
+
+            hue = max(
+                range(360),
+                key=lambda candidate: (
+                    min(distance(candidate, existing) for existing in used),
+                    -distance(candidate, seed),
+                    -candidate,
+                ),
+            )
+        assigned[full_id] = hue
+        used.append(hue)
     return assigned
 
 
@@ -116,7 +104,7 @@ class PluginMainWidgetFrame(QtWidgets.QFrame):
         super().__init__(parent)
         self.full_id = str(full_id)
         self.content = content
-        self.color_index = int(color_index) % len(_CARD_LIGHT_COLORS)
+        self.color_index = int(color_index) % 360
         self.setObjectName("plugin_card_" + self.full_id.replace(".", "_"))
         self.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
         self.setFrameShadow(QtWidgets.QFrame.Shadow.Plain)
@@ -139,8 +127,11 @@ class PluginMainWidgetFrame(QtWidgets.QFrame):
 
     def card_colors(self):
         window = QtWidgets.QApplication.palette().color(QtGui.QPalette.ColorRole.Window)
-        colors = _CARD_DARK_COLORS if window.lightness() < 128 else _CARD_LIGHT_COLORS
-        return tuple(QtGui.QColor(value) for value in colors[self.color_index])
+        if window.lightness() < 128:
+            return (QtGui.QColor.fromHsv(self.color_index, 65, 74),
+                    QtGui.QColor.fromHsv(self.color_index, 100, 185))
+        return (QtGui.QColor.fromHsv(self.color_index, 42, 246),
+                QtGui.QColor.fromHsv(self.color_index, 110, 170))
 
     def paintEvent(self, event):
         super().paintEvent(event)
