@@ -3,7 +3,7 @@ import unittest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from qt_compat import QtWidgets
+from qt_compat import QtCore, QtWidgets
 
 from app_plugins.builtin.task_delivery_daily_quantity import DailyQuantityDialog
 
@@ -12,6 +12,32 @@ class DailyQuantityDialogTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+
+    def test_summary_shows_selected_day_and_overall_total(self):
+        dialog = DailyQuantityDialog()
+        try:
+            dialog.folder_day.setDate(QtCore.QDate(2026, 9, 26))
+            dialog.show_result({
+                "counted": 7, "warnings": [], "category_options": {},
+                "updated": [{"range": "'口播视频组'!DL29", "count": 0}],
+                "daily_counts": [
+                    {"date": "2026-09-26", "sheet": "口播视频组",
+                     "category": "短口播", "01": 2, "02": 1, "03": 0, "total": 3},
+                    {"date": "2026-09-26", "sheet": "效果视频组",
+                     "category": "特效", "01": 0, "02": 0, "03": 1, "total": 1},
+                    {"date": "2026-09-25", "sheet": "口播视频组",
+                     "category": "短口播", "01": 0, "02": 0, "03": 3, "total": 3},
+                ],
+            })
+            self.assertIn("合计 4 个", dialog.summary_heading.text())
+            self.assertIn("全部日期总合计 7 个", dialog.summary_heading.text())
+            self.assertEqual(dialog.summary_table.item(2, 5).text(), "4")
+            self.assertIn("不是今日视频总数", dialog.details.toPlainText())
+            dialog.folder_day.setDate(QtCore.QDate(2026, 9, 25))
+            self.assertIn("合计 3 个", dialog.summary_heading.text())
+            self.assertEqual(dialog.summary_table.item(1, 5).text(), "3")
+        finally:
+            dialog.close()
 
     def test_row_dropdowns_follow_sheet_and_save_selected_values(self):
         dialog = DailyQuantityDialog()

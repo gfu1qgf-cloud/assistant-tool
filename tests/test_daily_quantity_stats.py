@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from model.DailyQuantityStats import (
+    _daily_count_rows,
     _find_cell,
     _external_assignments,
     _category_options,
@@ -19,6 +20,21 @@ from model.DailyQuantityStats import (
 
 
 class DailyQuantityTests(unittest.TestCase):
+    def test_daily_count_summary_groups_categories_slots_and_dates(self):
+        groups = {
+            ("口播视频组", "2026-09-26", "01", "短口播", "本人"): [1, 2],
+            ("口播视频组", "2026-09-26", "02", "短口播", "本人"): [3],
+            ("效果视频组", "2026-09-26", "03", "特效", "本人"): [4],
+            ("口播视频组", "2026-09-25", "03", "短口播", "本人"): [5],
+        }
+        rows = _daily_count_rows(groups)
+        today = [row for row in rows if row["date"] == "2026-09-26"]
+        self.assertEqual(sum(row["total"] for row in today), 4)
+        self.assertEqual(sum(row["total"] for row in rows), 5)
+        short = next(row for row in today if row["category"] == "短口播")
+        self.assertEqual((short["01"], short["02"], short["03"], short["total"]),
+                         (2, 1, 0, 3))
+
     def test_excluded_video_outside_period_can_be_classified_without_counting(self):
         config = {"daily_quantity_sheet_url": "fake-id"}
         with tempfile.TemporaryDirectory() as directory:
@@ -148,6 +164,7 @@ class DailyQuantityTests(unittest.TestCase):
             self.assertTrue(by_name["a.mp4"]["included"])
             self.assertFalse(by_name["b.mp4"]["included"])
             self.assertEqual(first["counted"], 1)
+            self.assertEqual(first["daily_counts"][0]["02"], 1)
             self.assertEqual(grid[4][6], 1)
             update_external_video_records(config, directory, [{
                 "id": by_name["a.mp4"]["id"], "batch_date": day,
@@ -290,6 +307,7 @@ class DailyQuantityTests(unittest.TestCase):
             self.assertEqual(first["counted"], 1)
             self.assertEqual(grid[4][6], 1)
             self.assertFalse(second["updated"])
+            self.assertEqual(second["daily_counts"][0]["total"], 1)
             self.assertEqual(external_video_records(config, directory, state_path)[0]["category"], "短口播")
             update_external_video_records(config, directory, [{
                 "id": entry["id"], "batch_date": day, "batch_slot": "02",

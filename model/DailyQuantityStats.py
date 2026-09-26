@@ -619,6 +619,20 @@ def _external_assignments(scope, creator, local_groups):
     return groups, warnings
 
 
+def _daily_count_rows(groups):
+    """Summarize classified videos independently of whether a cell needs rewriting."""
+    rows = {}
+    for (sheet, day, slot, category, _creator), videos in groups.items():
+        row = rows.setdefault((day, sheet, category), {
+            "date": day, "sheet": sheet, "category": category,
+            "01": 0, "02": 0, "03": 0, "total": 0,
+        })
+        count = len(videos)
+        row[slot] += count
+        row["total"] += count
+    return [rows[key] for key in sorted(rows)]
+
+
 def reconcile_daily_quantity(
     config, root, service=None, records=None, state_path=None, dry_run=False
 ):
@@ -688,13 +702,15 @@ def reconcile_daily_quantity(
         for key, videos in external_groups.items():
             groups.setdefault(key, []).extend(videos)
         warnings.extend(external_warnings)
+        daily_counts = _daily_count_rows(groups)
+        counted = sum(row["total"] for row in daily_counts)
         desired = {
             json.dumps(key, ensure_ascii=False): videos for key, videos in groups.items()
         }
         relevant = set(desired) | set(old_cells)
         if not relevant:
             return {"updated": [], "warnings": warnings, "counted": 0,
-                    "category_options": category_options}
+                    "category_options": category_options, "daily_counts": daily_counts}
 
         updates = []
         pending = []
@@ -754,5 +770,6 @@ def reconcile_daily_quantity(
         return {"updated": [{"range": a1, "count": number}
                             for _, _, a1, number in pending],
                 "warnings": warnings,
-                "counted": sum(len(v) for v in desired.values()),
+                "counted": counted,
+                "daily_counts": daily_counts,
                 "category_options": category_options}

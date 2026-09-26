@@ -93,8 +93,41 @@ class DailyQuantityDialog(QtWidgets.QDialog):
         layout.addWidget(note)
         self.status = QtWidgets.QLabel("尚未刷新")
         layout.addWidget(self.status)
+        self._daily_counts = []
+        self._overall_count = 0
+        self._has_summary = False
+        self.summary_heading = QtWidgets.QLabel("尚无统计结果；点击“刷新并自动修正”后显示所选日期的数量。")
+        heading_font = self.summary_heading.font()
+        heading_font.setBold(True)
+        self.summary_heading.setFont(heading_font)
+        layout.addWidget(self.summary_heading)
+        self.summary_table = QtWidgets.QTableWidget(0, 6)
+        self.summary_table.setHorizontalHeaderLabels([
+            "统计分页", "统计类别", "12点", "18点", "24点", "合计"
+        ])
+        self.summary_table.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.summary_table.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.NoSelection)
+        self.summary_table.setAlternatingRowColors(True)
+        self.summary_table.verticalHeader().setVisible(False)
+        self.summary_table.horizontalHeader().setStretchLastSection(True)
+        self.summary_table.setColumnWidth(0, 145)
+        self.summary_table.setColumnWidth(1, 170)
+        self.summary_table.setMaximumHeight(170)
+        layout.addWidget(self.summary_table)
+        self.summary_note = QtWidgets.QLabel(
+            "这里显示上次刷新时已归类、参与计数的视频；有待处理提示时，部分数字可能尚未写入表格。"
+        )
+        self.summary_note.setWordWrap(True)
+        layout.addWidget(self.summary_note)
+        self.details_toggle = QtWidgets.QToolButton()
+        self.details_toggle.setText("查看表格写入记录与待处理提示")
+        self.details_toggle.setCheckable(True)
+        layout.addWidget(self.details_toggle)
         self.details = QtWidgets.QPlainTextEdit()
         self.details.setReadOnly(True)
+        self.details.setMaximumHeight(140)
+        self.details.setVisible(False)
+        self.details_toggle.toggled.connect(self.details.setVisible)
         layout.addWidget(self.details)
         self.refresh_button = QtWidgets.QPushButton("刷新并自动修正")
         self.refresh_button.clicked.connect(self.refresh_requested.emit)
@@ -120,6 +153,7 @@ class DailyQuantityDialog(QtWidgets.QDialog):
         self.folder_day.setDisplayFormat("yyyy-MM-dd")
         self.folder_day.setCalendarPopup(True)
         self.folder_day.setDate(QtCore.QDate(batch_date.year, batch_date.month, batch_date.day))
+        self.folder_day.dateChanged.connect(self._show_daily_summary)
         self.scan_date_button = QtWidgets.QPushButton("扫描日期目录")
         self.scan_date_button.clicked.connect(lambda: self.scan_date_requested.emit(
             self.folder_day.date().toString("yyyy-MM-dd")
@@ -551,15 +585,59 @@ class DailyQuantityDialog(QtWidgets.QDialog):
         self.set_category_options(result.get("category_options", {}))
         warnings = result.get("warnings", [])
         updated = result.get("updated", [])
+        self._daily_counts = list(result.get("daily_counts", []))
+        self._overall_count = int(result.get("counted", 0))
+        self._has_summary = True
+        self._show_daily_summary()
         self.status.setText(
-            f"已归类视频 {result.get('counted', 0)} 个；更新数字格 {len(updated)} 个；"
+            f"全部日期已归类视频 {self._overall_count} 个；本次更新数字格 {len(updated)} 个；"
             f"待处理提示 {len(warnings)} 条"
         )
-        lines = [f"{item['range']} → {item['count']}" for item in updated]
+        lines = [
+            "以下是本次实际改写的谷歌表格单元格，不是今日视频总数。",
+            "写入 0 表示该格原有的程序计数需要清零；今日数量请看上方统计概览。",
+            "",
+            "表格写入记录：",
+        ]
+        lines.extend(f"{item['range']} → {item['count']}" for item in updated)
+        if not updated:
+            lines.append("本次无需改写数字格，现有表格已是最新。")
         if warnings:
             lines += ["", "待处理："] + [f"• {text}" for text in warnings]
-        self.details.setPlainText("\n".join(lines) or "数量已是最新，无需写入。")
+            self.details_toggle.setChecked(True)
+        self.details.setPlainText("\n".join(lines))
+
+    def _show_daily_summary(self, _date=None):
+        if not self._has_summary:
+            return
+        day = self.folder_day.date().toString("yyyy-MM-dd")
+        rows = [item for item in self._daily_counts if item.get("date") == day]
+        slots = {slot: sum(int(item.get(slot, 0)) for item in rows)
+                 for slot in ("01", "02", "03")}
+        daily_total = sum(slots.values())
+        self.summary_heading.setText(
+            f"{day}：合计 {daily_total} 个  ·  12点 {slots['01']} / "
+            f"18点 {slots['02']} / 24点 {slots['03']}"
+            f"  ｜  全部日期总合计 {self._overall_count} 个（上次刷新）"
+        )
+        self.summary_table.setRowCount(len(rows) + 1)
+        for row_number, item in enumerate(rows):
+            values = [item.get("sheet", ""), item.get("category", ""),
+                      item.get("01", 0), item.get("02", 0), item.get("03", 0),
+                      item.get("total", 0)]
+            for column, value in enumerate(values):
+                self.summary_table.setItem(
+                    row_number, column, QtWidgets.QTableWidgetItem(str(value))
+                )
+        total_values = ["合计", "", slots["01"], slots["02"], slots["03"], daily_total]
+        for column, value in enumerate(total_values):
+            cell = QtWidgets.QTableWidgetItem(str(value))
+            font = cell.font()
+            font.setBold(True)
+            cell.setFont(font)
+            self.summary_table.setItem(len(rows), column, cell)
 
     def show_error(self, error):
         self.status.setText("刷新失败，原统计数据未改动")
         self.details.setPlainText(error)
+        self.details_toggle.setChecked(True)
