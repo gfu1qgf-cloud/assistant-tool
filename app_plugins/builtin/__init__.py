@@ -2,6 +2,7 @@ from .audio_splitter import AudioSplitterPlugin
 from .chrome_launcher import ChromeLauncherPlugin
 from .codex_account_switcher import CodexAccountSwitcherPlugin
 from .daily_tasks import DailyTasksPlugin
+from .davinci_remote import DaVinciRemotePlugin
 from .inventory import InventoryPlugin
 from .image_classifier import ImageClassifierPlugin
 from .material_organizer import MaterialOrganizerPlugin
@@ -15,6 +16,7 @@ __all__ = [
     "ChromeLauncherPlugin",
     "CodexAccountSwitcherPlugin",
     "DailyTasksPlugin",
+    "DaVinciRemotePlugin",
     "InventoryPlugin",
     "ImageClassifierPlugin",
     "MaterialOrganizerPlugin",

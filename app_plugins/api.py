@@ -42,3 +42,13 @@ class PluginMainWidget:
     factory: Callable
     order: int = 100
     title: str = ""
+
+
+@dataclass(frozen=True)
+class PluginTabPage:
+    """A plugin page mounted into a main-window tab owned by the host."""
+
+    page_id: str
+    title: str
+    factory: Callable
+    order: int = 100

@@ -8,6 +8,7 @@
 - `tools_menu`：追加到主窗口现有的“工具”菜单中；
 - `task_context_menu`：显示在任务列表右键菜单中，回调会收到选中行；
 - `PluginSettingsPage`：显示在“程序设置”中，由页面控制器负责加载、校验和保存配置。
+- `PluginTabPage`：由主程序挂载到已有或新增的主界面标签页；插件只提供 QWidget，不直接修改主窗口布局。
 
 插件生命周期为 `register(context) -> start() -> apply_settings(config) -> can_close() -> stop()`。主程序通过 `PluginContext` 提供日志、桌面通知、配置读写、选中任务行和安全的任务目录解析，不要求插件直接依赖 `MainDialog` 的内部字段。
 
@@ -16,3 +17,5 @@
 当前内置插件包括库存与素材管理、图片智能分类、Chrome 启动器、切分音频和智能剪辑。图片智能分类插件通过后台懒加载 CLIP 模型先生成可人工修改的分类预览，再由用户确认复制或移动；设置保存在 `image_classifier_settings`，模型不得在程序启动阶段加载。切分音频插件在任务右键菜单中处理所选任务目录，并在“工具”菜单提供支持文件/文件夹拖拽的批量窗口；参数统一保存到 `audio_splitter` 配置节。Chrome 插件只接管窗口生命周期、菜单入口和全局快捷键；继续使用历史配置键 `chrome_preset_websites`、`chrome_profile_groups`、`chrome_profile_iterator` 和 `chrome_next_global_hotkey`，升级时不得清空或另建平行配置。
 
 智能剪辑插件拥有分析/导出线程、核对窗口、待处理记录和设置页。宿主只提供任务路径、字幕参数、共享 Whisper 模型与日志服务；历史配置键 `smart_video_editor`、`smart_video_pending_reviews` 以及旧的 `model.SmartVideoEditor`、`PYUI.smart_video_editor_pyui` 导入路径继续兼容。
+
+达芬奇遥控器通过 `PluginTabPage` 复用主界面的遥控器标签。三个旧脚本的处理函数保存在 `davinci_legacy/`，其 Fusion UI 入口不由软件调用；插件用 PyQt 显示参数、进度与字幕异常列表，并通过 `main.py --davinci-worker` 在独立进程连接当前 Resolve。达芬奇和当前项目/时间线必须处于可用状态。对轨道清空、添加水印、自动渲染等可能改变时间线或任务队列的操作，界面会先确认。

@@ -1,6 +1,13 @@
 import os
 import sys
 
+# The frozen executable doubles as the isolated Resolve worker. Dispatch
+# before importing Qt/ML modules so one worker never starts the GUI.
+if len(sys.argv) >= 3 and sys.argv[1] == "--davinci-worker":
+    from davinci_remote_worker import main as davinci_worker_main
+
+    sys.exit(davinci_worker_main(sys.argv[2:]))
+
 from app_paths import APP_ROOT
 
 # Keep legacy relative paths stable in source runs and PyInstaller builds.

@@ -16,6 +16,7 @@ from app_plugins.builtin import (
     ChromeLauncherPlugin,
     CodexAccountSwitcherPlugin,
     DailyTasksPlugin,
+    DaVinciRemotePlugin,
     ImageClassifierPlugin,
     InventoryPlugin,
     MaterialOrganizerPlugin,
@@ -821,6 +822,10 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
             SmartVideoEditorPlugin()
         )
         self.daily_tasks_plugin = self.plugin_host.install(DailyTasksPlugin())
+        self.davinci_remote_plugin = self.plugin_host.install(
+            DaVinciRemotePlugin()
+        )
+        self.plugin_host.attach_tab_area(self.tabWidget, self.tab_2)
         self.plugin_host.attach_main_menu(self.main_menu_bar)
         self.plugin_host.attach_tools_menu(self.tools_menu)
         self.setupUtilityManagerButtons()

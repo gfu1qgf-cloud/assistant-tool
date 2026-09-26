@@ -11,6 +11,7 @@ from app_plugins.api import (
     PluginCommand,
     PluginMainWidget,
     PluginSettingsPage,
+    PluginTabPage,
 )
 
 
@@ -213,6 +214,9 @@ class PluginContext:
     def register_main_widget(self, widget):
         self._host.register_main_widget(self.plugin_id, widget)
 
+    def register_tab_page(self, page):
+        self._host.register_tab_page(self.plugin_id, page)
+
     def load_config(self):
         return self._host.main_window.load_config()
 
@@ -323,6 +327,8 @@ class PluginHost:
         self._settings_pages = OrderedDict()
         self._settings_controllers = []
         self._main_widgets = OrderedDict()
+        self._tab_pages = OrderedDict()
+        self._tab_controllers = OrderedDict()
         self._main_widget_controllers = OrderedDict()
         self._main_widget_frames = OrderedDict()
         self._main_widget_order = []
@@ -349,6 +355,7 @@ class PluginHost:
         existing_commands = set(self._commands)
         existing_pages = set(self._settings_pages)
         existing_widgets = set(self._main_widgets)
+        existing_tabs = set(self._tab_pages)
         self._plugins[plugin_id] = plugin
         self._contexts[plugin_id] = context
         try:
@@ -362,6 +369,8 @@ class PluginHost:
                 self._settings_pages.pop(page_id, None)
             for widget_id in set(self._main_widgets) - existing_widgets:
                 self._main_widgets.pop(widget_id, None)
+            for page_id in set(self._tab_pages) - existing_tabs:
+                self._tab_pages.pop(page_id, None)
             raise
         if self.menu is not None:
             self._rebuild_main_menu()
@@ -411,6 +420,47 @@ class PluginHost:
         if full_id in self._main_widgets:
             raise ValueError(f"插件主界面控件 ID 重复：{full_id}")
         self._main_widgets[full_id] = (plugin_id, widget)
+
+    def register_tab_page(self, plugin_id, page):
+        if not isinstance(page, PluginTabPage):
+            raise TypeError("register_tab_page 只接受 PluginTabPage。")
+        page_id = str(page.page_id or "").strip()
+        if not page_id:
+            raise ValueError("插件分页缺少 page_id。")
+        full_id = f"{plugin_id}.{page_id}"
+        if full_id in self._tab_pages:
+            raise ValueError(f"插件分页 ID 重复：{full_id}")
+        self._tab_pages[full_id] = (plugin_id, page)
+
+    def attach_tab_area(self, tab_widget, placeholder=None):
+        """Mount plugin pages; the first can reuse an existing placeholder tab."""
+        pages = sorted(self._tab_pages.items(), key=lambda entry: (
+            entry[1][1].order, entry[0],
+        ))
+        for index, (full_id, (_plugin_id, page)) in enumerate(pages):
+            if full_id in self._tab_controllers:
+                continue
+            if index == 0 and placeholder is not None:
+                container = placeholder
+                layout = container.layout()
+                if layout is None:
+                    layout = QtWidgets.QVBoxLayout(container)
+                while layout.count():
+                    item = layout.takeAt(0)
+                    if item.widget() is not None:
+                        item.widget().hide()
+                        item.widget().deleteLater()
+                tab_widget.setTabText(tab_widget.indexOf(container), page.title)
+            else:
+                container = QtWidgets.QWidget(tab_widget)
+                layout = QtWidgets.QVBoxLayout(container)
+                tab_widget.addTab(container, page.title)
+            widget = page.factory(container)
+            if not isinstance(widget, QtWidgets.QWidget):
+                raise TypeError(f"插件分页 {full_id} 的 factory 未返回 QWidget。")
+            layout.addWidget(widget)
+            self._tab_controllers[full_id] = widget
+        return list(self._tab_controllers.items())
 
     def attach_main_menu(self, menu_bar):
         if self.menu is None:
