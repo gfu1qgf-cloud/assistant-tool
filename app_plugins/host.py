@@ -1,4 +1,5 @@
 import logging
+import hashlib
 from collections import OrderedDict
 
 from qt_compat import QtCore, QtGui, QtWidgets
@@ -15,6 +16,45 @@ from app_plugins.api import (
 
 PLUGIN_MAIN_WIDGET_ORDER_CONFIG_KEY = "plugin_main_widget_order"
 PLUGIN_MAIN_WIDGET_MIME = "application/x-lzx-plugin-main-widget"
+
+# Muted, distinguishable card colors. Each pair is (background, outline).
+# Keep light and dark variants at the same index so a theme change preserves identity.
+_CARD_LIGHT_COLORS = (
+    ("#DFEDFA", "#6C9BC9"),  # blue
+    ("#EDE2F8", "#9B7CC6"),  # violet
+    ("#DEF0E5", "#6DA987"),  # green
+    ("#FBE7D9", "#CB936C"),  # peach
+    ("#F8E0EA", "#C67E9E"),  # rose
+    ("#F8EFCF", "#B5A05B"),  # gold
+    ("#DDEFF1", "#6E9FA9"),  # teal
+    ("#E6E9FA", "#7F90C5"),  # indigo
+)
+_CARD_DARK_COLORS = (
+    ("#293B4E", "#719FCB"),
+    ("#3B304D", "#A48ACA"),
+    ("#2B4237", "#77AF8D"),
+    ("#49372D", "#CE9A74"),
+    ("#49313D", "#CA89A5"),
+    ("#47412B", "#C2AD67"),
+    ("#2B4146", "#79A9B1"),
+    ("#30394E", "#8999C9"),
+)
+
+
+def _card_color_indices(full_ids):
+    """Stable varied colors, independent of user-chosen card order."""
+    assigned = {}
+    used = set()
+    count = len(_CARD_LIGHT_COLORS)
+    for full_id in sorted(full_ids):
+        seed = int.from_bytes(
+            hashlib.blake2s(full_id.encode("utf-8"), digest_size=2).digest(), "big"
+        ) % count
+        index = next(((seed + offset) % count for offset in range(count)
+                      if (seed + offset) % count not in used), seed)
+        assigned[full_id] = index
+        used.add(index)
+    return assigned
 
 
 class _PluginWidgetDragHandle(QtWidgets.QToolButton):
@@ -72,12 +112,13 @@ class PluginMainWidgetFrame(QtWidgets.QFrame):
 
     reorderRequested = QtCore.pyqtSignal(str, str, bool)
 
-    def __init__(self, full_id, title, content, parent=None):
+    def __init__(self, full_id, title, content, parent=None, color_index=0):
         super().__init__(parent)
         self.full_id = str(full_id)
         self.content = content
+        self.color_index = int(color_index) % len(_CARD_LIGHT_COLORS)
         self.setObjectName("plugin_card_" + self.full_id.replace(".", "_"))
-        self.setFrameShape(QtWidgets.QFrame.Shape.StyledPanel)
+        self.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
         self.setFrameShadow(QtWidgets.QFrame.Shadow.Plain)
         self.setAcceptDrops(True)
         self.setLineWidth(1)
@@ -95,6 +136,27 @@ class PluginMainWidgetFrame(QtWidgets.QFrame):
         header.addStretch(1)
         layout.addLayout(header)
         layout.addWidget(content)
+
+    def card_colors(self):
+        window = QtWidgets.QApplication.palette().color(QtGui.QPalette.ColorRole.Window)
+        colors = _CARD_DARK_COLORS if window.lightness() < 128 else _CARD_LIGHT_COLORS
+        return tuple(QtGui.QColor(value) for value in colors[self.color_index])
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        background, outline = self.card_colors()
+        painter = QtGui.QPainter(self)
+        painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
+        painter.setPen(QtGui.QPen(outline, max(1, self.lineWidth())))
+        painter.setBrush(background)
+        painter.drawRoundedRect(
+            QtCore.QRectF(self.rect()).adjusted(1, 1, -1, -1), 7, 7
+        )
+
+    def changeEvent(self, event):
+        if event.type() == QtCore.QEvent.Type.PaletteChange:
+            self.update()
+        super().changeEvent(event)
 
     @staticmethod
     def _point(event):
@@ -399,6 +461,7 @@ class PluginHost:
         )
         entries_by_id = dict(default_entries)
         entries = [(full_id, entries_by_id[full_id]) for full_id in ordered_ids]
+        color_indices = _card_color_indices(ordered_ids)
         for full_id, (plugin_id, descriptor) in entries:
             if full_id in self._main_widget_controllers:
                 continue
@@ -415,7 +478,10 @@ class PluginHost:
                     or str(getattr(plugin, "display_name", "") or "").strip()
                     or plugin_id
                 )
-                frame = PluginMainWidgetFrame(full_id, title, widget, container)
+                frame = PluginMainWidgetFrame(
+                    full_id, title, widget, container,
+                    color_index=color_indices[full_id],
+                )
                 frame.reorderRequested.connect(self.move_main_widget)
                 target_layout.addWidget(frame)
                 self._main_widget_controllers[full_id] = controller

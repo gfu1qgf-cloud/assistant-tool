@@ -79,7 +79,7 @@ class MainPluginIntegrationTests(unittest.TestCase):
                 )
                 self.assertEqual(
                     [action.text() for action in delivery_action.menu().actions()],
-                    ["整理任务结果", "查看每日链接", "审核提醒", "交付待办…", "管理 AI 检测 Gemini Key…", "简易上传…"],
+                    ["整理任务结果", "查看每日链接", "审核提醒", "交付待办…", "管理 AI 检测 Gemini Key…", "简易上传…", "每日数量统计…"],
                 )
                 self.assertIsNotNone(window.task_delivery_plugin.quick_actions)
                 self.assertIsNotNone(window.task_audio_subtitle_plugin.quick_actions)
@@ -91,6 +91,11 @@ class MainPluginIntegrationTests(unittest.TestCase):
                     is not None
                     for full_id in window.plugin_host.main_widget_order()
                 ))
+                self.assertEqual(len({
+                    window.plugin_host.main_widget_frame(*full_id.split(".", 1))
+                    .card_colors()[0].name()
+                    for full_id in window.plugin_host.main_widget_order()
+                }), 4)
                 self.assertIs(
                     window.gen_audio_btn,
                     window.task_audio_subtitle_plugin.quick_actions.audio_button,

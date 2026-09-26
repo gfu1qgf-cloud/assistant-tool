@@ -3,7 +3,7 @@ import unittest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from qt_compat import QtWidgets
+from qt_compat import QtGui, QtWidgets
 
 from app_plugins.api import (
     MAIN_MENU,
@@ -37,7 +37,9 @@ from app_plugins.host import PluginHost
 from app_plugins.host import (
     PLUGIN_MAIN_WIDGET_ORDER_CONFIG_KEY,
     PluginMainWidgetFrame,
+    _card_color_indices,
 )
+from model.AppTheme import apply_ui_theme
 from model.GlobalHotkey import (
     CHROME_NEXT_HOTKEY_CONFIG_KEY,
     INVENTORY_MANAGER_HOTKEY_CONFIG_KEY,
@@ -137,6 +139,38 @@ class PluginHostTests(unittest.TestCase):
 
     def tearDown(self):
         self.main.deleteLater()
+
+    def test_main_card_colors_are_distinct_stable_and_readable(self):
+        ids = [f"plugin_{index}.quick_actions" for index in range(4)]
+        first = _card_color_indices(ids)
+        self.assertEqual(first, _card_color_indices(reversed(ids)))
+        self.assertEqual(len(set(first.values())), len(ids))
+
+        def luminance(color):
+            values = [value / 12.92 if value <= 0.04045
+                      else ((value + 0.055) / 1.055) ** 2.4
+                      for value in (color.redF(), color.greenF(), color.blueF())]
+            return sum(channel * weight for channel, weight in zip(
+                values, (0.2126, 0.7152, 0.0722)
+            ))
+
+        for theme in ("light", "dark"):
+            apply_ui_theme(self.app, theme)
+            text = self.app.palette().color(QtGui.QPalette.ColorRole.WindowText)
+            backgrounds = []
+            for full_id in ids:
+                card = PluginMainWidgetFrame(
+                    full_id, full_id, QtWidgets.QPushButton("测试"),
+                    color_index=first[full_id],
+                )
+                background, outline = card.card_colors()
+                backgrounds.append(background.name())
+                light, dark = sorted((luminance(text), luminance(background)), reverse=True)
+                self.assertGreaterEqual((light + 0.05) / (dark + 0.05), 7.0)
+                self.assertNotEqual(background, outline)
+                card.deleteLater()
+            self.assertEqual(len(set(backgrounds)), len(ids))
+        apply_ui_theme(self.app, "light")
 
     def test_commands_register_in_main_and_task_menus(self):
         plugin = self.host.install(DemoPlugin())
