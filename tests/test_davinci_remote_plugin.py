@@ -75,14 +75,16 @@ class DaVinciRemoteTests(unittest.TestCase):
         self.assertEqual(run.call_args.args[1]["settings"]["correct_text"], "one two three")
         self.assertNotIn("correct_text", self.plugin.settings["subtitle"])
 
-    def test_track_uses_confirmation_before_destructive_change(self):
+    def test_track_and_watermark_run_without_extra_confirmation(self):
         dialog = DaVinciRemoteDialog(self.plugin, self.window)
         self.plugin.dialog = dialog
-        with patch.object(QtWidgets.QMessageBox, "question", return_value=(
-            QtWidgets.QMessageBox.StandardButton.No
-        )), patch.object(dialog, "_start") as run:
+        with patch.object(QtWidgets.QMessageBox, "question") as question, patch.object(dialog, "_start") as run:
             dialog._run_track_fill()
-        run.assert_not_called()
+            dialog._run_watermark()
+        question.assert_not_called()
+        self.assertEqual(run.call_count, 2)
+        self.assertEqual(run.call_args_list[0].args[1]["settings"]["operation"], "track_fill")
+        self.assertEqual(run.call_args_list[1].args[1]["settings"]["operation"], "watermark_batch")
 
     def test_subtitle_worker_returns_review_data_without_fusion_dialog(self):
         class Resolve:

@@ -243,10 +243,6 @@ class DaVinciRemoteDialog(QtWidgets.QDialog):
         if not settings["output_root"] or not settings["render_preset"]:
             QtWidgets.QMessageBox.warning(self, "参数不完整", "请填写输出目录和渲染预设。")
             return
-        if settings["auto_start_render"] and QtWidgets.QMessageBox.question(
-            self, "确认开始渲染", "将创建任务并立即启动达芬奇渲染，继续吗？"
-        ) != QtWidgets.QMessageBox.StandardButton.Yes:
-            return
         self.plugin.save_settings("export", settings)
         self._start("export", {"settings": settings})
 
@@ -417,13 +413,6 @@ class DaVinciRemoteDialog(QtWidgets.QDialog):
         if settings["media_file_path"] and not Path(settings["media_file_path"]).is_file():
             QtWidgets.QMessageBox.warning(self, "素材不存在", settings["media_file_path"])
             return
-        warning = "将按参照轨道铺设目标轨道"
-        if settings["clear_target_track"]:
-            warning += "，并先清空目标轨道现有片段"
-        if QtWidgets.QMessageBox.question(self, "确认修改时间线", warning + "。继续吗？") != (
-            QtWidgets.QMessageBox.StandardButton.Yes
-        ):
-            return
         self.plugin.save_settings("track", settings)
         self._start("track", {"settings": settings})
 
@@ -446,13 +435,6 @@ class DaVinciRemoteDialog(QtWidgets.QDialog):
             settings["custom_names"] or settings["template_tracks"]
         ):
             QtWidgets.QMessageBox.warning(self, "未选择水印", "请至少选择一项水印或模板轨道。")
-            return
-        warning = "将按参照视频轨批量添加水印"
-        if settings["clear_tracks"]:
-            warning += "，并清空目标水印轨道"
-        if QtWidgets.QMessageBox.question(self, "确认修改时间线", warning + "。继续吗？") != (
-            QtWidgets.QMessageBox.StandardButton.Yes
-        ):
             return
         self.plugin.save_settings("watermark", settings)
         self._start("track", {"settings": settings})
@@ -580,5 +562,5 @@ class DaVinciRemoteDialog(QtWidgets.QDialog):
             )
             self._review_dialog.show()
             self._review_dialog.raise_()
-        elif action != "jump":
+        elif action not in {"jump", "track"}:
             QtWidgets.QMessageBox.information(self, "达芬奇操作完成", message)

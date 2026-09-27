@@ -3675,11 +3675,77 @@ def smart_video_missing_findings(bundle):
     return findings
 
 
+def smart_video_extra_clip_findings(bundle):
+    """Surface included takes which cannot safely be assigned unique script space."""
+    findings = []
+    for task_index, task in enumerate(bundle.get("tasks", [])):
+        clips = task.get("clips", []) or []
+        included = [
+            (index, clip) for index, clip in enumerate(clips)
+            if clip.get("included", True)
+        ]
+        suspicious = {}
+        for index, clip in included:
+            start = int(clip.get("script_word_start", -1))
+            end = int(clip.get("script_word_end", -1))
+            if (start < 0 or end < start) and (
+                len(text_units(clip.get("recognized_text", ""))) >= 3
+                or float(clip.get("original_duration") or 0) >= 2.0
+            ):
+                suspicious[index] = "未能定位到任务原文，可能是多余片段"
+        for left_position, (left_index, left) in enumerate(included):
+            left_words = text_units(left.get("recognized_text", ""))
+            for right_index, right in included[left_position + 1:]:
+                right_words = text_units(right.get("recognized_text", ""))
+                if min(len(left_words), len(right_words)) < 5:
+                    continue
+                if _range_overlap_ratio(
+                    {
+                        "start": left.get("content_order_start", -1),
+                        "end": left.get("content_order_end", -1),
+                        "reliable": left.get("content_order_reliable", False),
+                    },
+                    {
+                        "start": right.get("content_order_start", -1),
+                        "end": right.get("content_order_end", -1),
+                        "reliable": right.get("content_order_reliable", False),
+                    },
+                ) < 0.80 or _sequence_score(left_words, right_words) < 0.70:
+                    continue
+                loser_index, _loser = min(
+                    ((left_index, left), (right_index, right)),
+                    key=lambda pair: (
+                        float(pair[1].get("similarity") or 0),
+                        len(text_units(pair[1].get("recognized_text", ""))),
+                        -int(pair[1].get("source_index", pair[0])),
+                    ),
+                )
+                suspicious[loser_index] = "与另一片段覆盖同一段原文，疑似重复或多余"
+        for clip_index, reason in sorted(suspicious.items()):
+            clip = clips[clip_index]
+            name = str(clip.get("file_name") or Path(str(clip.get("source") or "")).name)
+            findings.append({
+                "kind": "extra_clip",
+                "task_index": task_index,
+                "task_id": str(task.get("task_id") or ""),
+                "task_label": str(task.get("label") or task.get("task_id") or "任务"),
+                "clip_index": clip_index,
+                "file_name": name,
+                "text": name,
+                "issue_reason": reason + "；请在时间线右键排除，或试听后人工确认保留。",
+                "review_decision": "approved" if clip.get("extra_clip_approved") else "",
+            })
+    return findings
+
+
 def smart_video_export_blockers(bundle):
-    """Return only hard gaps which still lack a valid human decision."""
+    """Return unresolved missing-script and suspicious-extra-clip findings."""
     return [
         block for block in smart_video_missing_findings(bundle)
         if block.get("review_decision") not in {"approved", "skipped"}
+    ] + [
+        block for block in smart_video_extra_clip_findings(bundle)
+        if block.get("review_decision") != "approved"
     ]
 
 
@@ -3769,6 +3835,12 @@ def format_smart_video_export_blockers(blockers, limit=12):
     blockers = list(blockers or [])
     lines = []
     for block in blockers[:max(1, int(limit or 1))]:
+        if block.get("kind") == "extra_clip":
+            lines.append(
+                f"• {block.get('task_label', '任务')}｜疑似多余片段："
+                f"{block.get('file_name', '')}\n  {block.get('issue_reason', '')}"
+            )
+            continue
         start_line = int(block.get("script_start_line", 0)) + 1
         end_line = int(block.get("script_end_line", 0)) + 1
         line_text = (
@@ -3798,7 +3870,7 @@ def validate_smart_video_bundle_for_export(bundle):
     if not blockers:
         return []
     raise ValueError(
-        "检测到任务视频缺段，已禁止生成。请补齐视频后重新分析：\n"
+        "检测到缺段或疑似多余片段，已禁止生成。请先人工处理：\n"
         + format_smart_video_export_blockers(blockers)
     )
 

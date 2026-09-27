@@ -24,6 +24,7 @@ from app_plugins.builtin.smart_video_editor.engine import (
     _compact_record_similarity,
     _mark_duplicate_clips,
     _protect_edges_adjacent_to_missing_script,
+    smart_video_extra_clip_findings,
     _token_equivalent,
 )
 from app_plugins.builtin.smart_video_editor.timeline_review import (
@@ -1394,6 +1395,63 @@ class SmartVideoEditorTests(unittest.TestCase):
             self.assertEqual(
                 _mark_duplicate_clips(fresh, transcriptions, separate), 0
             )
+
+    def test_unresolved_extra_take_blocks_export_until_manually_handled(self):
+        transcript = "alpha bravo charlie delta echo foxtrot golf hotel"
+        clips = [
+            {
+                "file_name": name, "source": name, "included": True,
+                "script_word_start": 0, "script_word_end": 7,
+                "recognized_text": transcript, "content_order_start": 0,
+                "content_order_end": 7, "content_order_reliable": True,
+                "similarity": similarity, "source_index": index,
+            }
+            for index, (name, similarity) in enumerate((
+                ("good.mp4", 1.0), ("extra.mp4", 0.8)
+            ))
+        ]
+        bundle = {"tasks": [{"task_id": "extra", "label": "extra", "clips": clips}]}
+        findings = smart_video_extra_clip_findings(bundle)
+        self.assertEqual([item["file_name"] for item in findings], ["extra.mp4"])
+        self.assertEqual(len(smart_video_export_blockers(bundle)), 1)
+        clips[1]["extra_clip_approved"] = True
+        self.assertFalse(smart_video_export_blockers(bundle))
+        clips[1]["extra_clip_approved"] = False
+        clips[1]["included"] = False
+        self.assertFalse(smart_video_export_blockers(bundle))
+
+    def test_review_dialog_requires_decision_for_suspected_extra_take(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            sources = [root / "first.mp4", root / "second.mp4"]
+            for source in sources:
+                source.write_bytes(b"video")
+            first_text = "alpha bravo charlie delta echo foxtrot golf hotel"
+            second_text = "india juliet kilo lima mike november oscar papa"
+            bundle = analyze_smart_video_jobs([{
+                "task_id": "T-extra-review", "label": "T-extra-review",
+                "task_dir": str(root), "script": first_text + "\n" + second_text,
+                "language": "en", "sources": [str(source) for source in sources],
+            }], _DictionaryWhisperModel({
+                sources[0].name: first_text,
+                sources[1].name: second_text,
+            }), {"silence_detection_enabled": False})
+            clips = bundle["tasks"][0]["clips"]
+            clips[1]["recognized_text"] = clips[0]["recognized_text"]
+            clips[1]["content_order_start"] = clips[0]["content_order_start"]
+            clips[1]["content_order_end"] = clips[0]["content_order_end"]
+            clips[1]["content_order_reliable"] = True
+            clips[1]["similarity"] = 0.8
+            dialog = SmartVideoReviewDialog(bundle)
+            try:
+                self.assertFalse(dialog.export_button.isEnabled())
+                self.assertIn("多余 1", dialog.detail_tabs.tabText(dialog.coverage_tab_index))
+                dialog.table.setCurrentCell(1, dialog.COL_FILE)
+                self.assertTrue(dialog.acknowledge_clip_button.isEnabled())
+                dialog._set_clip_acknowledged(True)
+                self.assertTrue(dialog.export_button.isEnabled())
+            finally:
+                dialog.close()
 
     def test_reordered_title_take_is_grouped_and_can_replace_kept_version(self):
         with tempfile.TemporaryDirectory() as temporary:

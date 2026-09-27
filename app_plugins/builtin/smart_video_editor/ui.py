@@ -16,6 +16,7 @@ from .engine import (
     select_duplicate_group_clip,
     set_smart_video_missing_review,
     smart_video_export_blockers,
+    smart_video_extra_clip_findings,
     smart_video_missing_findings,
 )
 from .timeline_review import SmartVideoTimelineReview
@@ -758,6 +759,7 @@ class SmartVideoReviewDialog(QtWidgets.QDialog):
         self.missing_tree.currentItemChanged.connect(
             lambda _current, _previous: self._update_missing_preview_buttons()
         )
+        self.missing_tree.itemDoubleClicked.connect(self._open_extra_clip_from_findings)
         self._next_problem_shortcut = QtWidgets.QShortcut(QtGui.QKeySequence("F8"), self)
         self._previous_problem_shortcut = QtWidgets.QShortcut(
             QtGui.QKeySequence("Shift+F8"), self
@@ -889,6 +891,8 @@ class SmartVideoReviewDialog(QtWidgets.QDialog):
 
     @staticmethod
     def _coverage_position(block):
+        if block.get("kind") == "extra_clip":
+            return "疑似多余片段"
         start_line = int(block.get("script_start_line", 0)) + 1
         end_line = int(block.get("script_end_line", 0)) + 1
         line_text = (
@@ -919,6 +923,11 @@ class SmartVideoReviewDialog(QtWidgets.QDialog):
         return "；".join(part for part in parts if part)
 
     def _collect_problem_rows(self):
+        extra_clips = {
+            (int(item["task_index"]), int(item["clip_index"]))
+            for item in smart_video_extra_clip_findings(self.bundle)
+            if item.get("review_decision") != "approved"
+        }
         affected_tasks = {
             int(item.get("task_index", -1))
             for item in smart_video_missing_findings(self.bundle)
@@ -932,14 +941,20 @@ class SmartVideoReviewDialog(QtWidgets.QDialog):
             data = include_item.data(QtCore.Qt.UserRole) if include_item else None
             clip = self._clip_for_row(row)
             task_index = int(data[0]) if data else -1
+            clip_index = int(data[1]) if data else -1
             has_issue = bool(
                 clip
-                and not clip.get("review_acknowledged")
                 and (
-                    str(clip.get("status") or "green") in {"orange", "pink"}
-                    or any(
-                        str(issue.get("severity") or "info") in {"orange", "pink"}
-                        for issue in clip.get("issues", [])
+                    (task_index, clip_index) in extra_clips
+                    or (
+                        not clip.get("review_acknowledged")
+                        and (
+                            str(clip.get("status") or "green") in {"orange", "pink"}
+                            or any(
+                                str(issue.get("severity") or "info") in {"orange", "pink"}
+                                for issue in clip.get("issues", [])
+                            )
+                        )
                     )
                 )
             )
@@ -1025,6 +1040,12 @@ class SmartVideoReviewDialog(QtWidgets.QDialog):
             clip["review_acknowledged"] = True
         else:
             clip.pop("review_acknowledged", None)
+        row_data = self.table.item(row, self.COL_INCLUDE).data(QtCore.Qt.UserRole)
+        if row_data and any(
+            (item["task_index"], item["clip_index"]) == tuple(row_data)
+            for item in smart_video_extra_clip_findings(self.bundle)
+        ):
+            clip["extra_clip_approved"] = bool(acknowledged)
         status = str(clip.get("status") or "green")
         status_item = self.table.item(row, self.COL_STATUS)
         if status_item is not None:
@@ -1041,7 +1062,7 @@ class SmartVideoReviewDialog(QtWidgets.QDialog):
         except OSError as error:
             QtWidgets.QMessageBox.warning(self, "保存核对标记", str(error))
             return
-        self._refresh_problem_rows()
+        self._refresh_export_blockers()
         self._update_clip_review_buttons(clip)
         if acknowledged:
             self.jump_problem(1)
@@ -1050,8 +1071,18 @@ class SmartVideoReviewDialog(QtWidgets.QDialog):
         clip = clip if clip is not None else self._clip_for_row(self.table.currentRow())
         has_clip = clip is not None
         reviewed = bool(clip and clip.get("review_acknowledged"))
+        selected = self.table.item(self.table.currentRow(), self.COL_INCLUDE)
+        selected_data = selected.data(QtCore.Qt.UserRole) if selected else None
+        extra_clips = {
+            (item["task_index"], item["clip_index"])
+            for item in smart_video_extra_clip_findings(self.bundle)
+            if item.get("review_decision") != "approved"
+        }
         needs_review = bool(
-            clip and str(clip.get("status") or "green") != "green"
+            clip and (
+                str(clip.get("status") or "green") != "green"
+                or (tuple(selected_data) in extra_clips if selected_data else False)
+            )
         )
         self.acknowledge_clip_button.setEnabled(
             has_clip and needs_review and not reviewed
@@ -1064,6 +1095,15 @@ class SmartVideoReviewDialog(QtWidgets.QDialog):
             return None
         block = item.data(0, QtCore.Qt.UserRole + 1)
         return block if isinstance(block, dict) else None
+
+    def _open_extra_clip_from_findings(self, item, _column):
+        block = item.data(0, QtCore.Qt.UserRole + 1)
+        if not isinstance(block, dict) or block.get("kind") != "extra_clip":
+            return
+        task_index = int(block["task_index"])
+        clip_index = int(block["clip_index"])
+        self.timeline_review.select_clip(task_index, clip_index)
+        self.review_mode_tabs.setCurrentIndex(self.timeline_tab_index)
 
     def _missing_neighbor_clip(self, block, side):
         if not isinstance(block, dict):
@@ -1086,6 +1126,13 @@ class SmartVideoReviewDialog(QtWidgets.QDialog):
 
     def _update_missing_preview_buttons(self):
         block = self._selected_missing_block()
+        is_missing = bool(block and block.get("kind") != "extra_clip")
+        for button in (
+            self.approve_missing_button,
+            self.skip_missing_button,
+            self.clear_missing_decision_button,
+        ):
+            button.setEnabled(is_missing)
         self.preview_missing_before_button.setEnabled(
             self._missing_neighbor_clip(block, "previous") is not None
         )
@@ -1134,7 +1181,9 @@ class SmartVideoReviewDialog(QtWidgets.QDialog):
 
     def _refresh_export_blockers(self, select_tab=False):
         self._apply_current_include_states()
-        findings = smart_video_missing_findings(self.bundle)
+        missing_findings = smart_video_missing_findings(self.bundle)
+        extra_findings = smart_video_extra_clip_findings(self.bundle)
+        findings = missing_findings + extra_findings
         blockers = smart_video_export_blockers(self.bundle)
         blocker_keys = {
             (
@@ -1197,7 +1246,8 @@ class SmartVideoReviewDialog(QtWidgets.QDialog):
             self.missing_tree.addTopLevelItem(row)
         self.detail_tabs.setTabText(
             self.coverage_tab_index,
-            f"缺段 {len(findings)}（未处理 {len(blockers)}） / "
+            f"缺段 {len(missing_findings)} / 多余 {len(extra_findings)}"
+            f"（未处理 {len(blockers)}） / "
             f"边界待核对 {len(unverified)}",
         )
         if self.missing_tree.topLevelItemCount() and self.missing_tree.currentItem() is None:
@@ -1207,7 +1257,7 @@ class SmartVideoReviewDialog(QtWidgets.QDialog):
         blocked = bool(blockers)
         self.export_button.setEnabled(not blocked)
         self.export_button.setToolTip(
-            "请补齐缺失视频并重新分析后再生成。" if blocked else ""
+            "请先处理缺段和疑似多余片段。" if blocked else ""
         )
         self.blocker_banner.setVisible(bool(findings))
         if blocked:
@@ -1217,8 +1267,8 @@ class SmartVideoReviewDialog(QtWidgets.QDialog):
                 "padding:10px; font-weight:600; }"
             )
             self.blocker_banner.setText(
-                f"⛔ 还有 {len(blockers)} 个缺段没有处理，当前不能导出。\n"
-                "请选择对应任务：试听后人工确认没问题，或暂缓该任务并先导出其余任务。"
+                f"⛔ 还有 {len(blockers)} 个缺段或疑似多余片段没有处理，当前不能导出。\n"
+                "多余片段请在时间线右键排除，或试听后标记本片段已核对。"
             )
             if select_tab:
                 self.detail_tabs.setCurrentIndex(self.coverage_tab_index)
@@ -1236,9 +1286,9 @@ class SmartVideoReviewDialog(QtWidgets.QDialog):
                 "padding:10px; font-weight:600; }"
             )
             self.blocker_banner.setText(
-                f"缺段决定已处理：人工通过 {len(approved_tasks)} 个任务，"
-                f"本次暂缓 {len(skipped_tasks)} 个任务。"
-                "人工通过项将使用完整任务原文生成 SRT。"
+                f"人工核对已完成：缺段通过 {len(approved_tasks)} 个任务，"
+                f"本次暂缓 {len(skipped_tasks)} 个任务，"
+                f"确认保留疑似多余片段 {sum(item.get('review_decision') == 'approved' for item in extra_findings)} 个。"
             )
             self.export_button.setText(
                 "导出其余任务" if skipped_tasks else "确认并生成视频与 SRT"
@@ -1250,6 +1300,12 @@ class SmartVideoReviewDialog(QtWidgets.QDialog):
 
     def _set_missing_decision(self, decision):
         item = self.missing_tree.currentItem()
+        block = self._selected_missing_block()
+        if block and block.get("kind") == "extra_clip":
+            QtWidgets.QMessageBox.information(
+                self, "处理多余片段", "请到时间线右键排除该片段，或试听后在片段详情中标记已核对。"
+            )
+            return
         task_index = item.data(0, QtCore.Qt.UserRole) if item is not None else -1
         try:
             task_index = int(task_index)
@@ -1342,7 +1398,7 @@ class SmartVideoReviewDialog(QtWidgets.QDialog):
             return
         if (
             clip is not None
-            and clip.get("review_acknowledged")
+            and (clip.get("review_acknowledged") or clip.get("extra_clip_approved"))
             and item.column() in {
                 self.COL_INCLUDE,
                 self.COL_ORDER,
@@ -1352,6 +1408,7 @@ class SmartVideoReviewDialog(QtWidgets.QDialog):
             }
         ):
             clip.pop("review_acknowledged", None)
+            clip.pop("extra_clip_approved", None)
             status = str(clip.get("status") or "green")
             status_item = self.table.item(row, self.COL_STATUS)
             if status_item is not None:
@@ -1691,9 +1748,8 @@ class SmartVideoReviewDialog(QtWidgets.QDialog):
                 self._refresh_export_blockers(select_tab=True)
                 QtWidgets.QMessageBox.critical(
                     self,
-                    "还有缺段未处理",
-                    "以下任务原文没有对应的视频片段。当前核对结果已经保存，"
-                    "请先人工确认没问题，或把对应任务设为本次暂缓：\n\n"
+                    "还有片段问题未处理",
+                    "当前核对结果已经保存。请先处理下列缺段或疑似多余片段：\n\n"
                     + format_smart_video_export_blockers(blockers),
                 )
                 return
