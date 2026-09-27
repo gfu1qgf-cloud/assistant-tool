@@ -5,6 +5,7 @@ from qt_compat import QtCore, QtGui, QtWidgets
 from model.ClipboardHelper import set_internal_clipboard_text
 from model.DailyQuantityStats import (
     preview_external_day,
+    read_daily_quantity_categories,
     reconcile_daily_quantity,
     scan_daily_drive_date,
     scan_external_video_folder,
@@ -31,6 +32,22 @@ class DailyQuantityThread(QtCore.QThread):
     def run(self):
         try:
             self.completed.emit(reconcile_daily_quantity(self.config, self.root))
+        except Exception as exc:
+            self.failed.emit(f"{type(exc).__name__}: {exc}")
+
+
+class DailyQuantityCategoriesThread(QtCore.QThread):
+    completed = QtCore.pyqtSignal(object)
+    failed = QtCore.pyqtSignal(str)
+
+    def __init__(self, config, parent=None):
+        super().__init__(parent)
+        self.config = dict(config)
+        self.sheet_url = str(config.get("daily_quantity_sheet_url") or "").strip()
+
+    def run(self):
+        try:
+            self.completed.emit(read_daily_quantity_categories(self.config))
         except Exception as exc:
             self.failed.emit(f"{type(exc).__name__}: {exc}")
 
@@ -104,6 +121,8 @@ class DailyQuantityDialog(QtWidgets.QDialog):
         self.edit_sheet_button.clicked.connect(self.edit_sheet_requested.emit)
         sheet_row.addWidget(self.edit_sheet_button)
         layout.addLayout(sheet_row)
+        self.category_status = QtWidgets.QLabel("分类尚未读取（只读加载，不会修改表格）")
+        layout.addWidget(self.category_status)
         self.status = QtWidgets.QLabel("尚未刷新")
         layout.addWidget(self.status)
         self._daily_counts = []
@@ -244,7 +263,25 @@ class DailyQuantityDialog(QtWidgets.QDialog):
         layout.addWidget(source_box, 2)
 
     def set_sheet_url(self, url):
-        self.sheet_url.setText(str(url or "").strip())
+        url = str(url or "").strip()
+        if url != self.sheet_url.text():
+            self.set_category_options({})
+            self.category_status.setText("表格链接已更改，正在等待读取分类…")
+        self.sheet_url.setText(url)
+
+    def set_category_loading(self):
+        self.category_status.setText("正在只读加载统计分页和类别，不会修改表格…")
+
+    def show_category_options(self, options):
+        self.set_category_options(options)
+        count = sum(len(values) for values in options.values())
+        self.category_status.setText(
+            f"已读取 {len(options)} 个统计分页、{count} 个类别（只读）"
+            if count else "未找到当前制作人对应的分类；请核对制作人名称和表格结构。"
+        )
+
+    def show_category_error(self, error):
+        self.category_status.setText("分类读取失败：" + str(error))
 
     def _request_scan(self):
         link = self.folder_link.currentText().strip()
@@ -674,7 +711,7 @@ class DailyQuantityDialog(QtWidgets.QDialog):
             self.status.setText("正在读取上传历史、本地任务表和 Google 表格…")
 
     def show_result(self, result):
-        self.set_category_options(result.get("category_options", {}))
+        self.show_category_options(result.get("category_options", {}))
         warnings = result.get("warnings", [])
         updated = result.get("updated", [])
         self._daily_counts = list(result.get("daily_counts", []))

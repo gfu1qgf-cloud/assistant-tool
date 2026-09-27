@@ -11,6 +11,7 @@ from app_plugins.builtin.task_delivery_quick_upload import (
     QuickUploadThread,
 )
 from app_plugins.builtin.task_delivery_daily_quantity import (
+    DailyQuantityCategoriesThread,
     DailyQuantityDateThread,
     DailyQuantityDialog,
     DailyQuantityFolderThread,
@@ -75,6 +76,7 @@ class TaskDeliveryPlugin:
         self.quick_upload_thread = None
         self.daily_quantity_dialog = None
         self.daily_quantity_thread = None
+        self.daily_quantity_categories_thread = None
         self.daily_quantity_folder_thread = None
         self.daily_quantity_date_thread = None
 
@@ -223,6 +225,7 @@ class TaskDeliveryPlugin:
         self.daily_quantity_dialog.show()
         self.daily_quantity_dialog.raise_()
         self.daily_quantity_dialog.activateWindow()
+        self.load_daily_quantity_categories()
         return self.daily_quantity_dialog
 
     def edit_daily_quantity_sheet(self):
@@ -231,6 +234,48 @@ class TaskDeliveryPlugin:
             self.daily_quantity_dialog.set_sheet_url(
                 self.context.load_config().get("daily_quantity_sheet_url")
             )
+        self.load_daily_quantity_categories()
+
+    def load_daily_quantity_categories(self):
+        dialog = self.daily_quantity_dialog
+        if dialog is None:
+            return False
+        config = self.context.load_config()
+        url = str(config.get("daily_quantity_sheet_url") or "").strip()
+        if not url:
+            dialog.show_category_error("请先设置每日数量表格链接")
+            return False
+        thread = self.daily_quantity_categories_thread
+        if thread is not None and thread.isRunning():
+            return False
+        thread = DailyQuantityCategoriesThread(config, self.context.parent_widget)
+        self.daily_quantity_categories_thread = thread
+        thread.completed.connect(lambda options: self._daily_quantity_categories_completed(thread, options))
+        thread.failed.connect(lambda error: self._daily_quantity_categories_failed(thread, error))
+        thread.finished.connect(lambda: self._daily_quantity_categories_finished(thread))
+        dialog.set_category_loading()
+        thread.start()
+        return True
+
+    def _daily_quantity_categories_completed(self, thread, options):
+        if (self.daily_quantity_dialog is not None
+                and thread.sheet_url == self.daily_quantity_dialog.sheet_url.text()):
+            self.daily_quantity_dialog.show_category_options(options)
+
+    def _daily_quantity_categories_failed(self, thread, error):
+        if (self.daily_quantity_dialog is not None
+                and thread.sheet_url == self.daily_quantity_dialog.sheet_url.text()):
+            self.daily_quantity_dialog.show_category_error(error)
+        self.context.log("每日数量分类读取失败：" + error)
+
+    def _daily_quantity_categories_finished(self, thread):
+        if self.daily_quantity_categories_thread is thread:
+            self.daily_quantity_categories_thread = None
+        thread.deleteLater()
+        if (self.daily_quantity_dialog is not None
+                and self.daily_quantity_dialog.sheet_url.text()
+                != thread.sheet_url):
+            self.load_daily_quantity_categories()
 
     def refresh_daily_quantity(self):
         if self.daily_quantity_thread is not None and self.daily_quantity_thread.isRunning():
@@ -518,6 +563,8 @@ class TaskDeliveryPlugin:
         return self.controller.update_config(config)
 
     def can_close(self):
+        if self.daily_quantity_categories_thread is not None and self.daily_quantity_categories_thread.isRunning():
+            return False, "每日数量分类正在读取，请稍等。"
         if self.daily_quantity_date_thread is not None and self.daily_quantity_date_thread.isRunning():
             return False, "每日数量日期目录正在扫描，请稍等。"
         if self.daily_quantity_folder_thread is not None and self.daily_quantity_folder_thread.isRunning():

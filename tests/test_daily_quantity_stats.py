@@ -13,6 +13,7 @@ from model.DailyQuantityStats import (
     external_video_records,
     external_video_sources,
     preview_external_day,
+    read_daily_quantity_categories,
     reconcile_daily_quantity,
     scan_daily_drive_date,
     scan_external_video_folder,
@@ -21,6 +22,27 @@ from model.DailyQuantityStats import (
 
 
 class DailyQuantityTests(unittest.TestCase):
+    def test_category_loading_reads_sheet_without_writing_counts(self):
+        config = {
+            "daily_quantity_sheet_url": "https://docs.google.com/spreadsheets/d/fake-id/edit",
+            "task_submission_creator": "本人",
+        }
+        grid = [[], [], ["组别", "名字"], ["AI组", "本人"],
+                ["", "", "短口播"], ["", "", "长口播"]]
+        service = MagicMock()
+        service.spreadsheets.return_value.get.return_value.execute.return_value = {
+            "sheets": [{"properties": {"title": "口播视频组",
+                         "gridProperties": {"rowCount": 6, "columnCount": 8}}}]
+        }
+        service.spreadsheets.return_value.values.return_value.batchGet.return_value.execute.return_value = {
+            "valueRanges": [{"values": grid}]
+        }
+        self.assertEqual(
+            read_daily_quantity_categories(config, service=service),
+            {"口播视频组": ["短口播", "长口播"]},
+        )
+        service.spreadsheets.return_value.values.return_value.batchUpdate.assert_not_called()
+
     def test_saved_day_preview_counts_included_videos_without_sheet_refresh(self):
         records = [
             {"id": str(index), "drive_file_id": str(index),

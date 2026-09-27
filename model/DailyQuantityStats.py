@@ -222,6 +222,46 @@ def _category_options(snapshots, creator):
     return result
 
 
+def read_daily_quantity_categories(config, service=None):
+    """Read dropdown choices from the target sheet without reconciling counts."""
+    url = str(config.get("daily_quantity_sheet_url") or "").strip()
+    creator = str(config.get("task_submission_creator") or "").strip()
+    if not url:
+        raise ValueError("请先设置每日数量表格链接")
+    if not creator:
+        raise ValueError("请先在程序设置中填写任务制作人")
+    service = service or load_sheets_service(config, "task_submission_sheet")
+    spreadsheet_id = extract_spreadsheet_id(url)
+    metadata = service.spreadsheets().get(
+        spreadsheetId=spreadsheet_id,
+        fields="sheets(properties(title,gridProperties(rowCount,columnCount)))",
+    ).execute()
+    sheets = [item.get("properties", {}) for item in metadata.get("sheets", [])]
+    ranges = [
+        sheet_range(
+            item["title"],
+            "A1:{}{}".format(
+                column_to_letter(min(3, max(1, int(item.get("gridProperties", {}).get("columnCount") or 1)))),
+                max(1, int(item.get("gridProperties", {}).get("rowCount") or 1)),
+            ),
+        )
+        for item in sheets if item.get("title")
+    ]
+    response = service.spreadsheets().values().batchGet(
+        spreadsheetId=spreadsheet_id,
+        ranges=ranges,
+        valueRenderOption="FORMATTED_VALUE",
+    ).execute() if ranges else {"valueRanges": []}
+    snapshots = {
+        item["title"]: values.get("values", [])
+        for item, values in zip(
+            (item for item in sheets if item.get("title")),
+            response.get("valueRanges", []),
+        )
+    }
+    return _category_options(snapshots, creator)
+
+
 def _load_state(path):
     try:
         data = json.loads(Path(path).read_text(encoding="utf-8"))

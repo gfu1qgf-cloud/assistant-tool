@@ -26,6 +26,11 @@ class DailyQuantityDialogTests(unittest.TestCase):
             self.assertTrue(dialog.sheet_url.isReadOnly())
             dialog.edit_sheet_button.click()
             self.assertEqual(requests, [True])
+            dialog.show_category_options({"旧分页": ["旧类别"]})
+            dialog.set_sheet_url("https://docs.google.com/spreadsheets/d/another/edit")
+            self.assertEqual(dialog._category_options, {})
+            dialog.show_category_options({"口播": ["短口播"]})
+            self.assertEqual(dialog.bulk_sheet.findData("口播"), 1)
         finally:
             dialog.close()
 
