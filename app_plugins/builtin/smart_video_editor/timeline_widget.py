@@ -24,6 +24,7 @@ class SmartTimelineWidget(QtWidgets.QWidget):
     seekRequested = QtCore.pyqtSignal(float)
     clipActivated = QtCore.pyqtSignal(int)
     clipReorderRequested = QtCore.pyqtSignal(int, int)
+    clipInclusionRequested = QtCore.pyqtSignal(int, bool)
     removedSegmentRestoreRequested = QtCore.pyqtSignal(object)
     markerActivated = QtCore.pyqtSignal(object)
     subtitleActivated = QtCore.pyqtSignal(object)
@@ -397,6 +398,12 @@ class SmartTimelineWidget(QtWidgets.QWidget):
 
     def mousePressEvent(self, event):
         point = event.position()
+        if event.button() == QtCore.Qt.RightButton:
+            for rect, segment in self._segment_rects:
+                if rect.contains(point):
+                    self.clipActivated.emit(int(segment["clip_index"]))
+                    event.accept()
+                    return
         marker = self._nearest_marker(point)
         if marker is not None:
             self.seekRequested.emit(float(marker["time"]))
@@ -484,6 +491,7 @@ class SmartTimelineWidget(QtWidgets.QWidget):
                     f"{format_time(segment['timeline_end'])}\n"
                     f"原片 {format_time(segment['source_start'])} → "
                     f"{format_time(segment['source_end'])}"
+                    + "\n右键可排除或恢复整个片段（不会删除源文件）"
                     + (
                         "\n点击后可在右侧重复片段列表切换保留版本"
                         if segment.get("duplicate_group_id")
@@ -505,6 +513,27 @@ class SmartTimelineWidget(QtWidgets.QWidget):
                     event.accept()
                     return
         super().mouseDoubleClickEvent(event)
+
+    def contextMenuEvent(self, event):
+        point = QtCore.QPointF(event.pos())
+        segment = next(
+            (item for rect, item in self._segment_rects if rect.contains(point)),
+            None,
+        )
+        if segment is None:
+            return super().contextMenuEvent(event)
+        clip_index = int(segment["clip_index"])
+        included = bool(segment.get("included", True))
+        menu = QtWidgets.QMenu(self)
+        action = menu.addAction(
+            "从成片中删除此片段（保留原文件）"
+            if included else "恢复此片段到成片"
+        )
+        action.setToolTip("只改变智能剪辑导出，不会删除硬盘上的源视频。")
+        selected = menu.exec(event.globalPos())
+        if selected is action:
+            self.clipInclusionRequested.emit(clip_index, not included)
+        event.accept()
 
     def mouseReleaseEvent(self, event):
         source = self._drag_clip_index

@@ -6,6 +6,7 @@ from .engine import (
     _combined_detection_error,
     _issue_summary,
     _media_shape,
+    _task_missing_findings,
     _protect_edges_adjacent_to_missing_script,
     apply_manual_breath_overrides,
     breath_cut_plan,
@@ -441,6 +442,7 @@ class SmartVideoTimelineReview(QtWidgets.QWidget):
         self.timeline.seekRequested.connect(self._timeline_seek)
         self.timeline.clipActivated.connect(self._timeline_clip_activated)
         self.timeline.clipReorderRequested.connect(self._move_clip_to)
+        self.timeline.clipInclusionRequested.connect(self._set_clip_included)
         self.timeline.removedSegmentRestoreRequested.connect(
             self._restore_removed_segment
         )
@@ -1983,6 +1985,36 @@ class SmartVideoTimelineReview(QtWidgets.QWidget):
             return
         self.orderChanged.emit(self.task_index)
         self.refresh(preserve_time=False)
+        self.select_clip(self.task_index, clip_index)
+
+    def _set_clip_included(self, clip_index, included):
+        """Exclude/restore one whole clip without touching its source file."""
+        task = self.bundle.get("tasks", [])[self.task_index]
+        clips = task.get("clips", []) or []
+        if clip_index < 0 or clip_index >= len(clips):
+            return
+        clip = clips[clip_index]
+        if bool(clip.get("included", True)) == bool(included):
+            return
+        if not included and sum(bool(item.get("included", True)) for item in clips) <= 1:
+            QtWidgets.QMessageBox.warning(
+                self, "无法删除片段", "当前任务至少要保留一个片段；若整项有问题，请跳过该任务。"
+            )
+            return
+        if included and clip.get("auto_excluded_duplicate"):
+            try:
+                select_duplicate_group_clip(
+                    task, clip_index, self.bundle.get("settings", {})
+                )
+            except (IndexError, TypeError, ValueError) as error:
+                QtWidgets.QMessageBox.warning(self, "恢复片段失败", str(error))
+                return
+        else:
+            clip["included"] = bool(included)
+            clip["manual_excluded"] = not bool(included)
+        task["missing_blocks"] = _task_missing_findings(task)
+        self.orderChanged.emit(self.task_index)
+        self.refresh(preserve_time=True)
         self.select_clip(self.task_index, clip_index)
 
     def _player_position_changed(self, local_position):

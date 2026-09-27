@@ -32,7 +32,7 @@ SMART_VIDEO_PENDING_CONFIG_KEY = "smart_video_pending_reviews"
 SMART_VIDEO_EDITOR_REPORT_NAME = "智能剪辑审核.json"
 SMART_VIDEO_EDITOR_TEXT_REPORT_NAME = "智能剪辑问题报告.txt"
 BREATH_CUT_OUTPUT_FOLDER_NAME = "气口剪辑结果"
-SMART_VIDEO_ANALYSIS_CACHE_VERSION = 9
+SMART_VIDEO_ANALYSIS_CACHE_VERSION = 10
 VOICE_ACTIVITY_CACHE_VERSION = 1
 VIDEO_SUFFIXES = {".mp4", ".mov", ".m4v", ".avi", ".mkv", ".webm", ".mts"}
 BREATH_DETECTION_MODES = (
@@ -1205,8 +1205,9 @@ def _mark_duplicate_clips(clips, transcriptions, order_evidence):
         for right in range(left + 1, count):
             same_path = normalized_paths[left] == normalized_paths[right]
             right_units = text_units(transcriptions[right].get("text", ""))
+            sequence_similarity = _sequence_score(left_units, right_units)
             transcript_similarity = max(
-                _sequence_score(left_units, right_units),
+                sequence_similarity,
                 _token_multiset_similarity(left_units, right_units),
             )
             right_duration = max(
@@ -1230,12 +1231,22 @@ def _mark_duplicate_clips(clips, transcriptions, order_evidence):
                 and duration_ratio >= 0.72
                 and same_script_location
             )
+            # A replacement take may omit a short phrase yet still cover the
+            # exact same script window.  A short missing phrase can lower the
+            # score just below the strict cutoff even for equal-length takes.
+            # Require stronger duration/order evidence for this relaxed case.
+            near_duplicate_take = (
+                min(len(left_units), len(right_units)) >= 8
+                and sequence_similarity >= 0.90
+                and duration_ratio >= 0.90
+                and same_script_location
+            )
             copied_file = (
                 same_sample
                 and transcript_similarity >= 0.90
                 and duration_ratio >= 0.90
             )
-            if same_path or copied_file or spoken_duplicate:
+            if same_path or copied_file or spoken_duplicate or near_duplicate_take:
                 union(left, right)
 
     groups = {}

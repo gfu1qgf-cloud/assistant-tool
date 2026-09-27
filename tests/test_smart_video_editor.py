@@ -10,7 +10,7 @@ from unittest import mock
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from globalValue import GlobalValue, WhisperModelRestartRequired
-from qt_compat import QtCore, QtWidgets
+from qt_compat import QtCore, QtGui, QtWidgets
 
 from app_plugins.builtin.smart_video_editor.settings import (
     SmartVideoEditorSettingsPage,
@@ -22,6 +22,7 @@ from app_plugins.builtin.smart_video_editor.breath_editor import (
 )
 from app_plugins.builtin.smart_video_editor.engine import (
     _compact_record_similarity,
+    _mark_duplicate_clips,
     _protect_edges_adjacent_to_missing_script,
     _token_equivalent,
 )
@@ -150,6 +151,35 @@ class SmartTimelineQt6EventTests(unittest.TestCase):
         self.assertLess(rect.height(), widget.SUBTITLE_HEIGHT)
         widget.mouseMoveEvent(_MouseMoveEvent(rect.center().x(), rect.center().y()))
         self.assertIn(missing_text, widget.toolTip())
+        widget.close()
+
+    def test_context_menu_excludes_clip_without_deleting_source(self):
+        widget = SmartTimelineWidget()
+        widget.resize(720, 260)
+        segment = {
+            "clip_index": 2, "timeline_start": 0.0, "timeline_end": 5.0,
+            "source_start": 0.0, "source_end": 5.0,
+            "file_name": "take.mp4", "included": True,
+        }
+        widget.set_data([segment], [], 5.0)
+        widget.show()
+        self.app.processEvents()
+        widget.grab()
+        rect, _ = widget._segment_rects[0]
+        point = rect.center().toPoint()
+        event = QtGui.QContextMenuEvent(
+            QtGui.QContextMenuEvent.Reason.Mouse, point,
+            widget.mapToGlobal(point),
+        )
+        requested = []
+        widget.clipInclusionRequested.connect(
+            lambda index, included: requested.append((index, included))
+        )
+        with mock.patch.object(
+            QtWidgets.QMenu, "exec", lambda menu, *_args: menu.actions()[0]
+        ):
+            widget.contextMenuEvent(event)
+        self.assertEqual(requested, [(2, False)])
         widget.close()
 
 
@@ -1320,6 +1350,51 @@ class SmartVideoEditorTests(unittest.TestCase):
             self.assertFalse(duplicates[0]["included"])
             self.assertIn("重复", duplicates[0]["issue_reason"])
 
+    def test_near_duplicate_with_short_omission_and_same_script_slot(self):
+        complete = (
+            "alpha bravo charlie delta echo foxtrot golf hotel india juliet "
+            "kilo lima mike november oscar papa quebec romeo sierra tango "
+            "uniform victor whiskey"
+        )
+        omitted = complete.replace("uniform victor whiskey", "")
+        clips = [
+            {"source": "take_complete.mp4", "file_name": "take_complete.mp4",
+             "script_word_start": 0, "similarity": 1.0, "included": True},
+            {"source": "take_omitted.mp4", "file_name": "take_omitted.mp4",
+             "script_word_start": -1, "similarity": 0.0, "included": True},
+        ]
+        transcriptions = [
+            {"text": complete, "duration": 10.0},
+            {"text": omitted, "duration": 10.0},
+        ]
+        same_slot = [
+            {"reliable": True, "start": 30, "end": 52},
+            {"reliable": True, "start": 30, "end": 52},
+        ]
+        with mock.patch(
+            "app_plugins.builtin.smart_video_editor.engine._stable_fingerprint",
+            side_effect=[{"id": 1}, {"id": 2}],
+        ):
+            self.assertEqual(
+                _mark_duplicate_clips(clips, transcriptions, same_slot), 1
+            )
+        self.assertEqual(sum(bool(clip["included"]) for clip in clips), 1)
+        self.assertEqual(clips[0]["duplicate_group_id"], clips[1]["duplicate_group_id"])
+        self.assertTrue(clips[1]["auto_excluded_duplicate"])
+
+        # Similar speech at separate script positions must remain two clips.
+        separate = [same_slot[0], {"reliable": True, "start": 60, "end": 82}]
+        fresh = [dict(clip, included=True) for clip in clips]
+        for clip in fresh:
+            clip.pop("duplicate_group_id", None)
+        with mock.patch(
+            "app_plugins.builtin.smart_video_editor.engine._stable_fingerprint",
+            side_effect=[{"id": 1}, {"id": 2}],
+        ):
+            self.assertEqual(
+                _mark_duplicate_clips(fresh, transcriptions, separate), 0
+            )
+
     def test_reordered_title_take_is_grouped_and_can_replace_kept_version(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -1447,6 +1522,36 @@ class SmartVideoEditorTests(unittest.TestCase):
                 clip.get("included", True)
                 for clip in result["tasks"][0]["clips"]
             ))
+
+    def test_timeline_can_exclude_and_restore_whole_clip(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            sources = [root / "first.mp4", root / "second.mp4"]
+            for source in sources:
+                source.write_bytes(b"video")
+            result = analyze_smart_video_jobs([{
+                "task_id": "T-manual-exclude",
+                "label": "T-manual-exclude",
+                "task_dir": str(root),
+                "script": "alpha beta gamma\ndelta epsilon zeta",
+                "language": "en",
+                "sources": [str(path) for path in sources],
+            }], _DictionaryWhisperModel({
+                "first.mp4": "alpha beta gamma",
+                "second.mp4": "delta epsilon zeta",
+            }), {"silence_detection_enabled": False})
+            review = SmartVideoTimelineReview(result)
+            try:
+                review._set_clip_included(1, False)
+                self.assertFalse(result["tasks"][0]["clips"][1]["included"])
+                self.assertTrue(sources[1].is_file())
+                self.assertTrue(result["tasks"][0]["missing_blocks"])
+                review._set_clip_included(1, True)
+                self.assertTrue(result["tasks"][0]["clips"][1]["included"])
+                self.assertFalse(result["tasks"][0]["missing_blocks"])
+            finally:
+                review.close_player()
+                review.close()
 
     def test_cjk_phrase_token_maps_to_individual_script_character_times(self):
         with tempfile.TemporaryDirectory() as temporary:
