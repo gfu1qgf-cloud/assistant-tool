@@ -76,6 +76,7 @@ class DailyQuantityDateThread(QtCore.QThread):
 
 
 class DailyQuantityDialog(QtWidgets.QDialog):
+    edit_sheet_requested = QtCore.pyqtSignal()
     refresh_requested = QtCore.pyqtSignal()
     scan_requested = QtCore.pyqtSignal(str, str, str)
     scan_date_requested = QtCore.pyqtSignal(str)
@@ -92,6 +93,17 @@ class DailyQuantityDialog(QtWidgets.QDialog):
         )
         note.setWordWrap(True)
         layout.addWidget(note)
+        sheet_row = QtWidgets.QHBoxLayout()
+        sheet_row.addWidget(QtWidgets.QLabel("统计表链接："))
+        self.sheet_url = QtWidgets.QLineEdit()
+        self.sheet_url.setReadOnly(True)
+        self.sheet_url.setPlaceholderText("尚未设置每日数量表格")
+        self.sheet_url.setToolTip("当前每日数量统计的 Google 表格；模板链接可在右侧更改。")
+        sheet_row.addWidget(self.sheet_url, 1)
+        self.edit_sheet_button = QtWidgets.QPushButton("更改…")
+        self.edit_sheet_button.clicked.connect(self.edit_sheet_requested.emit)
+        sheet_row.addWidget(self.edit_sheet_button)
+        layout.addLayout(sheet_row)
         self.status = QtWidgets.QLabel("尚未刷新")
         layout.addWidget(self.status)
         self._daily_counts = []
@@ -230,6 +242,9 @@ class DailyQuantityDialog(QtWidgets.QDialog):
         action_row.addWidget(self.save_external_button, 1)
         source_layout.addLayout(action_row)
         layout.addWidget(source_box, 2)
+
+    def set_sheet_url(self, url):
+        self.sheet_url.setText(str(url or "").strip())
 
     def _request_scan(self):
         link = self.folder_link.currentText().strip()

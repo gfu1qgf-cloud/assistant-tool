@@ -2150,10 +2150,13 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
             show_error=show_error,
         )
 
-    def openSettings(self):
+    def openSettings(self, focus_daily_quantity=False):
         """打开设置对话框"""
         loaded_whisper_model = globalValue.loaded_whisper_model_name()
-        settings = MainSettingDialog.get_settings(self, plugin_host=self.plugin_host)
+        settings = MainSettingDialog.get_settings(
+            self, plugin_host=self.plugin_host,
+            focus_daily_quantity=focus_daily_quantity,
+        )
         if settings:
             apply_ui_theme(
                 QtWidgets.QApplication.instance(),

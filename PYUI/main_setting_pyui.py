@@ -753,6 +753,7 @@ class MainSettingDialog(QtWidgets.QDialog, Ui_MainSettingDialog):
         tab_layout = QtWidgets.QVBoxLayout(self.task_result_tab)
 
         scroll = QtWidgets.QScrollArea(self.task_result_tab)
+        self.task_result_scroll = scroll
         scroll.setWidgetResizable(True)
         scroll_content = QtWidgets.QWidget()
         form = QtWidgets.QFormLayout(scroll_content)
@@ -1484,9 +1485,18 @@ class MainSettingDialog(QtWidgets.QDialog, Ui_MainSettingDialog):
             super().accept()
     
     @staticmethod
-    def get_settings(parent=None, plugin_host=None):
+    def get_settings(parent=None, plugin_host=None, focus_daily_quantity=False):
         """静态方法：显示设置对话框并返回配置"""
         dialog = MainSettingDialog(parent, plugin_host=plugin_host)
+        if focus_daily_quantity:
+            dialog.settingTabWidget.setCurrentWidget(dialog.task_result_tab)
+            dialog.daily_quantity_sheet_url_edit.setFocus()
+            QtCore.QTimer.singleShot(
+                0,
+                lambda: dialog.task_result_scroll.ensureWidgetVisible(
+                    dialog.daily_quantity_sheet_url_edit, 16, 48
+                ),
+            )
         result = dialog.exec()
         
         if result == QtWidgets.QDialog.Accepted:

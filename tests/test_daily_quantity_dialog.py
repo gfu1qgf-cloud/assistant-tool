@@ -13,6 +13,22 @@ class DailyQuantityDialogTests(unittest.TestCase):
     def setUpClass(cls):
         cls.app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
 
+    def test_sheet_link_is_visible_and_change_button_opens_settings(self):
+        dialog = DailyQuantityDialog()
+        try:
+            requests = []
+            dialog.edit_sheet_requested.connect(lambda: requests.append(True))
+            dialog.set_sheet_url("https://docs.google.com/spreadsheets/d/test/edit")
+            self.assertEqual(
+                dialog.sheet_url.text(),
+                "https://docs.google.com/spreadsheets/d/test/edit",
+            )
+            self.assertTrue(dialog.sheet_url.isReadOnly())
+            dialog.edit_sheet_button.click()
+            self.assertEqual(requests, [True])
+        finally:
+            dialog.close()
+
     def test_summary_shows_selected_day_and_overall_total(self):
         dialog = DailyQuantityDialog()
         try:

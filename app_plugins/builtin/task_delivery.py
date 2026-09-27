@@ -204,6 +204,7 @@ class TaskDeliveryPlugin:
             dialog.scan_requested.connect(self.scan_daily_quantity_folder)
             dialog.scan_date_requested.connect(self.scan_daily_quantity_date)
             dialog.view_date_requested.connect(self.view_daily_quantity_date)
+            dialog.edit_sheet_requested.connect(self.edit_daily_quantity_sheet)
             self.daily_quantity_dialog = dialog
             try:
                 dialog.show_external_records(external_video_records(
@@ -216,11 +217,20 @@ class TaskDeliveryPlugin:
                 ))
             except ValueError:
                 pass
+        self.daily_quantity_dialog.set_sheet_url(
+            self.context.load_config().get("daily_quantity_sheet_url")
+        )
         self.daily_quantity_dialog.show()
         self.daily_quantity_dialog.raise_()
         self.daily_quantity_dialog.activateWindow()
-        self.refresh_daily_quantity()
         return self.daily_quantity_dialog
+
+    def edit_daily_quantity_sheet(self):
+        self.context.parent_widget.openSettings(focus_daily_quantity=True)
+        if self.daily_quantity_dialog is not None:
+            self.daily_quantity_dialog.set_sheet_url(
+                self.context.load_config().get("daily_quantity_sheet_url")
+            )
 
     def refresh_daily_quantity(self):
         if self.daily_quantity_thread is not None and self.daily_quantity_thread.isRunning():
