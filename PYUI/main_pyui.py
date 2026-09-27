@@ -2152,12 +2152,23 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
 
     def openSettings(self, focus_daily_quantity=False):
         """打开设置对话框"""
+        previous_config = self.load_config()
         loaded_whisper_model = globalValue.loaded_whisper_model_name()
         settings = MainSettingDialog.get_settings(
             self, plugin_host=self.plugin_host,
             focus_daily_quantity=focus_daily_quantity,
         )
         if settings:
+            current_config = self.load_config()
+            previous_other = dict(previous_config)
+            current_other = dict(current_config)
+            previous_url = previous_other.pop("daily_quantity_sheet_url", "")
+            current_url = current_other.pop("daily_quantity_sheet_url", "")
+            if previous_url != current_url and previous_other == current_other:
+                # Updating the statistics target needs no hotkey, guard or
+                # plugin restart. Reapplying every setting here can tear down
+                # active Qt workers while this modal dialog is closing.
+                return
             apply_ui_theme(
                 QtWidgets.QApplication.instance(),
                 settings.get(UI_THEME_CONFIG_KEY),
