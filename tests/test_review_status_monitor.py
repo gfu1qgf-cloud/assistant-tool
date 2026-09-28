@@ -23,6 +23,7 @@ from model.ReviewSubmissionHistory import (
     acknowledge_review_items,
     apply_review_statuses,
     canonical_review_link,
+    read_review_history,
     record_review_submissions,
     review_history_snapshot,
 )
@@ -93,6 +94,7 @@ class ReviewStatusParsingTests(unittest.TestCase):
         result = review_status_from_row(row, columns)
         self.assertEqual(result["phase"], "返修")
         self.assertEqual(result["status"], "passed")
+        self.assertIn("rework/view", result["rework_link"])
 
     def test_formula_link_is_mapped_without_relying_on_row_number(self):
         row = [""] * len(HEADERS)
@@ -266,6 +268,21 @@ class ReviewHistoryTests(unittest.TestCase):
 
             acknowledge_review_items([key], path)
             self.assertEqual(review_history_snapshot(path)["passed_count"], 0)
+
+    def test_pending_rework_link_change_triggers_reconciliation(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "history.json"
+            link = "https://drive.google.com/file/d/old-id/view"
+            record_review_submissions([{"webViewLink": link, "name": "a.mp4"}], path)
+            key = canonical_review_link(link)
+            pending = {key: {"status": "pending", "phase": "返修",
+                             "rework_link": "https://drive.google.com/file/d/new-id/view"}}
+            first = apply_review_statuses(pending, path)
+            second = apply_review_statuses(pending, path)
+            self.assertEqual(len(first), 1)
+            self.assertEqual(second, [])
+            self.assertEqual(read_review_history(path)["items"][key]["rework_link"],
+                             pending[key]["rework_link"])
 
 
 if __name__ == "__main__":

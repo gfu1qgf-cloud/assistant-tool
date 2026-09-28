@@ -159,6 +159,7 @@ def review_status_from_row(row, columns, sheet_row=0):
         return {
             "status": _review_state(rework_results),
             "phase": "返修",
+            "rework_link": rework_link,
             "note": _combine(row, columns, ("rework_note1", "rework_note2")),
             "severity": "",
             "sheet_row": sheet_row,
@@ -171,6 +172,7 @@ def review_status_from_row(row, columns, sheet_row=0):
     return {
         "status": _review_state(initial_results),
         "phase": "初审",
+        "rework_link": "",
         "note": _combine(row, columns, ("note1", "note2")),
         "severity": _combine(row, columns, ("severity1", "severity2")),
         "sheet_row": sheet_row,

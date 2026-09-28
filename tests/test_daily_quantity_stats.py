@@ -234,7 +234,7 @@ class DailyQuantityTests(unittest.TestCase):
             by_name = {item["file_name"]: item for item in scanned["records"]}
             self.assertEqual(by_name["a.mp4"]["category"], "短口播")
             self.assertTrue(by_name["a.mp4"]["included"])
-            self.assertFalse(by_name["b.mp4"]["included"])
+            self.assertTrue(by_name["b.mp4"]["included"])
             self.assertEqual(first["counted"], 1)
             self.assertEqual(first["daily_counts"][0]["02"], 1)
             self.assertEqual(grid[4][6], 1)
@@ -278,6 +278,47 @@ class DailyQuantityTests(unittest.TestCase):
         groups, warnings = _external_assignments(scope, "本人", local)
         self.assertFalse(groups)
         self.assertFalse(warnings)
+
+    def test_review_staging_counts_once_and_legacy_exclusion_is_migrated(self):
+        key = ("统计", "2026-09-25", "02", "短口播", "本人")
+        review = {
+            "id": "review-entry", "drive_file_id": "review-id", "file_name": "a.mp4",
+            "batch_date": "2026-09-25", "batch_slot": "02", "daily_scan_date": "2026-09-25",
+            "sheet": "统计", "category": "短口播", "included": False, "review_path": True,
+        }
+        scope = {"daily_scans": {"2026-09-25": {}}, "external_videos": [review]}
+        groups, warnings = _external_assignments(scope, "本人", {})
+        self.assertEqual(len(groups[key]), 1)
+        self.assertFalse(warnings)
+        # Once the final version exists, the staged copy no longer adds a second unit.
+        scope["external_videos"].append({
+            **review, "id": "final-entry", "drive_file_id": "final-id",
+            "included": True, "review_path": False,
+        })
+        groups, warnings = _external_assignments(scope, "本人", {})
+        self.assertEqual(len(groups[key]), 1)
+        self.assertEqual(groups[key][0]["drive_file_id"], "final-id")
+        review["manual_included"] = True
+        groups, warnings = _external_assignments({**scope, "external_videos": [review]}, "本人", {})
+        self.assertFalse(groups)
+
+    def test_review_sheet_rework_link_prevents_counting_original_and_rework(self):
+        key = ("统计", "2026-09-25", "02", "短口播", "本人")
+        base = {"batch_date": "2026-09-25", "batch_slot": "02",
+                "daily_scan_date": "2026-09-25", "sheet": "统计",
+                "category": "短口播", "included": True}
+        scope = {"daily_scans": {"2026-09-25": {}}, "external_videos": [
+            dict(base, id="review", drive_file_id="old-id", file_name="old.mp4",
+                 review_path=True),
+            dict(base, id="rework", drive_file_id="new-id", file_name="new.mp4",
+                 review_path=False),
+        ]}
+        history = {"items": {"google:old-id": {
+            "rework_link": "https://drive.google.com/file/d/new-id/view"}}}
+        with patch("model.DailyQuantityStats.read_review_history", return_value=history):
+            groups, _ = _external_assignments(scope, "本人", {})
+        self.assertEqual(len(groups[key]), 1)
+        self.assertEqual(groups[key][0]["drive_file_id"], "new-id")
 
     def test_folder_import_preserves_first_delivery_and_allows_later_classification(self):
         config = {"daily_quantity_sheet_url": "fake-id", "task_submission_creator": "本人"}

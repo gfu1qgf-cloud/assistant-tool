@@ -1,5 +1,6 @@
 import os
 import unittest
+from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -12,6 +13,23 @@ class DailyQuantityDialogTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+
+    def test_review_status_refresh_keeps_unsaved_classification(self):
+        dialog = DailyQuantityDialog()
+        try:
+            dialog.show_external_records([{
+                "id": "review-1", "drive_file_id": "drive-1", "file_name": "a.mp4",
+                "batch_date": "2026-09-26", "batch_slot": "02", "included": True,
+                "review_path": True, "review_status": "pending",
+            }])
+            dialog.external_table.cellWidget(0, 4).setCurrentIndex(1)
+            with patch("app_plugins.builtin.task_delivery_daily_quantity.read_review_history",
+                       return_value={"items": {"google:drive-1": {"status": "passed"}}}):
+                dialog.refresh_review_statuses()
+            self.assertIn("已通过", dialog.external_table.item(0, 7).text())
+            self.assertEqual(dialog.external_edits()[0]["batch_slot"], "01")
+        finally:
+            dialog.close()
 
     def test_sheet_link_is_visible_and_change_button_opens_settings(self):
         dialog = DailyQuantityDialog()

@@ -147,9 +147,12 @@ def apply_review_statuses(status_by_key, path=None, now=None):
                 continue
             new_status = str(result.get("status") or "pending")
             old_status = str(item.get("status") or "pending")
-            for field in ("phase", "note", "severity", "sheet_row"):
+            rework_link_changed = False
+            for field in ("phase", "note", "severity", "sheet_row", "rework_link"):
                 new_value = result.get(field, "")
                 if item.get(field) != new_value:
+                    if field == "rework_link" and (item.get(field) or new_value):
+                        rework_link_changed = True
                     item[field] = new_value
                     changed = True
             if new_status != old_status:
@@ -165,6 +168,9 @@ def apply_review_statuses(status_by_key, path=None, now=None):
                 transitions.append(dict(item))
                 item["last_notified_status"] = new_status
                 changed = True
+            elif rework_link_changed:
+                # Rework may stay pending while its replacement Drive file changes.
+                transitions.append(dict(item))
         if changed:
             _write_unlocked(history, path)
     return transitions

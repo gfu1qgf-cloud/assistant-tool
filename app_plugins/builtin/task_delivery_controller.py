@@ -449,7 +449,7 @@ class TaskDeliveryController:
             parent=self.window,
         )
         thread.status.connect(self.on_review_status_monitor_status)
-        thread.snapshot.connect(self.update_review_status_button)
+        thread.snapshot.connect(self.on_review_status_snapshot)
         thread.changed.connect(self.on_review_status_changed)
         thread.log.connect(lambda message: self.context.log(message))
         thread.finished.connect(self.on_review_status_monitor_finished)
@@ -497,10 +497,22 @@ class TaskDeliveryController:
             if status == "异常":
                 self.context.log("监视器出现异常，请查看后续错误日志。", logging.ERROR)
 
+    def on_review_status_snapshot(self, snapshot):
+        self.update_review_status_button(snapshot)
+        delivery = getattr(self.window, "task_delivery_plugin", None)
+        quantity_dialog = getattr(delivery, "daily_quantity_dialog", None)
+        if quantity_dialog is not None and quantity_dialog.isVisible():
+            quantity_dialog.refresh_review_statuses()
+
     def on_review_status_changed(self, result):
         passed = result.get("passed", [])
         needs_changes = result.get("needs_changes", [])
-        self.update_review_status_button(result.get("snapshot"))
+        self.on_review_status_snapshot(result.get("snapshot"))
+        if (result.get("items")
+                and self.context.load_config().get("daily_quantity_sheet_url")):
+            delivery = getattr(self.window, "task_delivery_plugin", None)
+            if delivery is not None:
+                delivery.refresh_daily_quantity()
         if needs_changes:
             names = "、".join(
                 str(item.get("name") or "未命名视频")

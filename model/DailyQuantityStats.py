@@ -23,6 +23,7 @@ from model.GoogleSheetsHelper import (
     sheet_range,
 )
 from model.OdsHelper import ReadTaskOds2
+from model.ReviewSubmissionHistory import canonical_review_link, read_review_history
 from model.TaskTableSchema import load_task_table_schema
 from model.VideoUploadHistory import (
     VIDEO_SUFFIXES,
@@ -285,11 +286,30 @@ def _scope_key(config, root):
     return f"{extract_spreadsheet_id(url)}|{Path(root).resolve()}"
 
 
+def _included(item):
+    """Honor explicit exclusions, but migrate the old review-folder default."""
+    if item.get("included", True):
+        return True
+    return bool(item.get("review_path") and not item.get("manual_included")
+                and item.get("batch_slot") in _PERIOD_LABELS
+                and not item.get("possible_revision"))
+
+
+def _with_review_status(items):
+    history = read_review_history().get("items", {})
+    for item in items:
+        if item.get("review_path"):
+            key = "google:" + str(item.get("drive_file_id") or "")
+            item["review_status"] = str(history.get(key, {}).get("status") or "")
+    return items
+
+
 def external_video_records(config, root, state_path=None):
     """Return copies of folder-imported videos for the editor."""
     with _LOCK:
         scope = _load_state(state_path or STATE_FILE).get(_scope_key(config, root), {})
-        return [dict(item) for item in scope.get("external_videos", [])]
+        return _with_review_status([dict(item, included=_included(item))
+                                    for item in scope.get("external_videos", [])])
 
 
 def external_video_sources(config, root, state_path=None):
@@ -408,18 +428,24 @@ def scan_daily_drive_date(
                               and old.get("drive_file_id") not in remote_ids), None)
                 if entry is not None:
                     replaced += 1
+            was_auto_excluded_review = False
             if entry is None:
                 entry = {
                     "id": uuid.uuid4().hex,
                     "folder_id": date_folder_id,
                     "first_seen_at": datetime.now().astimezone().isoformat(timespec="seconds"),
-                    "included": bool(detected_slot and not is_review and not is_revision),
+                    "included": bool(detected_slot and not is_revision),
                     "sheet": "", "category": "",
                 }
                 videos.append(entry)
                 added += 1
-            elif (is_review or not detected_slot) and entry.get("daily_scan_date") != day:
-                entry["included"] = False
+            else:
+                was_auto_excluded_review = bool(
+                    entry.get("review_path") and not entry.get("included", True)
+                    and not entry.get("manual_included")
+                )
+                if not detected_slot and entry.get("daily_scan_date") != day:
+                    entry["included"] = False
             manual_slot = str(entry.get("manual_batch_slot") or "")
             slot = detected_slot or (manual_slot if manual_slot in _PERIOD_LABELS else "")
             if detected_slot:
@@ -450,6 +476,10 @@ def scan_daily_drive_date(
                 "possible_revision": is_revision,
                 "review_path": is_review,
             })
+            if (is_review and _included(entry)) or (
+                was_auto_excluded_review and slot in _PERIOD_LABELS and not is_revision
+            ):
+                entry["included"] = True
             by_id[drive_id] = entry
         for entry in videos:
             if entry.get("daily_scan_date") == day and entry.get("drive_file_id") not in seen_ids:
@@ -475,7 +505,8 @@ def scan_daily_drive_date(
                                       if entry.get("daily_scan_date") == day
                                       and not entry.get("missing_from_daily")
                                       and entry.get("possible_revision")),
-            "records": [dict(entry) for entry in videos if entry.get("batch_date") == day],
+            "records": _with_review_status([dict(entry) for entry in videos
+                                            if entry.get("batch_date") == day]),
             "warnings": hint_warnings,
         }
 
@@ -622,6 +653,7 @@ def update_external_video_records(config, root, edits, state_path=None):
                 "sheet": str(edit.get("sheet") or "").strip(),
                 "category": str(edit.get("category") or "").strip(),
                 "included": included,
+                "manual_included": True,
             })
             if item.get("daily_scan_date") and detected_slot not in _PERIOD_LABELS:
                 if slot in _PERIOD_LABELS:
@@ -641,8 +673,35 @@ def _external_assignments(scope, creator, local_groups):
                    for video in videos}
     seen_ids = set()
     scanned_days = set(scope.get("daily_scans", {}))
+    def eligible(item):
+        day = _date(item.get("batch_date"))
+        return (bool(_included(item) and item.get("sheet") and item.get("category"))
+                and str(item.get("batch_slot") or "").zfill(2) in _PERIOD_LABELS
+                and not item.get("missing_from_daily")
+                and not item.get("outside_daily_scan")
+                and (day not in scanned_days or item.get("daily_scan_date") == day))
+
+    eligible_files = {str(item.get("drive_file_id") or "")
+                      for item in scope.get("external_videos", []) if eligible(item)} | counted_ids
+    replaced_review_ids = set()
+    for key, item in read_review_history().get("items", {}).items():
+        rework_key = canonical_review_link(item.get("rework_link"))
+        if (str(key).startswith("google:") and rework_key.startswith("google:")
+                and rework_key.removeprefix("google:") in eligible_files):
+            replaced_review_ids.add(str(key).removeprefix("google:"))
+    active_normal_names = {
+        normalize_video_identity(item.get("file_name"))
+        for item in scope.get("external_videos", [])
+        if not item.get("review_path") and eligible(item)
+    }
     for item in scope.get("external_videos", []):
-        if not item.get("included", True):
+        if not _included(item):
+            continue
+        if item.get("missing_from_daily") or item.get("outside_daily_scan"):
+            continue
+        if (item.get("review_path")
+                and (normalize_video_identity(item.get("file_name")) in active_normal_names
+                     or str(item.get("drive_file_id") or "") in replaced_review_ids)):
             continue
         file_id = str(item.get("drive_file_id") or "")
         if not file_id or file_id in counted_ids or file_id in seen_ids:
@@ -690,8 +749,6 @@ def preview_external_day(records, day):
     """Show a local inventory preview without claiming Google Sheet sync succeeded."""
     day = _date(day)
     items = [item for item in records if _date(item.get("batch_date")) == day]
-    groups = defaultdict(list)
-    seen = set()
     missing_slot = missing_category = 0
     for item in items:
         slot = str(item.get("batch_slot") or "").zfill(2)
@@ -701,15 +758,7 @@ def preview_external_day(records, day):
             missing_slot += 1
         if not sheet or not category:
             missing_category += 1
-        if (not item.get("included", True) or item.get("missing_from_daily")
-                or item.get("outside_daily_scan") or slot not in _PERIOD_LABELS
-                or not sheet or not category):
-            continue
-        identity = str(item.get("drive_file_id") or item.get("id") or "")
-        if not identity or identity in seen:
-            continue
-        seen.add(identity)
-        groups[(sheet, day, slot, category, "")].append(item)
+    groups, _warnings = _external_assignments({"external_videos": items}, "", {})
     daily_counts = _daily_count_rows(groups)
     counted = sum(row["total"] for row in daily_counts)
     return {"date": day, "total_files": len(items), "counted": counted,
