@@ -104,29 +104,8 @@ class DailyQuantityDialog(QtWidgets.QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("每日数量统计")
-        self.resize(1040, 690)
+        self.resize(1120, 740)
         layout = QtWidgets.QVBoxLayout(self)
-        note = QtWidgets.QLabel(
-            "根据上传历史的首次交付日期与批次计数；刷新会重新读取本地任务表。"
-            "只填写本人分类的三个时段数量，不改定额和合计。"
-        )
-        note.setWordWrap(True)
-        layout.addWidget(note)
-        sheet_row = QtWidgets.QHBoxLayout()
-        sheet_row.addWidget(QtWidgets.QLabel("统计表链接："))
-        self.sheet_url = QtWidgets.QLineEdit()
-        self.sheet_url.setReadOnly(True)
-        self.sheet_url.setPlaceholderText("尚未设置每日数量表格")
-        self.sheet_url.setToolTip("当前每日数量统计的 Google 表格；模板链接可在右侧更改。")
-        sheet_row.addWidget(self.sheet_url, 1)
-        self.edit_sheet_button = QtWidgets.QPushButton("更改…")
-        self.edit_sheet_button.clicked.connect(self.edit_sheet_requested.emit)
-        sheet_row.addWidget(self.edit_sheet_button)
-        layout.addLayout(sheet_row)
-        self.category_status = QtWidgets.QLabel("分类尚未读取（只读加载，不会修改表格）")
-        layout.addWidget(self.category_status)
-        self.status = QtWidgets.QLabel("尚未刷新")
-        layout.addWidget(self.status)
         self._daily_counts = []
         self._overall_count = 0
         self._has_summary = False
@@ -135,12 +114,69 @@ class DailyQuantityDialog(QtWidgets.QDialog):
         self._show_preview = False
         self._visible_records = []
         self._populating_records = False
-        self.summary_heading = QtWidgets.QLabel("尚无统计结果；点击“刷新并自动修正”后显示所选日期的数量。")
+
+        toolbar = QtWidgets.QHBoxLayout()
+        toolbar.addWidget(QtWidgets.QLabel("交付日期"))
+        batch_date, batch_slot = get_upload_batch({})
+        self.folder_day = QtWidgets.QDateEdit()
+        self.folder_day.setDisplayFormat("yyyy-MM-dd")
+        self.folder_day.setCalendarPopup(True)
+        self.folder_day.setDate(QtCore.QDate(batch_date.year, batch_date.month, batch_date.day))
+        self.folder_day.dateChanged.connect(self._show_daily_summary)
+        toolbar.addWidget(self.folder_day)
+        self.view_date_button = QtWidgets.QPushButton("查看已存清单")
+        self.view_date_button.clicked.connect(lambda: self.view_date_requested.emit(
+            self.folder_day.date().toString("yyyy-MM-dd")
+        ))
+        toolbar.addWidget(self.view_date_button)
+        self.scan_date_button = QtWidgets.QPushButton("扫描网盘日期目录")
+        self.scan_date_button.clicked.connect(lambda: self.scan_date_requested.emit(
+            self.folder_day.date().toString("yyyy-MM-dd")
+        ))
+        toolbar.addWidget(self.scan_date_button)
+        toolbar.addStretch(1)
+        self.refresh_button = QtWidgets.QPushButton("保存并刷新数量")
+        self.refresh_button.setToolTip("保存清单里的修改，重新核对本地任务表并同步每日数量表格。")
+        self.refresh_button.clicked.connect(self.refresh_requested.emit)
+        toolbar.addWidget(self.refresh_button)
+        layout.addLayout(toolbar)
+
+        self.tabs = QtWidgets.QTabWidget()
+        layout.addWidget(self.tabs, 1)
+
+        overview = QtWidgets.QWidget()
+        overview_layout = QtWidgets.QVBoxLayout(overview)
+        overview_layout.setSpacing(12)
+        self.tabs.addTab(overview, "数量概览")
+        metric_row = QtWidgets.QHBoxLayout()
+        self.metric_values = {}
+        for title, key in (("当日合计", "total"), ("12 点", "01"),
+                           ("18 点", "02"), ("24 点", "03")):
+            card = QtWidgets.QFrame()
+            card.setObjectName("quantityCard")
+            card.setStyleSheet(
+                "QFrame#quantityCard { background:#F3F7FC; border:1px solid #D8E4F2;"
+                " border-radius:7px; }"
+                "QLabel { color:#24364A; border:0; background:transparent; }"
+            )
+            card_layout = QtWidgets.QVBoxLayout(card)
+            caption = QtWidgets.QLabel(title)
+            value = QtWidgets.QLabel("—")
+            font = value.font()
+            font.setPointSize(20)
+            font.setBold(True)
+            value.setFont(font)
+            card_layout.addWidget(caption)
+            card_layout.addWidget(value)
+            self.metric_values[key] = value
+            metric_row.addWidget(card, 1)
+        overview_layout.addLayout(metric_row)
+        self.summary_heading = QtWidgets.QLabel("尚无统计结果；选择日期后查看已存清单，或保存并刷新数量。")
         heading_font = self.summary_heading.font()
         heading_font.setBold(True)
         self.summary_heading.setFont(heading_font)
         self.summary_heading.setWordWrap(True)
-        layout.addWidget(self.summary_heading)
+        overview_layout.addWidget(self.summary_heading)
         self.summary_table = QtWidgets.QTableWidget(0, 6)
         self.summary_table.setHorizontalHeaderLabels([
             "统计分页", "统计类别", "12点", "18点", "24点", "合计"
@@ -152,99 +188,102 @@ class DailyQuantityDialog(QtWidgets.QDialog):
         self.summary_table.horizontalHeader().setStretchLastSection(True)
         self.summary_table.setColumnWidth(0, 145)
         self.summary_table.setColumnWidth(1, 170)
-        self.summary_table.setMaximumHeight(170)
-        layout.addWidget(self.summary_table)
+        overview_layout.addWidget(self.summary_table, 1)
         self.summary_note = QtWidgets.QLabel(
             "这里显示上次刷新时已归类、参与计数的视频；有待处理提示时，部分数字可能尚未写入表格。"
         )
         self.summary_note.setWordWrap(True)
-        layout.addWidget(self.summary_note)
-        review_row = QtWidgets.QHBoxLayout()
+        overview_layout.addWidget(self.summary_note)
         self.review_queue_toggle = QtWidgets.QToolButton()
         self.review_queue_toggle.setText("待审核未计数：0")
-        self.review_queue_toggle.setCheckable(True)
-        review_row.addWidget(self.review_queue_toggle)
-        review_row.addStretch(1)
-        self.review_check_button = QtWidgets.QPushButton("立即检查审核状态")
-        self.review_check_button.clicked.connect(self.review_check_requested.emit)
-        review_row.addWidget(self.review_check_button)
-        layout.addLayout(review_row)
-        self.review_queue = QtWidgets.QTableWidget(0, 3)
-        self.review_queue.setHorizontalHeaderLabels(["交付日期/时段", "视频", "审核状态"])
-        self.review_queue.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.review_queue.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
-        self.review_queue.horizontalHeader().setStretchLastSection(True)
-        self.review_queue.setColumnWidth(0, 135)
-        self.review_queue.setColumnWidth(1, 450)
-        self.review_queue.setMaximumHeight(175)
-        self.review_queue.setToolTip("双击视频可打开网盘链接；通过审核后会自动补计到原交付日期。")
-        self.review_queue.cellDoubleClicked.connect(self._open_pending_review)
-        self.review_queue.setVisible(False)
-        self.review_queue_toggle.toggled.connect(self.review_queue.setVisible)
-        layout.addWidget(self.review_queue)
-        self.details_toggle = QtWidgets.QToolButton()
-        self.details_toggle.setText("查看表格写入记录与待处理提示")
-        self.details_toggle.setCheckable(True)
-        layout.addWidget(self.details_toggle)
-        self.details = QtWidgets.QPlainTextEdit()
-        self.details.setReadOnly(True)
-        self.details.setMaximumHeight(140)
-        self.details.setVisible(False)
-        self.details_toggle.toggled.connect(self.details.setVisible)
-        layout.addWidget(self.details)
-        self.refresh_button = QtWidgets.QPushButton("刷新并自动修正")
-        self.refresh_button.clicked.connect(self.refresh_requested.emit)
-        layout.addWidget(self.refresh_button)
+        self.review_queue_toggle.setToolTip("查看尚未通过审核、暂不计数的视频。")
+        self.review_queue_toggle.clicked.connect(self._show_review_tab)
+        overview_layout.addWidget(self.review_queue_toggle, 0, QtCore.Qt.AlignLeft)
 
-        source_box = QtWidgets.QGroupBox("网盘视频清单")
-        source_layout = QtWidgets.QVBoxLayout(source_box)
+        videos = QtWidgets.QWidget()
+        source_layout = QtWidgets.QVBoxLayout(videos)
+        self.video_tab_index = self.tabs.addTab(videos, "视频清单")
         source_note = QtWidgets.QLabel(
-            "扫描所选日期会核对网盘实有视频；已保存的分类不变，未分类的可在清单中选择。"
-            "最左侧勾选框表示允许计数，和选中表格行是两回事；可右键批量操作。"
-            "审核暂存只有通过后才计数；未通过的会列在上方待审核清单，状态更新后自动补计。"
-            "疑似旧任务修订版默认不计数；重复内容会标出供你核对。"
-            "日期目录目前只按月日命名，跨年复用时请留意旧视频。只读取清单，不下载。"
+            "在清单中核对时段和分类；勾选表示允许计数，审核视频仍须通过审核。"
         )
-        source_note.setWordWrap(True)
+        source_note.setToolTip(
+            "扫描日期目录只读取清单，不下载。已保存的分类会保留；疑似旧任务修订版默认不计数。"
+            "右键可批量调整勾选和时段。跨年复用月日目录时，请留意旧视频。"
+        )
         source_layout.addWidget(source_note)
-        date_row = QtWidgets.QHBoxLayout()
+        source_row = QtWidgets.QHBoxLayout()
         self.folder_link = QtWidgets.QComboBox()
         self.folder_link.setEditable(True)
         self.folder_link.setInsertPolicy(QtWidgets.QComboBox.InsertPolicy.NoInsert)
         self.folder_link.lineEdit().setPlaceholderText("粘贴 Google Drive 文件夹链接，或选择已导入的文件夹")
-        batch_date, batch_slot = get_upload_batch({})
-        self.folder_day = QtWidgets.QDateEdit()
-        self.folder_day.setDisplayFormat("yyyy-MM-dd")
-        self.folder_day.setCalendarPopup(True)
-        self.folder_day.setDate(QtCore.QDate(batch_date.year, batch_date.month, batch_date.day))
-        self.folder_day.dateChanged.connect(self._show_daily_summary)
-        self.scan_date_button = QtWidgets.QPushButton("扫描日期目录")
-        self.scan_date_button.clicked.connect(lambda: self.scan_date_requested.emit(
-            self.folder_day.date().toString("yyyy-MM-dd")
-        ))
-        self.view_date_button = QtWidgets.QPushButton("查看已存清单")
-        self.view_date_button.clicked.connect(lambda: self.view_date_requested.emit(
-            self.folder_day.date().toString("yyyy-MM-dd")
-        ))
-        date_row.addWidget(QtWidgets.QLabel("交付日期："))
-        date_row.addWidget(self.folder_day)
-        date_row.addWidget(self.scan_date_button)
-        date_row.addWidget(self.view_date_button)
-        date_row.addStretch(1)
-        source_layout.addLayout(date_row)
-        source_row = QtWidgets.QHBoxLayout()
         self.folder_slot = QtWidgets.QComboBox()
         for slot, label in (("01", "12点"), ("02", "18点"), ("03", "24点")):
             self.folder_slot.addItem(label, slot)
         self.folder_slot.setCurrentIndex(self.folder_slot.findData(batch_slot))
-        self.scan_button = QtWidgets.QPushButton("导入指定文件夹")
+        self.scan_button = QtWidgets.QPushButton("读取指定文件夹")
+        self.scan_button.setToolTip("只读取网盘文件清单，不下载视频。")
         self.scan_button.clicked.connect(self._request_scan)
         source_row.addWidget(self.folder_link, 1)
         source_row.addWidget(self.folder_slot)
         source_row.addWidget(self.scan_button)
         source_layout.addLayout(source_row)
         self.folder_status = QtWidgets.QLabel("尚未扫描文件夹")
+        self.folder_status.setWordWrap(True)
         source_layout.addWidget(self.folder_status)
+
+        reviews = QtWidgets.QWidget()
+        review_layout = QtWidgets.QVBoxLayout(reviews)
+        self.review_tab_index = self.tabs.addTab(reviews, "待审核")
+        review_header = QtWidgets.QHBoxLayout()
+        review_header.addWidget(QtWidgets.QLabel(
+            "待审核、需修改和缺少审核记录的视频暂不计数；通过后自动补计到原交付日期。"
+        ), 1)
+        self.review_check_button = QtWidgets.QPushButton("立即检查审核状态")
+        self.review_check_button.clicked.connect(self.review_check_requested.emit)
+        review_header.addWidget(self.review_check_button)
+        review_layout.addLayout(review_header)
+        self.review_queue = QtWidgets.QTableWidget(0, 3)
+        self.review_queue.setHorizontalHeaderLabels(["交付日期/时段", "视频", "审核状态"])
+        self.review_queue.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.review_queue.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
+        self.review_queue.setAlternatingRowColors(True)
+        self.review_queue.verticalHeader().setVisible(False)
+        self.review_queue.horizontalHeader().setStretchLastSection(True)
+        self.review_queue.setColumnWidth(0, 135)
+        self.review_queue.setColumnWidth(1, 450)
+        self.review_queue.setToolTip("双击视频可打开网盘链接；通过审核后会自动补计到原交付日期。")
+        self.review_queue.cellDoubleClicked.connect(self._open_pending_review)
+        review_layout.addWidget(self.review_queue, 1)
+
+        settings = QtWidgets.QWidget()
+        settings_layout = QtWidgets.QVBoxLayout(settings)
+        self.settings_tab_index = self.tabs.addTab(settings, "设置与记录")
+        sheet_row = QtWidgets.QHBoxLayout()
+        sheet_row.addWidget(QtWidgets.QLabel("统计表链接"))
+        self.sheet_url = QtWidgets.QLineEdit()
+        self.sheet_url.setReadOnly(True)
+        self.sheet_url.setPlaceholderText("尚未设置每日数量表格")
+        sheet_row.addWidget(self.sheet_url, 1)
+        self.edit_sheet_button = QtWidgets.QPushButton("更改…")
+        self.edit_sheet_button.clicked.connect(self.edit_sheet_requested.emit)
+        sheet_row.addWidget(self.edit_sheet_button)
+        settings_layout.addLayout(sheet_row)
+        self.category_status = QtWidgets.QLabel("分类尚未读取（只读加载，不会修改表格）")
+        settings_layout.addWidget(self.category_status)
+        settings_note = QtWidgets.QLabel(
+            "根据首次交付日期计数；刷新时重读本地任务表，只写本人分类的三个时段，不修改定额和合计。"
+        )
+        settings_note.setWordWrap(True)
+        settings_layout.addWidget(settings_note)
+        self.details_toggle = QtWidgets.QToolButton()
+        self.details_toggle.setText("查看表格写入记录与待处理提示")
+        self.details_toggle.setCheckable(True)
+        settings_layout.addWidget(self.details_toggle, 0, QtCore.Qt.AlignLeft)
+        self.details = QtWidgets.QPlainTextEdit()
+        self.details.setReadOnly(True)
+        self.details.setVisible(False)
+        self.details_toggle.toggled.connect(self.details.setVisible)
+        self.details_toggle.setChecked(True)
         self.external_table = QtWidgets.QTableWidget(0, 8)
         self.external_table.setHorizontalHeaderLabels([
             "允许计数", "文件夹", "视频", "交付日期", "时段", "统计分页", "统计类别", "状态"
@@ -286,7 +325,18 @@ class DailyQuantityDialog(QtWidgets.QDialog):
         action_row.addWidget(self.copy_list_button)
         action_row.addWidget(self.save_external_button, 1)
         source_layout.addLayout(action_row)
-        layout.addWidget(source_box, 2)
+        settings_layout.addWidget(self.details, 1)
+        settings_layout.addStretch(1)
+
+        self.status = QtWidgets.QLabel("尚未刷新")
+        self.status.setWordWrap(True)
+        layout.addWidget(self.status)
+
+    def _show_review_tab(self):
+        self.tabs.setCurrentIndex(self.review_tab_index)
+
+    def show_video_list(self):
+        self.tabs.setCurrentIndex(self.video_tab_index)
 
     def set_sheet_url(self, url):
         url = str(url or "").strip()
@@ -308,19 +358,23 @@ class DailyQuantityDialog(QtWidgets.QDialog):
                                          labels.get(record.get("status"), "待审核"))):
                 item = QtWidgets.QTableWidgetItem(str(value))
                 item.setToolTip(str(record.get("drive_link") or ""))
-                if record.get("status") == "needs_changes":
-                    item.setBackground(QtGui.QColor("#FFE3DF"))
+                color = {
+                    "needs_changes": "#FFE3DF",
+                    "pending": "#FFF1CF",
+                    "untracked": "#EEF2F6",
+                }.get(record.get("status"))
+                if color:
+                    item.setBackground(QtGui.QColor(color))
                     item.setForeground(QtGui.QColor("#202124"))
                 if col == 1:
                     item.setData(QtCore.Qt.UserRole, str(record.get("drive_link") or ""))
                 self.review_queue.setItem(row, col, item)
         self.review_queue_toggle.setText(f"待审核未计数：{len(records)}")
         self.review_queue_toggle.setToolTip("包括待审核、需修改以及尚未写入审核记录的视频。")
+        self.tabs.setTabText(self.review_tab_index, f"待审核 · {len(records)}")
         self.review_queue_toggle.setStyleSheet(
             "background-color:#FFF1CF;color:#202124;font-weight:bold;" if records else ""
         )
-        if records and not self.review_queue_toggle.isChecked():
-            self.review_queue_toggle.setChecked(True)
 
     def _open_pending_review(self, row, _column):
         item = self.review_queue.item(row, 1)
@@ -377,6 +431,7 @@ class DailyQuantityDialog(QtWidgets.QDialog):
         self._visible_records = sorted(records, key=lambda item: (
             str(item.get("batch_date") or ""), str(item.get("file_name") or "")
         ))
+        self.tabs.setTabText(self.video_tab_index, f"视频清单 · {len(self._visible_records)}")
         self._preview_day = day or self.folder_day.date().toString("yyyy-MM-dd")
         for record in self._visible_records:
             row = self.external_table.rowCount()
@@ -829,6 +884,9 @@ class DailyQuantityDialog(QtWidgets.QDialog):
         if warnings:
             lines += ["", "待处理："] + [f"• {text}" for text in warnings]
             self.details_toggle.setChecked(True)
+        self.tabs.setTabText(
+            self.settings_tab_index, "设置与记录 · 待处理" if warnings else "设置与记录"
+        )
         self.details.setPlainText("\n".join(lines))
 
     def _show_daily_summary(self, _date=None):
@@ -862,10 +920,15 @@ class DailyQuantityDialog(QtWidgets.QDialog):
                 f"{day}：尚无统计结果；点击“查看已存清单”或“刷新并自动修正”。"
             )
             self.summary_table.setRowCount(0)
+            for value in self.metric_values.values():
+                value.setText("—")
             return
         slots = {slot: sum(int(item.get(slot, 0)) for item in rows)
                  for slot in ("01", "02", "03")}
         daily_total = sum(slots.values())
+        for key, count in (("total", daily_total), ("01", slots["01"]),
+                           ("02", slots["02"]), ("03", slots["03"])):
+            self.metric_values[key].setText(str(count))
         self.summary_heading.setText(
             f"{day}：合计 {daily_total} 个  ·  12点 {slots['01']} / "
             f"18点 {slots['02']} / 24点 {slots['03']}"
@@ -892,3 +955,5 @@ class DailyQuantityDialog(QtWidgets.QDialog):
         self.status.setText("刷新失败，原统计数据未改动")
         self.details.setPlainText(error)
         self.details_toggle.setChecked(True)
+        self.tabs.setTabText(self.settings_tab_index, "设置与记录 · 错误")
+        self.tabs.setCurrentIndex(self.settings_tab_index)

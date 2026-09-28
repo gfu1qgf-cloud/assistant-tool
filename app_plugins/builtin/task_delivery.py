@@ -376,6 +376,7 @@ class TaskDeliveryPlugin:
             dialog.show_external_records(
                 result["records"], day=dialog.folder_day.date().toString("yyyy-MM-dd")
             )
+            dialog.show_video_list()
             dialog.show_external_sources(result["sources"])
             dialog.folder_status.setText(
                 f"扫描到 {result['found']} 个视频；新增 {result['added']} 个，"
@@ -412,6 +413,7 @@ class TaskDeliveryPlugin:
             dialog.show_error(str(error))
             return False
         dialog.show_external_records(rows, day=day)
+        dialog.show_video_list()
         dialog.folder_status.setText(
             f"{day} 已保存 {dialog.external_table.rowCount()} 个视频。"
         )
@@ -447,6 +449,7 @@ class TaskDeliveryPlugin:
         if dialog is not None:
             dialog.set_folder_busy(False)
             dialog.show_external_records(result["records"], day=result["date"])
+            dialog.show_video_list()
             dialog.folder_status.setText(
                 f"{result['date']}：网盘视频 {result['found']} 个，新增 {result['added']} 个，"
                 f"同路径替换 {result['replaced']} 个，"

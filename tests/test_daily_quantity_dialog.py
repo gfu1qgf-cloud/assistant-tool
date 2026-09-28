@@ -41,9 +41,11 @@ class DailyQuantityDialogTests(unittest.TestCase):
                 "status": "needs_changes", "drive_link": "https://drive.google.com/file/d/a/view",
             }])
             self.assertEqual(dialog.review_queue.rowCount(), 1)
-            self.assertTrue(dialog.review_queue.isVisible() or dialog.review_queue_toggle.isChecked())
             self.assertIn("待审核未计数：1", dialog.review_queue_toggle.text())
+            self.assertEqual(dialog.tabs.tabText(dialog.review_tab_index), "待审核 · 1")
             self.assertEqual(dialog.review_queue.item(0, 2).text(), "需修改")
+            dialog.review_queue_toggle.click()
+            self.assertEqual(dialog.tabs.currentIndex(), dialog.review_tab_index)
             dialog.review_check_button.click()
             self.assertEqual(requests, [True])
         finally:
@@ -73,6 +75,8 @@ class DailyQuantityDialogTests(unittest.TestCase):
     def test_summary_shows_selected_day_and_overall_total(self):
         dialog = DailyQuantityDialog()
         try:
+            self.assertEqual(dialog.tabs.tabText(0), "数量概览")
+            self.assertEqual(dialog.tabs.tabText(dialog.video_tab_index), "视频清单")
             dialog.folder_day.setDate(QtCore.QDate(2026, 9, 26))
             dialog.show_result({
                 "counted": 7, "warnings": [], "category_options": {},
@@ -87,6 +91,8 @@ class DailyQuantityDialogTests(unittest.TestCase):
                 ],
             })
             self.assertIn("合计 4 个", dialog.summary_heading.text())
+            self.assertEqual(dialog.metric_values["total"].text(), "4")
+            self.assertEqual(dialog.metric_values["01"].text(), "2")
             self.assertIn("全部日期总合计 7 个", dialog.summary_heading.text())
             self.assertEqual(dialog.summary_table.item(2, 5).text(), "4")
             self.assertIn("不是今日视频总数", dialog.details.toPlainText())
