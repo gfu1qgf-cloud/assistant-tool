@@ -8,6 +8,7 @@ from .image_classifier import ImageClassifierPlugin
 from .material_organizer import MaterialOrganizerPlugin
 from .music_ducker import MusicDuckerPlugin
 from .smart_video_editor import SmartVideoEditorPlugin
+from .smart_image_search import SmartImageSearchPlugin
 from .task_audio_subtitle import TaskAudioSubtitlePlugin
 from .task_delivery import TaskDeliveryPlugin
 
@@ -22,6 +23,7 @@ __all__ = [
     "MaterialOrganizerPlugin",
     "MusicDuckerPlugin",
     "SmartVideoEditorPlugin",
+    "SmartImageSearchPlugin",
     "TaskAudioSubtitlePlugin",
     "TaskDeliveryPlugin",
 ]

@@ -16,6 +16,8 @@
 
 当前内置插件包括库存与素材管理、图片智能分类、Chrome 启动器、切分音频和智能剪辑。图片智能分类插件通过后台懒加载 CLIP 模型先生成可人工修改的分类预览，再由用户确认复制或移动；设置保存在 `image_classifier_settings`，模型不得在程序启动阶段加载。切分音频插件在任务右键菜单中处理所选任务目录，并在“工具”菜单提供支持文件/文件夹拖拽的批量窗口；参数统一保存到 `audio_splitter` 配置节。Chrome 插件只接管窗口生命周期、菜单入口和全局快捷键；继续使用历史配置键 `chrome_preset_websites`、`chrome_profile_groups`、`chrome_profile_iterator` 和 `chrome_next_global_hotkey`，升级时不得清空或另建平行配置。
 
+“智能搜图”插件索引库存管理、人物素材和在插件设置中指定的额外图片库文件夹，不复制原图，并递归读取子目录。首次使用时后台加载固定版本的中文 CLIP 安全权重；之后用文件大小和纳秒修改时间增量计算，路径、缩略图和特征缓存在本机 `SmartImageSearch/`（Git 忽略）。图片移出后立即注销对应索引项，不重算其他图片。配置键为 `smart_image_search`；更换模型版本必须重新生成该版本的特征。插件启动阶段不扫描图片、不加载模型。
+
 智能剪辑插件拥有分析/导出线程、核对窗口、待处理记录和设置页。宿主只提供任务路径、字幕参数、共享 Whisper 模型与日志服务；历史配置键 `smart_video_editor`、`smart_video_pending_reviews` 以及旧的 `model.SmartVideoEditor`、`PYUI.smart_video_editor_pyui` 导入路径继续兼容。
 
 达芬奇遥控器通过 `PluginTabPage` 复用主界面的遥控器标签。三个旧脚本的处理函数保存在 `davinci_legacy/`，其 Fusion UI 入口不由软件调用；插件用 PyQt 显示参数、进度与字幕异常列表，并通过 `main.py --davinci-worker` 在独立进程连接当前 Resolve。达芬奇和当前项目/时间线必须处于可用状态。对轨道清空、添加水印、自动渲染等可能改变时间线或任务队列的操作，界面会先确认。
