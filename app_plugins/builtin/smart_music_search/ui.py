@@ -73,6 +73,7 @@ class SmartMusicSearchDialog(QtWidgets.QDialog):
         self.worker = None
         self._task_kind = ""
         self._results = []
+        self._shown_count = 0
         self._player = None
         self._audio_output = None
         self._pending_seek_ms = None
@@ -86,7 +87,7 @@ class SmartMusicSearchDialog(QtWidgets.QDialog):
         line = QtWidgets.QHBoxLayout()
         self.status = QtWidgets.QLabel()
         line.addWidget(self.status, 1)
-        self.index_button = QtWidgets.QPushButton("增量更新索引")
+        self.index_button = QtWidgets.QPushButton("建立 / 更新索引")
         self.index_button.clicked.connect(self.update_index)
         line.addWidget(self.index_button)
         self.stop_button = QtWidgets.QPushButton("停止")
@@ -152,6 +153,10 @@ class SmartMusicSearchDialog(QtWidgets.QDialog):
         self.pause_button = QtWidgets.QPushButton("停止试听")
         self.pause_button.clicked.connect(self.stop_preview)
         bottom.addWidget(self.pause_button)
+        self.more_button = QtWidgets.QPushButton("加载更多")
+        self.more_button.setEnabled(False)
+        self.more_button.clicked.connect(self._append_results)
+        bottom.addWidget(self.more_button)
         bottom.addStretch(1)
         bottom.addWidget(QtWidgets.QLabel("相似度仅用于排序，仍需试听确认。"))
         layout.addLayout(bottom)
@@ -162,7 +167,9 @@ class SmartMusicSearchDialog(QtWidgets.QDialog):
         self._refresh_count()
 
     def _refresh_count(self):
-        self.status.setText(f"已索引 {self.index.count(self.encoder.model_id)} 首 | 配乐库："
+        count = self.index.count(self.encoder.model_id)
+        hint = "（更换模型后需重建）" if not count else ""
+        self.status.setText(f"已索引 {count} 首{hint} | 配乐库："
                             f"{self.settings['library_root']}")
 
     def is_busy(self):
@@ -218,7 +225,10 @@ class SmartMusicSearchDialog(QtWidgets.QDialog):
             rows, translated = result
             self.english.setText("模型检索描述：" + translated)
             self._show_results(rows)
-            self.status.setText(f"找到 {len(rows)} 首候选；双击试听，右键可复制路径或打开目录")
+            self.status.setText(
+                f"找到 {len(rows)} 首候选，已显示 {self._shown_count} 首；"
+                "双击试听，右键可复制路径或打开目录"
+            )
         elif self._task_kind == "duration":
             self.duration.setValue(max(1, int(round(result))))
             self.status.setText(f"视频长度 {format_time(result)}；下次搜索会使用此长度")
@@ -260,9 +270,9 @@ class SmartMusicSearchDialog(QtWidgets.QDialog):
             self.query.setFocus()
             return
         if not self.index.count(self.encoder.model_id):
-            QtWidgets.QMessageBox.information(self, "尚未建索引", "请先点击“增量更新索引”。")
+            QtWidgets.QMessageBox.information(self, "尚未建索引", "请先点击“建立 / 更新索引”。")
             return
-        if (any("\u3400" <= c <= "\u9fff" for c in query)
+        if (self.encoder.needs_translation(query)
                 and not self.encoder.translation_is_cached()):
             answer = QtWidgets.QMessageBox.question(
                 self, "首次下载中文翻译模型",
@@ -272,7 +282,6 @@ class SmartMusicSearchDialog(QtWidgets.QDialog):
             if answer != QtWidgets.QMessageBox.StandardButton.Yes:
                 return
         seconds = self.duration.value()
-        limit = self.settings["result_limit"]
         include_short = self.include_short.isChecked()
         def work(_progress, cancelled):
             if cancelled():
@@ -281,14 +290,22 @@ class SmartMusicSearchDialog(QtWidgets.QDialog):
             if cancelled():
                 return [], translated
             return self.index.search(self.encoder.model_id, vector, seconds=seconds,
-                                     limit=limit, include_short=include_short), translated
+                                     limit=None, include_short=include_short), translated
         self._start("search", work)
 
     def _show_results(self, rows):
         self._results = rows
-        self.table.setRowCount(len(rows))
+        self._shown_count = 0
+        self.table.setRowCount(0)
+        self._append_results()
+
+    def _append_results(self):
+        start = self._shown_count
+        end = min(len(self._results), start + self.settings["result_limit"])
+        self.table.setRowCount(end)
         root = Path(self.settings["library_root"])
-        for row_index, result in enumerate(rows):
+        for row_index in range(start, end):
+            result = self._results[row_index]
             path = Path(result["path"])
             try:
                 folder = str(path.parent.relative_to(root))
@@ -304,6 +321,12 @@ class SmartMusicSearchDialog(QtWidgets.QDialog):
                 for column in range(5):
                     self.table.item(row_index, column).setBackground(QtGui.QColor("#fff0d6"))
                 self.table.item(row_index, 3).setToolTip("此曲短于当前视频，需要循环或另行剪辑")
+        self._shown_count = end
+        remaining = len(self._results) - end
+        self.more_button.setEnabled(remaining > 0)
+        self.more_button.setText(f"加载更多（剩余 {remaining} 首）" if remaining else "已显示全部")
+        if start and remaining >= 0:
+            self.status.setText(f"已显示 {end}/{len(self._results)} 首候选")
 
     def _selected(self):
         row = self.table.currentRow()

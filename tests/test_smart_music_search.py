@@ -11,7 +11,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from qt_compat import QtWidgets
 from app_plugins.builtin.smart_music_search.audio import segment_starts
-from app_plugins.builtin.smart_music_search.encoder import MusicEncoder
+from app_plugins.builtin.smart_music_search.encoder import MODEL_ID, MusicEncoder
 from app_plugins.builtin.smart_music_search.index import MusicIndex, discover_music
 from app_plugins.builtin.smart_music_search.settings import normalize_settings
 from app_plugins.builtin.smart_music_search.ui import SmartMusicSearchDialog
@@ -121,8 +121,12 @@ class SmartMusicSearchTests(unittest.TestCase):
     def test_english_query_skips_translator(self):
         encoder = MusicEncoder()
         self.assertEqual(encoder.translate("hopeful piano"), "hopeful piano")
+        self.assertIn("horror soundtrack", encoder.translate("恐怖"))
+        self.assertFalse(encoder.needs_translation("恐怖"))
+        self.assertTrue(encoder.needs_translation("庄严的配乐"))
+        self.assertIn("larger_clap_general", MODEL_ID)
 
-    def test_text_encoding_removes_generic_music_direction(self):
+    def test_text_encoding_uses_full_model_direction(self):
         class Tensor:
             def __init__(self, values):
                 self.values = np.asarray(values, dtype=np.float32)
@@ -143,9 +147,8 @@ class SmartMusicSearchTests(unittest.TestCase):
         class Model:
             def get_text_features(self, *, texts):
                 choices = {
-                    "music": [100, 0, 0],
-                    "happy": [100, 1, 0],
-                    "dark": [100, 0, 1],
+                    "happy": [0, 1, 0],
+                    "dark": [0, 0, 1],
                 }
                 return [Tensor(choices[item]) for item in texts]
 
@@ -157,10 +160,8 @@ class SmartMusicSearchTests(unittest.TestCase):
         happy, _ = encoder.text("happy")
         dark, _ = encoder.text("dark")
         self.assertLess(float(np.dot(happy, dark)), 0.1)
-        with self.assertRaisesRegex(ValueError, "过于笼统"):
-            encoder.text("music")
 
-    def test_centered_retrieval_distinguishes_nearly_parallel_tracks(self):
+    def test_audio_retrieval_distinguishes_nearly_parallel_tracks(self):
         with tempfile.TemporaryDirectory() as directory:
             index = MusicIndex(Path(directory) / "index")
             now = 123.0
@@ -179,6 +180,41 @@ class SmartMusicSearchTests(unittest.TestCase):
             second = index.search("test", [0, 0, 1], limit=3)
             self.assertEqual(Path(first[0]["path"]).name, "0.mp3")
             self.assertEqual(Path(second[0]["path"]).name, "1.mp3")
+            self.assertEqual(len(index.search("test", [0, 1, 0], limit=None)), 3)
+
+    def test_results_can_be_loaded_in_batches(self):
+        with tempfile.TemporaryDirectory() as directory:
+            dialog = SmartMusicSearchDialog(
+                {"library_root": directory, "result_limit": 10},
+                index=MusicIndex(Path(directory) / "index"), encoder=_FakeEncoder(),
+            )
+            rows = [{"path": str(Path(directory) / f"{n}.mp3"),
+                     "score": 1 - n / 100, "duration": 60.0,
+                     "start": 0.0, "short": False} for n in range(23)]
+            dialog._show_results(rows)
+            self.assertEqual(dialog.table.rowCount(), 10)
+            self.assertTrue(dialog.more_button.isEnabled())
+            dialog.more_button.click()
+            self.assertEqual(dialog.table.rowCount(), 20)
+            dialog.more_button.click()
+            self.assertEqual(dialog.table.rowCount(), 23)
+            self.assertFalse(dialog.more_button.isEnabled())
+            dialog.close()
+
+    def test_filenames_do_not_override_audio_ranking(self):
+        with tempfile.TemporaryDirectory() as directory:
+            index = MusicIndex(Path(directory) / "index")
+            with index._connect() as db:
+                for name, vector in (("恐怖.mp3", [0, 1]), ("欢快.mp3", [1, 0])):
+                    path = Path(directory) / name
+                    path.write_bytes(b"fixture")
+                    db.execute("INSERT INTO tracks VALUES (?,?,?,?,?,?,?)",
+                               (str(path), 7, 0, 30.0, "test", "", 0.0))
+                    db.execute("INSERT INTO segments VALUES (?,?,?)",
+                               (str(path), 0.0,
+                                np.asarray(vector, dtype=np.float16).tobytes()))
+            results = index.search("test", [1, 0], limit=None)
+            self.assertEqual(Path(results[0]["path"]).name, "欢快.mp3")
 
 
 if __name__ == "__main__":

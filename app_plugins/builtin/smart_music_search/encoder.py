@@ -9,11 +9,21 @@ os.environ.setdefault("TRANSFORMERS_NO_TF", "1")
 
 import numpy as np
 
-MUSIC_MODEL = "laion/larger_clap_music"
-MUSIC_REVISION = "4189a948e5e2aaa5df3e69da506e54513e977191"  # SafeTensors conversion.
+MUSIC_MODEL = "laion/larger_clap_general"
+MUSIC_REVISION = "16c8cc3159a3c8a31e8ff5ef1f66b0d9ab3667db"  # SafeTensors conversion.
 TRANSLATION_MODEL = "Helsinki-NLP/opus-mt-zh-en"
 TRANSLATION_REVISION = "fd5d2c871cd77baae0ec4beb338a3f3eee806af0"  # SafeTensors conversion.
-MODEL_ID = f"{MUSIC_MODEL}@{MUSIC_REVISION}:10s:v1"
+MODEL_ID = f"{MUSIC_MODEL}@{MUSIC_REVISION}:10s:v2"
+
+# The translation checkpoint mistakes the isolated Chinese mood “恐怖” for
+# “horrible” (bad quality), rather than “horror” (the requested soundtrack).
+# Disambiguate the query only; ranking always uses the decoded audio vectors.
+MOOD_QUERIES = {
+    "恐怖": "ominous horror soundtrack with eerie suspense and frightening tension",
+    "恐怖音乐": "ominous horror soundtrack with eerie suspense and frightening tension",
+    "惊悚": "ominous suspenseful thriller soundtrack",
+    "惊悚音乐": "ominous suspenseful thriller soundtrack",
+}
 
 
 def _normal(vector):
@@ -45,6 +55,13 @@ class MusicEncoder:
     def translation_is_cached(self):
         return self._cached(TRANSLATION_MODEL, TRANSLATION_REVISION)
 
+    @staticmethod
+    def needs_translation(query):
+        query = str(query).strip()
+        return query not in MOOD_QUERIES and any(
+            "\u3400" <= char <= "\u9fff" for char in query
+        )
+
     def _load_music(self):
         if self._music is None:
             import torch
@@ -72,7 +89,9 @@ class MusicEncoder:
 
     def translate(self, query):
         query = str(query).strip()
-        if not any("\u3400" <= char <= "\u9fff" for char in query):
+        if query in MOOD_QUERIES:
+            return MOOD_QUERIES[query]
+        if not self.needs_translation(query):
             return query
         torch, tokenizer, model = self._load_translation()
         tokens = tokenizer([query], return_tensors="pt", truncation=True, max_length=256)
@@ -89,15 +108,7 @@ class MusicEncoder:
     def text(self, query):
         english = self.translate(query)
         torch, processor, model = self._load_music()
-        # This checkpoint has a very large common "generic music" component:
-        # unrelated captions otherwise produce almost identical unit vectors.
-        # Contrast the requested description with a neutral music caption.
-        inputs = processor(text=[english, "music"], return_tensors="pt", padding=True)
+        inputs = processor(text=[english], return_tensors="pt", padding=True)
         with torch.inference_mode():
             features = model.get_text_features(**inputs)
-        vector = _normal(features[0]) - _normal(features[1])
-        length = float(np.linalg.norm(vector))
-        if length < 1e-5:
-            raise ValueError("搜索描述过于笼统，请补充情绪、乐器或场景。")
-        vector /= length
-        return vector, english
+        return _normal(features[0]), english

@@ -42,7 +42,7 @@ class SmartMusicSearchSettingsPage:
         form.addRow("FFmpeg 路径", self.ffmpeg)
         self.limit = QtWidgets.QSpinBox()
         self.limit.setRange(10, 200)
-        form.addRow("结果数量", self.limit)
+        form.addRow("每批显示结果", self.limit)
         layout.addLayout(form)
         layout.addStretch(1)
 

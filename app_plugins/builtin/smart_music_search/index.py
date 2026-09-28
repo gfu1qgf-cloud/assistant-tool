@@ -190,7 +190,6 @@ class MusicIndex:
                 (model_id,),
             ).fetchall()
         parsed = []
-        all_vectors = []
         for row in rows:
             path = row["path"]
             if not Path(path).is_file():
@@ -201,23 +200,13 @@ class MusicIndex:
                 continue
             vector /= max(1e-8, float(np.linalg.norm(vector)))
             parsed.append((path, duration, float(row["start"]), vector))
-            all_vectors.append(vector)
         if not parsed:
             return []
-        # Center the song embeddings as well. With this music checkpoint the
-        # shared direction dominates raw cosine scores, so different prompts
-        # otherwise return almost the same order. Only retrieval changes: the
-        # existing thousands of indexed song vectors remain valid.
-        center = np.mean(np.stack(all_vectors), axis=0)
         grouped = {}
         for path, duration, start, vector in parsed:
             if seconds and duration < seconds and not include_short:
                 continue
-            residual = vector - center
-            residual_norm = float(np.linalg.norm(residual))
-            if residual_norm < 1e-8:
-                continue
-            similarity = float(np.dot(residual / residual_norm, query))
+            similarity = float(np.dot(vector, query))
             grouped.setdefault(path, {"duration": duration, "points": []})["points"].append(
                 (start, similarity)
             )
@@ -239,4 +228,4 @@ class MusicIndex:
                                 "start": best[1], "score": best[0],
                                 "short": bool(seconds and duration < seconds)})
         results.sort(key=lambda item: (-item["score"], item["path"].casefold()))
-        return results[:limit]
+        return results if limit is None else results[:limit]
