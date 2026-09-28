@@ -23,6 +23,7 @@ from app_plugins.builtin import (
     MusicDuckerPlugin,
     SmartVideoEditorPlugin,
     SmartImageSearchPlugin,
+    SmartMusicSearchPlugin,
     TaskAudioSubtitlePlugin,
     TaskDeliveryPlugin,
 )
@@ -808,6 +809,9 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
         )
         self.smart_image_search_plugin = self.plugin_host.install(
             SmartImageSearchPlugin()
+        )
+        self.smart_music_search_plugin = self.plugin_host.install(
+            SmartMusicSearchPlugin()
         )
         self.material_organizer_plugin = self.plugin_host.install(
             MaterialOrganizerPlugin()

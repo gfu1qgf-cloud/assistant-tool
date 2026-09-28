@@ -78,8 +78,25 @@ def _windows_user32():
         wintypes.BOOL,
     ]
     user32.MoveWindow.restype = wintypes.BOOL
+    user32.GetClientRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
+    user32.GetClientRect.restype = wintypes.BOOL
+    user32.GetParent.argtypes = [wintypes.HWND]
+    user32.GetParent.restype = wintypes.HWND
+    user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+    user32.GetWindowThreadProcessId.restype = wintypes.DWORD
+    user32.EnumChildWindows.argtypes = [wintypes.HWND, enum_proc, wintypes.LPARAM]
+    user32.EnumChildWindows.restype = wintypes.BOOL
     _USER32 = user32
     return user32
+
+
+def _native_client_size(hwnd):
+    """Qt sizes are logical pixels; Win32 child windows need physical pixels."""
+    rect = wintypes.RECT()
+    user32 = _windows_user32()
+    if not user32 or not user32.GetClientRect(int(hwnd), ctypes.byref(rect)):
+        return 0, 0
+    return max(1, rect.right - rect.left), max(1, rect.bottom - rect.top)
 
 
 def resolve_ffplay(ffmpeg_path=""):
@@ -371,12 +388,13 @@ class _EmbeddedFfplayReviewSurface(QtWidgets.QFrame):
 
     def _resize_child(self):
         if self._child_hwnd and os.name == "nt":
+            width, height = _native_client_size(self.winId())
             _windows_user32().MoveWindow(
                 self._child_hwnd,
                 0,
                 0,
-                max(1, self.width()),
-                max(1, self.height()),
+                width,
+                height,
                 True,
             )
 
@@ -487,6 +505,31 @@ class _EmbeddedMpvReviewSurface(QtWidgets.QFrame):
     def _process_started(self):
         self.connect_timer.start()
         self._connect_socket()
+        QtCore.QTimer.singleShot(200, self._resize_native_video)
+
+    def _resize_native_video(self):
+        if os.name != "nt" or self.process.state() == QtCore.QProcess.NotRunning:
+            return
+        user32 = _windows_user32()
+        host = int(self.winId())
+        width, height = _native_client_size(host)
+        process_id = int(self.process.processId())
+        if not width or not height or not process_id:
+            return
+
+        def resize_child(hwnd, _lparam):
+            pid = wintypes.DWORD()
+            user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+            if int(user32.GetParent(hwnd) or 0) == host and pid.value == process_id:
+                user32.MoveWindow(hwnd, 0, 0, width, height, True)
+            return True
+
+        callback = user32._lzx_enum_proc_type(resize_child)
+        user32.EnumChildWindows(host, callback, 0)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._resize_native_video()
 
     def _connect_socket(self):
         if self._connected or self._releasing:
@@ -559,6 +602,7 @@ class _EmbeddedMpvReviewSurface(QtWidgets.QFrame):
             return
         event = str(message.get("event") or "")
         if event == "file-loaded":
+            self._resize_native_video()
             self._path_request_id = self._send(["get_property", "path"])
             return
         if event == "property-change":

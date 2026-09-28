@@ -1,5 +1,6 @@
 import json
 import os
+import ctypes
 import tempfile
 import unittest
 from pathlib import Path
@@ -11,6 +12,7 @@ from qt_compat import QtWidgets
 
 from app_plugins.builtin.smart_video_editor.player import (
     _EmbeddedMpvReviewSurface,
+    _native_client_size,
     resolve_mpv,
 )
 
@@ -27,6 +29,19 @@ class SmartVideoMpvPlayerTests(unittest.TestCase):
             with patch.dict(os.environ, {"LZX_MPV_PATH": str(executable)}):
                 os.environ.pop("QT_QPA_PLATFORM", None)
                 self.assertEqual(resolve_mpv(), str(executable))
+
+    def test_native_client_size_uses_physical_not_qt_logical_pixels(self):
+        class FakeUser32:
+            def GetClientRect(self, _hwnd, pointer):
+                from ctypes import wintypes
+                rect = ctypes.cast(pointer, ctypes.POINTER(wintypes.RECT)).contents
+                rect.right = 557
+                rect.bottom = 1000
+                return True
+
+        with patch("app_plugins.builtin.smart_video_editor.player._windows_user32",
+                   return_value=FakeUser32()):
+            self.assertEqual(_native_client_size(123), (557, 1000))
 
     def test_ipc_send_returns_request_id(self):
         surface = _EmbeddedMpvReviewSurface("missing-mpv.exe")

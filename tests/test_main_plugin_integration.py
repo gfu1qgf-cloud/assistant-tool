@@ -65,6 +65,7 @@ class MainPluginIntegrationTests(unittest.TestCase):
                 self.assertIn("库存与素材管理器", plugin_titles)
                 self.assertIn("素材整理…", plugin_titles)
                 self.assertIn("智能搜图…", plugin_titles)
+                self.assertIn("智能搜音乐…", plugin_titles)
                 self.assertIn("监听剪贴板中的 Google 链接", plugin_titles)
                 self.assertIn("Chrome 启动器", plugin_titles)
                 self.assertIn("启动下一个 Chrome", plugin_titles)
@@ -127,6 +128,7 @@ class MainPluginIntegrationTests(unittest.TestCase):
                 self.assertFalse(hasattr(window, "smart_video_editor_thread"))
                 self.assertIsNone(window.material_organizer_plugin.store)
                 self.assertIsNone(window.smart_image_search_plugin.dialog)
+                self.assertIsNone(window.smart_music_search_plugin.dialog)
                 self.assertIsNotNone(window.chrome_plugin.dialog)
                 self.assertIsNotNone(window.audio_splitter_plugin.dialog)
 
