@@ -6,7 +6,7 @@ from pathlib import Path
 
 from qt_compat import QtCore, QtGui, QtMultimedia, QtWidgets
 
-from .audio import media_duration, resolve_tools
+from .audio import encode_reference, media_duration, resolve_tools
 from .encoder import MusicEncoder
 from .index import MusicIndex
 from .settings import normalize_settings
@@ -38,13 +38,13 @@ class _Worker(QtCore.QThread):
             self.failed.emit(f"{type(exc).__name__}: {exc}")
 
 
-class _VideoDropEdit(QtWidgets.QLineEdit):
+class _MediaDropEdit(QtWidgets.QLineEdit):
     pathDropped = QtCore.pyqtSignal()
 
-    def __init__(self, parent=None):
+    def __init__(self, placeholder, parent=None):
         super().__init__(parent)
         self.setAcceptDrops(True)
-        self.setPlaceholderText("可选：拖入视频自动读取时长")
+        self.setPlaceholderText(placeholder)
 
     def dragEnterEvent(self, event):
         if any(url.isLocalFile() for url in event.mimeData().urls()):
@@ -80,7 +80,8 @@ class SmartMusicSearchDialog(QtWidgets.QDialog):
         self._preview_end_ms = None
         layout = QtWidgets.QVBoxLayout(self)
         note = QtWidgets.QLabel(
-            "中文描述在本机翻译后匹配音乐片段。首次建索引较慢，之后只处理新增或变化的歌曲；原文件只读。"
+            "可用文字搜索，或拖入参考音频 / 视频，按所选位置起约 10 秒的声音找相似配乐。"
+            "首次建索引较慢，之后只处理新增或变化的歌曲；原文件只读。"
         )
         note.setWordWrap(True)
         layout.addWidget(note)
@@ -110,6 +111,28 @@ class SmartMusicSearchDialog(QtWidgets.QDialog):
         query_line.addWidget(self.search_button)
         layout.addLayout(query_line)
 
+        reference_line = QtWidgets.QHBoxLayout()
+        reference_line.addWidget(QtWidgets.QLabel("参考音频 / 视频"))
+        self.reference_path = _MediaDropEdit("拖入参考文件，按实际声音找相似配乐")
+        reference_line.addWidget(self.reference_path, 1)
+        reference_choose = QtWidgets.QPushButton("选择…")
+        reference_choose.clicked.connect(self._choose_reference)
+        reference_line.addWidget(reference_choose)
+        layout.addLayout(reference_line)
+        reference_options = QtWidgets.QHBoxLayout()
+        reference_options.addWidget(QtWidgets.QLabel("参考起点"))
+        self.reference_start = QtWidgets.QSpinBox()
+        self.reference_start.setRange(0, 48 * 3600 - 1)
+        self.reference_start.setSuffix(" 秒")
+        self.reference_start.setToolTip("截取此处开始约 10 秒的声音；视频中有人声时，建议选配乐较清晰的位置")
+        reference_options.addWidget(self.reference_start)
+        self.reference_button = QtWidgets.QPushButton("找相似配乐")
+        self.reference_button.clicked.connect(self.search_reference)
+        reference_options.addWidget(self.reference_button)
+        reference_options.addWidget(QtWidgets.QLabel("视频含口播时，结果可能受到人声影响"))
+        reference_options.addStretch(1)
+        layout.addLayout(reference_options)
+
         duration_line = QtWidgets.QHBoxLayout()
         duration_line.addWidget(QtWidgets.QLabel("视频时长"))
         self.duration = QtWidgets.QSpinBox()
@@ -118,7 +141,7 @@ class SmartMusicSearchDialog(QtWidgets.QDialog):
         self.duration.setSuffix(" 秒")
         self.duration.setToolTip("留空不筛选时长；输入时优先找长度足够、能连续使用的音乐")
         duration_line.addWidget(self.duration)
-        self.video_path = _VideoDropEdit()
+        self.video_path = _MediaDropEdit("可选：拖入视频自动读取时长")
         self.video_path.pathDropped.connect(self.read_video_duration)
         duration_line.addWidget(self.video_path, 1)
         choose = QtWidgets.QPushButton("选择视频…")
@@ -186,6 +209,7 @@ class SmartMusicSearchDialog(QtWidgets.QDialog):
         self.worker.finished.connect(self._finished)
         self.index_button.setEnabled(False)
         self.search_button.setEnabled(False)
+        self.reference_button.setEnabled(False)
         self.stop_button.setEnabled(True)
         self.progress.setRange(0, 0)
         self.progress.show()
@@ -199,6 +223,7 @@ class SmartMusicSearchDialog(QtWidgets.QDialog):
     def _finished(self):
         self.index_button.setEnabled(True)
         self.search_button.setEnabled(True)
+        self.reference_button.setEnabled(True)
         self.stop_button.setEnabled(False)
         self.progress.hide()
         self.worker = None
@@ -221,9 +246,12 @@ class SmartMusicSearchDialog(QtWidgets.QDialog):
                 QtWidgets.QMessageBox.warning(self, "部分音频无法索引",
                     "失败文件已保留记录，修改源文件后可以重试。\n" +
                     "\n".join(f"{Path(path).name}: {error}" for path, error in failures[:12]))
-        elif self._task_kind == "search":
+        elif self._task_kind in ("search", "reference"):
             rows, translated = result
-            self.english.setText("模型检索描述：" + translated)
+            self.english.setText(
+                ("参考片段：" if self._task_kind == "reference" else "模型检索描述：")
+                + translated
+            )
             self._show_results(rows)
             self.status.setText(
                 f"找到 {len(rows)} 首候选，已显示 {self._shown_count} 首；"
@@ -292,6 +320,39 @@ class SmartMusicSearchDialog(QtWidgets.QDialog):
             return self.index.search(self.encoder.model_id, vector, seconds=seconds,
                                      limit=None, include_short=include_short), translated
         self._start("search", work)
+
+    def search_reference(self):
+        if self.is_busy():
+            return
+        path = Path(self.reference_path.text().strip())
+        if not path.is_file():
+            QtWidgets.QMessageBox.warning(self, "参考文件不存在", "请拖入或选择一个本地音频 / 视频文件。")
+            return
+        if not self.index.count(self.encoder.model_id):
+            QtWidgets.QMessageBox.information(self, "尚未建索引", "请先点击“建立 / 更新索引”。")
+            return
+        try:
+            ffmpeg, ffprobe = resolve_tools(self.settings["ffmpeg_path"])
+        except Exception as exc:
+            QtWidgets.QMessageBox.warning(self, "音频工具不可用", str(exc))
+            return
+        start = self.reference_start.value()
+        seconds = self.duration.value()
+        include_short = self.include_short.isChecked()
+        def work(_progress, cancelled):
+            if cancelled():
+                return [], ""
+            vector = encode_reference(path, start, self.encoder, ffmpeg, ffprobe)
+            if cancelled():
+                return [], ""
+            rows = self.index.search(self.encoder.model_id, vector, seconds=seconds,
+                                     limit=None, include_short=include_short)
+            # An indexed reference song is not a useful "similar" recommendation.
+            source = os.path.normcase(os.path.abspath(path))
+            rows = [row for row in rows
+                    if os.path.normcase(os.path.abspath(row["path"])) != source]
+            return rows, f"{path.name}，从 {format_time(start)} 起约 10 秒"
+        self._start("reference", work)
 
     def _show_results(self, rows):
         self._results = rows
@@ -385,6 +446,7 @@ class SmartMusicSearchDialog(QtWidgets.QDialog):
             return
         menu = QtWidgets.QMenu(self)
         menu.addAction("试听", self.preview_selected)
+        menu.addAction("以此曲找相似配乐", lambda: self._reference_from_result(result))
         menu.addAction("复制文件路径", lambda: QtWidgets.QApplication.clipboard().setText(result["path"]))
         menu.addAction("打开所在目录", lambda: self._open_file(str(Path(result["path"]).parent)))
         menu.exec(self.table.viewport().mapToGlobal(position))
@@ -403,6 +465,19 @@ class SmartMusicSearchDialog(QtWidgets.QDialog):
         if path:
             self.video_path.setText(path)
             self.read_video_duration()
+
+    def _choose_reference(self):
+        path, _filter = QtWidgets.QFileDialog.getOpenFileName(
+            self, "选择参考音频或视频", "",
+            "媒体 (*.mp3 *.wav *.flac *.m4a *.aac *.ogg *.opus *.wma *.mp4 *.mov *.mkv *.avi *.webm);;所有文件 (*)"
+        )
+        if path:
+            self.reference_path.setText(path)
+
+    def _reference_from_result(self, result):
+        self.reference_path.setText(result["path"])
+        self.reference_start.setValue(int(result["start"]))
+        self.search_reference()
 
     def read_video_duration(self):
         path = self.video_path.text().strip()

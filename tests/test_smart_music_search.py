@@ -10,7 +10,7 @@ import numpy as np
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from qt_compat import QtWidgets
-from app_plugins.builtin.smart_music_search.audio import segment_starts
+from app_plugins.builtin.smart_music_search.audio import encode_reference, segment_starts
 from app_plugins.builtin.smart_music_search.encoder import MODEL_ID, MusicEncoder
 from app_plugins.builtin.smart_music_search.index import MusicIndex, discover_music
 from app_plugins.builtin.smart_music_search.settings import normalize_settings
@@ -43,6 +43,31 @@ class SmartMusicSearchTests(unittest.TestCase):
         self.assertEqual(len(starts), 8)
         self.assertEqual(starts[0], 0)
         self.assertEqual(starts[-1], 590)
+
+    def test_reference_audio_uses_selected_excerpt(self):
+        class Encoder:
+            def audio(self, samples):
+                return np.asarray([float(samples[0]), 1.0], dtype=np.float32)
+
+        with patch("app_plugins.builtin.smart_music_search.audio.media_duration",
+                   return_value=30.0), patch(
+            "app_plugins.builtin.smart_music_search.audio.decode_segment",
+            return_value=np.asarray([0.25], dtype=np.float32),
+        ) as decode:
+            result = encode_reference("reference.mp4", 12.0, Encoder(),
+                                      "ffmpeg", "ffprobe")
+            decode.assert_called_once_with("reference.mp4", 12.0, "ffmpeg")
+            np.testing.assert_array_equal(result, [0.25, 1.0])
+            with self.assertRaisesRegex(ValueError, "超出文件长度"):
+                encode_reference("reference.mp4", 30.0, Encoder(),
+                                 "ffmpeg", "ffprobe")
+        with patch("app_plugins.builtin.smart_music_search.audio.media_duration",
+                   return_value=30.0), patch(
+            "app_plugins.builtin.smart_music_search.audio.decode_segment",
+            return_value=np.zeros(48000, dtype=np.float32),
+        ):
+            with self.assertRaisesRegex(ValueError, "几乎无声"):
+                encode_reference("silent.mp4", 0, Encoder(), "ffmpeg", "ffprobe")
 
     def test_default_library_and_lazy_dialog(self):
         settings = normalize_settings()

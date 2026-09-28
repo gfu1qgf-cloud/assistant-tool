@@ -55,3 +55,17 @@ def decode_segment(path, start, ffmpeg):
     if samples.size < SAMPLE_RATE:
         raise ValueError("音频片段不足 1 秒")
     return samples
+
+
+def encode_reference(path, start, encoder, ffmpeg, ffprobe):
+    """Encode one chosen ten-second excerpt; filenames never affect ranking."""
+    duration = media_duration(path, ffprobe)
+    if start < 0 or start >= duration:
+        raise ValueError(f"参考起点超出文件长度（{duration:.1f} 秒）")
+    try:
+        samples = decode_segment(path, start, ffmpeg)
+    except subprocess.CalledProcessError as exc:
+        raise ValueError("参考文件没有可解码的音轨；请选有声音的音频或视频") from exc
+    if float(np.sqrt(np.mean(np.square(samples.astype(np.float64))))) < 1e-4:
+        raise ValueError("选中的参考片段几乎无声，请换一个参考起点")
+    return encoder.audio(samples)
