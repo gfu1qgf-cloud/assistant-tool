@@ -100,6 +100,19 @@ class DailyLinkArchiveTests(unittest.TestCase):
                          "https://example.test/today")
         self.assertIn("video.mp4", normalized[yesterday]["task_sheet_failures"]["03"])
 
+    def test_main_button_counts_recovered_links_too(self):
+        today = date.today().isoformat()
+        button = QtWidgets.QPushButton()
+        controller = SimpleNamespace(
+            quick_actions=SimpleNamespace(daily_links_button=button),
+            daily_link_history={today: _day_entry("https://example.test/alice")},
+            daily_link_archive={today: _day_entry(
+                "https://example.test/bob", person="Bob"
+            )},
+        )
+        TaskDeliveryController.update_daily_links_button(controller)
+        self.assertIn("2 人、2 个批次链接", button.toolTip())
+
 
 if __name__ == "__main__":
     unittest.main()

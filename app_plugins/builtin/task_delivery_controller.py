@@ -353,9 +353,13 @@ class TaskDeliveryController:
         if self.quick_actions is None:
             return
         today_key = date.today().isoformat()
+        visible_links = merge_link_histories(
+            self.daily_link_archive, self.daily_link_history
+        )
         people_count, link_count = daily_link_counts(
-            self.daily_link_history,
+            visible_links,
             today_key,
+            retain_all=True,
         )
         failure_count = daily_task_sheet_failure_count(
             self.daily_link_history,
