@@ -206,7 +206,8 @@ class SmartMusicSearchDialog(QtWidgets.QDialog):
             suffix = "（已暂停，可继续增量更新）" if result["cancelled"] else ""
             self.status.setText(
                 f"已索引 {self.index.count(self.encoder.model_id)} 首；本次更新 "
-                f"{result['updated']} 首，失败 {result['failed']} 首{suffix}"
+                f"{result['updated']} 首，跳过过短 {result['skipped']} 首，"
+                f"失败 {result['failed']} 首{suffix}"
             )
             if result["failed"]:
                 failures = self.index.failures(self.encoder.model_id)

@@ -8,7 +8,9 @@ from pathlib import Path
 import numpy as np
 
 from app_paths import APP_ROOT
-from .audio import AUDIO_SUFFIXES, decode_segment, media_duration, segment_starts
+from .audio import (
+    AUDIO_SUFFIXES, SEGMENT_SECONDS, decode_segment, media_duration, segment_starts,
+)
 
 INDEX_ROOT = APP_ROOT / "SmartMusicSearch"
 
@@ -64,7 +66,8 @@ class MusicIndex:
     def failures(self, model_id):
         with self._connect() as db:
             return [(row["path"], row["error"]) for row in db.execute(
-                "SELECT path,error FROM tracks WHERE model_id=? AND error<>'' ORDER BY path",
+                "SELECT path,error FROM tracks WHERE model_id=? AND error<>'' "
+                "AND error NOT LIKE 'SKIP:%' ORDER BY path",
                 (model_id,),
             )]
 
@@ -73,15 +76,17 @@ class MusicIndex:
         cancelled = cancelled or (lambda: False)
         files = discover_music(root, cancelled)
         if files is None:
-            return {"cancelled": True, "updated": 0, "failed": 0, "total": 0}
+            return {"cancelled": True, "updated": 0, "failed": 0,
+                    "skipped": 0, "total": 0}
         with self._connect() as db:
             old = {row["path"]: row for row in db.execute(
-                "SELECT path,size,mtime_ns,model_id FROM tracks"
+                "SELECT path,size,mtime_ns,duration,model_id,error FROM tracks"
             )}
         pending = []
         for path in files:
             if cancelled():
                 return {"cancelled": True, "updated": 0, "failed": 0,
+                        "skipped": 0,
                         "total": len(files)}
             try:
                 stat = Path(path).stat()
@@ -90,11 +95,13 @@ class MusicIndex:
             row = old.get(path)
             if (row and row["size"] == stat.st_size
                     and row["mtime_ns"] == stat.st_mtime_ns
-                    and row["model_id"] == encoder.model_id):
+                    and row["model_id"] == encoder.model_id
+                    and not (0 < row["duration"] < SEGMENT_SECONDS
+                             and row["error"] != "SKIP: too short")):
                 continue
             pending.append((path, stat.st_size, stat.st_mtime_ns))
-        updated = failed = 0
-        consecutive_failures = 0
+        updated = failed = skipped = 0
+        consecutive_model_failures = 0
         total = len(pending)
         if total:
             progress(0, total, "正在加载音频模型…")
@@ -103,30 +110,43 @@ class MusicIndex:
             if cancelled():
                 break
             duration, vectors, error = 0.0, [], ""
+            model_failed = False
             try:
                 duration = media_duration(path, ffprobe)
-                for start in segment_starts(duration):
+                if duration < SEGMENT_SECONDS:
+                    # CLAP indexes ten-second excerpts. Tiny effects are not
+                    # useful as full-song candidates and must not abort a scan.
+                    error = "SKIP: too short"
+                    skipped += 1
+                else:
+                    for start in segment_starts(duration):
+                        if cancelled():
+                            break
+                        samples = decode_segment(path, start, ffmpeg)
+                        try:
+                            vector = encoder.audio(samples)
+                        except Exception:
+                            model_failed = True
+                            raise
+                        vectors.append((start, np.asarray(vector, dtype=np.float16).tobytes()))
                     if cancelled():
                         break
-                    samples = decode_segment(path, start, ffmpeg)
-                    vectors.append((start, np.asarray(
-                        encoder.audio(samples), dtype=np.float16
-                    ).tobytes()))
-                if cancelled():
-                    break
-                if not vectors:
-                    raise ValueError("没有得到音频特征")
+                    if not vectors:
+                        raise ValueError("没有得到音频特征")
             except Exception as exc:
                 error = f"{type(exc).__name__}: {exc}"
                 failed += 1
-                consecutive_failures += 1
-                if consecutive_failures >= 3:
+                if model_failed:
+                    consecutive_model_failures += 1
+                else:
+                    consecutive_model_failures = 0
+                if consecutive_model_failures >= 3:
                     raise RuntimeError(
-                        "连续 3 首音频索引失败，已停止以避免整库失败。"
+                        "连续 3 首可解码音频在模型推理阶段失败，已停止。"
                         f"最后错误：{error}"
                     ) from exc
             else:
-                consecutive_failures = 0
+                consecutive_model_failures = 0
             with self._connect() as db:
                 db.execute("DELETE FROM segments WHERE path=?", (path,))
                 db.execute("""INSERT INTO tracks
@@ -151,7 +171,7 @@ class MusicIndex:
                     ((path,) for path in old if path not in valid),
                 )
         return {"cancelled": bool(cancelled()), "updated": updated,
-                "failed": failed, "total": len(files)}
+                "failed": failed, "skipped": skipped, "total": len(files)}
 
     def search(self, model_id, query_vector, *, seconds=0, limit=50,
                include_short=False):

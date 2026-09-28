@@ -89,6 +89,33 @@ class SmartMusicSearchTests(unittest.TestCase):
             with self.assertRaises(FileNotFoundError):
                 index.sync(Path(directory) / "missing", _FakeEncoder(), "", "")
 
+    def test_short_or_broken_files_do_not_abort_following_tracks(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "music"
+            root.mkdir()
+            for name in ("01.mp3", "02.mp3", "03.mp3", "04.mp3", "05.mp3"):
+                (root / name).write_bytes(b"fixture")
+            index = MusicIndex(Path(directory) / "index")
+            encoder = _FakeEncoder()
+
+            def duration(path, _probe):
+                number = int(Path(path).stem)
+                if number == 4:
+                    raise ValueError("broken audio")
+                return 5.0 if number <= 3 else 30.0
+
+            with patch("app_plugins.builtin.smart_music_search.index.media_duration",
+                       side_effect=duration), patch(
+                "app_plugins.builtin.smart_music_search.index.decode_segment",
+                return_value=np.ones(48000, dtype=np.float32),
+            ):
+                result = index.sync(root, encoder, "ffmpeg", "ffprobe")
+                self.assertEqual(result["skipped"], 3)
+                self.assertEqual(result["failed"], 1)
+                self.assertEqual(index.count(encoder.model_id), 1)
+                self.assertEqual(len(index.failures(encoder.model_id)), 1)
+                self.assertEqual(index.sync(root, encoder, "ffmpeg", "ffprobe")["updated"], 0)
+
     def test_english_query_skips_translator(self):
         encoder = MusicEncoder()
         self.assertEqual(encoder.translate("hopeful piano"), "hopeful piano")
