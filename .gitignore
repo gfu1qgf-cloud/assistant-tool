@@ -15,6 +15,7 @@
 /TaskResultPendingFiles.json
 /GoogleSheetMonitorState.json
 /ReviewSubmissionHistory.json
+/DeliveryTodos.sqlite3*
 /VideoUploadHistory.json
 /DailyQuantityStats.json
 /DailyLinkArchive.json

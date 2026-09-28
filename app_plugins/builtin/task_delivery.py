@@ -5,7 +5,10 @@ from qt_compat import QtWidgets
 from app_plugins.api import MAIN_MENU, PluginCommand, PluginMainWidget
 from app_plugins.builtin.task_delivery_controller import TaskDeliveryController
 from app_plugins.builtin.task_delivery_gemini import GeminiKeysDialog
-from app_plugins.builtin.task_delivery_inbox import DeliveryInboxDialog
+from app_plugins.builtin.task_delivery_board import DeliveryBoardDialog
+from model.DeliveryTodoStore import DeliveryTodoStore, collect_delivery_todos
+from model.ReviewSubmissionHistory import review_history_snapshot
+from model.VideoUploadHistory import load_video_upload_history
 from app_plugins.builtin.task_delivery_quick_upload import (
     QuickUploadDialog,
     QuickUploadThread,
@@ -80,6 +83,8 @@ class TaskDeliveryPlugin:
         self.daily_quantity_categories_thread = None
         self.daily_quantity_folder_thread = None
         self.daily_quantity_date_thread = None
+        self.todo_store = None
+        self.delivery_board_dialog = None
 
     def register(self, context):
         self.context = context
@@ -169,11 +174,38 @@ class TaskDeliveryPlugin:
         return self.controller.open_review_status()
 
     def open_delivery_inbox(self):
-        return DeliveryInboxDialog(
-            self.context.load_config(),
-            self.controller.daily_link_history,
-            self.context.parent_widget,
-        ).exec()
+        try:
+            self.sync_delivery_todos()
+            if self.delivery_board_dialog is None:
+                self.delivery_board_dialog = DeliveryBoardDialog(
+                    self.todo_store, self.sync_delivery_todos, self.context.parent_widget,
+                )
+            self.delivery_board_dialog.render()
+            self.delivery_board_dialog.show()
+            self.delivery_board_dialog.raise_()
+            self.delivery_board_dialog.activateWindow()
+            return self.delivery_board_dialog
+        except Exception as error:
+            self.context.log(f"交付待办无法打开：{error}")
+            QtWidgets.QMessageBox.warning(self.context.parent_widget, "交付待办", str(error))
+            return None
+
+    def sync_delivery_todos(self, snapshot=None):
+        """Import new evidence, never auto-complete or discard an existing task."""
+        if self.todo_store is None:
+            self.todo_store = DeliveryTodoStore()
+        reviews = (snapshot if snapshot is not None else review_history_snapshot()).get("all", [])
+        records = load_video_upload_history(self.context.load_config()).get("records", [])
+        sources = collect_delivery_todos(
+            records, reviews, self.controller.daily_link_history,
+        )
+        added = self.todo_store.add_sources(sources)
+        changed = self.todo_store.mark_old_review_versions(reviews)
+        archived = self.todo_store.archive_completed()
+        dialog = self.delivery_board_dialog
+        if (added or changed or archived) and dialog is not None and dialog.isVisible():
+            dialog.render()
+        return added
 
     def open_gemini_keys(self):
         dialog = GeminiKeysDialog(

@@ -109,6 +109,10 @@ class TaskDeliveryController:
         self.register_hotkey(self.global_hotkey, show_error=False)
         self.update_daily_links_button()
         self.update_review_status_button()
+        try:
+            self.plugin.sync_delivery_todos()
+        except Exception as error:
+            self.context.log(f"交付待办初始化失败：{error}", logging.ERROR)
         self.start_review_status_monitor()
 
     def update_config(self, config):
@@ -443,6 +447,10 @@ class TaskDeliveryController:
                 f"任务提交表有 {failed_file_count} 个视频未能确认填写成功，"
                 "已加入每日待核对记录。"
             )
+        try:
+            self.plugin.sync_delivery_todos()
+        except Exception as error:
+            self.context.log(f"交付待办更新失败：{error}", logging.ERROR)
         return saved_link_count, failed_file_count
 
     def update_review_status_button(self, snapshot=None):
@@ -555,6 +563,10 @@ class TaskDeliveryController:
 
     def on_review_status_snapshot(self, snapshot):
         self.update_review_status_button(snapshot)
+        try:
+            self.plugin.sync_delivery_todos(snapshot)
+        except Exception as error:
+            self.context.log(f"审核待办更新失败：{error}", logging.ERROR)
         delivery = getattr(self.window, "task_delivery_plugin", None)
         quantity_dialog = getattr(delivery, "daily_quantity_dialog", None)
         if quantity_dialog is not None and quantity_dialog.isVisible():
