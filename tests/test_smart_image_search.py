@@ -15,7 +15,7 @@ from app_plugins.builtin.smart_image_search.index import (
 )
 from app_plugins.builtin.smart_image_search.settings import normalize_settings
 from app_plugins.builtin.smart_image_search.ui import (
-    SmartImageSearchDialog, _move_external,
+    SmartImageSearchDialog, _fitted_icon, _move_external,
 )
 
 
@@ -89,6 +89,11 @@ class ImageSearchIndexTests(unittest.TestCase):
                                            source_kind="material"), [])
         self.assertEqual(len(self.index.search(self.encoder.model_id, [0, 1],
                                                source_kind="person")), 1)
+
+    def test_search_can_return_all_matches(self):
+        self.index.sync(group(self.red, self.blue), self.encoder)
+        self.assertEqual(len(self.index.search(self.encoder.model_id, [1, 0],
+                                               limit=None)), 2)
 
     def test_model_load_failure_does_not_poison_index(self):
         class BrokenEncoder(FakeEncoder):
@@ -182,6 +187,36 @@ class ImageSearchDialogTests(unittest.TestCase):
                 self.assertIn("red.png", dialog.results.item(0).text())
             finally:
                 dialog.close()
+
+    def test_results_are_paged_without_losing_remaining_matches(self):
+        with tempfile.TemporaryDirectory() as folder:
+            dialog = SmartImageSearchDialog(
+                {"result_limit": 20}, index=ImageSearchIndex(Path(folder) / "index"),
+                encoder=FakeEncoder(), store=object(),
+            )
+            try:
+                rows = [
+                    {"path": str(Path(folder) / f"image-{number}.png"),
+                     "source_name": "图库", "source_kind": "folder",
+                     "score": 0.5, "thumbnail": ""}
+                    for number in range(23)
+                ]
+                dialog._show_results(rows)
+                self.assertEqual(dialog.results.count(), 20)
+                self.assertFalse(dialog.load_more_button.isHidden())
+                dialog._append_page()
+                self.assertEqual(dialog.results.count(), 23)
+                self.assertEqual(dialog._shown, 23)
+            finally:
+                dialog.close()
+
+    def test_portrait_thumbnail_keeps_its_aspect_ratio(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "portrait.png"
+            Image.new("RGB", (25, 100), (255, 0, 0)).save(path)
+            pixels = _fitted_icon(path).pixmap(175, 175).toImage()
+            self.assertEqual(pixels.pixelColor(0, 87).alpha(), 0)
+            self.assertGreater(pixels.pixelColor(87, 87).alpha(), 0)
 
 
 if __name__ == "__main__":

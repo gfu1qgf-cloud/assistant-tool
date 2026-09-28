@@ -245,6 +245,7 @@ class ImageSearchIndex:
             return result
 
     def search(self, model_id, vector, limit=60, source_kind=""):
+        """Return ranked matches; limit=None allows the UI to page every match."""
         rows, matrix = self._matrix(model_id)
         if not rows:
             return []
@@ -262,10 +263,13 @@ class ImageSearchIndex:
             excluded = [index for index, row in enumerate(rows)
                         if row["source_kind"] != source_kind]
             scores[excluded] = -np.inf
-        candidates = min(len(rows), max(limit * 8, limit))
-        top = np.argpartition(scores, -candidates)[-candidates:]
+        target = len(rows) if limit is None else max(0, int(limit))
+        if not target:
+            return []
         result = []
-        for index in sorted(top, key=lambda item: float(scores[item]), reverse=True):
+        # Sorting the full score array is cheap for a local library and avoids
+        # losing results when many top-ranked files were moved externally.
+        for index in np.argsort(-scores):
             row = rows[int(index)]
             if not np.isfinite(scores[index]):
                 continue
@@ -274,6 +278,6 @@ class ImageSearchIndex:
             if not Path(row["path"]).is_file():
                 continue
             result.append({**row, "score": float(scores[index])})
-            if len(result) >= limit:
+            if len(result) >= target:
                 break
         return result

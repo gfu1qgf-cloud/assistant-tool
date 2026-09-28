@@ -15,9 +15,9 @@ def normalize_settings(value=None):
     if model not in MODEL_IDS:
         model = "base"
     try:
-        limit = int(value.get("result_limit", 60))
+        limit = int(value.get("result_limit", 200))
     except (TypeError, ValueError):
-        limit = 60
+        limit = 200
     roots = []
     seen = set()
     raw_roots = value.get("library_roots", ())
@@ -29,7 +29,7 @@ def normalize_settings(value=None):
         if key and key not in seen:
             roots.append(path)
             seen.add(key)
-    return {"model": model, "result_limit": min(200, max(10, limit)),
+    return {"model": model, "result_limit": min(500, max(20, limit)),
             "library_roots": roots}
 
 
@@ -40,7 +40,7 @@ class SmartImageSearchSettingsPage:
         note = QtWidgets.QLabel(
             "智能搜图在后台为库存图片建立本地索引，首次使用才下载中文模型。"
             "当前电脑使用 CPU 版 PyTorch，因此默认采用中文 CLIP Base。"
-            "更换模型版本时需要重新计算图片特征。"
+            "搜索覆盖整个索引，结果分页展示；每批数量不会限制总结果。"
         )
         note.setWordWrap(True)
         layout.addWidget(note)
@@ -48,9 +48,10 @@ class SmartImageSearchSettingsPage:
         self.model = QtWidgets.QComboBox()
         self.model.addItem("中文 CLIP Base（CPU 推荐，约 753 MB）", "base")
         self.result_limit = QtWidgets.QSpinBox()
-        self.result_limit.setRange(10, 200)
+        self.result_limit.setRange(20, 500)
+        self.result_limit.setSingleStep(20)
         form.addRow("检索模型", self.model)
-        form.addRow("最多展示", self.result_limit)
+        form.addRow("每批展示", self.result_limit)
         layout.addLayout(form)
         layout.addWidget(QtWidgets.QLabel("额外图片库文件夹（递归搜索子目录）"))
         self.roots = QtWidgets.QListWidget()

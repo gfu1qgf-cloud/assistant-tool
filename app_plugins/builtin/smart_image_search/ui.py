@@ -1,6 +1,7 @@
 """Non-modal Chinese image search for existing inventory material files."""
 
 import shutil
+import time
 from pathlib import Path
 
 from qt_compat import QtCore, QtGui, QtWidgets
@@ -10,6 +11,25 @@ from model.InventoryManager import InventoryStore
 from .encoder import ChineseImageEncoder
 from .index import ImageSearchIndex, discover_external_groups
 from .settings import normalize_settings
+
+
+def _fitted_icon(path, size=175):
+    """Letterbox the cached thumbnail instead of stretching portrait images."""
+    source = QtGui.QPixmap(str(path))
+    if source.isNull():
+        return QtGui.QIcon()
+    fitted = source.scaled(
+        size, size,
+        QtCore.Qt.AspectRatioMode.KeepAspectRatio,
+        QtCore.Qt.TransformationMode.SmoothTransformation,
+    )
+    canvas = QtGui.QPixmap(size, size)
+    canvas.fill(QtCore.Qt.GlobalColor.transparent)
+    painter = QtGui.QPainter(canvas)
+    painter.drawPixmap((size - fitted.width()) // 2,
+                       (size - fitted.height()) // 2, fitted)
+    painter.end()
+    return QtGui.QIcon(canvas)
 
 
 class _ImageDropEdit(QtWidgets.QLineEdit):
@@ -115,6 +135,9 @@ class SmartImageSearchDialog(QtWidgets.QDialog):
         self.index = index or ImageSearchIndex()
         self.encoder = encoder or ChineseImageEncoder(self.settings["model"])
         self.worker = None
+        self._search_rows = []
+        self._shown = 0
+        self._search_details = ""
         self._model_notice_acknowledged = False
         layout = QtWidgets.QVBoxLayout(self)
 
@@ -178,13 +201,18 @@ class SmartImageSearchDialog(QtWidgets.QDialog):
         self.results.setResizeMode(QtWidgets.QListView.ResizeMode.Adjust)
         self.results.setMovement(QtWidgets.QListView.Movement.Static)
         self.results.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.ExtendedSelection)
-        self.results.setIconSize(QtCore.QSize(175, 135))
-        self.results.setGridSize(QtCore.QSize(205, 205))
+        self.results.setIconSize(QtCore.QSize(175, 175))
+        self.results.setGridSize(QtCore.QSize(205, 245))
         self.results.setWordWrap(True)
         self.results.itemDoubleClicked.connect(self._open_item)
         self.results.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
         self.results.customContextMenuRequested.connect(self._show_context_menu)
         layout.addWidget(self.results, 1)
+
+        self.load_more_button = QtWidgets.QPushButton("加载更多")
+        self.load_more_button.clicked.connect(self._append_page)
+        self.load_more_button.setVisible(False)
+        layout.addWidget(self.load_more_button)
 
         action_row = QtWidgets.QHBoxLayout()
         self.status = QtWidgets.QLabel("索引仅存储在本机；移动素材后会立即从检索结果中移除。")
@@ -210,6 +238,9 @@ class SmartImageSearchDialog(QtWidgets.QDialog):
             self.encoder = ChineseImageEncoder(self.settings["model"])
             self._model_notice_acknowledged = False
             self.results.clear()
+            self._search_rows = []
+            self._shown = 0
+            self.load_more_button.setVisible(False)
             self._refresh_index_status()
 
     def _confirm_model(self):
@@ -252,6 +283,7 @@ class SmartImageSearchDialog(QtWidgets.QDialog):
         self.search_button.setEnabled(False)
         self.move_button.setEnabled(False)
         self.copy_button.setEnabled(False)
+        self.load_more_button.setEnabled(False)
         self.cancel_button.setEnabled(True)
         self.status.setText(message)
         self.progress_bar.setRange(0, 0)
@@ -293,14 +325,24 @@ class SmartImageSearchDialog(QtWidgets.QDialog):
         if not self._confirm_model():
             return
         scope = str(self.scope.currentData() or "")
-        limit = self.settings["result_limit"]
         def task(progress, _cancelled):
+            load_start = time.perf_counter()
+            prepare = getattr(self.encoder, "prepare", None)
+            if callable(prepare) and not getattr(self.encoder, "is_loaded", False):
+                progress(0, 0, "正在加载中文模型（首次搜索需要数秒）…")
+                prepare()
+            load_seconds = time.perf_counter() - load_start
             progress(0, 0, "正在分析搜索条件…")
+            encode_start = time.perf_counter()
             vector = self.encoder.text(query) if mode == 0 else self.encoder.image(query)
+            encode_seconds = time.perf_counter() - encode_start
             progress(0, 0, "正在检索已建立的图片索引…")
+            search_start = time.perf_counter()
             return {"kind": "search", "rows": self.index.search(
-                self.encoder.model_id, vector, limit, scope
-            )}
+                self.encoder.model_id, vector, None, scope
+            ), "load_seconds": load_seconds,
+                "encode_seconds": encode_seconds,
+                "search_seconds": time.perf_counter() - search_start}
         self._start(task, "正在搜索…")
 
     def _progress(self, done, total, message):
@@ -322,8 +364,13 @@ class SmartImageSearchDialog(QtWidgets.QDialog):
                 + (" 已暂停，下次可续建。" if result["cancelled"] else "")
             )
         elif kind == "search":
+            self._search_details = (
+                f"条件 {result['encode_seconds']:.2f} 秒 · "
+                f"检索 {result['search_seconds']:.2f} 秒"
+            )
+            if result["load_seconds"] >= 0.1:
+                self._search_details += f" · 模型加载 {result['load_seconds']:.1f} 秒"
             self._show_results(result["rows"])
-            self.status.setText(f"找到 {len(result['rows'])} 张候选图；分数仅用于排序，不是准确率。")
         elif kind == "move":
             moved = result["moved"]
             self.index.remove_paths(item["source"] for item in moved)
@@ -346,13 +393,20 @@ class SmartImageSearchDialog(QtWidgets.QDialog):
         self.search_button.setEnabled(True)
         self.move_button.setEnabled(True)
         self.copy_button.setEnabled(True)
+        self.load_more_button.setEnabled(True)
         self.cancel_button.setEnabled(False)
         self.progress_bar.setVisible(False)
         self.update_settings(self.settings)
 
     def _show_results(self, rows):
         self.results.clear()
-        for row in rows:
+        self._search_rows = list(rows)
+        self._shown = 0
+        self._append_page()
+
+    def _append_page(self):
+        end = min(len(self._search_rows), self._shown + self.settings["result_limit"])
+        for row in self._search_rows[self._shown:end]:
             path = str(row["path"])
             caption = f"{Path(path).name}\n{row['source_name']} · {row['score']:.3f}"
             item = QtWidgets.QListWidgetItem(caption)
@@ -361,8 +415,20 @@ class SmartImageSearchDialog(QtWidgets.QDialog):
             item.setToolTip(f"{path}\n来源：{row['source_name']}\n相似度排序分数：{row['score']:.4f}")
             thumbnail = str(row.get("thumbnail") or "")
             if Path(thumbnail).is_file():
-                item.setIcon(QtGui.QIcon(thumbnail))
+                item.setIcon(_fitted_icon(thumbnail))
             self.results.addItem(item)
+        self._shown = end
+        self.load_more_button.setVisible(end < len(self._search_rows))
+        self.load_more_button.setText(
+            f"加载更多（下一批 {min(self.settings['result_limit'], len(self._search_rows) - end)} 张）"
+        )
+        self._update_result_status()
+
+    def _update_result_status(self):
+        self.status.setText(
+            f"已显示 {self._shown:,} / 共 {len(self._search_rows):,} 张 · "
+            f"{self._search_details}。分数仅用于排序，不是准确率。"
+        )
 
     def _selected_paths(self):
         return [str(item.data(QtCore.Qt.ItemDataRole.UserRole))
@@ -377,10 +443,16 @@ class SmartImageSearchDialog(QtWidgets.QDialog):
 
     def _remove_result_paths(self, paths):
         normalized = {str(Path(path).resolve()).casefold() for path in paths}
+        self._search_rows = [
+            row for row in self._search_rows
+            if str(Path(row["path"]).resolve()).casefold() not in normalized
+        ]
         for row in range(self.results.count() - 1, -1, -1):
             item = self.results.item(row)
             if str(Path(item.data(QtCore.Qt.ItemDataRole.UserRole)).resolve()).casefold() in normalized:
                 self.results.takeItem(row)
+        self._shown = self.results.count()
+        self.load_more_button.setVisible(self._shown < len(self._search_rows))
 
     def _transfer(self, operation):
         selected = self._selected_records()

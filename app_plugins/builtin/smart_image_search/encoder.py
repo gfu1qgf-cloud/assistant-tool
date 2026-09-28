@@ -26,6 +26,14 @@ class ChineseImageEncoder:
         self.model_id = f"{self.repository_id}@{MODEL_REVISION}"
         self._runtime = None
 
+    @property
+    def is_loaded(self):
+        return self._runtime is not None
+
+    def prepare(self):
+        """Load once so the UI can report model loading separately from encoding."""
+        self._load()
+
     def model_is_cached(self):
         try:
             from huggingface_hub import try_to_load_from_cache
