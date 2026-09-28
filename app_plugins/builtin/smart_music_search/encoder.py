@@ -23,7 +23,56 @@ MOOD_QUERIES = {
     "恐怖音乐": "ominous horror soundtrack with eerie suspense and frightening tension",
     "惊悚": "ominous suspenseful thriller soundtrack",
     "惊悚音乐": "ominous suspenseful thriller soundtrack",
+    "懊悔": "somber mournful introspective instrumental music",
+    "懊悔自责": "somber mournful introspective instrumental music",
+    "悲伤": "sad melancholic instrumental music",
+    "忧郁": "melancholic reflective instrumental music",
 }
+
+# These are acoustic descriptions, not guesses based on the library filenames.
+# Keeping the phrases visible in the UI makes the Chinese presets predictable.
+MOOD_TAGS = {
+    "懊悔自责": "somber mournful introspective",
+    "哀伤": "sad melancholic",
+    "忧郁": "melancholic reflective",
+    "恐怖": "ominous eerie",
+    "紧张": "tense suspenseful",
+    "孤独": "lonely wistful",
+    "庄严": "solemn reverent",
+    "温暖": "warm gentle",
+    "希望": "hopeful uplifting",
+    "激昂": "dramatic energetic",
+    "平静": "calm peaceful",
+    "欢快": "joyful upbeat",
+    "神秘": "mysterious atmospheric",
+}
+SOUND_TAGS = {
+    "钢琴": "piano",
+    "弦乐": "strings",
+    "管弦乐": "orchestral",
+    "合唱": "choir",
+    "吉他": "guitar",
+    "电子": "electronic",
+}
+for _label, _description in MOOD_TAGS.items():
+    MOOD_QUERIES.setdefault(_label, f"{_description} instrumental music")
+for _label, _description in SOUND_TAGS.items():
+    MOOD_QUERIES.setdefault(_label, f"{_description} music")
+
+
+def build_music_prompt(query, moods=(), sounds=(), translate=None):
+    """Compose selected acoustic qualities without translating the preset labels."""
+    query = str(query or "").strip()
+    moods = tuple(moods)
+    sounds = tuple(sounds)
+    parts = []
+    if query and query not in moods and query not in sounds:
+        parts.append((translate(query) if translate else query).strip().rstrip("."))
+    parts.extend(MOOD_TAGS[label] for label in moods if label in MOOD_TAGS)
+    parts.extend(SOUND_TAGS[label] for label in sounds if label in SOUND_TAGS)
+    if moods or sounds:
+        parts.append("music" if sounds else "instrumental music")
+    return " ".join(part for part in parts if part).strip()
 
 
 def _normal(vector):

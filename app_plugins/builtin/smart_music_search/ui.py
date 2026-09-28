@@ -7,7 +7,7 @@ from pathlib import Path
 from qt_compat import QtCore, QtGui, QtMultimedia, QtWidgets
 
 from .audio import encode_reference, media_duration, resolve_tools
-from .encoder import MusicEncoder
+from .encoder import MusicEncoder, MOOD_TAGS, SOUND_TAGS, build_music_prompt
 from .index import MusicIndex
 from .settings import normalize_settings
 
@@ -66,7 +66,7 @@ class SmartMusicSearchDialog(QtWidgets.QDialog):
     def __init__(self, settings, parent=None, index=None, encoder=None):
         super().__init__(parent)
         self.setWindowTitle("智能搜音乐")
-        self.resize(1010, 670)
+        self.resize(1050, 800)
         self.settings = normalize_settings(settings)
         self.index = index or MusicIndex()
         self.encoder = encoder or MusicEncoder()
@@ -101,15 +101,36 @@ class SmartMusicSearchDialog(QtWidgets.QDialog):
         layout.addWidget(self.progress)
 
         query_line = QtWidgets.QHBoxLayout()
-        query_line.addWidget(QtWidgets.QLabel("情绪 / 场景"))
+        query_line.addWidget(QtWidgets.QLabel("情绪 / 场景 / 歌名"))
         self.query = QtWidgets.QLineEdit()
         self.query.setPlaceholderText("例如：庄严、充满希望、逐渐激昂的管弦乐")
         self.query.returnPressed.connect(self.search)
         query_line.addWidget(self.query, 1)
+        self.filename_match = QtWidgets.QCheckBox("匹配文件名")
+        self.filename_match.setToolTip(
+            "默认关闭。启用后，歌名直接命中的结果会单独置顶；不会改变音频语义相似度。"
+        )
+        query_line.addWidget(self.filename_match)
         self.search_button = QtWidgets.QPushButton("搜索")
         self.search_button.clicked.connect(self.search)
         query_line.addWidget(self.search_button)
         layout.addLayout(query_line)
+
+        tag_box = QtWidgets.QGroupBox("中文标签 · 可多选组合；不填文字也能搜索")
+        tag_grid = QtWidgets.QGridLayout(tag_box)
+        tag_grid.setSpacing(6)
+        self.mood_buttons = {}
+        self.sound_buttons = {}
+        for number, label in enumerate(MOOD_TAGS):
+            button = self._make_tag_button(label, MOOD_TAGS[label])
+            self.mood_buttons[label] = button
+            tag_grid.addWidget(button, number // 7, number % 7)
+        tag_grid.addWidget(QtWidgets.QLabel("声音 / 编制"), 2, 0)
+        for number, label in enumerate(SOUND_TAGS, start=1):
+            button = self._make_tag_button(label, SOUND_TAGS[label])
+            self.sound_buttons[label] = button
+            tag_grid.addWidget(button, 2, number)
+        layout.addWidget(tag_box)
 
         reference_line = QtWidgets.QHBoxLayout()
         reference_line.addWidget(QtWidgets.QLabel("参考音频 / 视频"))
@@ -158,7 +179,7 @@ class SmartMusicSearchDialog(QtWidgets.QDialog):
         self.english.setTextInteractionFlags(QtCore.Qt.TextInteractionFlag.TextSelectableByMouse)
         layout.addWidget(self.english)
         self.table = QtWidgets.QTableWidget(0, 5)
-        self.table.setHorizontalHeaderLabels(["匹配", "歌曲", "所在目录", "曲长", "建议试听起点"])
+        self.table.setHorizontalHeaderLabels(["匹配方式 / 相似度", "歌曲", "所在目录", "曲长", "建议试听起点"])
         self.table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.setAlternatingRowColors(True)
@@ -184,6 +205,25 @@ class SmartMusicSearchDialog(QtWidgets.QDialog):
         bottom.addWidget(QtWidgets.QLabel("相似度仅用于排序，仍需试听确认。"))
         layout.addLayout(bottom)
         self._refresh_count()
+
+    @staticmethod
+    def _make_tag_button(label, english):
+        button = QtWidgets.QToolButton()
+        button.setText(label)
+        button.setCheckable(True)
+        button.setToolTip(f"模型描述：{english}；可与其他标签组合")
+        button.setStyleSheet("""
+            QToolButton { background:#f5f7fa; color:#30475b; padding:5px 10px;
+                border:1px solid #cbd5df; border-radius:12px; }
+            QToolButton:checked { background:#dceaff; color:#164e91;
+                border:1px solid #4f91d5; font-weight:600; }
+        """)
+        return button
+
+    def _selected_tags(self):
+        moods = tuple(label for label, button in self.mood_buttons.items() if button.isChecked())
+        sounds = tuple(label for label, button in self.sound_buttons.items() if button.isChecked())
+        return moods, sounds
 
     def update_settings(self, settings):
         self.settings = normalize_settings(settings)
@@ -247,14 +287,20 @@ class SmartMusicSearchDialog(QtWidgets.QDialog):
                     "失败文件已保留记录，修改源文件后可以重试。\n" +
                     "\n".join(f"{Path(path).name}: {error}" for path, error in failures[:12]))
         elif self._task_kind in ("search", "reference"):
-            rows, translated = result
+            if self._task_kind == "search":
+                rows, translated, filename_count = result
+            else:
+                rows, translated = result
+                filename_count = 0
             self.english.setText(
                 ("参考片段：" if self._task_kind == "reference" else "模型检索描述：")
                 + translated
             )
             self._show_results(rows)
             self.status.setText(
-                f"找到 {len(rows)} 首候选，已显示 {self._shown_count} 首；"
+                f"找到 {len(rows)} 首候选"
+                + (f"（文件名直接命中 {filename_count} 首）" if filename_count else "")
+                + f"，已显示 {self._shown_count} 首；"
                 "双击试听，右键可复制路径或打开目录"
             )
         elif self._task_kind == "duration":
@@ -294,13 +340,30 @@ class SmartMusicSearchDialog(QtWidgets.QDialog):
         if self.is_busy():
             return
         query = self.query.text().strip()
-        if not query:
+        moods, sounds = self._selected_tags()
+        if not query and not moods and not sounds:
             self.query.setFocus()
             return
+        self._show_results([])
+        self.english.setText("")
+        seconds = self.duration.value()
+        include_short = self.include_short.isChecked()
+        filename_hits = (
+            self.index.search_filename(query, seconds=seconds)
+            if self.filename_match.isChecked() and query else []
+        )
+        if filename_hits:
+            self._show_results(filename_hits)
+            self.english.setText("文件名直接命中；这部分不使用音频相似度评分")
+            self.status.setText(f"文件名找到 {len(filename_hits)} 首；音频语义结果正在准备…")
         if not self.index.count(self.encoder.model_id):
-            QtWidgets.QMessageBox.information(self, "尚未建索引", "请先点击“建立 / 更新索引”。")
+            if filename_hits:
+                self.status.setText(f"文件名找到 {len(filename_hits)} 首；要搜索相似声音，请先更新索引")
+            else:
+                QtWidgets.QMessageBox.information(self, "尚未建索引", "请先点击“建立 / 更新索引”。")
             return
-        if (self.encoder.needs_translation(query)
+        if (query not in moods and query not in sounds
+                and self.encoder.needs_translation(query)
                 and not self.encoder.translation_is_cached()):
             answer = QtWidgets.QMessageBox.question(
                 self, "首次下载中文翻译模型",
@@ -309,16 +372,19 @@ class SmartMusicSearchDialog(QtWidgets.QDialog):
             )
             if answer != QtWidgets.QMessageBox.StandardButton.Yes:
                 return
-        seconds = self.duration.value()
-        include_short = self.include_short.isChecked()
         def work(_progress, cancelled):
             if cancelled():
-                return [], ""
-            vector, translated = self.encoder.text(query)
+                return filename_hits, "", len(filename_hits)
+            prompt = build_music_prompt(query, moods, sounds, self.encoder.translate)
+            vector, translated = self.encoder.text(prompt)
             if cancelled():
-                return [], translated
-            return self.index.search(self.encoder.model_id, vector, seconds=seconds,
-                                     limit=None, include_short=include_short), translated
+                return filename_hits, translated, len(filename_hits)
+            semantic = self.index.search(self.encoder.model_id, vector, seconds=seconds,
+                                         limit=None, include_short=include_short)
+            named_paths = {os.path.normcase(row["path"]) for row in filename_hits}
+            rows = filename_hits + [row for row in semantic
+                                    if os.path.normcase(row["path"]) not in named_paths]
+            return rows, translated, len(filename_hits)
         self._start("search", work)
 
     def search_reference(self):
@@ -372,12 +438,16 @@ class SmartMusicSearchDialog(QtWidgets.QDialog):
                 folder = str(path.parent.relative_to(root))
             except ValueError:
                 folder = str(path.parent)
-            fields = [f"{result['score']:.3f}", path.name, folder,
+            match_label = "文件名命中" if result.get("match_type") == "filename" else f"{result['score']:.3f}"
+            fields = [match_label, path.name, folder,
                       format_time(result["duration"]), format_time(result["start"])]
             for column, value in enumerate(fields):
                 item = QtWidgets.QTableWidgetItem(value)
                 item.setToolTip(str(path))
                 self.table.setItem(row_index, column, item)
+            if result.get("match_type") == "filename":
+                self.table.item(row_index, 0).setToolTip("文件名直接匹配；不代表音频情绪相似度")
+                self.table.item(row_index, 0).setBackground(QtGui.QColor("#e4efff"))
             if result["short"]:
                 for column in range(5):
                     self.table.item(row_index, column).setBackground(QtGui.QColor("#fff0d6"))

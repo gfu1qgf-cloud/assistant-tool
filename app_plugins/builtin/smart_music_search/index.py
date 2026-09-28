@@ -3,6 +3,7 @@
 import os
 import sqlite3
 import time
+import unicodedata
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -14,6 +15,11 @@ from .audio import (
 )
 
 INDEX_ROOT = APP_ROOT / "SmartMusicSearch"
+
+
+def _name_key(text):
+    return "".join(char for char in unicodedata.normalize("NFKC", str(text)).casefold()
+                   if char.isalnum())
 
 
 def discover_music(root, cancelled=lambda: False):
@@ -76,6 +82,34 @@ class MusicIndex:
                 "AND error NOT LIKE 'SKIP:%' ORDER BY path",
                 (model_id,),
             )]
+
+    def search_filename(self, query, *, seconds=0):
+        """Find literal title matches separately; never alter audio similarity scores."""
+        query_name = Path(str(query).strip()).name
+        if Path(query_name).suffix.lower() in AUDIO_SUFFIXES:
+            query_name = Path(query_name).stem
+        needle = _name_key(query_name)
+        if not needle:
+            return []
+        with self._connect() as db:
+            tracks = db.execute("SELECT path,duration FROM tracks").fetchall()
+        matches = []
+        for row in tracks:
+            path = Path(row["path"])
+            title = _name_key(path.stem)
+            position = title.find(needle)
+            if position < 0 or not path.is_file():
+                continue
+            duration = float(row["duration"])
+            matches.append({
+                "path": str(path), "duration": duration, "start": 0.0,
+                "score": 0.0, "short": bool(seconds and duration < seconds),
+                "match_type": "filename", "_order": (position, len(title), str(path).casefold()),
+            })
+        matches.sort(key=lambda row: row["_order"])
+        for row in matches:
+            del row["_order"]
+        return matches
 
     def sync(self, root, encoder, ffmpeg, ffprobe, progress=None, cancelled=None):
         progress = progress or (lambda _done, _total, _msg: None)

@@ -11,7 +11,9 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from qt_compat import QtWidgets
 from app_plugins.builtin.smart_music_search.audio import encode_reference, segment_starts
-from app_plugins.builtin.smart_music_search.encoder import MODEL_ID, MusicEncoder
+from app_plugins.builtin.smart_music_search.encoder import (
+    MODEL_ID, MusicEncoder, build_music_prompt,
+)
 from app_plugins.builtin.smart_music_search.index import MusicIndex, discover_music
 from app_plugins.builtin.smart_music_search.settings import normalize_settings
 from app_plugins.builtin.smart_music_search.ui import SmartMusicSearchDialog
@@ -151,6 +153,23 @@ class SmartMusicSearchTests(unittest.TestCase):
         self.assertTrue(encoder.needs_translation("庄严的配乐"))
         self.assertIn("larger_clap_general", MODEL_ID)
 
+    def test_chinese_tags_combine_without_translating_the_presets(self):
+        def unexpected_translation(_query):
+            self.fail("selected Chinese tags must bypass the translation model")
+
+        self.assertEqual(
+            build_music_prompt("", ("懊悔自责",), ("钢琴",), unexpected_translation),
+            "somber mournful introspective piano music",
+        )
+        self.assertEqual(
+            build_music_prompt("恐怖", ("恐怖",), (), unexpected_translation),
+            "ominous eerie instrumental music",
+        )
+        self.assertEqual(
+            MusicEncoder().translate("懊悔自责"),
+            "somber mournful introspective instrumental music",
+        )
+
     def test_text_encoding_uses_full_model_direction(self):
         class Tensor:
             def __init__(self, values):
@@ -240,6 +259,54 @@ class SmartMusicSearchTests(unittest.TestCase):
                                 np.asarray(vector, dtype=np.float16).tobytes()))
             results = index.search("test", [1, 0], limit=None)
             self.assertEqual(Path(results[0]["path"]).name, "欢快.mp3")
+
+    def test_filename_match_is_optional_separate_and_keeps_short_song(self):
+        with tempfile.TemporaryDirectory() as directory:
+            index = MusicIndex(Path(directory) / "index")
+            song = Path(directory) / "PYZ-懊悔自责（加长版）_20230317.wav"
+            other = Path(directory) / "明亮.mp3"
+            with index._connect() as db:
+                for path, vector in ((song, [0, 1]), (other, [1, 0])):
+                    path.write_bytes(b"fixture")
+                    db.execute("INSERT INTO tracks VALUES (?,?,?,?,?,?,?)",
+                               (str(path), 7, 0, 81.0, "test", "", 0.0))
+                    db.execute("INSERT INTO segments VALUES (?,?,?)",
+                               (str(path), 0.0,
+                                np.asarray(vector, dtype=np.float16).tobytes()))
+            self.assertEqual(Path(index.search("test", [1, 0])[0]["path"]), other)
+            hits = index.search_filename("懊悔自责", seconds=120)
+            self.assertEqual([row["path"] for row in hits], [str(song)])
+            self.assertEqual(hits[0]["match_type"], "filename")
+            self.assertTrue(hits[0]["short"])
+            self.assertEqual(index.search_filename("懊悔-自责")[0]["path"], str(song))
+            self.assertEqual(index.search_filename(song.name)[0]["path"], str(song))
+
+            class Encoder:
+                model_id = "test"
+                needs_translation = staticmethod(lambda _query: False)
+                translate = staticmethod(lambda query: query)
+
+                @staticmethod
+                def text(query):
+                    return np.asarray([1, 0], dtype=np.float32), query
+
+            dialog = SmartMusicSearchDialog(
+                {"library_root": directory}, index=index, encoder=Encoder(),
+            )
+            self.assertFalse(dialog.filename_match.isChecked())
+            dialog.filename_match.setChecked(True)
+            dialog.query.setText("懊悔自责")
+
+            def run_now(kind, task):
+                dialog._task_kind = kind
+                dialog._completed(task(lambda *_args: None, lambda: False))
+
+            dialog._start = run_now
+            dialog.search()
+            self.assertEqual(dialog._results[0]["path"], str(song))
+            self.assertEqual(dialog.table.item(0, 0).text(), "文件名命中")
+            self.assertEqual(len(dialog._results), 2)
+            dialog.close()
 
 
 if __name__ == "__main__":
