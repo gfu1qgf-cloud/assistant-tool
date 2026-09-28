@@ -28,7 +28,11 @@ from model.ReviewSubmissionHistory import (
     record_review_submissions,
     review_history_snapshot,
 )
-from model.TaskResultOrganizer import attach_local_task_metadata, file_identity
+from model.TaskResultOrganizer import (
+    attach_local_task_metadata,
+    file_identity,
+    pending_review_recovery_records,
+)
 
 
 HEADERS = [
@@ -171,6 +175,24 @@ class ReviewResubmissionTests(unittest.TestCase):
         with_new_version = [self.old_values[0], rows[0], self.old_values[1]]
         rows_again, _ = self._plan(retry, values=with_new_version, history=history)
         self.assertEqual(rows_again, [])
+
+    def test_recovery_uses_recent_upload_ledger_without_reuploading_video(self):
+        key = canonical_review_link(self.link)
+        history = {"items": {key: {"submitted_at": 1_700_000_000,
+                                   "link": self.link, "name": "v.mp4"}}}
+        ledger = {"records": [{
+            "drive_file_id": "same-id", "drive_action": "updated_previous_batch",
+            "drive_modified_at": "2026-09-28T12:00:00Z",
+            "drive_link": self.link, "file_name": "v.mp4",
+        }]}
+        config = {"review_sheet_url": "https://docs.google.com/spreadsheets/d/demo/edit"}
+        with mock.patch("model.TaskResultOrganizer.read_review_history", return_value=history), \
+             mock.patch("model.TaskResultOrganizer.load_video_upload_history", return_value=ledger):
+            pending = pending_review_recovery_records(config)
+        self.assertEqual(len(pending), 1)
+        self.assertFalse(pending[0]["review_routed"])
+        rows, _ = self._plan(pending[0], history=history)
+        self.assertEqual(len(rows), 1)
 
     def test_resubmission_resets_previous_approval_once(self):
         with tempfile.TemporaryDirectory() as temp_dir:

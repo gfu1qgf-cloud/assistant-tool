@@ -6,7 +6,7 @@ import subprocess
 import threading
 import traceback
 from contextlib import redirect_stderr, redirect_stdout
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
@@ -21,6 +21,7 @@ from model.GoogleDriveHelper import (
     upload_routed_changed_files_to_drive_batch,
 )
 from model.GoogleSheetsHelper import write_review_video_links
+from model.ReviewSubmissionHistory import read_review_history
 from model.OdsHelper import normalize_subcategory_path
 from model.TaskResultExporter import export_one_date
 from model.TaskSubmissionHelper import (
@@ -28,6 +29,7 @@ from model.TaskSubmissionHelper import (
     write_task_submission_links,
 )
 from model.VideoUploadHistory import (
+    load_video_upload_history,
     normalize_video_identity,
     preferred_drive_file_ids_by_identity,
     record_video_uploads,
@@ -742,6 +744,52 @@ def is_review_upload_record(record: Dict, review_folder_name: str) -> bool:
     return False
 
 
+def pending_review_recovery_records(config: Dict) -> List[Dict]:
+    """Recover in-place Drive updates that previously missed the review sheet."""
+    if not config_bool(config, "review_sheet_enabled", True) or not config_str(
+        config, "review_sheet_url"
+    ):
+        return []
+    history = read_review_history().get("items", {})
+    latest = {}
+    for item in load_video_upload_history(config).get("records", []):
+        file_id = str(item.get("drive_file_id") or "").strip()
+        modified = str(item.get("drive_modified_at") or "").strip()
+        if not file_id or not modified or not str(item.get("drive_action") or "").startswith("updated"):
+            continue
+        if "google:" + file_id not in history:
+            continue
+        if modified > str(latest.get(file_id, {}).get("drive_modified_at") or ""):
+            latest[file_id] = item
+
+    pending = []
+    for file_id, item in latest.items():
+        previous = history["google:" + file_id]
+        modified = str(item["drive_modified_at"])
+        revision = "time:" + modified
+        if previous.get("review_revision") == revision:
+            continue
+        if not previous.get("review_revision"):
+            try:
+                remote_time = datetime.fromisoformat(modified.replace("Z", "+00:00"))
+                if remote_time.tzinfo is None:
+                    remote_time = remote_time.replace(tzinfo=timezone.utc)
+                if remote_time.timestamp() <= float(previous.get("submitted_at") or 0) + 1:
+                    continue
+            except (ValueError, TypeError, OverflowError):
+                continue
+        pending.append({
+            "id": file_id,
+            "name": str(item.get("file_name") or previous.get("name") or ""),
+            "webViewLink": str(item.get("drive_link") or previous.get("link") or ""),
+            "modifiedTime": modified,
+            "md5Checksum": str(item.get("md5") or ""),
+            "action": "updated_previous_batch",
+            "review_routed": False,
+        })
+    return pending
+
+
 def run_task_result_organizer(
     task_dates: Iterable[date],
     base_dir: Path,
@@ -811,6 +859,16 @@ def run_task_result_organizer(
         )
         if not changed_file_batches:
             summary["message"] = "没有本次新增或更新的文件，已跳过 Google Drive 上传。"
+            recovery_records = pending_review_recovery_records(config)
+            if recovery_records:
+                try:
+                    recovered = write_review_video_links(config, recovery_records)
+                    summary["review_sheet_count"] = recovered
+                    if recovered:
+                        summary["message"] += f" 已补填审核表 {recovered} 条。"
+                except Exception as error:
+                    print(f"补填人工检查表格失败：{type(error).__name__}: {error}")
+                    summary["review_sheet_error"] = str(error)
             return summary
         if pending_count:
             print(f"已恢复上次保留的待处理文件：{pending_count} 个")
@@ -954,10 +1012,11 @@ def run_task_result_organizer(
             record["review_routed"] = is_review_upload_record(
                 record, review_folder_name
             )
-        if uploaded_records:
+        review_sheet_records = uploaded_records + pending_review_recovery_records(config)
+        if review_sheet_records:
             try:
                 summary["review_sheet_count"] = write_review_video_links(
-                    config, uploaded_records
+                    config, review_sheet_records
                 )
             except Exception as error:
                 print(f"写入人工检查表格失败：{type(error).__name__}: {error}")

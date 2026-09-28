@@ -363,7 +363,7 @@ def _plan_review_rows(config: Dict, records: List[Dict], values: List[List[str]]
         submitted_record["review_resubmitted"] = already_listed
         submitted.append(submitted_record)
         versions.setdefault(key, set())
-        if already_listed:
+        if revision:
             versions[key].add(revision)
 
     return rows, submitted
