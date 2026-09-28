@@ -12,6 +12,7 @@ from .engine import (
     apply_clip_review,
     format_smart_video_export_blockers,
     render_task_problem_report,
+    refresh_renamed_task_signatures,
     save_analysis_reports,
     select_duplicate_group_clip,
     set_smart_video_missing_review,
@@ -1679,6 +1680,13 @@ class SmartVideoReviewDialog(QtWidgets.QDialog):
             QtWidgets.QMessageBox.warning(self, "视频命名失败", str(error))
             return
         update_bundle_video_paths(self.bundle, plan)
+        try:
+            refresh_renamed_task_signatures(self.bundle)
+        except OSError as error:
+            QtWidgets.QMessageBox.warning(
+                self, "视频已命名", f"原视频已完成命名，但刷新分析缓存失败：\n{error}"
+            )
+            return
         for row in range(self.table.rowCount()):
             clip = self._clip_for_row(row)
             if clip is not None:

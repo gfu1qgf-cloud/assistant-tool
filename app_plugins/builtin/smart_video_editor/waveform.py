@@ -31,7 +31,10 @@ def _cache_key(path):
     source = Path(path)
     try:
         stat = source.stat()
-        return str(source.resolve()), int(stat.st_size), int(stat.st_mtime_ns)
+        identity = (int(stat.st_dev), int(stat.st_ino))
+        if not identity[1]:
+            identity = str(source.resolve())
+        return identity, int(stat.st_size), int(stat.st_mtime_ns)
     except OSError:
         return str(source), 0, 0
 

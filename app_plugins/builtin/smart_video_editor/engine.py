@@ -2608,10 +2608,51 @@ def _stable_fingerprint(path):
 
 def _cache_path(task_dir, source, settings):
     output_dir = Path(task_dir) / settings["output_folder_name"]
+    stat = Path(source).stat()
+    if stat.st_ino:
+        identity = f"file:{stat.st_dev}:{stat.st_ino}"
+    else:
+        fingerprint = _stable_fingerprint(source)
+        identity = f"content:{fingerprint['size']}:{fingerprint['sample_sha256']}"
     digest = hashlib.sha256(
-        os.path.normcase(os.path.abspath(str(source))).encode("utf-8", "replace")
+        identity.encode("ascii")
     ).hexdigest()[:20]
     return output_dir / ".smart_edit_cache" / f"{digest}.json"
+
+
+def _source_cache_candidates(cache_path, source, suffix, fingerprint=None):
+    """Find content-matching caches, including files keyed by an old path."""
+    cache_path = Path(cache_path)
+    fingerprint = fingerprint or _fingerprint(source)
+    seen = set()
+    candidates = [cache_path]
+    if cache_path.parent.is_dir():
+        candidates.extend(cache_path.parent.glob(f"*{suffix}"))
+    for candidate in candidates:
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        if suffix == ".json" and candidate.name.endswith(
+            (".silence.json", ".voice.json")
+        ):
+            continue
+        try:
+            value = json.loads(candidate.read_text(encoding="utf-8"))
+        except (FileNotFoundError, OSError, ValueError, TypeError):
+            continue
+        if isinstance(value, dict) and _fingerprints_match(
+            value.get("source_fingerprint"), fingerprint
+        ):
+            yield candidate, value
+
+
+def _promote_source_cache(candidate, cache_path, value):
+    if candidate != cache_path:
+        try:
+            _write_json_atomic(cache_path, value)
+        except OSError:
+            # A usable old cache should remain usable even if migration fails.
+            pass
 
 
 def _silence_cache_path(task_dir, source, settings):
@@ -2639,20 +2680,16 @@ def analyze_source_silence(
         "min_silence_ms": settings["min_silence_ms"],
     }
     cache_path = _silence_cache_path(task_dir, source, settings)
-    try:
-        cached = json.loads(cache_path.read_text(encoding="utf-8"))
-    except (FileNotFoundError, OSError, ValueError, TypeError):
-        cached = None
-    if (
-        isinstance(cached, dict)
-        and _fingerprints_match(
-            cached.get("source_fingerprint"), signature["source_fingerprint"]
-        )
-        and cached.get("silence_threshold_db") == signature["silence_threshold_db"]
-        and cached.get("min_silence_ms") == signature["min_silence_ms"]
+    for candidate, cached in _source_cache_candidates(
+        cache_path, source, ".silence.json", signature["source_fingerprint"]
     ):
-        progress(f"{log_prefix} 分贝静音缓存命中：{Path(source).name}")
-        return list(cached.get("ranges") or []), str(cached.get("error") or "")
+        if (
+            cached.get("silence_threshold_db") == signature["silence_threshold_db"]
+            and cached.get("min_silence_ms") == signature["min_silence_ms"]
+        ):
+            _promote_source_cache(candidate, cache_path, {**cached, **signature})
+            progress(f"{log_prefix} 分贝静音缓存命中：{Path(source).name}")
+            return list(cached.get("ranges") or []), str(cached.get("error") or "")
 
     if not settings.get("silence_detection_enabled", True):
         return [], "静音分贝检测已关闭"
@@ -2695,25 +2732,14 @@ def analyze_source_voice_absence(
         "vad_speech_pad_ms": settings["vad_speech_pad_ms"],
     }
     cache_path = _voice_activity_cache_path(task_dir, source, settings)
-    try:
-        cached = json.loads(cache_path.read_text(encoding="utf-8"))
-    except (FileNotFoundError, OSError, ValueError, TypeError):
-        cached = None
-    if (
-        isinstance(cached, dict)
-        and cached.get("version") == signature["version"]
-        and _fingerprints_match(
-            cached.get("source_fingerprint"),
-            signature["source_fingerprint"],
-        )
-        and cached.get("vad_threshold") == signature["vad_threshold"]
-        and cached.get("vad_neg_threshold") == signature["vad_neg_threshold"]
-        and cached.get("vad_min_speech_ms") == signature["vad_min_speech_ms"]
-        and cached.get("min_silence_ms") == signature["min_silence_ms"]
-        and cached.get("vad_speech_pad_ms") == signature["vad_speech_pad_ms"]
+    for candidate, cached in _source_cache_candidates(
+        cache_path, source, ".voice.json", signature["source_fingerprint"]
     ):
-        progress(f"{log_prefix} 人声检测缓存命中：{Path(source).name}")
-        return list(cached.get("ranges") or []), str(cached.get("error") or "")
+        if all(cached.get(key) == value for key, value in signature.items()
+               if key != "source_fingerprint"):
+            _promote_source_cache(candidate, cache_path, {**cached, **signature})
+            progress(f"{log_prefix} 人声检测缓存命中：{Path(source).name}")
+            return list(cached.get("ranges") or []), str(cached.get("error") or "")
 
     if not settings.get("voice_detection_enabled", True):
         return [], "人声活动检测已关闭"
@@ -2735,21 +2761,23 @@ def analyze_source_voice_absence(
 def _read_transcription_cache(
     cache_path, source, language, model_name="base"
 ):
-    try:
-        value = json.loads(cache_path.read_text(encoding="utf-8"))
-    except (FileNotFoundError, OSError, ValueError, TypeError):
-        return None
-    if not _fingerprints_match(
-        value.get("source_fingerprint"), _fingerprint(source)
-    ):
-        return None
-    if str(value.get("language") or "") != str(language or ""):
-        return None
-    cached_model = str(value.get("whisper_model_size") or "base").lower()
-    if cached_model != str(model_name or "base").lower():
-        return None
-    value["from_cache"] = True
-    return value
+    for candidate, value in _source_cache_candidates(cache_path, source, ".json"):
+        old_source = str(value.get("source") or "")
+        if candidate != cache_path and old_source:
+            old_path = Path(old_source)
+            if old_path.is_file() and not os.path.samefile(old_path, source):
+                # A separate, still-existing video is not a rename.
+                continue
+        if str(value.get("language") or "") != str(language or ""):
+            continue
+        cached_model = str(value.get("whisper_model_size") or "base").lower()
+        if cached_model != str(model_name or "base").lower():
+            continue
+        value["source"] = str(source)
+        _promote_source_cache(candidate, cache_path, value)
+        value["from_cache"] = True
+        return value
+    return None
 
 
 def _write_json_atomic(path, value):
@@ -2782,6 +2810,25 @@ def _task_analysis_signature(job, sources, settings):
         payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
     ).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
+
+
+def refresh_renamed_task_signatures(bundle):
+    """Keep an already-reviewed task reusable after its own source rename."""
+    settings = normalize_smart_video_editor_settings(bundle.get("settings"))
+    for task in bundle.get("tasks", []):
+        selected = {
+            str(clip.get("source")) for clip in task.get("clips", [])
+            if clip.get("source")
+        }
+        sources = [
+            source for source in discover_task_videos(task["task_dir"], settings)
+            if str(source) in selected
+        ]
+        if len(sources) != len(selected):
+            raise FileNotFoundError("重命名后部分原视频无法找到，未更新分析缓存")
+        task["analysis_signature"] = _task_analysis_signature(
+            task, sources, settings
+        )
 
 
 def _task_report_path(job, settings):
