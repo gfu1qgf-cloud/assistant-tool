@@ -15,6 +15,7 @@ from model.InventoryManager import MATERIAL_IMAGE_SUFFIXES
 
 
 INDEX_ROOT = APP_ROOT / "SmartImageSearch"
+THUMBNAIL_VERSION = "v2"
 
 
 def discover_external_groups(roots):
@@ -87,12 +88,12 @@ class ImageSearchIndex:
     def _thumbnail(self, path):
         from PIL import Image, ImageOps
         digest = hashlib.sha1(os.path.normcase(str(path)).encode("utf-8")).hexdigest()
-        target = self.thumbnails / f"{digest}.jpg"
+        target = self.thumbnails / f"{digest}_{THUMBNAIL_VERSION}.jpg"
         temporary = target.with_suffix(".tmp")
         with Image.open(path) as original:
             image = ImageOps.exif_transpose(original).convert("RGB")
-            image.thumbnail((220, 170))
-            image.save(temporary, format="JPEG", quality=78)
+            image.thumbnail((400, 600), resample=Image.Resampling.LANCZOS)
+            image.save(temporary, format="JPEG", quality=90)
             image.close()
         os.replace(temporary, target)
         return str(target)
@@ -113,11 +114,13 @@ class ImageSearchIndex:
         with self._lock, self._connect() as connection:
             old = {
                 row["path"]: row for row in connection.execute(
-                    "SELECT path,size,mtime_ns,model_id,source_kind,source_name FROM images"
+                    "SELECT path,size,mtime_ns,model_id,source_kind,source_name,"
+                    "thumbnail,vector IS NOT NULL AS has_vector FROM images"
                 )
             }
         pending = []
         metadata = []
+        thumbnail_pending = []
         for key, (path, source_kind, source_name) in current.items():
             try:
                 stat = Path(path).stat()
@@ -130,6 +133,12 @@ class ImageSearchIndex:
                 if (existing["source_kind"] != source_kind
                         or existing["source_name"] != source_name):
                     metadata.append((source_kind, source_name, key))
+                thumb = str(existing["thumbnail"] or "")
+                if existing["has_vector"] and (
+                    not thumb.endswith(f"_{THUMBNAIL_VERSION}.jpg")
+                    or not Path(thumb).is_file()
+                ):
+                    thumbnail_pending.append((key, path))
                 continue
             pending.append((key, path, stat.st_size, stat.st_mtime_ns,
                             source_kind, source_name))
@@ -137,6 +146,9 @@ class ImageSearchIndex:
         total = len(pending)
         done = 0
         failures = 0
+        thumbnail_done = 0
+        thumbnail_updated = 0
+        thumbnail_failures = 0
         if not cancelled():
             with self._lock, self._connect() as connection:
                 connection.executemany(
@@ -204,9 +216,36 @@ class ImageSearchIndex:
                 self._inactive_indices.clear()
             done += len(outcomes)
             progress(done, total, f"已建立索引 {done}/{total}，失败 {failures}")
+        thumb_total = len(thumbnail_pending)
+        for offset in range(0, thumb_total, 20):
+            if cancelled():
+                break
+            thumbnail_updates = []
+            for key, path in thumbnail_pending[offset:offset + 20]:
+                if cancelled():
+                    break
+                try:
+                    thumbnail_updates.append((self._thumbnail(path), key))
+                except Exception:
+                    thumbnail_failures += 1
+                thumbnail_done += 1
+            with self._lock, self._connect() as connection:
+                connection.executemany(
+                    "UPDATE images SET thumbnail=? WHERE path=?",
+                    thumbnail_updates,
+                )
+                thumbnail_updated += len(thumbnail_updates)
+                if thumbnail_updates:
+                    self._matrix_cache = None
+                    self._inactive_indices.clear()
+            progress(thumbnail_done, thumb_total,
+                     f"高清缩略图 {thumbnail_done}/{thumb_total}，失败 {thumbnail_failures}")
         return {"new_or_changed": done, "needed": total,
                 "removed": len(removed) if not cancelled() else 0,
-                "failed": failures, "cancelled": bool(cancelled())}
+                "failed": failures, "cancelled": bool(cancelled()),
+                "thumbnail_updated": thumbnail_updated,
+                "thumbnail_needed": thumb_total,
+                "thumbnail_failed": thumbnail_failures}
 
     def remove_paths(self, paths):
         keys = [os.path.normcase(os.path.abspath(str(path))) for path in paths]

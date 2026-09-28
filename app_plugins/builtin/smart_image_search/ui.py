@@ -13,21 +13,25 @@ from .index import ImageSearchIndex, discover_external_groups
 from .settings import normalize_settings
 
 
-def _fitted_icon(path, size=175):
-    """Letterbox the cached thumbnail instead of stretching portrait images."""
+PREVIEW_WIDTH = 185
+PREVIEW_HEIGHT = 280
+
+
+def _fitted_icon(path, width=PREVIEW_WIDTH, height=PREVIEW_HEIGHT):
+    """Fit without distortion on a portrait-friendly transparent canvas."""
     source = QtGui.QPixmap(str(path))
     if source.isNull():
         return QtGui.QIcon()
     fitted = source.scaled(
-        size, size,
+        width, height,
         QtCore.Qt.AspectRatioMode.KeepAspectRatio,
         QtCore.Qt.TransformationMode.SmoothTransformation,
     )
-    canvas = QtGui.QPixmap(size, size)
+    canvas = QtGui.QPixmap(width, height)
     canvas.fill(QtCore.Qt.GlobalColor.transparent)
     painter = QtGui.QPainter(canvas)
-    painter.drawPixmap((size - fitted.width()) // 2,
-                       (size - fitted.height()) // 2, fitted)
+    painter.drawPixmap((width - fitted.width()) // 2,
+                       (height - fitted.height()) // 2, fitted)
     painter.end()
     return QtGui.QIcon(canvas)
 
@@ -245,8 +249,8 @@ class SmartImageSearchDialog(QtWidgets.QDialog):
         self.results.setMovement(QtWidgets.QListView.Movement.Static)
         self.results.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.ExtendedSelection)
         self.results.setToolTip("拖到资源管理器：默认移动；按住 Ctrl 可复制。")
-        self.results.setIconSize(QtCore.QSize(175, 175))
-        self.results.setGridSize(QtCore.QSize(205, 245))
+        self.results.setIconSize(QtCore.QSize(PREVIEW_WIDTH, PREVIEW_HEIGHT))
+        self.results.setGridSize(QtCore.QSize(220, 350))
         self.results.setWordWrap(True)
         self.results.itemDoubleClicked.connect(self._open_item)
         self.results.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
@@ -408,7 +412,9 @@ class SmartImageSearchDialog(QtWidgets.QDialog):
             self.status.setText(
                 f"增量更新完成：处理 {result['new_or_changed']} / "
                 f"{result['needed']} 张，移除失效记录 {result['removed']} 条，"
-                f"无法读取 {result['failed']} 张。"
+                f"无法读取 {result['failed']} 张；"
+                f"高清缩略图更新 {result['thumbnail_updated']} 张"
+                f"（失败 {result['thumbnail_failed']} 张）。"
                 + (" 已暂停，下次可续建。" if result["cancelled"] else "")
             )
         elif kind == "search":

@@ -1,5 +1,6 @@
 import os
 import shutil
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -145,6 +146,27 @@ class ImageSearchIndexTests(unittest.TestCase):
         self.assertEqual(settings["library_roots"], [str(self.root)])
         self.assertEqual(settings["result_limit"], 100)
 
+    def test_legacy_thumbnail_upgrades_without_reencoding_image(self):
+        source = self.root / "portrait.png"
+        Image.new("RGB", (400, 800), (255, 0, 1)).save(source)
+        self.index.sync(group(source), self.encoder)
+        legacy = self.index.thumbnails / "legacy.jpg"
+        Image.new("RGB", (95, 170), (255, 0, 1)).save(legacy)
+        with sqlite3.connect(self.index.path) as connection:
+            connection.execute(
+                "UPDATE images SET thumbnail=? WHERE path=?",
+                (str(legacy), os.path.normcase(os.path.abspath(source))),
+            )
+        previous_calls = len(self.encoder.calls)
+        result = self.index.sync(group(source), self.encoder)
+        self.assertEqual(result["new_or_changed"], 0)
+        self.assertEqual(result["thumbnail_updated"], 1)
+        self.assertEqual(len(self.encoder.calls), previous_calls)
+        row = self.index.search(self.encoder.model_id, [1, 0])[0]
+        self.assertTrue(row["thumbnail"].endswith("_v2.jpg"))
+        with Image.open(row["thumbnail"]) as thumb:
+            self.assertEqual(thumb.size, (300, 600))
+
 
 class ImageSearchDialogTests(unittest.TestCase):
     @classmethod
@@ -216,9 +238,9 @@ class ImageSearchDialogTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "portrait.png"
             Image.new("RGB", (25, 100), (255, 0, 0)).save(path)
-            pixels = _fitted_icon(path).pixmap(175, 175).toImage()
-            self.assertEqual(pixels.pixelColor(0, 87).alpha(), 0)
-            self.assertGreater(pixels.pixelColor(87, 87).alpha(), 0)
+            pixels = _fitted_icon(path).pixmap(185, 280).toImage()
+            self.assertEqual(pixels.pixelColor(0, 140).alpha(), 0)
+            self.assertGreater(pixels.pixelColor(92, 140).alpha(), 0)
 
     def test_drag_exports_file_urls_with_move_as_default(self):
         with tempfile.TemporaryDirectory() as folder:
