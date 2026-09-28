@@ -21,8 +21,8 @@ class DailyLinksDialog(QtWidgets.QDialog):
 
     def __init__(self, history, parent=None):
         super().__init__(parent)
-        self.history = normalize_daily_link_history(history)
-        self.setWindowTitle("每日链接与任务表记录（最近 7 天）")
+        self.history = normalize_daily_link_history(history, retain_all=True)
+        self.setWindowTitle("历史链接与任务表记录")
         self.resize(900, 680)
 
         layout = QtWidgets.QVBoxLayout(self)
@@ -95,9 +95,11 @@ class DailyLinksDialog(QtWidgets.QDialog):
         buttons.addWidget(close_btn)
         layout.addLayout(buttons)
 
-        for day_key in history_dates(self.history):
+        for day_key in history_dates(self.history, retain_all=True):
             day = date.fromisoformat(day_key)
-            people_count, link_count = daily_link_counts(self.history, day_key)
+            people_count, link_count = daily_link_counts(
+                self.history, day_key, retain_all=True
+            )
             failure_count = daily_task_sheet_failure_count(self.history, day_key)
             self.date_combo.addItem(
                 f"{day:%Y-%m-%d}（{people_count} 人 / {link_count} 个链接 / "
@@ -105,7 +107,7 @@ class DailyLinksDialog(QtWidgets.QDialog):
                 day_key,
             )
         if self.date_combo.count() == 0:
-            self.date_combo.addItem("最近 7 天暂无已保存链接", "")
+            self.date_combo.addItem("暂无已保存链接", "")
             self.date_combo.setEnabled(False)
 
         self.date_combo.currentIndexChanged.connect(self.refresh_links)
@@ -150,7 +152,9 @@ class DailyLinksDialog(QtWidgets.QDialog):
         self.failure_title_label.setText(
             f"任务提交表待核对视频（{len(failures)}）"
         )
-        people_count, link_count = daily_link_counts(self.history, day_key)
+        people_count, link_count = daily_link_counts(
+            self.history, day_key, retain_all=True
+        )
         if day_key:
             self.status_label.setText(
                 f"当天共 {people_count} 人、{link_count} 个批次链接；"
@@ -207,11 +211,16 @@ class DailyLinksDialog(QtWidgets.QDialog):
 
     def copy_current_day(self):
         day_key = self.current_day_key()
-        _people_count, link_count = daily_link_counts(self.history, day_key)
+        _people_count, link_count = daily_link_counts(
+            self.history, day_key, retain_all=True
+        )
         if not day_key or not link_count:
             QMessageBox.information(self, "查看每日链接", "当天没有可以复制的链接。")
             return
-        self.copy_text(format_daily_links(self.history, day_key), "已复制当天全部链接。")
+        self.copy_text(
+            format_daily_links(self.history, day_key, retain_all=True),
+            "已复制当天全部链接。",
+        )
 
     def copy_selected_failure(self):
         item = self.failure_tree.currentItem()

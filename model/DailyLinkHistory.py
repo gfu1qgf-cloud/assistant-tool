@@ -21,8 +21,10 @@ def _date_value(value) -> Optional[date]:
 def normalize_daily_link_history(
     raw_history,
     today: Optional[date] = None,
+    *,
+    retain_all: bool = False,
 ) -> Dict[str, Dict]:
-    """Validate history and keep only the most recent seven calendar days."""
+    """Validate history; the config view keeps seven days, archive keeps all."""
     current_day = _date_value(today) or date.today()
     first_day = current_day - timedelta(days=DAILY_LINK_HISTORY_RETENTION_DAYS - 1)
     if not isinstance(raw_history, Mapping):
@@ -31,7 +33,7 @@ def normalize_daily_link_history(
     normalized = {}
     for raw_day, raw_day_entry in raw_history.items():
         day = _date_value(raw_day)
-        if day is None or day < first_day or day > current_day:
+        if day is None or day > current_day or (not retain_all and day < first_day):
             continue
         if not isinstance(raw_day_entry, Mapping):
             continue
@@ -227,12 +229,12 @@ def update_daily_task_sheet_results(
     return normalize_daily_link_history(merged, moment.date()), len(normalized_failures)
 
 
-def history_dates(history):
-    return sorted(normalize_daily_link_history(history).keys(), reverse=True)
+def history_dates(history, *, retain_all=False):
+    return sorted(normalize_daily_link_history(history, retain_all=retain_all).keys(), reverse=True)
 
 
-def daily_link_counts(history, day_key) -> Tuple[int, int]:
-    normalized = normalize_daily_link_history(history)
+def daily_link_counts(history, day_key, *, retain_all=False) -> Tuple[int, int]:
+    normalized = normalize_daily_link_history(history, retain_all=retain_all)
     people = normalized.get(str(day_key), {}).get("people", {})
     return len(people), sum(len(slots) for slots in people.values())
 
@@ -277,8 +279,8 @@ def format_person_daily_links(person, slots) -> str:
     return "\n".join(lines)
 
 
-def format_daily_links(history, day_key) -> str:
-    normalized = normalize_daily_link_history(history)
+def format_daily_links(history, day_key, *, retain_all=False) -> str:
+    normalized = normalize_daily_link_history(history, retain_all=retain_all)
     people = normalized.get(str(day_key), {}).get("people", {})
     day = _date_value(day_key)
     heading = (

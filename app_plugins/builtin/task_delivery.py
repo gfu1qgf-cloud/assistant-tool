@@ -97,7 +97,7 @@ class TaskDeliveryPlugin:
                 "查看每日链接",
                 self.open_daily_links,
                 20,
-                "查看最近七天的人员文件夹链接和任务表待核对记录",
+                "查看历史人员文件夹链接和最近七天的任务表待核对记录",
             ),
             (
                 "review_status",

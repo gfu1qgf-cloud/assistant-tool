@@ -17,6 +17,8 @@
 /ReviewSubmissionHistory.json
 /VideoUploadHistory.json
 /DailyQuantityStats.json
+/DailyLinkArchive.json
+/DailyLinkArchive.json.bak
 /VideoUploadHistoryArchives/
 /InventoryState.json
 /MaterialDriveSyncState.json

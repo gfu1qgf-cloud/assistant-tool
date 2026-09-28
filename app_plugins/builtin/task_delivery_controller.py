@@ -16,6 +16,11 @@ from model.DailyLinkHistory import (
     record_daily_person_links,
     update_daily_task_sheet_results,
 )
+from model.DailyLinkArchive import (
+    load_daily_link_archive,
+    merge_link_histories,
+    save_daily_link_archive,
+)
 from model.GlobalHotkey import (
     DEFAULT_TASK_RESULT_HOTKEY,
     GlobalHotkeyManager,
@@ -49,6 +54,7 @@ class TaskDeliveryController:
         self.review_status_state = "未启动"
         self._manual_review_quantity_refresh = False
         self.daily_link_history = normalize_daily_link_history({})
+        self.daily_link_archive = {}
         self.global_hotkey = DEFAULT_TASK_RESULT_HOTKEY
         self.gemini_api_keys = []
         self.hotkey_manager = None
@@ -77,6 +83,11 @@ class TaskDeliveryController:
         self.daily_link_history = normalize_daily_link_history(
             config.get(DAILY_LINK_HISTORY_CONFIG_KEY)
         )
+        try:
+            self.daily_link_archive = load_daily_link_archive(self.daily_link_history)
+        except (OSError, ValueError) as error:
+            self.daily_link_archive = merge_link_histories(self.daily_link_history)
+            self.context.log(f"每日链接归档加载失败：{error}", logging.ERROR)
         self.review_status_settings = normalize_review_status_settings(config)
         self.review_status_config = load_task_result_config(config)
         self.gemini_api_keys = config_list(config, "gemini_api_keys")
@@ -103,9 +114,26 @@ class TaskDeliveryController:
     def update_config(self, config):
         config["gemini_api_keys"] = list(self.gemini_api_keys)
         config[TASK_RESULT_HOTKEY_CONFIG_KEY] = self.global_hotkey
-        config[DAILY_LINK_HISTORY_CONFIG_KEY] = normalize_daily_link_history(
-            self.daily_link_history
+        # A stale controller must not erase links that another settings save
+        # already wrote to disk. Resolved task-sheet failures still follow the
+        # live controller state, so merge only the person links.
+        on_disk = normalize_daily_link_history(
+            config.get(DAILY_LINK_HISTORY_CONFIG_KEY)
         )
+        current = normalize_daily_link_history(self.daily_link_history)
+        links = merge_link_histories(on_disk, current)
+        for day in set(on_disk) | set(current):
+            entry = links.setdefault(day, {
+                "updated_at": "", "people": {}, "task_sheet_failures": {},
+            })
+            if day in current:
+                entry["task_sheet_failures"] = current[day]["task_sheet_failures"]
+                entry["updated_at"] = max(
+                    entry["updated_at"], current[day].get("updated_at", "")
+                )
+            elif day in on_disk:
+                entry["task_sheet_failures"] = on_disk[day]["task_sheet_failures"]
+        config[DAILY_LINK_HISTORY_CONFIG_KEY] = normalize_daily_link_history(links)
         return config
 
     def apply_settings(self, config):
@@ -352,8 +380,15 @@ class TaskDeliveryController:
         if normalized != self.daily_link_history:
             self.daily_link_history = normalized
             self._sync_compatibility_state()
-            self.context.save_config()
-        return DailyLinksDialog(self.daily_link_history, self.window).exec()
+        history = merge_link_histories(self.daily_link_archive, normalized)
+        # Keep the seven-day task-sheet-failure panel; the archive stores links only.
+        for day, entry in normalized.items():
+            display_entry = history.setdefault(day, {
+                "updated_at": entry.get("updated_at", ""),
+                "people": {}, "task_sheet_failures": {},
+            })
+            display_entry["task_sheet_failures"] = entry["task_sheet_failures"]
+        return DailyLinksDialog(history, self.window).exec()
 
     def record_task_result_history(self, result):
         upload_date = result.get("upload_date") or date.today().isoformat()
@@ -384,6 +419,13 @@ class TaskDeliveryController:
             return saved_link_count, failed_file_count
         self.daily_link_history = history
         self._sync_compatibility_state()
+        if saved_link_count:
+            try:
+                self.daily_link_archive = save_daily_link_archive(
+                    merge_link_histories(self.daily_link_archive, history)
+                )
+            except (OSError, ValueError) as error:
+                self.context.log(f"每日链接长期归档失败：{error}", logging.ERROR)
         if not self.context.save_config():
             return 0, 0
         self.update_daily_links_button()
