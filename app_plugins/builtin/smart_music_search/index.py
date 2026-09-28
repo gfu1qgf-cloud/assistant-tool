@@ -3,6 +3,7 @@
 import os
 import sqlite3
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 import numpy as np
@@ -49,12 +50,17 @@ class MusicIndex:
             )""")
             db.execute("CREATE INDEX IF NOT EXISTS tracks_model ON tracks(model_id)")
 
+    @contextmanager
     def _connect(self):
         db = sqlite3.connect(str(self.path), timeout=30)
-        db.row_factory = sqlite3.Row
-        db.execute("PRAGMA busy_timeout=30000")
-        db.execute("PRAGMA foreign_keys=ON")
-        return db
+        try:
+            db.row_factory = sqlite3.Row
+            db.execute("PRAGMA busy_timeout=30000")
+            db.execute("PRAGMA foreign_keys=ON")
+            with db:
+                yield db
+        finally:
+            db.close()
 
     def count(self, model_id):
         with self._connect() as db:
@@ -183,20 +189,37 @@ class MusicIndex:
                 WHERE t.model_id=? AND t.error='' ORDER BY t.path,s.start""",
                 (model_id,),
             ).fetchall()
-        grouped = {}
+        parsed = []
+        all_vectors = []
         for row in rows:
             path = row["path"]
             if not Path(path).is_file():
                 continue
             duration = float(row["duration"])
-            if seconds and duration < seconds and not include_short:
-                continue
             vector = np.frombuffer(row["vector"], dtype=np.float16).astype(np.float32)
             if vector.size != query.size:
                 continue
-            similarity = float(np.dot(vector, query) / max(1e-8, np.linalg.norm(vector)))
+            vector /= max(1e-8, float(np.linalg.norm(vector)))
+            parsed.append((path, duration, float(row["start"]), vector))
+            all_vectors.append(vector)
+        if not parsed:
+            return []
+        # Center the song embeddings as well. With this music checkpoint the
+        # shared direction dominates raw cosine scores, so different prompts
+        # otherwise return almost the same order. Only retrieval changes: the
+        # existing thousands of indexed song vectors remain valid.
+        center = np.mean(np.stack(all_vectors), axis=0)
+        grouped = {}
+        for path, duration, start, vector in parsed:
+            if seconds and duration < seconds and not include_short:
+                continue
+            residual = vector - center
+            residual_norm = float(np.linalg.norm(residual))
+            if residual_norm < 1e-8:
+                continue
+            similarity = float(np.dot(residual / residual_norm, query))
             grouped.setdefault(path, {"duration": duration, "points": []})["points"].append(
-                (float(row["start"]), similarity)
+                (start, similarity)
             )
         results = []
         for path, info in grouped.items():

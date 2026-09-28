@@ -89,7 +89,15 @@ class MusicEncoder:
     def text(self, query):
         english = self.translate(query)
         torch, processor, model = self._load_music()
-        inputs = processor(text=[english], return_tensors="pt", padding=True)
+        # This checkpoint has a very large common "generic music" component:
+        # unrelated captions otherwise produce almost identical unit vectors.
+        # Contrast the requested description with a neutral music caption.
+        inputs = processor(text=[english, "music"], return_tensors="pt", padding=True)
         with torch.inference_mode():
-            vector = _normal(model.get_text_features(**inputs)[0])
+            features = model.get_text_features(**inputs)
+        vector = _normal(features[0]) - _normal(features[1])
+        length = float(np.linalg.norm(vector))
+        if length < 1e-5:
+            raise ValueError("搜索描述过于笼统，请补充情绪、乐器或场景。")
+        vector /= length
         return vector, english

@@ -1,6 +1,7 @@
 import os
 import tempfile
 import unittest
+from contextlib import nullcontext
 from pathlib import Path
 from unittest.mock import patch
 
@@ -27,7 +28,8 @@ class _FakeEncoder:
 
     def audio(self, samples):
         self.calls += 1
-        return np.array([1.0, 0.0], dtype=np.float32)
+        vector = np.array([1.0, 0.02 * (self.calls % 3)], dtype=np.float32)
+        return vector / np.linalg.norm(vector)
 
 
 class SmartMusicSearchTests(unittest.TestCase):
@@ -119,6 +121,64 @@ class SmartMusicSearchTests(unittest.TestCase):
     def test_english_query_skips_translator(self):
         encoder = MusicEncoder()
         self.assertEqual(encoder.translate("hopeful piano"), "hopeful piano")
+
+    def test_text_encoding_removes_generic_music_direction(self):
+        class Tensor:
+            def __init__(self, values):
+                self.values = np.asarray(values, dtype=np.float32)
+
+            def detach(self):
+                return self
+
+            def cpu(self):
+                return self
+
+            def numpy(self):
+                return self.values
+
+        class Processor:
+            def __call__(self, *, text, **_kwargs):
+                return {"texts": text}
+
+        class Model:
+            def get_text_features(self, *, texts):
+                choices = {
+                    "music": [100, 0, 0],
+                    "happy": [100, 1, 0],
+                    "dark": [100, 0, 1],
+                }
+                return [Tensor(choices[item]) for item in texts]
+
+        class Torch:
+            inference_mode = staticmethod(nullcontext)
+
+        encoder = MusicEncoder()
+        encoder._load_music = lambda: (Torch, Processor(), Model())
+        happy, _ = encoder.text("happy")
+        dark, _ = encoder.text("dark")
+        self.assertLess(float(np.dot(happy, dark)), 0.1)
+        with self.assertRaisesRegex(ValueError, "过于笼统"):
+            encoder.text("music")
+
+    def test_centered_retrieval_distinguishes_nearly_parallel_tracks(self):
+        with tempfile.TemporaryDirectory() as directory:
+            index = MusicIndex(Path(directory) / "index")
+            now = 123.0
+            vectors = ((1.0, 0.03, 0.0), (1.0, 0.0, 0.03),
+                       (1.0, -0.03, -0.03))
+            with index._connect() as db:
+                for number, vector in enumerate(vectors):
+                    path = Path(directory) / f"{number}.mp3"
+                    path.write_bytes(b"fixture")
+                    db.execute("INSERT INTO tracks VALUES (?,?,?,?,?,?,?)",
+                               (str(path), 7, 0, 30.0, "test", "", now))
+                    db.execute("INSERT INTO segments VALUES (?,?,?)",
+                               (str(path), 0.0,
+                                np.asarray(vector, dtype=np.float16).tobytes()))
+            first = index.search("test", [0, 1, 0], limit=3)
+            second = index.search("test", [0, 0, 1], limit=3)
+            self.assertEqual(Path(first[0]["path"]).name, "0.mp3")
+            self.assertEqual(Path(second[0]["path"]).name, "1.mp3")
 
 
 if __name__ == "__main__":
