@@ -1,4 +1,5 @@
 import os
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -142,6 +143,7 @@ class ImageSearchIndexTests(unittest.TestCase):
         settings = normalize_settings({"library_roots": [str(self.root),
                                                          str(self.root), ""]})
         self.assertEqual(settings["library_roots"], [str(self.root)])
+        self.assertEqual(settings["result_limit"], 100)
 
 
 class ImageSearchDialogTests(unittest.TestCase):
@@ -217,6 +219,80 @@ class ImageSearchDialogTests(unittest.TestCase):
             pixels = _fitted_icon(path).pixmap(175, 175).toImage()
             self.assertEqual(pixels.pixelColor(0, 87).alpha(), 0)
             self.assertGreater(pixels.pixelColor(87, 87).alpha(), 0)
+
+    def test_drag_exports_file_urls_with_move_as_default(self):
+        with tempfile.TemporaryDirectory() as folder:
+            image = Path(folder) / "image.png"
+            Image.new("RGB", (8, 8), "red").save(image)
+            dialog = SmartImageSearchDialog(
+                {}, index=ImageSearchIndex(Path(folder) / "index"),
+                encoder=FakeEncoder(), store=object(),
+            )
+            try:
+                dialog._show_results([{
+                    "path": str(image), "source_name": "图库",
+                    "source_kind": "folder", "score": 0.8, "thumbnail": "",
+                }])
+                item = dialog.results.item(0)
+                mime = dialog.results.mimeData([item])
+                self.assertEqual([Path(url.toLocalFile()) for url in mime.urls()],
+                                 [image])
+                self.assertEqual(dialog.results.defaultDropAction(),
+                                 QtCore.Qt.DropAction.MoveAction)
+            finally:
+                dialog.close()
+
+    def test_drag_cleanup_only_removes_files_actually_moved(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            image = root / "image.png"
+            Image.new("RGB", (8, 8), "red").save(image)
+            index = ImageSearchIndex(root / "index")
+            encoder = FakeEncoder()
+            index.sync(group(image), encoder)
+            dialog = SmartImageSearchDialog(
+                {}, index=index, encoder=encoder, store=object(),
+            )
+            try:
+                row = index.search(encoder.model_id, [1, 0])[0]
+                dialog._show_results([row])
+                dialog._finalize_dragged_move(
+                    [str(image)], QtCore.Qt.DropAction.TargetMoveAction
+                )
+                self.assertEqual(index.count(encoder.model_id), 1)
+                self.assertEqual(dialog.results.count(), 1)
+                destination = root / "destination.png"
+                shutil.move(image, destination)
+                dialog._finalize_dragged_move(
+                    [str(image)], QtCore.Qt.DropAction.TargetMoveAction
+                )
+                self.assertEqual(index.count(encoder.model_id), 0)
+                self.assertEqual(dialog.results.count(), 0)
+            finally:
+                dialog.close()
+
+    def test_successful_move_drop_removes_source_after_target_copy(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            image = root / "image.png"
+            destination = root / "copied.png"
+            Image.new("RGB", (8, 8), "red").save(image)
+            index = ImageSearchIndex(root / "index")
+            encoder = FakeEncoder()
+            index.sync(group(image), encoder)
+            dialog = SmartImageSearchDialog(
+                {}, index=index, encoder=encoder, store=object(),
+            )
+            try:
+                shutil.copy2(image, destination)
+                dialog._finalize_dragged_move(
+                    [str(image)], QtCore.Qt.DropAction.MoveAction
+                )
+                self.assertFalse(image.exists())
+                self.assertTrue(destination.is_file())
+                self.assertEqual(index.count(encoder.model_id), 0)
+            finally:
+                dialog.close()
 
 
 if __name__ == "__main__":

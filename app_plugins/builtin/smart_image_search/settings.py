@@ -15,9 +15,9 @@ def normalize_settings(value=None):
     if model not in MODEL_IDS:
         model = "base"
     try:
-        limit = int(value.get("result_limit", 200))
+        limit = int(value.get("result_limit", 100))
     except (TypeError, ValueError):
-        limit = 200
+        limit = 100
     roots = []
     seen = set()
     raw_roots = value.get("library_roots", ())

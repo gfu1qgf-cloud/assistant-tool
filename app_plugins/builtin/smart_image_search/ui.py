@@ -53,6 +53,49 @@ class _ImageDropEdit(QtWidgets.QLineEdit):
         super().dropEvent(event)
 
 
+class _DraggableResults(QtWidgets.QListWidget):
+    moveDropFinished = QtCore.pyqtSignal(object, object)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setDragEnabled(True)
+        self.setAcceptDrops(False)
+        self.setDragDropMode(QtWidgets.QAbstractItemView.DragDropMode.DragOnly)
+        self.setDefaultDropAction(QtCore.Qt.DropAction.MoveAction)
+
+    def mimeData(self, items):
+        mime = QtCore.QMimeData()
+        mime.setUrls([
+            QtCore.QUrl.fromLocalFile(path)
+            for item in items
+            if (path := str(item.data(QtCore.Qt.ItemDataRole.UserRole) or ""))
+            and Path(path).is_file()
+        ])
+        return mime
+
+    def startDrag(self, _supported_actions):
+        items = self.selectedItems()
+        if not items:
+            return
+        mime = self.mimeData(items)
+        if not mime.hasUrls():
+            return
+        paths = [url.toLocalFile() for url in mime.urls()]
+        drag = QtGui.QDrag(self)
+        drag.setMimeData(mime)
+        icon = items[0].icon()
+        if not icon.isNull():
+            drag.setPixmap(icon.pixmap(96, 96))
+        # Default move; Ctrl can request a copy from Explorer.
+        action = drag.exec(
+            QtCore.Qt.DropAction.MoveAction | QtCore.Qt.DropAction.CopyAction,
+            QtCore.Qt.DropAction.MoveAction,
+        )
+        if action in (QtCore.Qt.DropAction.MoveAction,
+                      QtCore.Qt.DropAction.TargetMoveAction):
+            self.moveDropFinished.emit(paths, action)
+
+
 class _SearchWorker(QtCore.QThread):
     progressChanged = QtCore.pyqtSignal(int, int, str)
     completed = QtCore.pyqtSignal(object)
@@ -196,17 +239,19 @@ class SmartImageSearchDialog(QtWidgets.QDialog):
         filter_row.addWidget(self.search_button)
         layout.addLayout(filter_row)
 
-        self.results = QtWidgets.QListWidget()
+        self.results = _DraggableResults()
         self.results.setViewMode(QtWidgets.QListView.ViewMode.IconMode)
         self.results.setResizeMode(QtWidgets.QListView.ResizeMode.Adjust)
         self.results.setMovement(QtWidgets.QListView.Movement.Static)
         self.results.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.results.setToolTip("拖到资源管理器：默认移动；按住 Ctrl 可复制。")
         self.results.setIconSize(QtCore.QSize(175, 175))
         self.results.setGridSize(QtCore.QSize(205, 245))
         self.results.setWordWrap(True)
         self.results.itemDoubleClicked.connect(self._open_item)
         self.results.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
         self.results.customContextMenuRequested.connect(self._show_context_menu)
+        self.results.moveDropFinished.connect(self._schedule_drag_cleanup)
         layout.addWidget(self.results, 1)
 
         self.load_more_button = QtWidgets.QPushButton("加载更多")
@@ -215,7 +260,9 @@ class SmartImageSearchDialog(QtWidgets.QDialog):
         layout.addWidget(self.load_more_button)
 
         action_row = QtWidgets.QHBoxLayout()
-        self.status = QtWidgets.QLabel("索引仅存储在本机；移动素材后会立即从检索结果中移除。")
+        self.status = QtWidgets.QLabel(
+            "可直接拖到资源管理器：默认移动，Ctrl 复制；索引仅存储在本机。"
+        )
         self.status.setWordWrap(True)
         action_row.addWidget(self.status, 1)
         self.copy_button = QtWidgets.QPushButton("复制选中图片到…")
@@ -284,6 +331,7 @@ class SmartImageSearchDialog(QtWidgets.QDialog):
         self.move_button.setEnabled(False)
         self.copy_button.setEnabled(False)
         self.load_more_button.setEnabled(False)
+        self.results.setDragEnabled(False)
         self.cancel_button.setEnabled(True)
         self.status.setText(message)
         self.progress_bar.setRange(0, 0)
@@ -394,6 +442,7 @@ class SmartImageSearchDialog(QtWidgets.QDialog):
         self.move_button.setEnabled(True)
         self.copy_button.setEnabled(True)
         self.load_more_button.setEnabled(True)
+        self.results.setDragEnabled(True)
         self.cancel_button.setEnabled(False)
         self.progress_bar.setVisible(False)
         self.update_settings(self.settings)
@@ -453,6 +502,49 @@ class SmartImageSearchDialog(QtWidgets.QDialog):
                 self.results.takeItem(row)
         self._shown = self.results.count()
         self.load_more_button.setVisible(self._shown < len(self._search_rows))
+
+    def _schedule_drag_cleanup(self, paths, action):
+        # Shell file moves may finish just after the drag returns.
+        QtCore.QTimer.singleShot(
+            500, lambda: self._finalize_dragged_move(paths, action)
+        )
+
+    def _finalize_dragged_move(self, paths, action):
+        moved = []
+        failures = []
+        for path in paths:
+            source = Path(path)
+            if not source.is_file():
+                moved.append(path)
+            elif action == QtCore.Qt.DropAction.MoveAction:
+                # Qt's MoveAction contract: the target accepted the data,
+                # and the source must remove the original. On Windows,
+                # TargetMoveAction means the target already owns the move.
+                try:
+                    source.unlink()
+                    moved.append(path)
+                except OSError as error:
+                    failures.append(f"{source.name}：{error}")
+            else:
+                failures.append(f"{source.name}：目标未移走原件")
+        if moved:
+            try:
+                self.index.remove_paths(moved)
+                self._remove_result_paths(moved)
+                self._refresh_index_status()
+            except Exception as error:
+                self.status.setText(
+                    f"已移出 {len(moved)} 张，但索引更新失败：{error}。"
+                    "下次点击“增量更新索引”可修复。"
+                )
+                return
+        if failures:
+            self.status.setText(
+                f"已移出 {len(moved)} 张；另有 {len(failures)} 张仍在库中。"
+                "请检查目标文件夹：" + "；".join(failures[:3])
+            )
+        elif moved:
+            self.status.setText(f"已通过拖拽移走 {len(moved)} 张，索引已同步注销。")
 
     def _transfer(self, operation):
         selected = self._selected_records()
