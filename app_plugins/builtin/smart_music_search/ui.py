@@ -7,9 +7,10 @@ from pathlib import Path
 from qt_compat import QtCore, QtGui, QtMultimedia, QtWidgets
 
 from .audio import encode_reference, media_duration, resolve_tools
-from .encoder import MusicEncoder, MOOD_TAGS, SOUND_TAGS, build_music_prompt
+from .encoder import MusicEncoder, build_music_prompt
 from .index import MusicIndex
 from .settings import normalize_settings
+from .tag_input import MusicTagInput
 
 
 logger = logging.getLogger(__name__)
@@ -66,7 +67,7 @@ class SmartMusicSearchDialog(QtWidgets.QDialog):
     def __init__(self, settings, parent=None, index=None, encoder=None):
         super().__init__(parent)
         self.setWindowTitle("智能搜音乐")
-        self.resize(1050, 800)
+        self.resize(1010, 690)
         self.settings = normalize_settings(settings)
         self.index = index or MusicIndex()
         self.encoder = encoder or MusicEncoder()
@@ -101,11 +102,10 @@ class SmartMusicSearchDialog(QtWidgets.QDialog):
         layout.addWidget(self.progress)
 
         query_line = QtWidgets.QHBoxLayout()
-        query_line.addWidget(QtWidgets.QLabel("情绪 / 场景 / 歌名"))
-        self.query = QtWidgets.QLineEdit()
-        self.query.setPlaceholderText("例如：庄严、充满希望、逐渐激昂的管弦乐")
+        self.tag_input = MusicTagInput(self)
+        self.query = self.tag_input.query
         self.query.returnPressed.connect(self.search)
-        query_line.addWidget(self.query, 1)
+        query_line.addWidget(self.tag_input, 1)
         self.filename_match = QtWidgets.QCheckBox("匹配文件名")
         self.filename_match.setToolTip(
             "默认关闭。启用后，歌名直接命中的结果会单独置顶；不会改变音频语义相似度。"
@@ -115,22 +115,6 @@ class SmartMusicSearchDialog(QtWidgets.QDialog):
         self.search_button.clicked.connect(self.search)
         query_line.addWidget(self.search_button)
         layout.addLayout(query_line)
-
-        tag_box = QtWidgets.QGroupBox("中文标签 · 可多选组合；不填文字也能搜索")
-        tag_grid = QtWidgets.QGridLayout(tag_box)
-        tag_grid.setSpacing(6)
-        self.mood_buttons = {}
-        self.sound_buttons = {}
-        for number, label in enumerate(MOOD_TAGS):
-            button = self._make_tag_button(label, MOOD_TAGS[label])
-            self.mood_buttons[label] = button
-            tag_grid.addWidget(button, number // 7, number % 7)
-        tag_grid.addWidget(QtWidgets.QLabel("声音 / 编制"), 2, 0)
-        for number, label in enumerate(SOUND_TAGS, start=1):
-            button = self._make_tag_button(label, SOUND_TAGS[label])
-            self.sound_buttons[label] = button
-            tag_grid.addWidget(button, 2, number)
-        layout.addWidget(tag_box)
 
         reference_line = QtWidgets.QHBoxLayout()
         reference_line.addWidget(QtWidgets.QLabel("参考音频 / 视频"))
@@ -206,24 +190,8 @@ class SmartMusicSearchDialog(QtWidgets.QDialog):
         layout.addLayout(bottom)
         self._refresh_count()
 
-    @staticmethod
-    def _make_tag_button(label, english):
-        button = QtWidgets.QToolButton()
-        button.setText(label)
-        button.setCheckable(True)
-        button.setToolTip(f"模型描述：{english}；可与其他标签组合")
-        button.setStyleSheet("""
-            QToolButton { background:#f5f7fa; color:#30475b; padding:5px 10px;
-                border:1px solid #cbd5df; border-radius:12px; }
-            QToolButton:checked { background:#dceaff; color:#164e91;
-                border:1px solid #4f91d5; font-weight:600; }
-        """)
-        return button
-
     def _selected_tags(self):
-        moods = tuple(label for label, button in self.mood_buttons.items() if button.isChecked())
-        sounds = tuple(label for label, button in self.sound_buttons.items() if button.isChecked())
-        return moods, sounds
+        return self.tag_input.selected_tags()
 
     def update_settings(self, settings):
         self.settings = normalize_settings(settings)
@@ -562,6 +530,7 @@ class SmartMusicSearchDialog(QtWidgets.QDialog):
         self._start("duration", lambda _progress, _cancelled: media_duration(path, ffprobe))
 
     def closeEvent(self, event):
+        self.tag_input.picker.close()
         if self.is_busy():
             self.hide()
             event.ignore()

@@ -9,7 +9,7 @@ import numpy as np
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from qt_compat import QtWidgets
+from qt_compat import QtCore, QtGui, QtWidgets
 from app_plugins.builtin.smart_music_search.audio import encode_reference, segment_starts
 from app_plugins.builtin.smart_music_search.encoder import (
     MODEL_ID, MusicEncoder, build_music_prompt,
@@ -38,6 +38,7 @@ class SmartMusicSearchTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+        cls.app.setQuitOnLastWindowClosed(False)
 
     def test_sampling_is_bounded_and_reaches_ends(self):
         self.assertEqual(segment_starts(8), [0.0])
@@ -244,6 +245,35 @@ class SmartMusicSearchTests(unittest.TestCase):
             self.assertEqual(dialog.table.rowCount(), 23)
             self.assertFalse(dialog.more_button.isEnabled())
             dialog.close()
+
+    def test_popup_tags_become_removable_input_chips(self):
+        with tempfile.TemporaryDirectory() as directory:
+            dialog = SmartMusicSearchDialog(
+                {"library_root": directory}, index=MusicIndex(Path(directory) / "index"),
+                encoder=_FakeEncoder(),
+            )
+            dialog.show()
+            dialog.tag_input.tag_button.click()
+            picker = dialog.tag_input.picker
+            self.assertTrue(picker.isVisible())
+            picker.buttons[("mood", "懊悔自责")].click()
+            picker.buttons[("sound", "钢琴")].click()
+            self.assertEqual(dialog._selected_tags(), (("懊悔自责",), ("钢琴",)))
+            self.assertEqual(dialog.tag_input.chip_layout.count(), 2)
+            self.app.processEvents()
+            self.assertGreater(dialog.tag_input.chip_area.width(), 0)
+            self.assertTrue(picker.isVisible())
+            picker.close()
+            dialog.query.keyPressEvent(QtGui.QKeyEvent(
+                QtCore.QEvent.Type.KeyPress, QtCore.Qt.Key.Key_Backspace,
+                QtCore.Qt.KeyboardModifier.NoModifier,
+            ))
+            self.assertEqual(dialog._selected_tags(), (("懊悔自责",), ()))
+            dialog.tag_input.chip_layout.itemAt(0).widget().click()
+            self.assertEqual(dialog._selected_tags(), ((), ()))
+            dialog.tag_input.show_picker()
+            dialog.close()
+            self.assertFalse(picker.isVisible())
 
     def test_filenames_do_not_override_audio_ranking(self):
         with tempfile.TemporaryDirectory() as directory:
