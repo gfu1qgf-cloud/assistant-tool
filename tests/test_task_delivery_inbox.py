@@ -27,6 +27,18 @@ class DeliveryInboxTests(unittest.TestCase):
             }))
         restart.assert_not_called()
 
+    def test_manual_review_check_refreshes_quantity_even_without_status_transition(self):
+        delivery = SimpleNamespace(daily_quantity_dialog=None,
+                                   refresh_daily_quantity=mock.Mock())
+        context = mock.Mock()
+        context.parent_widget = SimpleNamespace(task_delivery_plugin=delivery)
+        context.load_config.return_value = {"daily_quantity_sheet_url": "fake-id"}
+        controller = TaskDeliveryController(SimpleNamespace(quick_actions=None), context)
+        controller._manual_review_quantity_refresh = True
+        controller.on_review_status_checked({"all": []})
+        controller.on_review_status_checked({"all": []})
+        delivery.refresh_daily_quantity.assert_called_once_with()
+
     def test_joins_exact_drive_file_and_keeps_current_upload(self):
         records = [
             {"logical_key": "video.mp4", "file_name": "video.mp4", "recorded_at": "2026-09-24T12:00:00",

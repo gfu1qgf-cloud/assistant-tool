@@ -12,6 +12,7 @@ from model.DailyQuantityStats import (
     collect_assignments,
     external_video_records,
     external_video_sources,
+    pending_review_quantity_records,
     preview_external_day,
     read_daily_quantity_categories,
     reconcile_daily_quantity,
@@ -239,6 +240,29 @@ class DailyQuantityTests(unittest.TestCase):
             self.assertEqual(first["daily_counts"][0]["02"], 1)
             self.assertEqual(grid[4][6], 1)
             update_external_video_records(config, directory, [{
+                "id": by_name["b.mp4"]["id"], "batch_date": day,
+                "batch_slot": "02", "sheet": "统计", "category": "短口播",
+                "included": True,
+            }], state_path=path)
+            with patch("model.DailyQuantityStats.collect_assignments", return_value=(local, [])), patch(
+                "model.DailyQuantityStats.read_review_history", return_value={
+                    "items": {"google:review-video-id": {"status": "passed"}}
+                }
+            ):
+                approved = reconcile_daily_quantity(config, directory, service=sheet,
+                                                    records=[], state_path=path)
+            self.assertEqual(approved["counted"], 2)
+            self.assertEqual(grid[4][6], 2)
+            with patch("model.DailyQuantityStats.collect_assignments", return_value=(local, [])), patch(
+                "model.DailyQuantityStats.read_review_history", return_value={
+                    "items": {"google:review-video-id": {"status": "needs_changes"}}
+                }
+            ):
+                rejected = reconcile_daily_quantity(config, directory, service=sheet,
+                                                    records=[], state_path=path)
+            self.assertEqual(rejected["counted"], 1)
+            self.assertEqual(grid[4][6], 1)
+            update_external_video_records(config, directory, [{
                 "id": by_name["a.mp4"]["id"], "batch_date": day,
                 "batch_slot": "02", "sheet": "统计",
                 "category": "人工改过的类别", "included": True,
@@ -288,6 +312,11 @@ class DailyQuantityTests(unittest.TestCase):
         }
         scope = {"daily_scans": {"2026-09-25": {}}, "external_videos": [review]}
         groups, warnings = _external_assignments(scope, "本人", {})
+        self.assertFalse(groups)
+        with patch("model.DailyQuantityStats.read_review_history", return_value={
+            "items": {"google:review-id": {"status": "passed"}}
+        }):
+            groups, warnings = _external_assignments(scope, "本人", {})
         self.assertEqual(len(groups[key]), 1)
         self.assertFalse(warnings)
         # Once the final version exists, the staged copy no longer adds a second unit.
@@ -295,9 +324,12 @@ class DailyQuantityTests(unittest.TestCase):
             **review, "id": "final-entry", "drive_file_id": "final-id",
             "included": True, "review_path": False,
         })
-        groups, warnings = _external_assignments(scope, "本人", {})
+        with patch("model.DailyQuantityStats.read_review_history", return_value={
+            "items": {"google:review-id": {"status": "passed"}}
+        }):
+            groups, warnings = _external_assignments(scope, "本人", {})
         self.assertEqual(len(groups[key]), 1)
-        self.assertEqual(groups[key][0]["drive_file_id"], "final-id")
+        self.assertEqual(groups[key][0]["drive_file_id"], "review-id")
         review["manual_included"] = True
         groups, warnings = _external_assignments({**scope, "external_videos": [review]}, "本人", {})
         self.assertFalse(groups)
@@ -314,11 +346,38 @@ class DailyQuantityTests(unittest.TestCase):
                  review_path=False),
         ]}
         history = {"items": {"google:old-id": {
+            "status": "passed",
             "rework_link": "https://drive.google.com/file/d/new-id/view"}}}
         with patch("model.DailyQuantityStats.read_review_history", return_value=history):
             groups, _ = _external_assignments(scope, "本人", {})
         self.assertEqual(len(groups[key]), 1)
-        self.assertEqual(groups[key][0]["drive_file_id"], "new-id")
+        self.assertEqual(groups[key][0]["drive_file_id"], "old-id")
+        history["items"]["google:old-id"]["status"] = "needs_changes"
+        with patch("model.DailyQuantityStats.read_review_history", return_value=history):
+            groups, _ = _external_assignments(scope, "本人", {})
+        self.assertFalse(groups)
+
+    def test_pending_review_queue_includes_local_upload_without_drive_scan(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = {"daily_quantity_sheet_url": "fake-id", "review_folder_name": "review"}
+            record = {
+                "source": "upload", "drive_file_id": "review-id", "file_name": "a.mp4",
+                "local_file": str(root / "0925" / "result" / "a.mp4"),
+                "relative_path": "review/a.mp4", "batch_date": "2026-09-25",
+                "batch_slot": "02", "drive_link": "https://drive.google.com/file/d/review-id/view",
+            }
+            pending = pending_review_quantity_records(
+                config, root, state_path=root / "none.json", records=[record]
+            )
+            self.assertEqual(len(pending), 1)
+            self.assertEqual(pending[0]["status"], "untracked")
+            with patch("model.DailyQuantityStats.read_review_history", return_value={
+                "items": {"google:review-id": {"status": "passed"}}
+            }):
+                self.assertFalse(pending_review_quantity_records(
+                    config, root, state_path=root / "none.json", records=[record]
+                ))
 
     def test_folder_import_preserves_first_delivery_and_allows_later_classification(self):
         config = {"daily_quantity_sheet_url": "fake-id", "task_submission_creator": "本人"}
@@ -475,6 +534,45 @@ class DailyQuantityTests(unittest.TestCase):
                 self.assertEqual(sum(map(len, groups.values())), 1)
                 self.assertEqual(next(iter(groups))[1:3], ("2026-09-25", "01"))
                 self.assertFalse(warnings)
+                review_record = dict(base, drive_file_id="review-id",
+                                     relative_path="review/same.mp4",
+                                     batch_date="2026-09-25")
+                groups, warnings = collect_assignments(
+                    {"task_submission_creator": "本人", "task_table_file_name": "tasks.ods"},
+                    root, [review_record],
+                )
+                self.assertFalse(groups)
+                self.assertFalse(warnings)
+                hint_groups, _ = collect_assignments(
+                    {"task_submission_creator": "本人", "task_table_file_name": "tasks.ods"},
+                    root, [review_record], include_unapproved_reviews=True,
+                )
+                self.assertEqual(sum(map(len, hint_groups.values())), 1)
+                with patch("model.DailyQuantityStats.read_review_history", return_value={
+                    "items": {"google:review-id": {"status": "passed"}}
+                }):
+                    groups, warnings = collect_assignments(
+                        {"task_submission_creator": "本人", "task_table_file_name": "tasks.ods"},
+                        root, [review_record],
+                    )
+                self.assertEqual(sum(map(len, groups.values())), 1)
+                rework_record = dict(review_record, logical_key="rework.mp4",
+                                     file_name="rework.mp4", drive_file_id="rework-id",
+                                     local_file=str(project / "result" / "rework.mp4"),
+                                     relative_path="person/rework.mp4",
+                                     batch_date="2026-09-26")
+                with patch("model.DailyQuantityStats.read_review_history", return_value={
+                    "items": {"google:review-id": {
+                        "status": "passed",
+                        "rework_link": "https://drive.google.com/file/d/rework-id/view",
+                    }}
+                }):
+                    groups, _ = collect_assignments(
+                        {"task_submission_creator": "本人", "task_table_file_name": "tasks.ods"},
+                        root, [review_record, rework_record],
+                    )
+                self.assertEqual(sum(map(len, groups.values())), 1)
+                self.assertEqual(next(iter(groups))[1], "2026-09-25")
             with patch("model.DailyQuantityStats.ReadTaskOds2", return_value=([Task("")], report)), patch(
                 "model.DailyQuantityStats.load_task_table_schema", return_value={}
             ):

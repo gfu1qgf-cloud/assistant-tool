@@ -86,7 +86,32 @@ def _project_ods(root, record, table_name):
     return root / relative.parts[0] / table_name
 
 
-def collect_assignments(config, root, records=None, allowed_dates=None):
+def _review_upload(record, folder_name):
+    review_name = _key(folder_name or "review")
+    for field in ("remote_prefix", "relative_path"):
+        parts = [part for part in re.split(r"[\\/]+", str(record.get(field) or "")) if part]
+        if parts:
+            return _key(parts[0]) == review_name
+    return False
+
+
+def _review_index(history=None):
+    """Index the original and rework Drive IDs under the same review result."""
+    items = (history if history is not None else read_review_history()).get("items", {})
+    statuses = {}
+    for key, item in items.items():
+        if not str(key).startswith("google:"):
+            continue
+        status = str(item.get("status") or "pending")
+        statuses[str(key).removeprefix("google:")] = status
+        rework = canonical_review_link(item.get("rework_link"))
+        if rework.startswith("google:"):
+            statuses[rework.removeprefix("google:")] = status
+    return statuses
+
+
+def collect_assignments(config, root, records=None, allowed_dates=None,
+                        include_unapproved_reviews=False):
     """Return one first-delivery assignment per logical finished video."""
     root = Path(root).resolve()
     table_name = str(config.get("task_table_file_name") or "任务登记表格.ods").strip()
@@ -95,6 +120,8 @@ def collect_assignments(config, root, records=None, allowed_dates=None):
     if not creator:
         raise ValueError("请先在程序设置 → 整理任务结果填写任务制作人")
     records = all_video_upload_records(config) if records is None else records
+    review_history = read_review_history()
+    review_statuses = _review_index(review_history)
     first = {}
     for record in records:
         if record.get("source") != "upload":
@@ -116,7 +143,24 @@ def collect_assignments(config, root, records=None, allowed_dates=None):
 
     tasks_by_ods = {}
     groups = defaultdict(list)
+    first_ids = {str(record.get("drive_file_id") or "")
+                 for _, record, _ in first.values()}
+    rework_to_original = {}
+    for key, item in review_history.get("items", {}).items():
+        rework = canonical_review_link(item.get("rework_link"))
+        if str(key).startswith("google:") and rework.startswith("google:"):
+            rework_to_original[rework.removeprefix("google:")] = (
+                str(key).removeprefix("google:")
+            )
     for identity, ((day, slot, _), record, ods) in first.items():
+        file_id = str(record.get("drive_file_id") or "")
+        if rework_to_original.get(file_id) in first_ids:
+            continue
+        if (not include_unapproved_reviews
+                and (_review_upload(record, config.get("review_folder_name"))
+                     or file_id in review_statuses)
+                and review_statuses.get(file_id) != "passed"):
+            continue
         if ods not in tasks_by_ods:
             if not ods.is_file():
                 tasks_by_ods[ods] = None
@@ -296,11 +340,11 @@ def _included(item):
 
 
 def _with_review_status(items):
-    history = read_review_history().get("items", {})
+    statuses = _review_index()
     for item in items:
         if item.get("review_path"):
-            key = "google:" + str(item.get("drive_file_id") or "")
-            item["review_status"] = str(history.get(key, {}).get("status") or "")
+            file_id = str(item.get("drive_file_id") or "")
+            item["review_status"] = statuses.get(file_id, "untracked")
     return items
 
 
@@ -317,6 +361,61 @@ def external_video_sources(config, root, state_path=None):
     with _LOCK:
         scope = _load_state(state_path or STATE_FILE).get(_scope_key(config, root), {})
         return [dict(item) for item in scope.get("external_folders", [])]
+
+
+def pending_review_quantity_records(config, root, state_path=None, records=None):
+    """List review-linked uploads in this project still waiting to be counted."""
+    root = Path(root).resolve()
+    table_name = str(config.get("task_table_file_name") or "任务登记表格.ods").strip()
+    statuses = _review_index()
+    with _LOCK:
+        scope = _load_state(state_path or STATE_FILE).get(_scope_key(config, root), {})
+        external = [dict(item) for item in scope.get("external_videos", [])]
+    review_names = {
+        normalize_video_identity(item.get("file_name")): statuses.get(
+            str(item.get("drive_file_id") or ""), "untracked"
+        ) for item in external if item.get("review_path")
+    }
+    result = {}
+    for item in external:
+        file_id = str(item.get("drive_file_id") or "")
+        name = str(item.get("file_name") or "")
+        if not file_id or not (item.get("review_path") or file_id in statuses
+                               or normalize_video_identity(name) in review_names):
+            continue
+        status = statuses.get(file_id, review_names.get(normalize_video_identity(name),
+                                                        "untracked"))
+        if status == "passed":
+            continue
+        result[file_id] = {
+            "drive_file_id": file_id, "file_name": name,
+            "drive_link": str(item.get("drive_link") or ""),
+            "batch_date": str(item.get("batch_date") or ""),
+            "batch_slot": str(item.get("batch_slot") or ""),
+            "status": status,
+        }
+    uploads = all_video_upload_records(config) if records is None else records
+    for record in uploads:
+        if record.get("source") != "upload" or _project_ods(root, record, table_name) is None:
+            continue
+        file_id = str(record.get("drive_file_id") or "")
+        if not file_id or not (_review_upload(record, config.get("review_folder_name"))
+                               or file_id in statuses):
+            continue
+        status = statuses.get(file_id, "untracked")
+        if status == "passed" or file_id in result:
+            continue
+        result[file_id] = {
+            "drive_file_id": file_id,
+            "file_name": str(record.get("file_name") or ""),
+            "drive_link": str(record.get("drive_link") or ""),
+            "batch_date": str(record.get("batch_date") or ""),
+            "batch_slot": str(record.get("batch_slot") or ""),
+            "status": status,
+        }
+    return sorted(result.values(), key=lambda item: (
+        item["batch_date"], item["batch_slot"], item["file_name"]
+    ), reverse=True)
 
 
 def scan_daily_drive_date(
@@ -377,7 +476,7 @@ def scan_daily_drive_date(
     relevant_records = [item for item in records
                         if normalize_video_identity(item.get("file_name")) in scanned_names]
     known_groups, hint_warnings = collect_assignments(
-        config, root, relevant_records
+        config, root, relevant_records, include_unapproved_reviews=True
     )
     by_drive_id = {}
     by_name = defaultdict(set)
@@ -673,37 +772,58 @@ def _external_assignments(scope, creator, local_groups):
                    for video in videos}
     seen_ids = set()
     scanned_days = set(scope.get("daily_scans", {}))
+    review_statuses = _review_index()
+    review_names = {
+        normalize_video_identity(item.get("file_name")): review_statuses.get(
+            str(item.get("drive_file_id") or ""), "untracked"
+        )
+        for item in scope.get("external_videos", []) if item.get("review_path")
+    }
+
+    def review_passed(item):
+        file_id = str(item.get("drive_file_id") or "")
+        name = normalize_video_identity(item.get("file_name"))
+        if item.get("review_path") or file_id in review_statuses or name in review_names:
+            return review_statuses.get(file_id, review_names.get(name)) == "passed"
+        return True
+
     def eligible(item):
         day = _date(item.get("batch_date"))
-        return (bool(_included(item) and item.get("sheet") and item.get("category"))
+        return (bool(_included(item) and review_passed(item)
+                     and item.get("sheet") and item.get("category"))
                 and str(item.get("batch_slot") or "").zfill(2) in _PERIOD_LABELS
                 and not item.get("missing_from_daily")
                 and not item.get("outside_daily_scan")
                 and (day not in scanned_days or item.get("daily_scan_date") == day))
 
-    eligible_files = {str(item.get("drive_file_id") or "")
-                      for item in scope.get("external_videos", []) if eligible(item)} | counted_ids
-    replaced_review_ids = set()
+    eligible_review_ids = {str(item.get("drive_file_id") or "")
+                           for item in scope.get("external_videos", [])
+                           if item.get("review_path") and eligible(item)}
+    rework_original_by_id = {}
     for key, item in read_review_history().get("items", {}).items():
         rework_key = canonical_review_link(item.get("rework_link"))
         if (str(key).startswith("google:") and rework_key.startswith("google:")
-                and rework_key.removeprefix("google:") in eligible_files):
-            replaced_review_ids.add(str(key).removeprefix("google:"))
-    active_normal_names = {
+                and rework_key != key):
+            rework_original_by_id[rework_key.removeprefix("google:")] = (
+                str(key).removeprefix("google:")
+            )
+    active_review_names = {
         normalize_video_identity(item.get("file_name"))
         for item in scope.get("external_videos", [])
-        if not item.get("review_path") and eligible(item)
+        if item.get("review_path") and eligible(item)
     }
     for item in scope.get("external_videos", []):
         if not _included(item):
             continue
+        if not review_passed(item):
+            continue
         if item.get("missing_from_daily") or item.get("outside_daily_scan"):
             continue
-        if (item.get("review_path")
-                and (normalize_video_identity(item.get("file_name")) in active_normal_names
-                     or str(item.get("drive_file_id") or "") in replaced_review_ids)):
-            continue
         file_id = str(item.get("drive_file_id") or "")
+        if (not item.get("review_path")
+                and (normalize_video_identity(item.get("file_name")) in active_review_names
+                     or rework_original_by_id.get(file_id) in eligible_review_ids)):
+            continue
         if not file_id or file_id in counted_ids or file_id in seen_ids:
             continue
         label = str(item.get("file_name") or file_id)

@@ -47,6 +47,7 @@ class TaskDeliveryController:
         self.review_status_settings = normalize_review_status_settings({})
         self.review_status_config = load_task_result_config({})
         self.review_status_state = "未启动"
+        self._manual_review_quantity_refresh = False
         self.daily_link_history = normalize_daily_link_history({})
         self.global_hotkey = DEFAULT_TASK_RESULT_HOTKEY
         self.gemini_api_keys = []
@@ -431,8 +432,8 @@ class TaskDeliveryController:
         self.update_review_status_button()
         return result
 
-    def start_review_status_monitor(self):
-        if not self.review_status_settings.get("review_status_monitor_enabled"):
+    def start_review_status_monitor(self, force_once=False):
+        if not force_once and not self.review_status_settings.get("review_status_monitor_enabled"):
             self.review_status_state = "未启用"
             self._sync_compatibility_state()
             self.update_review_status_button()
@@ -447,14 +448,18 @@ class TaskDeliveryController:
         thread = ReviewStatusMonitorThread(
             self.review_status_config,
             parent=self.window,
+            single_pass=force_once and not self.review_status_settings.get(
+                "review_status_monitor_enabled"
+            ),
         )
         thread.status.connect(self.on_review_status_monitor_status)
         thread.snapshot.connect(self.on_review_status_snapshot)
+        thread.checked.connect(self.on_review_status_checked)
         thread.changed.connect(self.on_review_status_changed)
         thread.log.connect(lambda message: self.context.log(message))
         thread.finished.connect(self.on_review_status_monitor_finished)
         self.review_status_thread = thread
-        self.review_status_state = "正在启动…"
+        self.review_status_state = "正在手动检查…" if thread.single_pass else "正在启动…"
         self._sync_compatibility_state()
         thread.start()
 
@@ -483,11 +488,16 @@ class TaskDeliveryController:
         self.start_review_status_monitor()
         return True
 
-    def request_review_status_check(self):
+    def request_review_status_check(self, manual=False):
+        if manual:
+            self._manual_review_quantity_refresh = True
         if self.review_status_thread is None:
-            self.start_review_status_monitor()
+            self.start_review_status_monitor(force_once=manual)
         if self.review_status_thread is not None:
             self.review_status_thread.request_check()
+        elif manual:
+            self._manual_review_quantity_refresh = False
+            QMessageBox.warning(self.window, "审核检查", "请先在程序设置中填写审核表格链接。")
 
     def on_review_status_monitor_status(self, status):
         status = str(status)
@@ -504,13 +514,23 @@ class TaskDeliveryController:
         if quantity_dialog is not None and quantity_dialog.isVisible():
             quantity_dialog.refresh_review_statuses()
 
+    def on_review_status_checked(self, _snapshot):
+        if not self._manual_review_quantity_refresh:
+            return
+        self._manual_review_quantity_refresh = False
+        delivery = getattr(self.window, "task_delivery_plugin", None)
+        if delivery is not None and self.context.load_config().get("daily_quantity_sheet_url"):
+            delivery.refresh_daily_quantity()
+
     def on_review_status_changed(self, result):
         passed = result.get("passed", [])
         needs_changes = result.get("needs_changes", [])
         self.on_review_status_snapshot(result.get("snapshot"))
+        delivery = getattr(self.window, "task_delivery_plugin", None)
+        if delivery is not None:
+            delivery.refresh_daily_quantity_review_queue()
         if (result.get("items")
                 and self.context.load_config().get("daily_quantity_sheet_url")):
-            delivery = getattr(self.window, "task_delivery_plugin", None)
             if delivery is not None:
                 delivery.refresh_daily_quantity()
         if needs_changes:
@@ -538,6 +558,11 @@ class TaskDeliveryController:
     def on_review_status_monitor_finished(self):
         thread = self.review_status_thread
         self.review_status_thread = None
+        if thread is not None and thread.single_pass and self._manual_review_quantity_refresh:
+            self._manual_review_quantity_refresh = False
+            self.context.log("手动审核检查未完成；每日数量没有刷新，请查看审核监控错误日志。")
+        if thread is not None and thread.single_pass and self.review_status_state == "运行中":
+            self.review_status_state = "手动检查完成"
         self._sync_compatibility_state()
         if thread is not None:
             thread.deleteLater()

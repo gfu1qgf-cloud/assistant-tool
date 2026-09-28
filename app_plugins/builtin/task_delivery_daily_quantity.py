@@ -99,6 +99,7 @@ class DailyQuantityDialog(QtWidgets.QDialog):
     scan_requested = QtCore.pyqtSignal(str, str, str)
     scan_date_requested = QtCore.pyqtSignal(str)
     view_date_requested = QtCore.pyqtSignal(str)
+    review_check_requested = QtCore.pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -158,6 +159,31 @@ class DailyQuantityDialog(QtWidgets.QDialog):
         )
         self.summary_note.setWordWrap(True)
         layout.addWidget(self.summary_note)
+        review_row = QtWidgets.QHBoxLayout()
+        self.review_queue_toggle = QtWidgets.QToolButton()
+        self.review_queue_toggle.setText("待审核未计数：0")
+        self.review_queue_toggle.setCheckable(True)
+        self.review_queue_toggle.toggled.connect(
+            lambda visible: self.review_queue.setVisible(visible)
+        )
+        review_row.addWidget(self.review_queue_toggle)
+        review_row.addStretch(1)
+        self.review_check_button = QtWidgets.QPushButton("立即检查审核状态")
+        self.review_check_button.clicked.connect(self.review_check_requested.emit)
+        review_row.addWidget(self.review_check_button)
+        layout.addLayout(review_row)
+        self.review_queue = QtWidgets.QTableWidget(0, 3)
+        self.review_queue.setHorizontalHeaderLabels(["交付日期/时段", "视频", "审核状态"])
+        self.review_queue.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.review_queue.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
+        self.review_queue.horizontalHeader().setStretchLastSection(True)
+        self.review_queue.setColumnWidth(0, 135)
+        self.review_queue.setColumnWidth(1, 450)
+        self.review_queue.setMaximumHeight(175)
+        self.review_queue.setToolTip("双击视频可打开网盘链接；通过审核后会自动补计到原交付日期。")
+        self.review_queue.cellDoubleClicked.connect(self._open_pending_review)
+        self.review_queue.setVisible(False)
+        layout.addWidget(self.review_queue)
         self.details_toggle = QtWidgets.QToolButton()
         self.details_toggle.setText("查看表格写入记录与待处理提示")
         self.details_toggle.setCheckable(True)
@@ -176,8 +202,8 @@ class DailyQuantityDialog(QtWidgets.QDialog):
         source_layout = QtWidgets.QVBoxLayout(source_box)
         source_note = QtWidgets.QLabel(
             "扫描所选日期会核对网盘实有视频；已保存的分类不变，未分类的可在清单中选择。"
-            "最左侧勾选框表示计入数量，和选中表格行是两回事；可右键批量操作。"
-            "审核暂存也参与计数；审核状态会跟随审核提醒更新，返修不重复计数。"
+            "最左侧勾选框表示允许计数，和选中表格行是两回事；可右键批量操作。"
+            "审核暂存只有通过后才计数；未通过的会列在上方待审核清单，状态更新后自动补计。"
             "疑似旧任务修订版默认不计数；重复内容会标出供你核对。"
             "日期目录目前只按月日命名，跨年复用时请留意旧视频。只读取清单，不下载。"
         )
@@ -223,13 +249,13 @@ class DailyQuantityDialog(QtWidgets.QDialog):
         source_layout.addWidget(self.folder_status)
         self.external_table = QtWidgets.QTableWidget(0, 8)
         self.external_table.setHorizontalHeaderLabels([
-            "计数", "文件夹", "视频", "交付日期", "时段", "统计分页", "统计类别", "状态"
+            "允许计数", "文件夹", "视频", "交付日期", "时段", "统计分页", "统计类别", "状态"
         ])
         self.external_table.setAlternatingRowColors(True)
         self.external_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
         self.external_table.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
         self.external_table.horizontalHeader().setStretchLastSection(True)
-        self.external_table.setColumnWidth(0, 52)
+        self.external_table.setColumnWidth(0, 75)
         self.external_table.setColumnWidth(2, 250)
         self.external_table.setColumnWidth(3, 105)
         self.external_table.setColumnWidth(4, 105)
@@ -270,6 +296,39 @@ class DailyQuantityDialog(QtWidgets.QDialog):
             self.set_category_options({})
             self.category_status.setText("表格链接已更改，正在等待读取分类…")
         self.sheet_url.setText(url)
+
+    def show_pending_reviews(self, records):
+        labels = {"pending": "待审核", "needs_changes": "需修改",
+                  "untracked": "未找到审核记录"}
+        self.review_queue.setRowCount(0)
+        for record in records:
+            row = self.review_queue.rowCount()
+            self.review_queue.insertRow(row)
+            date_text = "{} / {}".format(record.get("batch_date") or "日期待确认",
+                                          record.get("batch_slot") or "时段待确认")
+            for col, value in enumerate((date_text, record.get("file_name") or "",
+                                         labels.get(record.get("status"), "待审核"))):
+                item = QtWidgets.QTableWidgetItem(str(value))
+                item.setToolTip(str(record.get("drive_link") or ""))
+                if record.get("status") == "needs_changes":
+                    item.setBackground(QtGui.QColor("#FFE3DF"))
+                    item.setForeground(QtGui.QColor("#202124"))
+                if col == 1:
+                    item.setData(QtCore.Qt.UserRole, str(record.get("drive_link") or ""))
+                self.review_queue.setItem(row, col, item)
+        self.review_queue_toggle.setText(f"待审核未计数：{len(records)}")
+        self.review_queue_toggle.setToolTip("包括待审核、需修改以及尚未写入审核记录的视频。")
+        self.review_queue_toggle.setStyleSheet(
+            "background-color:#FFF1CF;color:#202124;font-weight:bold;" if records else ""
+        )
+        if records and not self.review_queue_toggle.isChecked():
+            self.review_queue_toggle.setChecked(True)
+
+    def _open_pending_review(self, row, _column):
+        item = self.review_queue.item(row, 1)
+        link = str(item.data(QtCore.Qt.UserRole) or "") if item else ""
+        if link:
+            QtGui.QDesktopServices.openUrl(QtCore.QUrl(link))
 
     def set_category_loading(self):
         self.category_status.setText("正在只读加载统计分页和类别，不会修改表格…")
@@ -329,7 +388,7 @@ class DailyQuantityDialog(QtWidgets.QDialog):
                              & ~QtCore.Qt.ItemIsEditable)
             include.setCheckState(QtCore.Qt.Checked if record.get("included", True)
                                   else QtCore.Qt.Unchecked)
-            include.setToolTip("勾选表示计入每日数量；请先确认交付时段为 01、02 或 03。")
+            include.setToolTip("勾选表示允许计数；审核视频仍须通过审核才会实际计入。")
             include.setData(QtCore.Qt.UserRole, str(record.get("id") or ""))
             self.external_table.setItem(row, 0, include)
             for col, key in ((1, "folder_name"), (2, "file_name"), (3, "batch_date")):
@@ -404,8 +463,10 @@ class DailyQuantityDialog(QtWidgets.QDialog):
                 state += " · 审核暂存"
                 state += {
                     "passed": " · 已通过", "needs_changes": " · 需修改",
-                    "pending": " · 待审核",
-                }.get(record.get("review_status"), "")
+                    "pending": " · 待审核", "untracked": " · 未找到审核记录",
+                }.get(record.get("review_status"), " · 待审核")
+                if record.get("review_status") != "passed":
+                    state += " · 暂不计数"
             if record.get("daily_scan_date") and record.get("batch_slot") not in {"01", "02", "03"}:
                 state += " · 时段待确认"
             if record.get("possible_duplicate"):
@@ -479,24 +540,31 @@ class DailyQuantityDialog(QtWidgets.QDialog):
     def refresh_review_statuses(self):
         """Update visible review states without discarding unsaved classifications."""
         history = read_review_history().get("items", {})
-        labels = {"passed": "已通过", "needs_changes": "需修改", "pending": "待审核"}
+        labels = {"passed": "已通过", "needs_changes": "需修改", "pending": "待审核",
+                  "untracked": "未找到审核记录"}
+        changed = False
         for row, record in enumerate(self._visible_records):
             if not record.get("review_path"):
                 continue
             key = "google:" + str(record.get("drive_file_id") or "")
-            status = str(history.get(key, {}).get("status") or "")
+            status = str(history.get(key, {}).get("status") or "untracked")
             if status == record.get("review_status"):
                 continue
+            changed = True
             record["review_status"] = status
             item = self.external_table.item(row, 7)
             if item is None:
                 continue
             parts = [part for part in str(item.data(QtCore.Qt.UserRole) or "").split(" · ")
-                     if part and part not in labels.values()]
+                     if part and part not in labels.values() and part != "暂不计数"]
             if status in labels:
                 parts.append(labels[status])
+            if status != "passed":
+                parts.append("暂不计数")
             item.setData(QtCore.Qt.UserRole, " · ".join(parts))
             self._update_row_status(row)
+        if changed:
+            self._refresh_inventory_preview()
 
     def external_edits(self):
         result = []

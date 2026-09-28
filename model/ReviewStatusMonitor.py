@@ -203,14 +203,16 @@ def statuses_from_review_values(values):
 class ReviewStatusMonitorThread(QtCore.QThread):
     status = QtCore.pyqtSignal(str)
     snapshot = QtCore.pyqtSignal(object)
+    checked = QtCore.pyqtSignal(object)
     changed = QtCore.pyqtSignal(object)
     log = QtCore.pyqtSignal(str)
 
-    def __init__(self, config, history_path=None, parent=None):
+    def __init__(self, config, history_path=None, parent=None, single_pass=False):
         super().__init__(parent)
         self.config = dict(config or {})
         self.settings = normalize_review_status_settings(config)
         self.history_path = history_path
+        self.single_pass = bool(single_pass)
         self._wake_event = threading.Event()
         self._last_error = ""
 
@@ -297,6 +299,7 @@ class ReviewStatusMonitorThread(QtCore.QThread):
                     snapshot = self._emit_snapshot()
                     if not snapshot["all"]:
                         self.status.emit("等待新的审核提交记录")
+                        self.checked.emit(snapshot)
                     else:
                         if service is None:
                             self.status.emit("正在读取审核表…")
@@ -307,6 +310,7 @@ class ReviewStatusMonitorThread(QtCore.QThread):
                         )
                         snapshot = self._emit_snapshot()
                         self.status.emit("运行中")
+                        self.checked.emit(snapshot)
                         if transitions:
                             self.changed.emit(
                                 {
@@ -340,6 +344,8 @@ class ReviewStatusMonitorThread(QtCore.QThread):
                         self._last_error = message
                     self._close_service(service)
                     service = None
+                if self.single_pass:
+                    break
                 if not self.isInterruptionRequested():
                     self._wait()
         finally:

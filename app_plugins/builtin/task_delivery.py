@@ -20,6 +20,7 @@ from app_plugins.builtin.task_delivery_daily_quantity import (
 from model.DailyQuantityStats import (
     external_video_records,
     external_video_sources,
+    pending_review_quantity_records,
     update_external_video_records,
 )
 from model.TaskResultOrganizer import load_effective_config
@@ -206,6 +207,9 @@ class TaskDeliveryPlugin:
             dialog.scan_requested.connect(self.scan_daily_quantity_folder)
             dialog.scan_date_requested.connect(self.scan_daily_quantity_date)
             dialog.view_date_requested.connect(self.view_daily_quantity_date)
+            dialog.review_check_requested.connect(
+                lambda: self.controller.request_review_status_check(manual=True)
+            )
             dialog.edit_sheet_requested.connect(self.edit_daily_quantity_sheet)
             self.daily_quantity_dialog = dialog
             try:
@@ -219,6 +223,7 @@ class TaskDeliveryPlugin:
                 ))
             except ValueError:
                 pass
+        self.refresh_daily_quantity_review_queue()
         self.daily_quantity_dialog.set_sheet_url(
             self.context.load_config().get("daily_quantity_sheet_url")
         )
@@ -227,6 +232,18 @@ class TaskDeliveryPlugin:
         self.daily_quantity_dialog.activateWindow()
         self.load_daily_quantity_categories()
         return self.daily_quantity_dialog
+
+    def refresh_daily_quantity_review_queue(self):
+        dialog = self.daily_quantity_dialog
+        if dialog is None:
+            return
+        try:
+            dialog.show_pending_reviews(pending_review_quantity_records(
+                self.context.load_config(),
+                self.context.parent_widget.task_path_edit.text().strip(),
+            ))
+        except (OSError, ValueError) as error:
+            self.context.log(f"每日数量待审核清单读取失败：{error}")
 
     def edit_daily_quantity_sheet(self):
         self.context.parent_widget.openSettings(focus_daily_quantity=True)
@@ -367,6 +384,7 @@ class TaskDeliveryPlugin:
         self.context.log(
             f"每日数量：扫描网盘文件夹，视频 {result['found']}，新增 {result['added']}。"
         )
+        self.refresh_daily_quantity_review_queue()
 
     def _daily_quantity_folder_failed(self, error):
         self.context.log(f"每日数量文件夹扫描失败：{error}")
@@ -439,6 +457,7 @@ class TaskDeliveryPlugin:
         self.context.log(
             f"每日数量：已扫描 {result['date']} 网盘目录，共 {result['found']} 个视频。"
         )
+        self.refresh_daily_quantity_review_queue()
 
     def _daily_quantity_date_failed(self, error):
         self.context.log(f"每日数量日期目录扫描失败：{error}")
@@ -456,6 +475,7 @@ class TaskDeliveryPlugin:
         if self.daily_quantity_dialog is not None:
             self.daily_quantity_dialog.set_busy(False)
             self.daily_quantity_dialog.show_result(result)
+        self.refresh_daily_quantity_review_queue()
         warnings = result.get("warnings", [])
         self.context.log(
             f"每日数量统计：已归类 {result.get('counted', 0)} 个视频，"

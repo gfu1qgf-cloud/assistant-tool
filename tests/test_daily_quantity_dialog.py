@@ -31,6 +31,24 @@ class DailyQuantityDialogTests(unittest.TestCase):
         finally:
             dialog.close()
 
+    def test_pending_review_list_is_visible_and_can_request_check(self):
+        dialog = DailyQuantityDialog()
+        try:
+            requests = []
+            dialog.review_check_requested.connect(lambda: requests.append(True))
+            dialog.show_pending_reviews([{
+                "file_name": "a.mp4", "batch_date": "2026-09-26", "batch_slot": "02",
+                "status": "needs_changes", "drive_link": "https://drive.google.com/file/d/a/view",
+            }])
+            self.assertEqual(dialog.review_queue.rowCount(), 1)
+            self.assertTrue(dialog.review_queue.isVisible() or dialog.review_queue_toggle.isChecked())
+            self.assertIn("待审核未计数：1", dialog.review_queue_toggle.text())
+            self.assertEqual(dialog.review_queue.item(0, 2).text(), "需修改")
+            dialog.review_check_button.click()
+            self.assertEqual(requests, [True])
+        finally:
+            dialog.close()
+
     def test_sheet_link_is_visible_and_change_button_opens_settings(self):
         dialog = DailyQuantityDialog()
         try:
