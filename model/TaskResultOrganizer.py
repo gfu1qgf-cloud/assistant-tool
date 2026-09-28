@@ -950,13 +950,15 @@ def run_task_result_organizer(
             print(f"视频上传历史保存失败：{type(error).__name__}: {error}")
             summary["video_upload_history_error"] = str(error)
 
-        review_records = [
-            record for record in uploaded_records
-            if is_review_upload_record(record, review_folder_name)
-        ]
-        if review_records:
+        for record in uploaded_records:
+            record["review_routed"] = is_review_upload_record(
+                record, review_folder_name
+            )
+        if uploaded_records:
             try:
-                summary["review_sheet_count"] = write_review_video_links(config, review_records)
+                summary["review_sheet_count"] = write_review_video_links(
+                    config, uploaded_records
+                )
             except Exception as error:
                 print(f"写入人工检查表格失败：{type(error).__name__}: {error}")
                 summary["review_sheet_error"] = str(error)

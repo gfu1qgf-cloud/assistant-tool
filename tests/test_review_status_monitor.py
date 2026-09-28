@@ -19,6 +19,7 @@ from model.ReviewStatusMonitor import (
     review_status_from_row,
     statuses_from_review_values,
 )
+from model.GoogleSheetsHelper import _plan_review_rows
 from model.ReviewSubmissionHistory import (
     acknowledge_review_items,
     apply_review_statuses,
@@ -105,6 +106,86 @@ class ReviewStatusParsingTests(unittest.TestCase):
         key = canonical_review_link("https://drive.google.com/file/d/video-1/view")
         self.assertEqual(statuses[key]["status"], "passed")
         self.assertEqual(statuses[key]["sheet_row"], 3)
+
+    def test_updated_same_link_uses_newest_review_row(self):
+        link = "https://drive.google.com/file/d/same-id/view"
+        newest = [""] * len(HEADERS)
+        newest[2] = f'=HYPERLINK("{link}","【更新版:time:2026-09-28T12:00:00Z】v.mp4")'
+        older = [""] * len(HEADERS)
+        older[2] = f'=HYPERLINK("{link}","v.mp4")'
+        older[5] = older[11] = "可以使用"
+        statuses = statuses_from_review_values([HEADERS, newest, older])
+        self.assertEqual(statuses[canonical_review_link(link)]["status"], "pending")
+        self.assertEqual(statuses[canonical_review_link(link)]["sheet_row"], 2)
+
+
+class ReviewResubmissionTests(unittest.TestCase):
+    def setUp(self):
+        self.link = "https://drive.google.com/file/d/same-id/view"
+        self.config = {
+            "review_sheet_date_column": "日期",
+            "review_sheet_submitter_column": "提交人",
+            "review_sheet_link_column": "视频链接",
+        }
+        self.old_values = [
+            ["日期", "提交人", "视频链接"],
+            ["2026-09-27", "Me", f'=HYPERLINK("{self.link}","v.mp4")'],
+        ]
+        self.record = {
+            "name": "v.mp4", "webViewLink": self.link,
+            "modifiedTime": "2026-09-28T12:00:00Z", "action": "updated_previous_batch",
+        }
+
+    def _plan(self, record=None, values=None, history=None):
+        with mock.patch("model.GoogleSheetsHelper.read_review_history", return_value=history or {"items": {}}):
+            return _plan_review_rows(
+                self.config, [record or self.record], values or self.old_values,
+                1, self.old_values[0],
+            )
+
+    def test_update_adds_visible_new_row_but_unchanged_file_does_not(self):
+        rows, submitted = self._plan()
+        self.assertEqual(len(rows), 1)
+        self.assertIn("【更新版:time:2026-09-28T12:00:00Z】", rows[0][2])
+        self.assertTrue(submitted[0]["review_resubmitted"])
+        rows, _ = self._plan(dict(self.record, action="skipped_same_previous_batch"))
+        self.assertEqual(rows, [])
+
+    def test_normal_route_only_reenters_review_when_link_was_reviewed(self):
+        rows, _ = self._plan(dict(self.record, review_routed=False))
+        self.assertEqual(len(rows), 1)
+        other = dict(self.record, webViewLink="https://drive.google.com/file/d/other/view",
+                     review_routed=False)
+        rows, tracked = self._plan(other)
+        self.assertEqual((rows, tracked), ([], []))
+
+    def test_retry_after_sheet_failure_adds_new_version_once(self):
+        key = canonical_review_link(self.link)
+        history = {"items": {key: {
+            "review_revision": "time:2026-09-27T12:00:00Z",
+            "submitted_at": 1_700_000_000,
+        }}}
+        retry = dict(self.record, action="skipped_same_previous_batch")
+        rows, _ = self._plan(retry, history=history)
+        self.assertEqual(len(rows), 1)
+        with_new_version = [self.old_values[0], rows[0], self.old_values[1]]
+        rows_again, _ = self._plan(retry, values=with_new_version, history=history)
+        self.assertEqual(rows_again, [])
+
+    def test_resubmission_resets_previous_approval_once(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "history.json"
+            key = canonical_review_link(self.link)
+            record_review_submissions([{"webViewLink": self.link, "name": "v.mp4",
+                                        "review_revision": "time:2026-09-27T12:00:00Z"}], path, now=100)
+            apply_review_statuses({key: {"status": "passed"}}, path, now=120)
+            revised = dict(self.record, review_revision="time:2026-09-28T12:00:00Z",
+                           review_resubmitted=True)
+            record_review_submissions([revised], path, now=200)
+            item = read_review_history(path)["items"][key]
+            self.assertEqual((item["status"], item["submitted_at"]), ("pending", 200))
+            record_review_submissions([revised], path, now=300)
+            self.assertEqual(read_review_history(path)["items"][key]["submitted_at"], 200)
 
 
 class ReviewStatusNetworkTests(unittest.TestCase):

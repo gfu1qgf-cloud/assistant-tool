@@ -106,6 +106,10 @@ def record_review_submissions(records, path=None, now=None):
             existing = items.get(key, {})
             updated = dict(existing)
             updated.update({"key": key, "link": link, "name": name})
+            revision = str(record.get("review_revision") or "").strip()
+            previous_revision = str(existing.get("review_revision") or "")
+            if revision:
+                updated["review_revision"] = revision
             for field, record_field in (
                 ("admin", "local_admin"),
                 ("task_name", "local_task_name"),
@@ -114,7 +118,11 @@ def record_review_submissions(records, path=None, now=None):
                 value = str(record.get(record_field) or "").strip()
                 if value or field not in existing:
                     updated[field] = value
-            if not existing:
+            if not existing or (
+                record.get("review_resubmitted")
+                and revision
+                and revision != previous_revision
+            ):
                 updated.update(
                     {
                         "submitted_at": timestamp,
@@ -122,6 +130,8 @@ def record_review_submissions(records, path=None, now=None):
                         "phase": "初审",
                         "note": "",
                         "severity": "",
+                        "sheet_row": "",
+                        "rework_link": "",
                         "acknowledged_status": "",
                         "last_notified_status": "",
                     }

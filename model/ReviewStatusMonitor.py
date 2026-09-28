@@ -196,7 +196,10 @@ def statuses_from_review_values(values):
     for offset, row in enumerate(values[header_index + 1 :], start=header_index + 2):
         key = canonical_review_link(_cell(row, columns["link"]))
         if key:
-            result[key] = review_status_from_row(row, columns, offset)
+            # New submissions are inserted directly below the header.  When
+            # an updated video reuses its Drive link, the newer row must win
+            # over an older approval/rejection farther down the sheet.
+            result.setdefault(key, review_status_from_row(row, columns, offset))
     return result
 
 
