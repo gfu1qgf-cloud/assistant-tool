@@ -1,5 +1,6 @@
 import os
 import sys
+import gc
 
 # The frozen executable doubles as the isolated Resolve worker. Dispatch
 # before importing Qt/ML modules so one worker never starts the GUI.
@@ -29,7 +30,7 @@ app_logger.info("程序启动，Python：%s", sys.version.replace("\n", " "))
 from globalValue import globalValue
 
 
-from qt_compat import QtWidgets
+from qt_compat import QtCore, QtWidgets
 
 from model.ComboBoxWheelGuard import ComboBoxWheelGuard
 from model.AppTheme import apply_configured_ui_theme
@@ -46,10 +47,24 @@ def main():
     apply_configured_ui_theme(app, APP_ROOT / "config.json")
     app.combo_box_wheel_guard = ComboBoxWheelGuard(app)
     app.installEventFilter(app.combo_box_wheel_guard)
-    app.aboutToQuit.connect(shutdown_application_logging)
     Dialog = MainDialog()
     Dialog.show()
-    return app.exec()
+    exit_code = app.exec()
+    # Keep QApplication alive until the window and installed event filter have
+    # been destroyed. Otherwise SIP may finalize their wrappers in the opposite
+    # order during interpreter shutdown, after the Qt application is gone.
+    app.removeEventFilter(app.combo_box_wheel_guard)
+    if not Dialog.isVisible():
+        Dialog.deleteLater()
+    app.combo_box_wheel_guard.deleteLater()
+    QtCore.QCoreApplication.sendPostedEvents(
+        None, QtCore.QEvent.Type.DeferredDelete
+    )
+    del Dialog
+    del app.combo_box_wheel_guard
+    gc.collect()
+    shutdown_application_logging()
+    return exit_code
 
 
 if __name__ == "__main__":

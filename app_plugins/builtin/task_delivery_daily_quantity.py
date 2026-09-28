@@ -163,9 +163,6 @@ class DailyQuantityDialog(QtWidgets.QDialog):
         self.review_queue_toggle = QtWidgets.QToolButton()
         self.review_queue_toggle.setText("待审核未计数：0")
         self.review_queue_toggle.setCheckable(True)
-        self.review_queue_toggle.toggled.connect(
-            lambda visible: self.review_queue.setVisible(visible)
-        )
         review_row.addWidget(self.review_queue_toggle)
         review_row.addStretch(1)
         self.review_check_button = QtWidgets.QPushButton("立即检查审核状态")
@@ -183,6 +180,7 @@ class DailyQuantityDialog(QtWidgets.QDialog):
         self.review_queue.setToolTip("双击视频可打开网盘链接；通过审核后会自动补计到原交付日期。")
         self.review_queue.cellDoubleClicked.connect(self._open_pending_review)
         self.review_queue.setVisible(False)
+        self.review_queue_toggle.toggled.connect(self.review_queue.setVisible)
         layout.addWidget(self.review_queue)
         self.details_toggle = QtWidgets.QToolButton()
         self.details_toggle.setText("查看表格写入记录与待处理提示")
