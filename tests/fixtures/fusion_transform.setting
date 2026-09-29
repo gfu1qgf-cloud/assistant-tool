@@ -1,0 +1,11 @@
+{
+	Tools = ordered() {
+		Transform1 = Transform {
+			Inputs = {
+				Center = Input { Value = { 0.2, 0.7 } },
+				Size = Input { Value = 1.3 },
+			},
+			ViewInfo = OperatorInfo { Pos = { 0, 0 } },
+		},
+	},
+}

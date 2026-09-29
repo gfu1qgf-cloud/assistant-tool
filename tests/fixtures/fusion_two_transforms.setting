@@ -1,0 +1,13 @@
+{
+	Tools = ordered() {
+		First = Transform {
+			Inputs = { Size = Input { Value = 1.2 } },
+		},
+		Second = Transform {
+			Inputs = {
+				Input = Input { SourceOp = "First", Source = "Output" },
+				Angle = Input { Value = 12 },
+			},
+		},
+	},
+}

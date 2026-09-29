@@ -154,12 +154,31 @@ def _jump(payload):
     return {"message": "已定位到 {}（帧 {}）。".format(timecode, frame)}
 
 
+def _fusion_preview(payload):
+    from davinci_legacy import fusion_batch
+
+    api = _resolve_module()
+    resolve, _project, timeline = _current_timeline()
+    return fusion_batch.preview(api, resolve, timeline, str(payload.get("text") or ""),
+                                int(payload.get("track") or 0))
+
+
+def _fusion_apply(payload):
+    from davinci_legacy import fusion_batch
+
+    api = _resolve_module()
+    resolve, _project, timeline = _current_timeline()
+    return fusion_batch.apply(api, resolve, timeline, payload)
+
+
 _ACTIONS = {
     "probe": _probe,
     "export": _export,
     "subtitle": _subtitle,
     "track": _track,
     "jump": _jump,
+    "fusion_preview": _fusion_preview,
+    "fusion_apply": _fusion_apply,
 }
 
 

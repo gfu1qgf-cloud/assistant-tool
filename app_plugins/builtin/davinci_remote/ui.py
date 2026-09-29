@@ -46,7 +46,7 @@ class DaVinciRemotePanel(QtWidgets.QWidget):
         refresh = QtWidgets.QPushButton("连接并刷新时间线", self)
         refresh.clicked.connect(lambda: plugin.open_dialog(probe=True))
         layout.addWidget(refresh)
-        for index, label in enumerate(("批量导出", "字幕核对", "轨道填充 / 水印")):
+        for index, label in enumerate(("批量导出", "字幕核对", "轨道填充 / 水印", "批量 Fusion 节点")):
             button = QtWidgets.QPushButton(label, self)
             button.clicked.connect(lambda _checked=False, page=index: plugin.open_dialog(page))
             layout.addWidget(button)
@@ -152,6 +152,7 @@ class DaVinciRemoteDialog(QtWidgets.QDialog):
         self._build_export_tab()
         self._build_subtitle_tab()
         self._build_track_tab()
+        self._build_fusion_tab()
         root.addWidget(QtWidgets.QLabel("执行日志（错误也会写入主程序日志）", self))
         self.log = QtWidgets.QPlainTextEdit(self)
         self.log.setReadOnly(True)
@@ -389,6 +390,113 @@ class DaVinciRemoteDialog(QtWidgets.QDialog):
         if chosen:
             self.fill_media_path.setText(chosen)
 
+    def _build_fusion_tab(self):
+        page, outer = self._page("批量 Fusion 节点")
+        hint = QtWidgets.QLabel(
+            "从 Fusion 节点面板复制节点并粘贴到下方。先预览空闲图像端口和轨道片段，"
+            "再指定哪些空闲输入端接原画面，以及最终输出端。只粘贴可信的节点文本；"
+            "已有节点链不会清空，复杂或失败的片段会逐项列出。", page)
+        hint.setWordWrap(True)
+        outer.addWidget(hint)
+        row = QtWidgets.QHBoxLayout()
+        row.addWidget(QtWidgets.QLabel("视频轨", page))
+        self.fusion_track = _spin(1, 1, 64, page)
+        row.addWidget(self.fusion_track)
+        row.addStretch(1)
+        outer.addLayout(row)
+        self.fusion_text = QtWidgets.QPlainTextEdit(page)
+        self.fusion_text.setPlaceholderText("在 Fusion 中选中一个或多个节点，Ctrl+C，然后粘贴到这里…")
+        self.fusion_text.setMinimumHeight(120)
+        outer.addWidget(self.fusion_text)
+        preview = QtWidgets.QPushButton("分析节点与预览轨道", page)
+        preview.clicked.connect(self._run_fusion_preview)
+        outer.addWidget(preview)
+        outer.addWidget(QtWidgets.QLabel("模板空闲输入端（可分别决定是否接入原画面）", page))
+        self.fusion_inputs = QtWidgets.QTableWidget(0, 2, page)
+        self.fusion_inputs.setHorizontalHeaderLabels(("节点输入端", "连接来源"))
+        self.fusion_inputs.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.fusion_inputs.horizontalHeader().setStretchLastSection(True)
+        self.fusion_inputs.setMaximumHeight(135)
+        outer.addWidget(self.fusion_inputs)
+        mapping = QtWidgets.QFormLayout()
+        self.fusion_exit = QtWidgets.QComboBox(page)
+        mapping.addRow("接回最终画面", self.fusion_exit)
+        outer.addLayout(mapping)
+        self.fusion_graph = QtWidgets.QLabel("尚未分析节点。", page)
+        self.fusion_graph.setWordWrap(True)
+        self.fusion_graph.setTextInteractionFlags(QtCore.Qt.TextInteractionFlag.TextSelectableByMouse)
+        outer.addWidget(self.fusion_graph)
+        self.fusion_clips = QtWidgets.QTableWidget(0, 2, page)
+        self.fusion_clips.setHorizontalHeaderLabels(("片段", "预检／执行结果"))
+        self.fusion_clips.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.fusion_clips.horizontalHeader().setStretchLastSection(True)
+        self.fusion_clips.setMinimumHeight(170)
+        outer.addWidget(self.fusion_clips, 1)
+        self.fusion_apply = QtWidgets.QPushButton("应用到此视频轨所有片段", page)
+        self.fusion_apply.setEnabled(False)
+        self.fusion_apply.clicked.connect(self._run_fusion_apply)
+        outer.addWidget(self.fusion_apply)
+        self._fusion_preview_data = None
+        self.fusion_text.textChanged.connect(self._invalidate_fusion_preview)
+        self.fusion_track.valueChanged.connect(self._invalidate_fusion_preview)
+        self.fusion_exit.currentIndexChanged.connect(self._refresh_fusion_apply)
+
+    def _selected_fusion_entries(self):
+        return [self.fusion_inputs.item(row, 0).text()
+                for row in range(self.fusion_inputs.rowCount())
+                if self.fusion_inputs.cellWidget(row, 1).currentData() == "upstream"]
+
+    def _refresh_fusion_apply(self):
+        data = self._fusion_preview_data or {}
+        exit_port = self.fusion_exit.currentData()
+        valid = any(exit_port in (data.get("allowed_exits") or {}).get(entry, [])
+                    for entry in self._selected_fusion_entries())
+        self.fusion_apply.setEnabled(bool(data and valid and any(
+            row["status"].startswith("可应用") for row in data.get("clips") or [])))
+
+    def _invalidate_fusion_preview(self):
+        self._fusion_preview_data = None
+        self.fusion_apply.setEnabled(False)
+
+    def _run_fusion_preview(self):
+        text = self.fusion_text.toPlainText().strip()
+        if not text:
+            QtWidgets.QMessageBox.warning(self, "缺少节点", "请先粘贴 Fusion 节点文本。")
+            return
+        self._invalidate_fusion_preview()
+        self._start("fusion_preview", {"text": text, "track": self.fusion_track.value()})
+
+    def _run_fusion_apply(self):
+        data = self._fusion_preview_data
+        if not data:
+            return
+        count = sum(row["status"].startswith("可应用") for row in data["clips"])
+        if not count:
+            QtWidgets.QMessageBox.information(self, "没有可应用片段", "请查看预检列表。")
+            return
+        answer = QtWidgets.QMessageBox.question(
+            self, "确认批量添加 Fusion 节点",
+            "即将修改当前时间线视频轨 {} 的 {} 个可应用片段。\n"
+            "输入：{}\n输出：{}\n\n建议先保存达芬奇工程。是否继续？".format(
+                data["track"], count, "、".join(self._selected_fusion_entries()),
+                self.fusion_exit.currentText()))
+        if answer != QtWidgets.QMessageBox.StandardButton.Yes:
+            return
+        self.fusion_apply.setEnabled(False)
+        self._start("fusion_apply", {
+            "text": self.fusion_text.toPlainText().strip(), "track": data["track"],
+            "digest": data["digest"], "timeline": data["project"],
+            "clip_keys": [row["key"] for row in data["clips"]],
+            "entries": self._selected_fusion_entries(), "exit": self.fusion_exit.currentData(),
+        })
+
+    def _show_fusion_rows(self, rows, field):
+        self.fusion_clips.setRowCount(len(rows))
+        for index, row in enumerate(rows):
+            self.fusion_clips.setItem(index, 0, QtWidgets.QTableWidgetItem(str(row.get("name") or "")))
+            self.fusion_clips.setItem(index, 1, QtWidgets.QTableWidgetItem(str(row.get(field) or "")))
+        self.fusion_clips.resizeColumnToContents(0)
+
     def _track_settings(self):
         return {
             "operation": "track_fill",
@@ -456,6 +564,7 @@ class DaVinciRemoteDialog(QtWidgets.QDialog):
         self.log.appendPlainText("→ " + {
             "probe": "检查连接", "export": "批量导出", "subtitle": "字幕核对",
             "track": "轨道 / 水印铺设", "jump": "定位字幕",
+            "fusion_preview": "分析 Fusion 节点", "fusion_apply": "批量添加 Fusion 节点",
         }.get(action, action))
         process = QtCore.QProcess(self)
         self.process = process
@@ -530,6 +639,33 @@ class DaVinciRemoteDialog(QtWidgets.QDialog):
         self._handle_result(self._action, data)
 
     def _handle_result(self, action, data):
+        if action == "fusion_preview":
+            self._fusion_preview_data = data
+            inputs = data.get("inputs") or []
+            self.fusion_inputs.setRowCount(len(inputs))
+            for row, port in enumerate(inputs):
+                self.fusion_inputs.setItem(row, 0, QtWidgets.QTableWidgetItem(port))
+                choice = QtWidgets.QComboBox(self.fusion_inputs)
+                choice.addItem("不连接", "none")
+                choice.addItem("接原画面", "upstream")
+                choice.setCurrentIndex(1 if row == 0 else 0)
+                choice.currentIndexChanged.connect(self._refresh_fusion_apply)
+                self.fusion_inputs.setCellWidget(row, 1, choice)
+            self.fusion_inputs.resizeColumnToContents(0)
+            self.fusion_exit.clear()
+            for port in data.get("outputs") or []:
+                self.fusion_exit.addItem(port, port)
+            self.fusion_graph.setText("节点：{}\n内部连线：{}\n空闲输入：{}；空闲输出：{}".format(
+                "、".join(data.get("nodes") or []),
+                "、".join(data.get("internal_links") or []) or "无",
+                "、".join(data.get("inputs") or []), "、".join(data.get("outputs") or [])))
+            self._show_fusion_rows(data.get("clips") or [], "status")
+            self._refresh_fusion_apply()
+            return
+        if action == "fusion_apply":
+            self._show_fusion_rows(data.get("results") or [], "status")
+            self._fusion_preview_data = None
+            self.fusion_apply.setEnabled(False)
         if action == "probe":
             status = "已连接：{} / {}（{} 条字幕）".format(
                 data.get("project", ""), data.get("timeline", ""),

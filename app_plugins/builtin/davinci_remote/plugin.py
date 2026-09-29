@@ -1,4 +1,4 @@
-"""One plugin for the existing DaVinci remote tab and its three tools."""
+"""One plugin for the existing DaVinci remote tab and its tools."""
 
 from app_plugins.api import MAIN_MENU, PluginCommand, PluginTabPage
 from .ui import DaVinciRemotePanel

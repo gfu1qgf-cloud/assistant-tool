@@ -58,10 +58,10 @@ class DaVinciRemoteTests(unittest.TestCase):
         self.assertEqual(len(placeholder.findChildren(QtWidgets.QTextEdit)), 1)
         self.assertFalse(placeholder.findChildren(QtWidgets.QTextEdit)[0].isVisible())
 
-    def test_three_qt_tools_expose_and_save_original_settings(self):
+    def test_four_qt_tools_expose_and_save_original_settings(self):
         dialog = DaVinciRemoteDialog(self.plugin, self.window)
         self.plugin.dialog = dialog
-        self.assertEqual(dialog.tabs.count(), 3)
+        self.assertEqual(dialog.tabs.count(), 4)
         self.assertEqual(dialog.track_tabs.count(), 2)
         dialog.export_category.setCurrentIndex(1)
         dialog.export_audio.setValue(3)
@@ -74,6 +74,34 @@ class DaVinciRemoteTests(unittest.TestCase):
         run.assert_called_once()
         self.assertEqual(run.call_args.args[1]["settings"]["correct_text"], "one two three")
         self.assertNotIn("correct_text", self.plugin.settings["subtitle"])
+
+    def test_fusion_tab_requires_fresh_preview_and_passes_selected_ports(self):
+        dialog = DaVinciRemoteDialog(self.plugin, self.window)
+        self.plugin.dialog = dialog
+        dialog.fusion_text.setPlainText("Fusion template")
+        with patch.object(dialog, "_start") as run:
+            dialog._run_fusion_preview()
+        self.assertEqual(run.call_args.args[0], "fusion_preview")
+        dialog._handle_result("fusion_preview", {
+            "inputs": ["A.Input", "B.Foreground"], "outputs": ["B.Output"],
+            "nodes": ["A (Transform)", "B (Merge)"],
+            "internal_links": ["A.Output → B.Background"],
+            "allowed_exits": {"A.Input": ["B.Output"], "B.Foreground": ["B.Output"]},
+            "project": "测试时间线", "track": 1, "digest": "test-digest",
+            "clips": [{"name": "片段一", "key": "1:20:片段一", "status": "可应用"}],
+        })
+        self.assertTrue(dialog.fusion_apply.isEnabled())
+        dialog.fusion_inputs.cellWidget(0, 1).setCurrentIndex(0)
+        dialog.fusion_inputs.cellWidget(1, 1).setCurrentIndex(1)
+        with patch.object(QtWidgets.QMessageBox, "question",
+                          return_value=QtWidgets.QMessageBox.StandardButton.Yes), patch.object(
+                              dialog, "_start") as run:
+            dialog._run_fusion_apply()
+        self.assertEqual(run.call_args.args[0], "fusion_apply")
+        self.assertEqual(run.call_args.args[1]["entries"], ["B.Foreground"])
+        self.assertEqual(run.call_args.args[1]["exit"], "B.Output")
+        dialog.fusion_text.setPlainText("changed")
+        self.assertFalse(dialog.fusion_apply.isEnabled())
 
     def test_track_and_watermark_run_without_extra_confirmation(self):
         dialog = DaVinciRemoteDialog(self.plugin, self.window)
