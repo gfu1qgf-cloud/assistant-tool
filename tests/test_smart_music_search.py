@@ -246,6 +246,53 @@ class SmartMusicSearchTests(unittest.TestCase):
             self.assertFalse(dialog.more_button.isEnabled())
             dialog.close()
 
+    def test_result_rows_drag_original_audio_as_copy_only(self):
+        with tempfile.TemporaryDirectory() as directory:
+            paths = [Path(directory) / "first.mp3", Path(directory) / "second.wav"]
+            for path in paths:
+                path.write_bytes(b"audio")
+            dialog = SmartMusicSearchDialog(
+                {"library_root": directory},
+                index=MusicIndex(Path(directory) / "index"), encoder=_FakeEncoder(),
+            )
+            dialog._show_results([
+                {"path": str(path), "score": 0.9, "duration": 60.0,
+                 "start": 0.0, "short": False}
+                for path in paths
+            ])
+            selection = dialog.table.selectionModel()
+            flags = (QtCore.QItemSelectionModel.SelectionFlag.Select
+                     | QtCore.QItemSelectionModel.SelectionFlag.Rows)
+            for row in range(2):
+                selection.select(dialog.table.model().index(row, 0), flags)
+            mime = dialog.table.mimeData(dialog.table.selectedItems())
+            self.assertEqual(
+                [Path(url.toLocalFile()) for url in mime.urls()],
+                paths,
+            )
+            captured = []
+
+            class FakeDrag:
+                def __init__(self, _parent):
+                    pass
+
+                def setMimeData(self, data):
+                    captured.append(data)
+
+                def exec(self, supported, default):
+                    captured.append((supported, default))
+                    return default
+
+            with patch("app_plugins.builtin.smart_music_search.ui.QtGui.QDrag", FakeDrag):
+                dialog.table.startDrag(QtCore.Qt.DropAction.MoveAction)
+            self.assertEqual(captured[1], (
+                QtCore.Qt.DropAction.CopyAction,
+                QtCore.Qt.DropAction.CopyAction,
+            ))
+            self.assertEqual([Path(url.toLocalFile()) for url in captured[0].urls()], paths)
+            self.assertTrue(all(path.exists() for path in paths))
+            dialog.close()
+
     def test_popup_tags_become_removable_input_chips(self):
         with tempfile.TemporaryDirectory() as directory:
             dialog = SmartMusicSearchDialog(

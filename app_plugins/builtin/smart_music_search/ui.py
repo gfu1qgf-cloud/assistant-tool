@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 
 from qt_compat import QtCore, QtGui, QtMultimedia, QtWidgets
+from model.ClipboardHelper import set_internal_clipboard_text
 
 from .audio import encode_reference, media_duration, resolve_tools
 from .encoder import MusicEncoder, build_music_prompt
@@ -61,6 +62,38 @@ class _MediaDropEdit(QtWidgets.QLineEdit):
                 event.acceptProposedAction()
                 return
         super().dropEvent(event)
+
+
+class _DraggableMusicResults(QtWidgets.QTableWidget):
+    """Expose original audio files to DaVinci/Explorer without moving the library."""
+
+    def __init__(self, parent=None):
+        super().__init__(0, 5, parent)
+        self.setDragEnabled(True)
+        self.setAcceptDrops(False)
+        self.setDragDropMode(QtWidgets.QAbstractItemView.DragDropMode.DragOnly)
+        self.setDefaultDropAction(QtCore.Qt.DropAction.CopyAction)
+        self.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.ExtendedSelection)
+
+    def mimeData(self, items):
+        mime = QtCore.QMimeData()
+        paths = []
+        seen = set()
+        for item in items:
+            path = str(item.data(QtCore.Qt.ItemDataRole.UserRole) or "")
+            if path and path not in seen and Path(path).is_file():
+                paths.append(path)
+                seen.add(path)
+        mime.setUrls([QtCore.QUrl.fromLocalFile(path) for path in paths])
+        return mime
+
+    def startDrag(self, _supported_actions):
+        mime = self.mimeData(self.selectedItems())
+        if not mime.hasUrls():
+            return
+        drag = QtGui.QDrag(self)
+        drag.setMimeData(mime)
+        drag.exec(QtCore.Qt.DropAction.CopyAction, QtCore.Qt.DropAction.CopyAction)
 
 
 class SmartMusicSearchDialog(QtWidgets.QDialog):
@@ -162,7 +195,7 @@ class SmartMusicSearchDialog(QtWidgets.QDialog):
         self.english = QtWidgets.QLabel("")
         self.english.setTextInteractionFlags(QtCore.Qt.TextInteractionFlag.TextSelectableByMouse)
         layout.addWidget(self.english)
-        self.table = QtWidgets.QTableWidget(0, 5)
+        self.table = _DraggableMusicResults(self)
         self.table.setHorizontalHeaderLabels(["匹配方式 / 相似度", "歌曲", "所在目录", "曲长", "建议试听起点"])
         self.table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -174,6 +207,9 @@ class SmartMusicSearchDialog(QtWidgets.QDialog):
         self.table.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self._context_menu)
         layout.addWidget(self.table, 1)
+        drag_hint = QtWidgets.QLabel("可选中一首或多首，直接拖到达芬奇；只引用原文件，不会移动配乐库。")
+        drag_hint.setWordWrap(True)
+        layout.addWidget(drag_hint)
         bottom = QtWidgets.QHBoxLayout()
         self.preview_button = QtWidgets.QPushButton("试听选中片段")
         self.preview_button.clicked.connect(self.preview_selected)
@@ -269,7 +305,7 @@ class SmartMusicSearchDialog(QtWidgets.QDialog):
                 f"找到 {len(rows)} 首候选"
                 + (f"（文件名直接命中 {filename_count} 首）" if filename_count else "")
                 + f"，已显示 {self._shown_count} 首；"
-                "双击试听，右键可复制路径或打开目录"
+                "双击试听，拖到达芬奇可直接使用原文件"
             )
         elif self._task_kind == "duration":
             self.duration.setValue(max(1, int(round(result))))
@@ -412,6 +448,7 @@ class SmartMusicSearchDialog(QtWidgets.QDialog):
             for column, value in enumerate(fields):
                 item = QtWidgets.QTableWidgetItem(value)
                 item.setToolTip(str(path))
+                item.setData(QtCore.Qt.ItemDataRole.UserRole, str(path))
                 self.table.setItem(row_index, column, item)
             if result.get("match_type") == "filename":
                 self.table.item(row_index, 0).setToolTip("文件名直接匹配；不代表音频情绪相似度")
@@ -485,7 +522,7 @@ class SmartMusicSearchDialog(QtWidgets.QDialog):
         menu = QtWidgets.QMenu(self)
         menu.addAction("试听", self.preview_selected)
         menu.addAction("以此曲找相似配乐", lambda: self._reference_from_result(result))
-        menu.addAction("复制文件路径", lambda: QtWidgets.QApplication.clipboard().setText(result["path"]))
+        menu.addAction("复制文件路径", lambda: set_internal_clipboard_text(result["path"]))
         menu.addAction("打开所在目录", lambda: self._open_file(str(Path(result["path"]).parent)))
         menu.exec(self.table.viewport().mapToGlobal(position))
 
