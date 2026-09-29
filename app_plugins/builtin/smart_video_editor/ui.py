@@ -1256,6 +1256,8 @@ class SmartVideoReviewDialog(QtWidgets.QDialog):
         self._update_missing_preview_buttons()
 
         blocked = bool(blockers)
+        unresolved_missing = sum(item.get("kind") != "extra_clip" for item in blockers)
+        unresolved_extra = len(blockers) - unresolved_missing
         self.export_button.setEnabled(not blocked)
         self.export_button.setToolTip(
             "请先处理缺段和疑似多余片段。" if blocked else ""
@@ -1268,7 +1270,7 @@ class SmartVideoReviewDialog(QtWidgets.QDialog):
                 "padding:10px; font-weight:600; }"
             )
             self.blocker_banner.setText(
-                f"⛔ 还有 {len(blockers)} 个缺段或疑似多余片段没有处理，当前不能导出。\n"
+                f"⛔ 未处理：缺段 {unresolved_missing} 个，疑似多余片段 {unresolved_extra} 个；当前不能导出。\n"
                 "多余片段请在时间线右键排除，或试听后标记本片段已核对。"
             )
             if select_tab:

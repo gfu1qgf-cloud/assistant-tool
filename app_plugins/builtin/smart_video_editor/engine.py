@@ -3796,6 +3796,18 @@ def smart_video_export_blockers(bundle):
     ]
 
 
+def summarize_smart_video_export_blockers(blockers):
+    """Make the user-facing reason match the actual unresolved issue types."""
+    missing = sum(block.get("kind") != "extra_clip" for block in blockers)
+    extra = sum(block.get("kind") == "extra_clip" for block in blockers)
+    parts = []
+    if missing:
+        parts.append(f"缺段 {missing} 个")
+    if extra:
+        parts.append(f"疑似多余片段 {extra} 个")
+    return "、".join(parts) or "没有未处理问题"
+
+
 def _pending_record_id(task):
     identity = "\n".join([
         os.path.normcase(os.path.abspath(str(task.get("task_dir") or ""))),

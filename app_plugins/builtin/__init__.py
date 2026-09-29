@@ -10,6 +10,7 @@ from .music_ducker import MusicDuckerPlugin
 from .smart_video_editor import SmartVideoEditorPlugin
 from .smart_image_search import SmartImageSearchPlugin
 from .smart_music_search import SmartMusicSearchPlugin
+from .video_prompt_assistant import VideoPromptAssistantPlugin
 from .task_audio_subtitle import TaskAudioSubtitlePlugin
 from .task_delivery import TaskDeliveryPlugin
 
@@ -26,6 +27,7 @@ __all__ = [
     "SmartVideoEditorPlugin",
     "SmartImageSearchPlugin",
     "SmartMusicSearchPlugin",
+    "VideoPromptAssistantPlugin",
     "TaskAudioSubtitlePlugin",
     "TaskDeliveryPlugin",
 ]

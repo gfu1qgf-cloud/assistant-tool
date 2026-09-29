@@ -12,6 +12,8 @@
 
 插件生命周期为 `register(context) -> start() -> apply_settings(config) -> can_close() -> stop()`。主程序通过 `PluginContext` 提供日志、桌面通知、配置读写、选中任务行和安全的任务目录解析，不要求插件直接依赖 `MainDialog` 的内部字段。
 
+“视频提示词助手”位于主菜单的“插件”中。拖入图片后先用作者原句模板给出可编辑的通用动画方案；用户主动点击看图并同意上传缩小图后，才复用已有的 Gemini Key 识别画面类型、主体和文字存在与否，再选用对应模板。它只负责提示词，不操控视频生成网站，也不保存原图。成功案例（标题、成功文案、可选失败文案和备注）保存在 Git 忽略的 `VideoPromptAssistant/cases.json`，预留 `tags` 字段供后续扩展。
+
 新内置插件放在 `app_plugins/builtin/`，并在主窗口安装。插件 ID、命令 ID 和设置页 ID 必须稳定且唯一；需要更高接口版本时应声明 `required_api_version`，不能静默降级。
 
 当前内置插件包括库存与素材管理、图片智能分类、Chrome 启动器、切分音频和智能剪辑。图片智能分类插件通过后台懒加载 CLIP 模型先生成可人工修改的分类预览，再由用户确认复制或移动；设置保存在 `image_classifier_settings`，模型不得在程序启动阶段加载。切分音频插件在任务右键菜单中处理所选任务目录，并在“工具”菜单提供支持文件/文件夹拖拽的批量窗口；参数统一保存到 `audio_splitter` 配置节。Chrome 插件只接管窗口生命周期、菜单入口和全局快捷键；继续使用历史配置键 `chrome_preset_websites`、`chrome_profile_groups`、`chrome_profile_iterator` 和 `chrome_next_global_hotkey`，升级时不得清空或另建平行配置。

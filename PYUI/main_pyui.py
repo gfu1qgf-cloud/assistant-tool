@@ -24,6 +24,7 @@ from app_plugins.builtin import (
     SmartVideoEditorPlugin,
     SmartImageSearchPlugin,
     SmartMusicSearchPlugin,
+    VideoPromptAssistantPlugin,
     TaskAudioSubtitlePlugin,
     TaskDeliveryPlugin,
 )
@@ -812,6 +813,9 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
         )
         self.smart_music_search_plugin = self.plugin_host.install(
             SmartMusicSearchPlugin()
+        )
+        self.video_prompt_assistant_plugin = self.plugin_host.install(
+            VideoPromptAssistantPlugin()
         )
         self.material_organizer_plugin = self.plugin_host.install(
             MaterialOrganizerPlugin()

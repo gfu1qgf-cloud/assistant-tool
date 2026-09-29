@@ -23,6 +23,7 @@ from .engine import (
     normalize_smart_video_pending_reviews,
     smart_video_jobs_require_model,
     smart_video_export_blockers,
+    summarize_smart_video_export_blockers,
     update_smart_video_pending_reviews,
 )
 from .settings import SmartVideoEditorSettingsPage
@@ -511,15 +512,16 @@ class SmartVideoEditorPlugin:
         )
         blockers = smart_video_export_blockers(bundle)
         if blockers:
+            issue_summary = summarize_smart_video_export_blockers(blockers)
             self.context.log(
-                f"[智能剪辑严重错误] 检测到 {len(blockers)} 个缺段，等待人工决定。",
+                f"[智能剪辑待核对] {issue_summary}，等待人工处理。",
                 level=logging.ERROR,
             )
             QMessageBox.warning(
                 self.parent,
-                "检测到缺段，需要人工决定",
-                "任务原文存在没有对应视频的片段。你可以在核对窗口中试听后"
-                "标记“没问题”，也可以暂缓这个任务并先导出其余任务。\n\n"
+                "检测到片段问题，需要人工决定",
+                f"检测到{issue_summary}。缺段可试听后确认完整或暂缓；"
+                "疑似多余片段可在时间线右键排除，或试听后确认保留。\n\n"
                 + format_smart_video_export_blockers(blockers, limit=8),
             )
         if summary.get("needs_review") or not settings.get("auto_export_clean"):
