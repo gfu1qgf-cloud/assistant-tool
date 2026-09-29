@@ -112,6 +112,7 @@ class SmartMusicSearchDialog(QtWidgets.QDialog):
         self._audio_output = None
         self._pending_seek_ms = None
         self._preview_end_ms = None
+        self._seek_dragging = False
         layout = QtWidgets.QVBoxLayout(self)
         note = QtWidgets.QLabel(
             "可用文字搜索，或拖入参考音频 / 视频，按所选位置起约 10 秒的声音找相似配乐。"
@@ -210,6 +211,26 @@ class SmartMusicSearchDialog(QtWidgets.QDialog):
         drag_hint = QtWidgets.QLabel("可选中一首或多首，直接拖到达芬奇；只引用原文件，不会移动配乐库。")
         drag_hint.setWordWrap(True)
         layout.addWidget(drag_hint)
+        seek_line = QtWidgets.QHBoxLayout()
+        self.preview_current_time = QtWidgets.QLabel("0:00")
+        seek_line.addWidget(self.preview_current_time)
+        self.seek_back_button = QtWidgets.QPushButton("-10 秒")
+        self.seek_back_button.clicked.connect(lambda: self._seek_preview_relative(-10_000))
+        seek_line.addWidget(self.seek_back_button)
+        self.seek_slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal, self)
+        self.seek_slider.setRange(0, 0)
+        self.seek_slider.setEnabled(False)
+        self.seek_slider.setToolTip("拖动以跳转试听位置；左右按钮每次跳转 10 秒")
+        self.seek_slider.sliderPressed.connect(self._seek_pressed)
+        self.seek_slider.sliderMoved.connect(self._seek_moved)
+        self.seek_slider.sliderReleased.connect(self._seek_released)
+        seek_line.addWidget(self.seek_slider, 1)
+        self.seek_forward_button = QtWidgets.QPushButton("+10 秒")
+        self.seek_forward_button.clicked.connect(lambda: self._seek_preview_relative(10_000))
+        seek_line.addWidget(self.seek_forward_button)
+        self.preview_total_time = QtWidgets.QLabel("0:00")
+        seek_line.addWidget(self.preview_total_time)
+        layout.addLayout(seek_line)
         bottom = QtWidgets.QHBoxLayout()
         self.preview_button = QtWidgets.QPushButton("试听选中片段")
         self.preview_button.clicked.connect(self.preview_selected)
@@ -484,8 +505,12 @@ class SmartMusicSearchDialog(QtWidgets.QDialog):
             )
             self._player.mediaStatusChanged.connect(self._media_status_changed)
             self._player.positionChanged.connect(self._preview_position_changed)
+            self._player.durationChanged.connect(self._preview_duration_changed)
         self._player.stop()
         self._pending_seek_ms = int(result["start"] * 1000)
+        self._preview_duration_changed(int(float(result["duration"]) * 1000))
+        self.seek_slider.setValue(min(self._pending_seek_ms, self.seek_slider.maximum()))
+        self.preview_current_time.setText(format_time(self._pending_seek_ms / 1000))
         self._preview_end_ms = (
             self._pending_seek_ms + self.duration.value() * 1000
             if self.duration.value() else None
@@ -506,14 +531,52 @@ class SmartMusicSearchDialog(QtWidgets.QDialog):
             self._pending_seek_ms = None
 
     def _preview_position_changed(self, position):
+        if not self._seek_dragging:
+            self.seek_slider.setValue(max(0, min(int(position), self.seek_slider.maximum())))
+            self.preview_current_time.setText(format_time(position / 1000))
         if self._preview_end_ms is not None and position >= self._preview_end_ms:
             self.stop_preview()
+
+    def _preview_duration_changed(self, duration_ms):
+        duration_ms = max(0, int(duration_ms))
+        if duration_ms:
+            self.seek_slider.setRange(0, duration_ms)
+            self.seek_slider.setEnabled(True)
+            self.preview_total_time.setText(format_time(duration_ms / 1000))
+
+    def _seek_pressed(self):
+        self._seek_dragging = True
+
+    def _seek_moved(self, position):
+        self.preview_current_time.setText(format_time(position / 1000))
+
+    def _seek_released(self):
+        self._seek_dragging = False
+        self._seek_preview_to(self.seek_slider.value())
+
+    def _seek_preview_relative(self, change_ms):
+        if self._player is not None and self.seek_slider.isEnabled():
+            self._seek_preview_to(self.seek_slider.value() + change_ms)
+
+    def _seek_preview_to(self, position_ms):
+        if self._player is None or not self.seek_slider.isEnabled():
+            return
+        position_ms = max(0, min(int(position_ms), self.seek_slider.maximum()))
+        self.seek_slider.setValue(position_ms)
+        self.preview_current_time.setText(format_time(position_ms / 1000))
+        self._pending_seek_ms = position_ms
+        self._preview_end_ms = (
+            position_ms + self.duration.value() * 1000 if self.duration.value() else None
+        )
+        self._player.setPosition(position_ms)
+        self._player.play()
 
     def stop_preview(self):
         if self._player is not None:
             self._player.stop()
         self._pending_seek_ms = None
         self._preview_end_ms = None
+        self._seek_dragging = False
 
     def _context_menu(self, position):
         result = self._selected()

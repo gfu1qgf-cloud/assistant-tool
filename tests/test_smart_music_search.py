@@ -246,6 +246,45 @@ class SmartMusicSearchTests(unittest.TestCase):
             self.assertFalse(dialog.more_button.isEnabled())
             dialog.close()
 
+    def test_music_preview_slider_seeks_and_refreshes_listening_window(self):
+        with tempfile.TemporaryDirectory() as directory:
+            dialog = SmartMusicSearchDialog(
+                {"library_root": directory},
+                index=MusicIndex(Path(directory) / "index"), encoder=_FakeEncoder(),
+            )
+
+            class FakePlayer:
+                def __init__(self):
+                    self.positions = []
+                    self.play_calls = 0
+
+                def setPosition(self, position):
+                    self.positions.append(position)
+
+                def play(self):
+                    self.play_calls += 1
+
+                def stop(self):
+                    pass
+
+            player = FakePlayer()
+            dialog._player = player
+            dialog.duration.setValue(20)
+            dialog._preview_duration_changed(120_000)
+            dialog._seek_preview_to(50_000)
+            self.assertEqual(player.positions, [50_000])
+            self.assertEqual(dialog._preview_end_ms, 70_000)
+            dialog._seek_pressed()
+            dialog.seek_slider.setValue(40_000)
+            dialog._preview_position_changed(52_000)
+            self.assertEqual(dialog.seek_slider.value(), 40_000)
+            dialog._seek_released()
+            self.assertEqual(player.positions[-1], 40_000)
+            self.assertEqual(dialog._preview_end_ms, 60_000)
+            dialog._seek_preview_relative(-10_000)
+            self.assertEqual(player.positions[-1], 30_000)
+            dialog.close()
+
     def test_result_rows_drag_original_audio_as_copy_only(self):
         with tempfile.TemporaryDirectory() as directory:
             paths = [Path(directory) / "first.mp3", Path(directory) / "second.wav"]
