@@ -44,7 +44,7 @@ class MaterialDuplicateIndex:
                     if not (name.startswith(".") and name.endswith(".tmp"))
                 ]
                 for name in files:
-                    if name.endswith(".part") or name.startswith("."):
+                    if name.endswith((".part", ".resume.json", ".complete.json")) or name.startswith("."):
                         continue
                     self.register(Path(directory) / name)
 

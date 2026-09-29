@@ -2,6 +2,7 @@ import hashlib
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from model.InventoryManager import InventoryStore
@@ -41,6 +42,40 @@ class _FolderService:
 
 
 class MaterialDedupTests(unittest.TestCase):
+    def test_interrupted_batch_keeps_completed_files_and_reuses_them(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            store = InventoryStore(root / "inventory.json", root / "library")
+            url = "https://drive.google.com/drive/folders/folder-123"
+            attempts = []
+
+            def fake_download(_url, output_dir, **_kwargs):
+                folder = Path(output_dir) / "素材包"
+                folder.mkdir(exist_ok=True)
+                first = folder / "first.mp4"
+                attempts.append(first.exists())
+                if len(attempts) == 1:
+                    first.write_bytes(b"first-complete")
+                    raise RuntimeError("网络中断")
+                (folder / "second.mp4").write_bytes(b"second-complete")
+                return SimpleNamespace(root_paths=(folder,), downloaded_files=1)
+
+            with patch("model.InventoryManager.download_google_drive_source",
+                       side_effect=fake_download):
+                with self.assertRaisesRegex(Exception, "网络中断"):
+                    store.add_material("中断测试", [url])
+                self.assertEqual(store.list_materials(), [])
+                checkpoints = list((store.material_root / ".download-checkpoints.tmp").rglob("first.mp4"))
+                self.assertEqual(len(checkpoints), 1)
+                material = store.add_material("中断测试", [url])
+
+            self.assertEqual(attempts, [False, True])
+            self.assertEqual((Path(material["path"]) / "素材包" / "first.mp4").read_bytes(),
+                             b"first-complete")
+            self.assertEqual((Path(material["path"]) / "素材包" / "second.mp4").read_bytes(),
+                             b"second-complete")
+            self.assertFalse((store.material_root / ".download-checkpoints.tmp").exists())
+
     def test_index_checks_hash_after_size_and_detects_same_bytes(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+import json
+import hashlib
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -111,13 +113,10 @@ def _report(callback, message):
 
 
 def _unique_target(parent, name):
-    safe_name, _changed = safe_filename(str(name or "素材"), "素材")
-    safe_name, _was_jfif = normalize_jfif_filename(safe_name)
-    safe_name = safe_name[:180]
-    target = Path(parent) / safe_name
+    target = _safe_target(parent, name)
     if not target.exists():
         return target
-    source = Path(safe_name)
+    source = target
     stem = source.stem or "素材"
     suffix = source.suffix
     index = 2
@@ -126,6 +125,62 @@ def _unique_target(parent, name):
         if not target.exists():
             return target
         index += 1
+
+
+def _safe_target(parent, name):
+    safe_name, _changed = safe_filename(str(name or "素材"), "素材")
+    safe_name, _was_jfif = normalize_jfif_filename(safe_name)
+    safe_name = safe_name[:180]
+    return Path(parent) / safe_name
+
+
+class _RangeNotHonored(DownloadError):
+    pass
+
+
+class _CheckedRangeHttp:
+    """Reject a server response that would append wrong bytes to a .part file."""
+
+    def __init__(self, inner):
+        self.inner = inner
+
+    def request(self, *args, **kwargs):
+        headers = kwargs.get("headers") or {}
+        requested = str(headers.get("range") or headers.get("Range") or "")
+        response, content = self.inner.request(*args, **kwargs)
+        match = re.match(r"bytes=(\d+)-", requested)
+        if match and int(match.group(1)) > 0:
+            actual = str(response.get("content-range") or response.get("Content-Range") or "")
+            if response.status != 206 or not actual.startswith(
+                "bytes {}-".format(match.group(1))
+            ):
+                raise _RangeNotHonored("网盘未确认断点范围，已改为重新下载当前文件")
+        return response, content
+
+    def __getattr__(self, name):
+        return getattr(self.inner, name)
+
+
+def _remote_signature(metadata):
+    return {key: str(metadata.get(key) or "") for key in
+            ("id", "size", "md5Checksum", "mimeType", "modifiedTime")}
+
+
+def _valid_remote_file(path, metadata):
+    try:
+        expected_size = int(metadata.get("size"))
+    except (TypeError, ValueError):
+        return False
+    if path.stat().st_size != expected_size:
+        return False
+    expected_md5 = str(metadata.get("md5Checksum") or "").lower()
+    if not re.fullmatch(r"[0-9a-f]{32}", expected_md5):
+        return False
+    digest = hashlib.md5()
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(4 * 1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest() == expected_md5
 
 
 def _load_authenticated_service(service_factory):
@@ -138,7 +193,7 @@ def _load_authenticated_service(service_factory):
 def _metadata(service, file_id):
     return service.files().get(
         fileId=file_id,
-        fields="id,name,mimeType,size,md5Checksum,shortcutDetails(targetId,targetMimeType)",
+        fields="id,name,mimeType,size,md5Checksum,modifiedTime,shortcutDetails(targetId,targetMimeType)",
         supportsAllDrives=True,
     ).execute()
 
@@ -151,7 +206,7 @@ def _folder_children(service, folder_id):
             q=f"'{folder_id}' in parents and trashed = false",
             fields=(
                 "nextPageToken,files("
-                "id,name,mimeType,size,md5Checksum,shortcutDetails(targetId,targetMimeType))"
+                "id,name,mimeType,size,md5Checksum,modifiedTime,shortcutDetails(targetId,targetMimeType))"
             ),
             pageSize=1000,
             pageToken=page_token,
@@ -162,13 +217,23 @@ def _folder_children(service, folder_id):
         page_token = response.get("nextPageToken")
         if not page_token:
             break
-    return sorted(
+    children = sorted(
         children,
         key=lambda item: (
             item.get("mimeType") != GOOGLE_FOLDER_MIME,
             str(item.get("name", "")).casefold(),
         ),
     )
+    folder_names = {}
+    for item in children:
+        if item.get("mimeType") == GOOGLE_FOLDER_MIME:
+            folder_names.setdefault(str(item.get("name") or "").casefold(), []).append(item)
+    for group in folder_names.values():
+        if len(group) > 1:
+            for item in group:
+                item["name"] = "{} [{}]".format(item.get("name") or "文件夹",
+                                                str(item.get("id") or "")[:8])
+    return children
 
 
 def resolve_google_drive_folder_name(url, service_factory=load_drive_service):
@@ -195,7 +260,10 @@ def resolve_google_drive_folder_name(url, service_factory=load_drive_service):
     return name
 
 
-def _download_api_file(service, metadata, output_dir, progress_callback, duplicate_index=None):
+def _download_api_file(
+    service, metadata, output_dir, progress_callback, duplicate_index=None,
+    reuse_existing=False,
+):
     from googleapiclient.http import MediaIoBaseDownload
 
     mime_type = str(metadata.get("mimeType") or "")
@@ -226,25 +294,86 @@ def _download_api_file(service, metadata, output_dir, progress_callback, duplica
             supportsAllDrives=True,
         )
 
+    native = mime_type.startswith(GOOGLE_NATIVE_PREFIX)
+    preferred = _safe_target(output_dir, name)
+    complete_meta = preferred.with_name(preferred.name + ".complete.json")
+    if reuse_existing and preferred.is_file():
+        try:
+            recorded = json.loads(complete_meta.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            recorded = None
+        if recorded == _remote_signature(metadata) and (
+            native or _valid_remote_file(preferred, metadata)
+        ):
+            _report(progress_callback, f"复用已完成的文件：{preferred.name}")
+            return preferred
+        if isinstance(recorded, dict) and recorded.get("id") == str(metadata.get("id")):
+            preferred.unlink()
+            complete_meta.unlink(missing_ok=True)
     target = _unique_target(output_dir, name)
     part = target.with_name(target.name + ".part")
+    resume_meta = part.with_name(part.name + ".resume.json")
+    can_resume = (reuse_existing and not mime_type.startswith(GOOGLE_NATIVE_PREFIX)
+                  and bool(metadata.get("md5Checksum")) and metadata.get("size") is not None)
+    signature = _remote_signature(metadata)
+    offset = 0
+    if can_resume and part.is_file():
+        try:
+            recorded = json.loads(resume_meta.read_text(encoding="utf-8"))
+            if recorded == signature:
+                offset = part.stat().st_size
+        except (OSError, ValueError):
+            pass
+    if not offset and part.exists():
+        part.unlink()
+    if can_resume:
+        resume_meta.write_text(json.dumps(signature), encoding="utf-8")
     _report(progress_callback, f"正在下载：{target.name}")
     try:
-        with part.open("wb") as stream:
-            downloader = MediaIoBaseDownload(stream, request, chunksize=1024 * 1024)
-            done = False
-            last_percent = -1
-            while not done:
-                status, done = downloader.next_chunk()
-                if status is not None:
-                    percent = int(status.progress() * 100)
-                    if percent >= last_percent + 10 or percent >= 100:
-                        _report(progress_callback, f"正在下载 {target.name}：{percent}%")
-                        last_percent = percent
+        if offset and _valid_remote_file(part, metadata):
+            _report(progress_callback, f"已验证完整缓存：{target.name}")
+        else:
+            if offset >= int(metadata.get("size") or 0) > 0:
+                offset = 0
+                part.unlink()
+            while True:
+                original_http = getattr(request, "http", None)
+                try:
+                    with part.open("r+b" if offset else "wb") as stream:
+                        stream.seek(offset)
+                        downloader = MediaIoBaseDownload(stream, request, chunksize=1024 * 1024)
+                        if offset:
+                            if not hasattr(downloader, "_progress"):
+                                raise _RangeNotHonored("当前下载器不支持安全续传")
+                            downloader._progress = offset
+                            request.http = _CheckedRangeHttp(original_http)
+                            _report(progress_callback, f"从 {offset / 1048576:.1f} MB 继续：{target.name}")
+                        done = False
+                        last_percent = -1
+                        while not done:
+                            status, done = downloader.next_chunk(num_retries=3)
+                            if status is not None:
+                                percent = int(status.progress() * 100)
+                                if percent >= last_percent + 10 or percent >= 100:
+                                    _report(progress_callback, f"正在下载 {target.name}：{percent}%")
+                                    last_percent = percent
+                    break
+                except _RangeNotHonored:
+                    if not offset:
+                        raise
+                    offset = 0
+                    part.unlink(missing_ok=True)
+                finally:
+                    if original_http is not None:
+                        request.http = original_http
+        if can_resume and not _valid_remote_file(part, metadata):
+            part.unlink(missing_ok=True)
+            raise DownloadError(f"下载校验未通过：{target.name}，请重试")
         if duplicate_index is not None:
             duplicate = duplicate_index.find_same_content(part)
             if duplicate is not None:
                 part.unlink()
+                resume_meta.unlink(missing_ok=True)
                 _report(progress_callback, f"跳过重复素材：{name}（已存在：{duplicate.name}）")
                 return None
         final_target = target
@@ -253,11 +382,13 @@ def _download_api_file(service, metadata, output_dir, progress_callback, duplica
             if desired != target:
                 final_target = _unique_target(output_dir, desired.name)
         os.replace(str(part), str(final_target))
+        resume_meta.unlink(missing_ok=True)
+        if reuse_existing and final_target == preferred:
+            complete_meta.write_text(json.dumps(_remote_signature(metadata)), encoding="utf-8")
     except BaseException:
-        try:
-            part.unlink()
-        except OSError:
-            pass
+        if not can_resume:
+            part.unlink(missing_ok=True)
+            resume_meta.unlink(missing_ok=True)
         raise
     if duplicate_index is not None:
         duplicate_index.register(final_target)
@@ -279,6 +410,7 @@ def _download_api_item(
     active_folder_ids,
     preferred_name=None,
     duplicate_index=None,
+    reuse_existing=False,
 ):
     mime_type = str(metadata.get("mimeType") or "")
     if mime_type == GOOGLE_SHORTCUT_MIME:
@@ -295,6 +427,7 @@ def _download_api_item(
             active_folder_ids,
             preferred_name=preferred_name or metadata.get("name"),
             duplicate_index=duplicate_index,
+            reuse_existing=reuse_existing,
         )
 
     if mime_type != GOOGLE_FOLDER_MIME:
@@ -307,6 +440,7 @@ def _download_api_item(
             output_dir,
             progress_callback,
             duplicate_index,
+            reuse_existing=reuse_existing,
         )
         return ([target] if target else []), (0 if target else 1)
 
@@ -315,8 +449,10 @@ def _download_api_item(
         _report(progress_callback, f"跳过循环文件夹：{metadata.get('name', folder_id)}")
         return [], 1
     folder_name = preferred_name or metadata.get("name") or folder_id
-    target_dir = _unique_target(output_dir, folder_name)
-    target_dir.mkdir(parents=True)
+    target_dir = _safe_target(output_dir, folder_name) if reuse_existing else _unique_target(output_dir, folder_name)
+    if target_dir.is_symlink():
+        raise DownloadError("网盘缓存目录异常（符号链接），已停止下载")
+    target_dir.mkdir(parents=True, exist_ok=reuse_existing)
     _report(progress_callback, f"正在读取网盘文件夹：{folder_name}")
     downloaded = []
     skipped = 0
@@ -330,6 +466,7 @@ def _download_api_item(
                 progress_callback,
                 active_folder_ids,
                 duplicate_index=duplicate_index,
+                reuse_existing=reuse_existing,
             )
             downloaded.extend(child_files)
             skipped += child_skipped
@@ -344,6 +481,7 @@ def download_google_drive_source(
     progress_callback: Callable[[str], None] | None = None,
     service_factory=load_drive_service,
     duplicate_index=None,
+    reuse_existing=False,
 ):
     """Download one Drive file/folder and return a structured result.
 
@@ -394,6 +532,7 @@ def download_google_drive_source(
             progress_callback,
             set(),
             duplicate_index=duplicate_index,
+            reuse_existing=reuse_existing,
         )
     except Exception as error:
         detail = f"；直接下载错误：{public_error}" if public_error else ""
@@ -402,7 +541,8 @@ def download_google_drive_source(
     downloaded = [path for path in downloaded if path is not None]
     if not downloaded and not skipped:
         raise DownloadError("网盘来源中没有可下载的文件，或文件夹为空")
-    roots = tuple(path for path in output_dir.iterdir() if path.name != ".part")
+    roots = tuple(path for path in output_dir.iterdir()
+                  if not path.name.endswith((".part", ".resume.json", ".complete.json")))
     _report(
         progress_callback,
         f"网盘来源处理完成：下载 {len(downloaded)} 个文件"

@@ -1,4 +1,5 @@
 import json
+import hashlib
 import math
 import os
 import re
@@ -789,7 +790,34 @@ class InventoryStore:
             raise ValueError("人物图片仅支持 PNG、JPG、WEBP、BMP 或 GIF")
         return path.resolve()
 
-    def _copy_material_sources(self, sources, staging_dir, progress_callback=None):
+    def _download_checkpoint(self, operation, identity, sources):
+        if not any(source.get("type") == "google_drive" for source in sources):
+            return None
+        key = json.dumps([operation, identity, sources], ensure_ascii=False, sort_keys=True)
+        digest = hashlib.sha256(key.encode("utf-8")).hexdigest()[:32]
+        return self.material_root / ".download-checkpoints.tmp" / digest
+
+    @staticmethod
+    def _clear_download_checkpoint(path):
+        if path is None:
+            return
+        shutil.rmtree(path, ignore_errors=True)
+        try:
+            path.parent.rmdir()
+        except OSError:
+            pass
+
+    @staticmethod
+    def _link_or_copy(source, target):
+        try:
+            os.link(source, target)
+        except OSError:
+            shutil.copy2(source, target)
+        return target
+
+    def _copy_material_sources(
+        self, sources, staging_dir, progress_callback=None, download_checkpoint=None,
+    ):
         duplicate_index = None
         for index, source_info in enumerate(sources, 1):
             if progress_callback is not None:
@@ -807,28 +835,61 @@ class InventoryStore:
                     duplicate_index.register_tree(target)
                 continue
 
+            if download_checkpoint is not None:
+                download_dir = download_checkpoint / f"source-{index}"
+                download_dir.mkdir(parents=True, exist_ok=True)
+            else:
+                download_dir = staging_dir / f".drive-source-{index}"
+                download_dir.mkdir()
             if duplicate_index is None:
-                duplicate_index = MaterialDuplicateIndex(
-                    [self.material_root, staging_dir]
+                roots = [self.material_root, staging_dir]
+                if download_checkpoint is not None:
+                    roots.append(download_checkpoint)
+                duplicate_index = MaterialDuplicateIndex(roots)
+            try:
+                download_google_drive_source(
+                    source_info["value"],
+                    download_dir,
+                    progress_callback=progress_callback,
+                    duplicate_index=duplicate_index,
+                    reuse_existing=download_checkpoint is not None,
                 )
-            download_dir = staging_dir / f".drive-source-{index}"
-            download_dir.mkdir()
-            download_google_drive_source(
-                source_info["value"],
-                download_dir,
-                progress_callback=progress_callback,
-                duplicate_index=duplicate_index,
-            )
+            except Exception as error:
+                if download_checkpoint is not None and any(
+                    path.is_file() for path in download_checkpoint.rglob("*")
+                ):
+                    raise DownloadError(
+                        f"{error}。已下载部分保存在 {download_checkpoint}；"
+                        "使用相同名称和来源再次提交即可继续。"
+                    ) from error
+                if download_checkpoint is not None:
+                    self._clear_download_checkpoint(download_checkpoint)
+                raise
             for downloaded in list(download_dir.iterdir()):
+                if downloaded.name.endswith((".part", ".resume.json", ".complete.json")):
+                    continue
+                if downloaded.is_symlink() or (downloaded.is_dir() and any(
+                    child.is_symlink() for child in downloaded.rglob("*")
+                )):
+                    raise ValueError("网盘下载缓存包含符号链接，已停止入库")
                 if downloaded.is_dir() and not material_directory_has_files(downloaded):
                     if downloaded.is_symlink() or downloaded.parent != download_dir:
                         raise ValueError("网盘下载目录异常，已停止入库")
-                    shutil.rmtree(downloaded)
+                    if download_checkpoint is None:
+                        shutil.rmtree(downloaded)
                     continue
                 target = self._unique_copy_target(staging_dir, downloaded.name)
-                shutil.move(str(downloaded), str(target))
+                if download_checkpoint is None:
+                    shutil.move(str(downloaded), str(target))
+                elif downloaded.is_dir():
+                    shutil.copytree(str(downloaded), str(target), copy_function=self._link_or_copy,
+                                    ignore=shutil.ignore_patterns("*.part", "*.resume.json",
+                                                                  "*.complete.json"))
+                else:
+                    self._link_or_copy(str(downloaded), str(target))
                 duplicate_index.register_tree(target)
-            download_dir.rmdir()
+            if download_checkpoint is None:
+                download_dir.rmdir()
 
     @staticmethod
     def _remove_material_path(path):
@@ -883,6 +944,7 @@ class InventoryStore:
 
         material_id = uuid.uuid4().hex
         self.material_root.mkdir(parents=True, exist_ok=True)
+        checkpoint = self._download_checkpoint("material_add", name, sources)
         staging_dir = self.material_root / f".{material_id}.tmp"
         final_dir = self.material_root / (
             f"{self._safe_material_directory_name(name)}-{material_id[:8]}"
@@ -893,6 +955,7 @@ class InventoryStore:
                 sources,
                 staging_dir,
                 progress_callback=progress_callback,
+                download_checkpoint=checkpoint,
             )
             if not material_directory_has_files(staging_dir):
                 raise ValueError("没有可保存的新文件；重复的网盘素材已自动跳过")
@@ -925,6 +988,7 @@ class InventoryStore:
                 except OSError:
                     shutil.rmtree(final_dir, ignore_errors=True)
                     raise
+                self._clear_download_checkpoint(checkpoint)
                 return material
         except Exception:
             shutil.rmtree(staging_dir, ignore_errors=True)
@@ -947,6 +1011,7 @@ class InventoryStore:
 
         sources = self._normalize_material_sources(source_paths)
         self.material_root.mkdir(parents=True, exist_ok=True)
+        checkpoint = self._download_checkpoint("material_append", material_id, sources)
         staging_dir = self.material_root / (
             f".{material_id}.append-{uuid.uuid4().hex[:8]}.tmp"
         )
@@ -957,6 +1022,7 @@ class InventoryStore:
                 sources,
                 staging_dir,
                 progress_callback=progress_callback,
+                download_checkpoint=checkpoint,
             )
             if not material_directory_has_files(staging_dir):
                 raise ValueError("没有可追加的新文件；重复的网盘素材已自动跳过")
@@ -993,6 +1059,7 @@ class InventoryStore:
                 state["version"] = 4
                 state["material_library_root"] = str(self.material_root.resolve())
                 self._write(state)
+                self._clear_download_checkpoint(checkpoint)
                 return material
         except Exception:
             for target in reversed(moved_targets):
@@ -1028,6 +1095,7 @@ class InventoryStore:
 
         person_id = uuid.uuid4().hex
         self.people_root.mkdir(parents=True, exist_ok=True)
+        checkpoint = self._download_checkpoint("person_add", name, sources)
         staging_dir = self.people_root / f".{person_id}.tmp"
         final_dir = self.people_root / (
             f"{self._safe_material_directory_name(name)}-{person_id[:8]}"
@@ -1045,6 +1113,7 @@ class InventoryStore:
                     sources,
                     staging_material_dir,
                     progress_callback=progress_callback,
+                    download_checkpoint=checkpoint,
                 )
                 if not material_directory_has_files(staging_material_dir):
                     raise ValueError("没有可保存的人物素材；重复的网盘素材已自动跳过")
@@ -1080,6 +1149,7 @@ class InventoryStore:
                 except OSError:
                     shutil.rmtree(final_dir, ignore_errors=True)
                     raise
+                self._clear_download_checkpoint(checkpoint)
                 return person
         except Exception:
             shutil.rmtree(staging_dir, ignore_errors=True)
@@ -1099,6 +1169,7 @@ class InventoryStore:
 
         sources = self._normalize_material_sources(source_paths)
         self.people_root.mkdir(parents=True, exist_ok=True)
+        checkpoint = self._download_checkpoint("person_append", person_id, sources)
         staging_dir = self.people_root / (
             f".{person_id}.append-{uuid.uuid4().hex[:8]}.tmp"
         )
@@ -1109,6 +1180,7 @@ class InventoryStore:
                 sources,
                 staging_dir,
                 progress_callback=progress_callback,
+                download_checkpoint=checkpoint,
             )
             if not material_directory_has_files(staging_dir):
                 raise ValueError("没有可追加的人物素材；重复的网盘素材已自动跳过")
@@ -1142,6 +1214,7 @@ class InventoryStore:
                 )
                 state["version"] = 4
                 self._write(state)
+                self._clear_download_checkpoint(checkpoint)
                 return person
         except Exception:
             for target in reversed(moved_targets):

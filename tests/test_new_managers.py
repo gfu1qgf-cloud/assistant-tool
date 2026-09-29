@@ -383,7 +383,7 @@ class InventoryTests(unittest.TestCase):
                 material_root=root / "library",
             )
 
-            def fake_copy(_sources, staging_dir, progress_callback=None):
+            def fake_copy(_sources, staging_dir, progress_callback=None, download_checkpoint=None):
                 (staging_dir / "clip.mp4").write_bytes(b"video")
 
             with patch(
@@ -441,7 +441,8 @@ class InventoryTests(unittest.TestCase):
             drive_url = "https://drive.google.com/file/d/drive-file-123/view"
             progress = []
 
-            def fake_download(url, output_dir, progress_callback=None, duplicate_index=None):
+            def fake_download(url, output_dir, progress_callback=None, duplicate_index=None,
+                              reuse_existing=False):
                 self.assertEqual(url, drive_url)
                 target = Path(output_dir) / "cloud.mp4"
                 target.write_bytes(b"cloud")
@@ -1112,7 +1113,7 @@ class MaterialSourceDownloaderTests(unittest.TestCase):
                 self.stream = stream
                 self.request = request
 
-            def next_chunk(self):
+            def next_chunk(self, num_retries=0):
                 self.stream.write(self.request.data)
                 return FakeStatus(), True
 
