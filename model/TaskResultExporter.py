@@ -1,4 +1,5 @@
 import shutil
+import re
 from datetime import date
 from pathlib import Path
 from typing import Any, Callable, Dict, List, NamedTuple, Optional
@@ -97,8 +98,33 @@ def copytree_if_updated(
 def first_existing_file(task_dir: Path, names: List[str]) -> Optional[Path]:
     for name in names:
         file_path = task_dir / name
-        if file_path.exists():
+        if file_path.is_file():
             return file_path
+
+    # Older profiles enumerate reels1..reels10.  Extend only an explicitly
+    # configured numbered family, keeping the configured exact-name priority.
+    families = set()
+    for name in names:
+        path = Path(name)
+        match = re.fullmatch(r"(.+?)(\d+)", path.stem)
+        if match and any(
+            Path(other).stem == match.group(1) and Path(other).suffix.lower() == path.suffix.lower()
+            for other in names
+        ):
+            families.add((match.group(1), path.suffix.lower()))
+    if task_dir.is_dir() and families:
+        numbered = []
+        for path in task_dir.iterdir():
+            if not path.is_file():
+                continue
+            for stem, suffix in families:
+                if path.suffix.lower() != suffix:
+                    continue
+                match = re.fullmatch(re.escape(stem) + r"(\d+)", path.stem)
+                if match:
+                    numbered.append((int(match.group(1)), path))
+        if numbered:
+            return max(numbered, key=lambda entry: entry[0])[1]
     return None
 
 
