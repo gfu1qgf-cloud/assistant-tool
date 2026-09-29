@@ -328,6 +328,11 @@ class TaskDeliveryController:
         if result.get("upload_batch"):
             details += f"\n上传批次：{result['upload_batch']}"
             details += f"\n成功同步：{result.get('uploaded_file_count', 0)} 个文件"
+            if result.get("shortcut_created_count"):
+                details += f"\n跨批次修改视频：本次目录快捷方式 {result['shortcut_created_count']} 个"
+                details += "\n注意：快捷方式不会自动授予收件人原视频的访问权限。"
+            if result.get("shortcut_failed_files"):
+                details += f"\n⚠ 快捷方式创建失败：{len(result['shortcut_failed_files'])} 个，请查看程序日志"
         if saved_link_count:
             details += f"\n每日链接汇总：已保存 {saved_link_count} 人（保留 7 天）"
         if failed_file_count:

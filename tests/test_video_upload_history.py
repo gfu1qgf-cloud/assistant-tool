@@ -121,7 +121,10 @@ class VideoUploadHistoryTests(unittest.TestCase):
         with patch("model.GoogleDriveHelper.file_md5", return_value="new-md5"), patch(
             "model.GoogleDriveHelper.update_existing_file",
             return_value=updated,
-        ) as update:
+        ) as update, patch(
+            "model.GoogleDriveHelper.ensure_remote_file_shortcut",
+            return_value="today-shortcut",
+        ) as shortcut:
             result = sync_file(
                 service,
                 local_file,
@@ -130,8 +133,12 @@ class VideoUploadHistoryTests(unittest.TestCase):
             )
 
         update.assert_called_once_with(service, local_file, "stable-file")
+        shortcut.assert_called_once_with(
+            service, "stable-file", "today-folder", local_file.name,
+        )
         self.assertEqual(result["id"], "stable-file")
         self.assertEqual(result["action"], "updated_previous_batch")
+        self.assertEqual(result["shortcut_id"], "today-shortcut")
 
     def test_later_upload_trashes_old_same_video_and_links_versions(self):
         with tempfile.TemporaryDirectory() as directory:

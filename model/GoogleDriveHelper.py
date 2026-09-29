@@ -15,6 +15,7 @@ CLIENT_SECRET_FILE = APP_ROOT / "GoogleDriveCredentials.json"
 TOKEN_FILE = APP_ROOT / "GoogleDriveToken.json"
 SCOPES = ["https://www.googleapis.com/auth/drive"]
 GOOGLE_FOLDER_MIME = "application/vnd.google-apps.folder"
+GOOGLE_SHORTCUT_MIME = "application/vnd.google-apps.shortcut"
 UPLOAD_CHUNK_SIZE = 8 * 1024 * 1024
 UPLOAD_MAX_RETRIES = 8
 METADATA_MAX_RETRIES = 5
@@ -240,7 +241,7 @@ def list_remote_children(
             results = service.files().list(
                 q=query,
                 spaces="drive",
-                fields="files(id,name,mimeType,md5Checksum,size,modifiedTime,webViewLink,webContentLink)",
+                fields="files(id,name,mimeType,md5Checksum,size,modifiedTime,webViewLink,webContentLink,shortcutDetails(targetId))",
                 pageSize=20,
                 supportsAllDrives=True,
                 includeItemsFromAllDrives=True,
@@ -309,6 +310,48 @@ def get_or_create_remote_folder(
                 raise
             wait_seconds = retry_sleep_seconds(attempt + 1)
             time.sleep(wait_seconds)
+
+
+def ensure_remote_file_shortcut(
+    service,
+    target_file_id: str,
+    parent_id: str,
+    file_name: str,
+    max_retries: int = METADATA_MAX_RETRIES,
+) -> str:
+    """Expose an earlier-batch file in this batch without duplicating its bytes."""
+    target_file_id = str(target_file_id or "").strip()
+    if not target_file_id:
+        raise ValueError("无法为没有文件 ID 的视频创建快捷方式")
+    metadata = {
+        "name": file_name,
+        "mimeType": GOOGLE_SHORTCUT_MIME,
+        "parents": [parent_id],
+        "shortcutDetails": {"targetId": target_file_id},
+    }
+    for attempt in range(max_retries + 1):
+        matches = list_remote_children(service, parent_id, file_name)
+        for item in matches:
+            if item.get("id") == target_file_id:
+                return item["id"]
+            if (item.get("mimeType") == GOOGLE_SHORTCUT_MIME
+                    and (item.get("shortcutDetails") or {}).get("targetId") == target_file_id):
+                return item["id"]
+        if any(item.get("mimeType") == GOOGLE_SHORTCUT_MIME for item in matches):
+            raise ValueError(f"当日目录已有同名快捷方式，但指向其他文件：{file_name}")
+        try:
+            created = service.files().create(
+                body=metadata,
+                fields="id,name,mimeType,shortcutDetails(targetId)",
+                supportsAllDrives=True,
+            ).execute()
+            print(f"已在本批次目录创建视频快捷方式：{file_name}")
+            return created["id"]
+        except Exception as exc:
+            if not is_retryable_metadata_error(exc) or attempt >= max_retries:
+                raise
+            time.sleep(retry_sleep_seconds(attempt + 1))
+    raise RuntimeError("创建视频快捷方式失败")
 
 
 def get_or_create_remote_folder_path(service, parent_id: str, relative_dir: Path) -> str:
@@ -444,7 +487,11 @@ def sync_file(
     preferred_file_id: str = "",
 ) -> Optional[Dict]:
     matches = list_remote_children(service, parent_id, local_file.name)
-    remote_files = [item for item in matches if item.get("mimeType") != GOOGLE_FOLDER_MIME]
+    # A shortcut in today's folder is only a pointer, never an upload target.
+    remote_files = [
+        item for item in matches
+        if item.get("mimeType") not in {GOOGLE_FOLDER_MIME, GOOGLE_SHORTCUT_MIME}
+    ]
 
     reused_previous_batch = False
     preferred_file_id = str(preferred_file_id or "").strip()
@@ -498,6 +545,14 @@ def sync_file(
             else "skipped_same"
         )
         remote_file["local_file"] = str(local_file)
+        if reused_previous_batch:
+            try:
+                remote_file["shortcut_id"] = ensure_remote_file_shortcut(
+                    service, remote_file["id"], parent_id, local_file.name,
+                )
+            except Exception as exc:
+                remote_file["shortcut_error"] = f"{type(exc).__name__}: {exc}"
+                print(f"快捷方式创建失败，但原视频仍可用：{local_file.name} -> {remote_file['shortcut_error']}")
         return remote_file
 
     updated = update_existing_file(service, local_file, remote_file["id"])
@@ -505,6 +560,14 @@ def sync_file(
         "updated_previous_batch" if reused_previous_batch else "updated"
     )
     updated["local_file"] = str(local_file)
+    if reused_previous_batch:
+        try:
+            updated["shortcut_id"] = ensure_remote_file_shortcut(
+                service, updated["id"], parent_id, local_file.name,
+            )
+        except Exception as exc:
+            updated["shortcut_error"] = f"{type(exc).__name__}: {exc}"
+            print(f"快捷方式创建失败，但原视频已覆盖：{local_file.name} -> {updated['shortcut_error']}")
     return updated
 
 def sync_directory_contents(service, local_dir: Path, remote_parent_id: str) -> None:

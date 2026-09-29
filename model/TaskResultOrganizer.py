@@ -943,6 +943,14 @@ def run_task_result_organizer(
         )
         attach_local_task_metadata(uploaded_records, upload_task_by_file, config)
         summary["uploaded_file_count"] = len(uploaded_records)
+        summary["shortcut_created_count"] = sum(
+            bool(record.get("shortcut_id")) for record in uploaded_records
+        )
+        summary["shortcut_failed_files"] = [
+            {"file_name": str(record.get("name") or ""),
+             "error": str(record.get("shortcut_error") or "")}
+            for record in uploaded_records if record.get("shortcut_error")
+        ]
 
         task_sheet_report = {}
         try:
@@ -1037,6 +1045,8 @@ def run_task_result_organizer(
         )
 
     summary["message"] = f"Google Drive 上传完成：{batch_date:%m%d}/{batch_slot}"
+    if summary.get("shortcut_failed_files"):
+        summary["message"] += "；部分跨天修改视频的当日快捷方式创建失败，请查看日志"
     return summary
 
 
