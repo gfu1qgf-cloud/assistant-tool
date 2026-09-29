@@ -61,12 +61,104 @@ class DeliveryTodoBoardTests(unittest.TestCase):
             store = DeliveryTodoStore(Path(directory) / "todos.sqlite3")
             store.add_sources(collect_delivery_todos([], [review], {}))
             newer = dict(review, review_revision="v2")
-            store.add_sources(collect_delivery_todos([], [newer], {}))
-            self.assertEqual(store.mark_old_review_versions([newer]), 1)
-            by_revision = {task["review_revision"]: task for task in store.list_tasks()}
-            self.assertEqual(by_revision["v1"]["stale"], 1)
-            self.assertEqual(by_revision["v2"]["stale"], 0)
+            self.assertEqual(store.add_sources(collect_delivery_todos([], [newer], {})), 0)
             self.assertEqual(store.mark_old_review_versions([newer]), 0)
+            self.assertEqual(len(store.list_tasks()), 1)
+            import json
+            item = json.loads(store.list_tasks()[0]["items_json"])[0]
+            self.assertEqual(item["review_revision"], "v2")
+            self.assertEqual(store.mark_old_review_versions([newer]), 0)
+
+    def test_send_reminders_group_no_review_and_approved_by_day_and_admin(self):
+        import json
+        uploads = [
+            {"event_id": f"e{n}", "logical_key": f"video-{n}",
+             "file_name": f"{n}.mp4", "drive_file_id": f"file-{n}",
+             "drive_link": f"https://drive.google.com/file/d/file-{n}/view",
+             "batch_date": day, "review_routed": False,
+             "task": {"admin": admin}, "task_submission": {"status": "confirmed"}}
+            for n, day, admin in (
+                (1, "2026-09-28", "张三"), (2, "2026-09-28", "张三"),
+                (3, "2026-09-29", "张三"), (4, "2026-09-28", "李四"),
+            )
+        ]
+        approved = {
+            "key": "google:file-5", "name": "5.mp4", "admin": "张三",
+            "link": "https://drive.google.com/file/d/file-5/view",
+            "review_revision": "v1", "status": "passed",
+            "status_updated_at": "2026-09-28T15:00:00",
+        }
+        groups = [source for source in collect_delivery_todos(uploads, [approved], {})
+                  if source["kind"] == "send"]
+        self.assertEqual(len(groups), 3)
+        together = next(source for source in groups if "2026-09-28" in source["title"]
+                        and "张三" in source["title"])
+        self.assertEqual({item["name"] for item in together["items"]},
+                         {"1.mp4", "2.mp4", "5.mp4"})
+        with tempfile.TemporaryDirectory() as directory:
+            store = DeliveryTodoStore(Path(directory) / "todos.sqlite3")
+            self.assertEqual(store.add_sources(groups), 3)
+            row = next(row for row in store.list_tasks() if row["group_key"] == together["id"])
+            self.assertEqual(len(json.loads(row["items_json"])), 3)
+            store.complete(row["id"])
+            self.assertEqual(store.add_sources(groups), 0)
+            updated = dict(together, items=together["items"] + [{
+                "id": "upload:e6", "name": "6.mp4", "link": "https://drive.google.com/file/d/file-6/view",
+                "note": "", "source_time": "2026-09-28T17:00:00",
+            }])
+            self.assertEqual(store.add_sources([updated]), 1)
+            open_group = next(row for row in store.list_tasks() if row["group_key"] == together["id"])
+            self.assertEqual([item["name"] for item in json.loads(open_group["items_json"])], ["6.mp4"])
+
+    def test_pending_review_is_not_mistaken_for_no_review(self):
+        upload = [{"event_id": "e1", "file_name": "A.mp4", "drive_file_id": "file-1",
+                   "drive_link": "https://drive.google.com/file/d/file-1/view",
+                   "batch_date": "2026-09-28", "review_routed": True,
+                   "task": {"admin": "张三"}}]
+        review = [{"key": "google:file-1", "status": "pending"}]
+        self.assertEqual(collect_delivery_todos(upload, review, {}), [])
+
+    def test_old_individual_card_is_hidden_but_preserved_after_grouping(self):
+        import sqlite3
+        review = {"key": "google:file-1", "name": "A.mp4", "status": "passed",
+                  "link": "https://drive.google.com/file/d/file-1/view",
+                  "review_revision": "v1", "admin": "张三"}
+        source = collect_delivery_todos([], [review], {})[0]
+        child_id = source["items"][0]["id"]
+        with tempfile.TemporaryDirectory() as directory:
+            store = DeliveryTodoStore(Path(directory) / "todos.sqlite3")
+            store.add_sources([{"id": child_id, "kind": "send", "title": "旧视频卡"}])
+            self.assertEqual(store.add_sources([source]), 1)
+            self.assertEqual(len(store.list_tasks()), 1)
+            with store._connect() as db:
+                self.assertEqual(db.execute("SELECT status FROM todos WHERE id=?", (child_id,)).fetchone()[0], "merged")
+
+    def test_group_card_exposes_each_video_link_for_copying(self):
+        review = [
+            {"key": f"google:file-{n}", "name": f"{n}.mp4", "admin": "张三",
+             "link": f"https://drive.google.com/file/d/file-{n}/view",
+             "review_revision": "v1", "status": "passed",
+             "status_updated_at": "2026-09-28T15:00:00"}
+            for n in (1, 2)
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            store = DeliveryTodoStore(Path(directory) / "todos.sqlite3")
+            store.add_sources(collect_delivery_todos([], review, {}))
+            dialog = DeliveryBoardDialog(store)
+            row = store.list_tasks()[0]
+            with mock.patch("app_plugins.builtin.task_delivery_board.set_internal_clipboard_text") as copy:
+                dialog._copy_id(row["id"])
+                self.assertEqual(copy.call_args.args[0].splitlines(),
+                                 [review[0]["link"], review[1]["link"]])
+            seen = []
+            def inspect_details(modal):
+                table = modal.findChild(QtWidgets.QTableWidget)
+                seen.extend(table.item(index, 0).text() for index in range(table.rowCount()))
+                return QtWidgets.QDialog.DialogCode.Accepted
+            with mock.patch.object(QtWidgets.QDialog, "exec", inspect_details):
+                dialog._show_details(row["id"])
+            self.assertEqual(seen, ["1.mp4", "2.mp4"])
+            dialog.close()
 
     def test_older_upload_failure_is_not_imported_after_success(self):
         old = {

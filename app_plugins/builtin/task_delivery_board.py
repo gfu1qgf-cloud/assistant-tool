@@ -1,5 +1,6 @@
 """Four-quadrant delivery to-do board; only the user can complete a task."""
 
+import json
 from datetime import datetime
 from pathlib import Path
 
@@ -199,7 +200,7 @@ class DeliveryBoardDialog(QtWidgets.QDialog):
         layout.addWidget(self.tabs, 1)
 
         footer = QtWidgets.QHBoxLayout()
-        hint = QtWidgets.QLabel("勾选才算完成；完成记录几天后归档，不会删除。双击打开视频，右键可移动象限。")
+        hint = QtWidgets.QLabel("勾选才算完成；完成记录几天后归档。双击或右键查看该管理员当日的视频与链接。")
         hint.setWordWrap(True)
         footer.addWidget(hint, 1)
         copy_button = QtWidgets.QPushButton("复制链接")
@@ -252,7 +253,7 @@ class DeliveryBoardDialog(QtWidgets.QDialog):
             for row in open_rows:
                 self.rows[row["id"]] = row
                 if query and query not in " ".join(
-                    str(row.get(key) or "") for key in ("title", "detail", "admin")
+                    str(row.get(key) or "") for key in ("title", "detail", "admin", "items_json")
                 ).casefold():
                     continue
                 quadrant = int(row["quadrant"])
@@ -330,6 +331,8 @@ class DeliveryBoardDialog(QtWidgets.QDialog):
         widget.setCurrentItem(item)
         task_id = item.data(QtCore.Qt.ItemDataRole.UserRole)
         menu = QtWidgets.QMenu(self)
+        if self.rows.get(task_id, {}).get("group_key"):
+            menu.addAction("查看视频明细与链接", lambda: self._show_details(task_id))
         menu.addAction("✓ 标记完成", lambda: self._complete_id(task_id))
         menu.addAction("打开视频 / 链接", lambda: self._open_id(task_id))
         menu.addAction("复制网盘链接", lambda: self._copy_id(task_id))
@@ -355,17 +358,90 @@ class DeliveryBoardDialog(QtWidgets.QDialog):
 
     def copy_selected_link(self):
         row = self._selected()
-        if row and row["link"]:
-            set_internal_clipboard_text(row["link"])
+        if row:
+            self._copy_id(row["id"])
 
     def _copy_id(self, task_id):
         row = self.rows.get(task_id)
-        if row and row["link"]:
+        if not row:
+            return
+        links = [item.get("link", "") for item in self._items(row) if item.get("link")]
+        if links:
+            set_internal_clipboard_text("\n".join(dict.fromkeys(links)))
+        elif row["link"]:
             set_internal_clipboard_text(row["link"])
+
+    @staticmethod
+    def _items(row):
+        try:
+            return json.loads(row.get("items_json") or "[]")
+        except (TypeError, ValueError):
+            return []
+
+    def _show_details(self, task_id):
+        row = self.rows.get(task_id)
+        if not row:
+            return
+        items = self._items(row)
+        if not items:
+            return
+        dialog = QtWidgets.QDialog(self)
+        dialog.setWindowTitle(row["title"])
+        dialog.resize(950, 490)
+        layout = QtWidgets.QVBoxLayout(dialog)
+        layout.addWidget(QtWidgets.QLabel(f"{len(items)} 个视频。双击打开链接；可单独复制，也可一次复制全部。"))
+        table = QtWidgets.QTableWidget(len(items), 3, dialog)
+        table.setHorizontalHeaderLabels(("视频", "备注 / 审核意见", "谷歌网盘链接"))
+        table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
+        table.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
+        table.horizontalHeader().setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeMode.Stretch)
+        table.horizontalHeader().setSectionResizeMode(1, QtWidgets.QHeaderView.ResizeMode.Stretch)
+        table.horizontalHeader().setSectionResizeMode(2, QtWidgets.QHeaderView.ResizeMode.Stretch)
+        for index, video in enumerate(items):
+            for column, value in enumerate((video.get("name", ""), video.get("note", ""), video.get("link", ""))):
+                table.setItem(index, column, QtWidgets.QTableWidgetItem(str(value)))
+        table.itemDoubleClicked.connect(lambda item: self._open_video_item(items[item.row()]))
+        table.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
+        def show_row_menu(position):
+            item = table.itemAt(position)
+            if item is None:
+                return
+            video = items[item.row()]
+            menu = QtWidgets.QMenu(dialog)
+            menu.addAction("复制文件名", lambda: set_internal_clipboard_text(video.get("name", "")))
+            menu.addAction("复制网盘链接", lambda: set_internal_clipboard_text(video.get("link", "")))
+            menu.addAction("打开视频", lambda: self._open_video_item(video))
+            menu.exec(table.viewport().mapToGlobal(position))
+        table.customContextMenuRequested.connect(show_row_menu)
+        layout.addWidget(table, 1)
+        buttons = QtWidgets.QHBoxLayout()
+        copy_one = QtWidgets.QPushButton("复制选中链接")
+        copy_one.clicked.connect(lambda: set_internal_clipboard_text(
+            items[table.currentRow()].get("link", "") if table.currentRow() >= 0 else ""
+        ))
+        buttons.addWidget(copy_one)
+        copy_all = QtWidgets.QPushButton("复制全部链接")
+        copy_all.clicked.connect(lambda: self._copy_id(task_id))
+        buttons.addWidget(copy_all)
+        buttons.addStretch(1)
+        close = QtWidgets.QPushButton("关闭")
+        close.clicked.connect(dialog.accept)
+        buttons.addWidget(close)
+        layout.addLayout(buttons)
+        dialog.exec()
+
+    @staticmethod
+    def _open_video_item(item):
+        target = item.get("link") or item.get("local_file")
+        if target:
+            QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromUserInput(target))
 
     def open_selected(self):
         row = self._selected()
         if row:
+            if row.get("group_key"):
+                self._show_details(row["id"])
+                return
             target = row["link"] or row["local_file"]
             if target:
                 QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromUserInput(target))
@@ -373,6 +449,9 @@ class DeliveryBoardDialog(QtWidgets.QDialog):
     def _open_id(self, task_id):
         row = self.rows.get(task_id)
         if row:
+            if row.get("group_key"):
+                self._show_details(task_id)
+                return
             target = row["link"] or row["local_file"]
             if target:
                 QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromUserInput(target))

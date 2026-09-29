@@ -171,6 +171,7 @@ def _record_from_upload(
         "relative_path": str(record.get("relative_path") or "").strip(),
         "remote_prefix": str(record.get("remote_prefix") or "").strip(),
         "remote_parent_id": str(record.get("remote_prefix_folder_id") or "").strip(),
+        "review_routed": record.get("review_routed"),
         "task": {
             "date": str(record.get("local_task_date") or "").strip(),
             "id": str(record.get("local_task_id") or "").strip(),
@@ -179,6 +180,7 @@ def _record_from_upload(
             "row": record.get("local_task_row"),
             "type": str(record.get("local_task_type") or "").strip(),
             "is_oral": bool(record.get("local_is_oral")),
+            "review_required": record.get("review_required_override"),
         },
         "task_submission": _task_sheet_result(file_name, task_sheet_report),
         "replacement": {

@@ -978,6 +978,10 @@ def run_task_result_organizer(
                 "successful_files"
             ]
 
+        for record in uploaded_records:
+            record["review_routed"] = is_review_upload_record(
+                record, review_folder_name
+            )
         try:
             upload_history_result = record_video_uploads(
                 config,
@@ -1016,10 +1020,6 @@ def run_task_result_organizer(
             print(f"视频上传历史保存失败：{type(error).__name__}: {error}")
             summary["video_upload_history_error"] = str(error)
 
-        for record in uploaded_records:
-            record["review_routed"] = is_review_upload_record(
-                record, review_folder_name
-            )
         review_sheet_records = uploaded_records + pending_review_recovery_records(config)
         if review_sheet_records:
             try:

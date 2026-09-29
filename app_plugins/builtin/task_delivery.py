@@ -116,7 +116,7 @@ class TaskDeliveryPlugin:
                 "交付待办…",
                 self.open_delivery_inbox,
                 35,
-                "汇总本地上传、任务表待核对和审核待办记录",
+                "按日期和管理员汇总待发送视频，并显示任务表与审核待办",
             ),
             (
                 "gemini_keys",
@@ -195,9 +195,11 @@ class TaskDeliveryPlugin:
         if self.todo_store is None:
             self.todo_store = DeliveryTodoStore()
         reviews = (snapshot if snapshot is not None else review_history_snapshot()).get("all", [])
-        records = load_video_upload_history(self.context.load_config()).get("records", [])
+        config = self.context.load_config()
+        records = load_video_upload_history(config).get("records", [])
         sources = collect_delivery_todos(
             records, reviews, self.controller.daily_link_history,
+            review_folder_name=str(config.get("review_folder_name") or "review"),
         )
         added = self.todo_store.add_sources(sources)
         changed = self.todo_store.mark_old_review_versions(reviews)

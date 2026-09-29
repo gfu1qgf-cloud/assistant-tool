@@ -105,6 +105,19 @@ class VideoUploadHistoryTests(unittest.TestCase):
             normalize_video_identity("Alice-0910-7-title.mp4"),
         )
 
+    def test_review_route_is_saved_for_delivery_reminders(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = self.config(root)
+            video = uploaded_record("file-no-review", "A.mp4", "md5")
+            video["review_routed"] = False
+            video["review_required_override"] = False
+            record_video_uploads(config, [video], "2026-09-28", "1",
+                                 confirmed_report("A.mp4"))
+            saved = load_video_upload_history(config)["records"][0]
+            self.assertIs(saved["review_routed"], False)
+            self.assertIs(saved["task"]["review_required"], False)
+
     def test_sync_file_updates_preferred_previous_batch_id_in_place(self):
         remote = {
             "id": "stable-file",
