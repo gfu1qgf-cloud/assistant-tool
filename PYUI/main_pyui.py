@@ -65,6 +65,7 @@ from model.GlobalHotkey import (
     LOAD_TASK_HOTKEY_ID,
     TASK_RESULT_HOTKEY_CONFIG_KEY,
     TASK_RESULT_HOTKEY_ID,
+    hotkey_setting_changed,
     normalize_hotkey_sequence,
 )
 from model.GoogleSheetMonitor import (
@@ -2201,14 +2202,15 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
                 self._set_flow_guard_action_checked(
                     previous_flow_guard_settings["enabled"]
                 )
-            registration_results = (
-                self.registerLoadTaskGlobalHotkey(
-                    settings.get(
-                        LOAD_TASK_HOTKEY_CONFIG_KEY,
-                        self.load_task_global_hotkey,
-                    )
-                ),
+            load_shortcut = settings.get(
+                LOAD_TASK_HOTKEY_CONFIG_KEY, self.load_task_global_hotkey,
             )
+            load_hotkey_ok = (
+                self.registerLoadTaskGlobalHotkey(load_shortcut, show_error=False)
+                if hotkey_setting_changed(load_shortcut, self.load_task_global_hotkey)
+                else True
+            )
+            registration_results = (load_hotkey_ok,)
             plugin_registration_results = self.plugin_host.apply_settings(settings)
             registration_results += tuple(
                 result for _plugin_id, result in plugin_registration_results
@@ -2218,6 +2220,10 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
                 all(registration_results)
                 and flow_guard_restarted
             ):
+                def hotkey_label(label, shortcut, manager):
+                    active = manager is None or bool(getattr(manager, 'is_registered', True))
+                    return f"{label}：{shortcut}" + ("（未启用，快捷键被占用）" if not active else "")
+
                 selected_whisper_model = str(
                     (settings.get("smart_video_editor") or {}).get(
                         "whisper_model_size"
@@ -2234,10 +2240,14 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
                     self,
                     '设置',
                     '设置已保存。\n'
-                    f'启动下一个浏览器：{self.chrome_plugin.global_hotkey}\n'
-                    f'整理任务结果：{self.task_delivery_plugin.global_hotkey}\n'
-                    f'加载当前任务：{self.load_task_global_hotkey}\n'
-                    f'库存与素材管理器：{self.inventory_plugin.global_hotkey}\n'
+                    + hotkey_label('启动下一个浏览器', self.chrome_plugin.global_hotkey,
+                                   self.chrome_plugin.hotkey_manager) + '\n'
+                    + hotkey_label('整理任务结果', self.task_delivery_plugin.global_hotkey,
+                                   self.task_delivery_plugin.controller.hotkey_manager) + '\n'
+                    + hotkey_label('加载当前任务', self.load_task_global_hotkey,
+                                   self.load_task_hotkey_manager) + '\n'
+                    + hotkey_label('库存与素材管理器', self.inventory_plugin.global_hotkey,
+                                   self.inventory_plugin.hotkey_manager) + '\n'
                     'Flow 参数守卫：{}（{}）{}'.format(
                         '已启用' if self.flow_guard_settings['enabled'] else '已关闭',
                         format_flow_guard_targets(self.flow_guard_settings),
@@ -2247,6 +2257,14 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
             else:
                 # 设置窗口先写入配置；注册失败时用仍然生效的旧值覆盖回来。
                 self.saveCurrentConfig()
+                failed = [plugin_id for plugin_id, ok in plugin_registration_results if not ok]
+                if not load_hotkey_ok:
+                    failed.insert(0, '加载当前任务快捷键')
+                if not flow_guard_restarted:
+                    failed.append('Flow 参数守卫')
+                message = '部分设置未能生效：' + '、'.join(failed or ['请查看程序日志'])
+                self.appendLog('[设置] ' + message, level=logging.ERROR)
+                self.showDesktopNotification('设置未完全生效', message, critical=True)
 
     def closeEvent(self, event):
         plugins_can_close, plugin_message = self.plugin_host.can_close_all()

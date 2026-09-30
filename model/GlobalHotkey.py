@@ -113,6 +113,14 @@ def normalize_hotkey_sequence(sequence_text):
     return parse_hotkey_sequence(sequence_text)[0]
 
 
+def hotkey_setting_changed(requested, current):
+    """Do not retry an unchanged, already-failed system hotkey on every save."""
+    try:
+        return normalize_hotkey_sequence(requested) != normalize_hotkey_sequence(current)
+    except ValueError:
+        return True
+
+
 class _NativeHotkeyFilter(QtCore.QAbstractNativeEventFilter):
     def __init__(self, hotkey_id, callback):
         super().__init__()

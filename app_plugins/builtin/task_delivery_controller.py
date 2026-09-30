@@ -26,6 +26,7 @@ from model.GlobalHotkey import (
     GlobalHotkeyManager,
     TASK_RESULT_HOTKEY_CONFIG_KEY,
     TASK_RESULT_HOTKEY_ID,
+    hotkey_setting_changed,
     normalize_hotkey_sequence,
 )
 from model.ReviewStatusMonitor import (
@@ -161,8 +162,11 @@ class TaskDeliveryController:
         review_ok = (
             self.restart_review_status_monitor() if monitor_changed else True
         )
-        hotkey_ok = self.register_hotkey(
-            config.get(TASK_RESULT_HOTKEY_CONFIG_KEY, self.global_hotkey)
+        requested_hotkey = config.get(TASK_RESULT_HOTKEY_CONFIG_KEY, self.global_hotkey)
+        hotkey_ok = (
+            self.register_hotkey(requested_hotkey, show_error=False)
+            if hotkey_setting_changed(requested_hotkey, self.global_hotkey)
+            else True
         )
         if not review_ok:
             self.review_status_settings = previous_settings

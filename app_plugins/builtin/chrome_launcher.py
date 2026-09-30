@@ -13,6 +13,7 @@ from model.GlobalHotkey import (
     CHROME_NEXT_HOTKEY_ID,
     DEFAULT_CHROME_NEXT_HOTKEY,
     GlobalHotkeyManager,
+    hotkey_setting_changed,
     normalize_hotkey_sequence,
 )
 from PYUI.chrome_runner_pyui import ChromeRunnerDialog
@@ -249,12 +250,10 @@ class ChromeLauncherPlugin:
         return profile
 
     def apply_settings(self, config):
-        return self._register_hotkey(
-            config.get(
-                CHROME_NEXT_HOTKEY_CONFIG_KEY,
-                self.global_hotkey,
-            )
-        )
+        shortcut = config.get(CHROME_NEXT_HOTKEY_CONFIG_KEY, self.global_hotkey)
+        if not hotkey_setting_changed(shortcut, self.global_hotkey):
+            return True
+        return self._register_hotkey(shortcut, show_error=False)
 
     def update_config(self, config):
         config[CHROME_NEXT_HOTKEY_CONFIG_KEY] = self.global_hotkey

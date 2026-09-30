@@ -11,6 +11,7 @@ from model.GlobalHotkey import (
     GlobalHotkeyManager,
     INVENTORY_MANAGER_HOTKEY_CONFIG_KEY,
     INVENTORY_MANAGER_HOTKEY_ID,
+    hotkey_setting_changed,
     normalize_hotkey_sequence,
 )
 from model.InventoryManager import (
@@ -297,7 +298,11 @@ class InventoryPlugin:
             INVENTORY_MANAGER_HOTKEY_CONFIG_KEY,
             self.global_hotkey,
         )
-        hotkey_registered = self._register_hotkey(shortcut)
+        hotkey_registered = (
+            self._register_hotkey(shortcut, show_error=False)
+            if hotkey_setting_changed(shortcut, self.global_hotkey)
+            else True
+        )
         self.set_clipboard_monitor(
             bool(config.get("clipboard_google_drive_monitor_enabled", False)),
             save=False,

@@ -27,6 +27,26 @@ class DeliveryInboxTests(unittest.TestCase):
             }))
         restart.assert_not_called()
 
+    def test_unchanged_occupied_hotkey_does_not_open_warning_on_settings_save(self):
+        context = mock.Mock()
+        controller = TaskDeliveryController(SimpleNamespace(quick_actions=None), context)
+        controller.hotkey_manager = mock.Mock(is_registered=False)
+        with mock.patch.object(controller, "register_hotkey") as register:
+            self.assertTrue(controller.apply_settings({
+                "task_result_global_hotkey": controller.global_hotkey,
+            }))
+        register.assert_not_called()
+
+    def test_new_conflicting_hotkey_is_reported_without_nested_modal(self):
+        context = mock.Mock()
+        controller = TaskDeliveryController(SimpleNamespace(quick_actions=None), context)
+        controller.hotkey_manager = mock.Mock(is_registered=False)
+        with mock.patch.object(controller, "register_hotkey", return_value=False) as register:
+            self.assertFalse(controller.apply_settings({
+                "task_result_global_hotkey": "Ctrl+Alt+F10",
+            }))
+        register.assert_called_once_with("Ctrl+Alt+F10", show_error=False)
+
     def test_manual_review_check_refreshes_quantity_even_without_status_transition(self):
         delivery = SimpleNamespace(daily_quantity_dialog=None,
                                    refresh_daily_quantity=mock.Mock())
