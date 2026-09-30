@@ -180,6 +180,9 @@ class DaVinciRemoteDialog(QtWidgets.QDialog):
         self.export_name = QtWidgets.QLineEdit("", page)
         self.export_name.setPlaceholderText("刷新时间线后自动填入日期或时间线名称")
         form.addRow("任务名", self.export_name)
+        self.video_info = QtWidgets.QLabel("刷新后显示视频轨道和片段数量。", page)
+        self.video_info.setWordWrap(True)
+        form.addRow("当前视频轨", self.video_info)
         self.export_category = _combo((("reels", "reels"), ("口播", "口播")),
                                       self._stored("export", "category", "reels"), page)
         form.addRow("分类", self.export_category)
@@ -682,16 +685,23 @@ class DaVinciRemoteDialog(QtWidgets.QDialog):
             self._fusion_preview_data = None
             self.fusion_apply.setEnabled(False)
         if action == "probe":
-            status = "已连接：{} / {}（{} 条字幕）".format(
+            tracks = data.get("video_tracks") or []
+            clip_count = sum(int(track.get("count") or 0) for track in tracks)
+            status = "已连接：{} / {}（视频 {} 轨 {} 段，字幕 {} 条）".format(
                 data.get("project", ""), data.get("timeline", ""),
-                data.get("subtitle_count", 0),
+                len(tracks), clip_count, data.get("subtitle_count", 0),
             )
             self.connection.setText(status)
+            self.log.appendPlainText("← " + status)
             self.plugin.report_status(status)
+            self.video_info.setText("；".join(
+                "V{}：{} 段".format(track.get("track"), track.get("count"))
+                for track in tracks
+            ) or "当前时间线没有视频轨道。")
             task_name = str(data.get("task_name") or "")
-            previous_auto = getattr(self, "_last_auto_task_name", "")
-            if not self.export_name.text().strip() or self.export_name.text() == previous_auto:
-                self.export_name.setText(task_name)
+            # Explicit refresh means the current timeline wins over a value
+            # left in this persistent dialog from an earlier timeline.
+            self.export_name.setText(task_name)
             self._last_auto_task_name = task_name
             subtitles = data.get("subtitles") or []
             self.subtitle_info.setText("当前时间线共 {} 条字幕".format(len(subtitles)))

@@ -181,6 +181,24 @@ class DailyQuantityTests(unittest.TestCase):
             {"统计": ["短口播", "长口播"]},
         )
 
+    def test_repeated_creator_in_each_category_row(self):
+        rows = [["", "", "", "", 46290, "", "", ""],
+                ["组别", "名字", "类别", "定额", "总数", "12点", "18点", "24点"],
+                ["甲组", "他人", "15"], ["", "他人", "别的类别"],
+                ["甲组", "本人", "15"], ["", "本人", "短口播"],
+                ["", "本人", "长口播"], ["乙组", "他人", "15"],
+                ["", "他人", "另一类别"]]
+        self.assertEqual(_category_options({"统计": rows}, "本人"),
+                         {"统计": ["短口播", "长口播"]})
+        self.assertEqual(_find_cell(rows, "2026-09-25", "01", "本人", "短口播"),
+                         (5, 5))
+        formula_rows = [list(row) for row in rows]
+        formula_rows[4][1] = '=A1'
+        formula_rows[5][1] = '=A1'
+        formula_rows[6][1] = '=A1'
+        self.assertEqual(_find_cell(formula_rows, "2026-09-25", "01", "本人",
+                                    "短口播", rows), (5, 5))
+
     def test_date_scan_lists_physical_videos_prefills_and_reconciles(self):
         day = "2026-09-25"
         parent_id = "parentFolderId12345"

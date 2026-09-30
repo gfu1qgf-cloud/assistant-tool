@@ -8,10 +8,60 @@ inside this process so a scripting bridge failure cannot crash Qt itself.
 import json
 import os
 import sys
+import time
 import traceback
 
 
 RESULT_PREFIX = "__DAVINCI_RESULT__"
+
+
+def _activate_resolve_window():
+    """Ask Resolve to commit its selected timeline before querying its script API.
+
+    Resolve can keep reporting the previously selected timeline to an external
+    process while its window is inactive.  Activating it first also prevents a
+    write operation from silently targeting that old timeline.
+    """
+    if not sys.platform.startswith("win"):
+        return
+    import ctypes
+    from ctypes import wintypes
+
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    user32.EnumWindows.argtypes = [ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND,
+                                                       wintypes.LPARAM), wintypes.LPARAM]
+    user32.GetWindowTextLengthW.argtypes = [wintypes.HWND]
+    user32.GetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+    user32.IsWindowVisible.argtypes = [wintypes.HWND]
+    user32.IsIconic.argtypes = [wintypes.HWND]
+    user32.SetForegroundWindow.argtypes = [wintypes.HWND]
+    user32.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
+    user32.GetForegroundWindow.restype = wintypes.HWND
+    windows = []
+    callback_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+
+    @callback_type
+    def collect(hwnd, _param):
+        if not user32.IsWindowVisible(hwnd):
+            return True
+        length = user32.GetWindowTextLengthW(hwnd)
+        if length:
+            title = ctypes.create_unicode_buffer(length + 1)
+            user32.GetWindowTextW(hwnd, title, length + 1)
+            if title.value.startswith(("DaVinci Resolve Studio - ", "DaVinci Resolve - ")):
+                windows.append(hwnd)
+        return True
+
+    user32.EnumWindows(collect, 0)
+    if len(windows) != 1:
+        return
+    hwnd = windows[0]
+    if user32.GetForegroundWindow() == hwnd:
+        return
+    if user32.IsIconic(hwnd):
+        user32.ShowWindow(hwnd, 9)  # SW_RESTORE
+    if user32.SetForegroundWindow(hwnd):
+        time.sleep(0.3)
 
 
 def _resolve_module():
@@ -32,6 +82,7 @@ def _resolve_module():
 
 
 def _current_timeline():
+    _activate_resolve_window()
     api = _resolve_module()
     resolve = api.scriptapp("Resolve")
     if not resolve:
@@ -44,6 +95,10 @@ def _current_timeline():
     if not project:
         raise RuntimeError("达芬奇尚未打开项目。")
     timeline = project.GetCurrentTimeline()
+    # A switch made just before the request may still be in Resolve's queue.
+    # A second read is cheap and must happen before any editing/export action.
+    time.sleep(0.1)
+    timeline = project.GetCurrentTimeline() or timeline
     if not timeline:
         raise RuntimeError("达芬奇尚未打开时间线。")
     return resolve, project, timeline
@@ -53,6 +108,10 @@ def _probe(_payload):
     from davinci_legacy import subtitle_review
 
     _resolve, project, timeline = _current_timeline()
+    video_tracks = []
+    for number in range(1, int(timeline.GetTrackCount("video") or 0) + 1):
+        clips = timeline.GetItemListInTrack("video", number) or []
+        video_tracks.append({"track": number, "count": len(clips)})
     subtitles = subtitle_review.get_all_subtitle_items(timeline)
     return {
         "project": str(project.GetName() or ""),
@@ -60,6 +119,7 @@ def _probe(_payload):
         "task_name": __import__("davinci_legacy.batch_export", fromlist=["get_timeline_task_name"])
             .get_timeline_task_name(timeline),
         "subtitle_count": len(subtitles),
+        "video_tracks": video_tracks,
         "subtitles": [
             {"index": index, "start": int(item["start"]),
              "original": str(item.get("original_text") or "")}

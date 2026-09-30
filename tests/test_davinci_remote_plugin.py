@@ -75,6 +75,45 @@ class DaVinciRemoteTests(unittest.TestCase):
         self.assertEqual(run.call_args.args[1]["settings"]["correct_text"], "one two three")
         self.assertNotIn("correct_text", self.plugin.settings["subtitle"])
 
+    def test_probe_replaces_task_name_from_previous_timeline(self):
+        dialog = DaVinciRemoteDialog(self.plugin, self.window)
+        self.plugin.dialog = dialog
+        dialog.export_name.setText("旧时间线任务名")
+        dialog._handle_result("probe", {
+            "project": "项目", "timeline": "新时间线", "task_name": "0930",
+            "subtitle_count": 0, "subtitles": [],
+            "video_tracks": [{"track": 1, "count": 3}],
+        })
+        self.assertEqual(dialog.export_name.text(), "0930")
+        self.assertIn("新时间线", dialog.connection.text())
+        self.assertIn("V1：3 段", dialog.video_info.text())
+
+    def test_probe_reads_video_tracks_even_without_subtitles(self):
+        class Named:
+            def __init__(self, name):
+                self.name = name
+
+            def GetName(self):
+                return self.name
+
+        class Timeline(Named):
+            def GetTrackCount(self, kind):
+                self.kind = kind
+                return 2
+
+            def GetItemListInTrack(self, kind, number):
+                return [object()] * (3 if number == 1 else 1)
+
+        timeline = Timeline("当前时间线")
+        with patch.object(davinci_remote_worker, "_current_timeline", return_value=(
+            object(), Named("项目"), timeline
+        )), patch.object(subtitle_review, "get_all_subtitle_items", return_value=[]):
+            result = davinci_remote_worker._probe({})
+        self.assertEqual(timeline.kind, "video")
+        self.assertEqual(result["video_tracks"], [
+            {"track": 1, "count": 3}, {"track": 2, "count": 1},
+        ])
+
     def test_fusion_tab_requires_fresh_preview_and_passes_selected_ports(self):
         dialog = DaVinciRemoteDialog(self.plugin, self.window)
         self.plugin.dialog = dialog

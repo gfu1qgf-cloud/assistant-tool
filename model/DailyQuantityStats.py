@@ -213,7 +213,7 @@ def collect_assignments(config, root, records=None, allowed_dates=None,
     return groups, warnings
 
 
-def _find_cell(rows, day, slot, creator, category):
+def _find_cell(rows, day, slot, creator, category, label_rows=None):
     if len(rows) < 2:
         raise ValueError("缺少日期/时段表头")
     dates = [(col, _date(raw)) for col, raw in enumerate(rows[0]) if _date(raw)]
@@ -229,16 +229,9 @@ def _find_cell(rows, day, slot, creator, category):
     if len(columns) != 1:
         raise ValueError(f"{day} / {slot} 时段列匹配到 {len(columns)} 列")
 
-    people = [row for row in range(2, len(rows))
-              if _key(_value(rows, row, 1)) == _key(creator)]
-    if len(people) != 1:
-        raise ValueError(f"制作人 {creator} 匹配到 {len(people)} 个区块")
-    start = people[0] + 1
-    end = next((row for row in range(start, len(rows))
-                if str(_value(rows, row, 0)).strip()
-                or str(_value(rows, row, 1)).strip()), len(rows))
-    matches = [row for row in range(start, end)
-               if _key(_value(rows, row, 2)) == _key(category)]
+    labels = label_rows if label_rows is not None else rows
+    matches = [row for row in _creator_category_rows(labels, creator)
+               if _key(_value(labels, row, 2)) == _key(category)]
     if len(matches) != 1:
         raise ValueError(f"类别 {category} 在本人区块匹配到 {len(matches)} 行")
     row, col = matches[0], columns[0]
@@ -247,20 +240,32 @@ def _find_cell(rows, day, slot, creator, category):
     return row, col
 
 
+def _creator_category_rows(rows, creator):
+    """Find category rows in the creator's sections, even when B repeats on every row.
+
+    Column A marks the next person's section.  The section's first row is a
+    quota/header row, not a category.  Older sheets leave B blank below that
+    row; newer sheets repeat the creator in B for every category row.
+    """
+    starts = [row for row in range(2, len(rows))
+              if str(_value(rows, row, 0)).strip()
+              and _key(_value(rows, row, 1)) == _key(creator)]
+    result = []
+    for start in starts:
+        end = next((row for row in range(start + 1, len(rows))
+                    if str(_value(rows, row, 0)).strip()), len(rows))
+        result.extend(row for row in range(start + 1, end)
+                      if not str(_value(rows, row, 1)).strip()
+                      or _key(_value(rows, row, 1)) == _key(creator))
+    return result
+
+
 def _category_options(snapshots, creator):
     """Read only category labels inside the configured creator's block."""
     result = {}
     for sheet, rows in snapshots.items():
-        people = [row for row in range(2, len(rows))
-                  if _key(_value(rows, row, 1)) == _key(creator)]
-        if len(people) != 1:
-            continue
-        start = people[0] + 1
-        end = next((row for row in range(start, len(rows))
-                    if str(_value(rows, row, 0)).strip()
-                    or str(_value(rows, row, 1)).strip()), len(rows))
         categories = sorted({str(_value(rows, row, 2)).strip()
-                             for row in range(start, end)
+                             for row in _creator_category_rows(rows, creator)
                              if str(_value(rows, row, 2)).strip()})
         if categories:
             result[sheet] = categories
@@ -921,8 +926,21 @@ def reconcile_daily_quantity(
             name: item.get("values", [])
             for name, item in zip(names, response.get("valueRanges", []))
         }
+        # Names in column B may be formulas.  Match against their displayed
+        # values, while retaining FORMULA snapshots for safe numeric writes.
+        label_ranges = [sheet_range(name, "A1:C{}".format(
+            sizes[name].get("rowCount", 1))) for name in names]
+        label_response = service.spreadsheets().values().batchGet(
+            spreadsheetId=spreadsheet_id,
+            ranges=label_ranges,
+            valueRenderOption="FORMATTED_VALUE",
+        ).execute() if label_ranges else {"valueRanges": []}
+        label_snapshots = {
+            name: item.get("values", [])
+            for name, item in zip(names, label_response.get("valueRanges", []))
+        }
         category_options = _category_options(
-            snapshots, str(config.get("task_submission_creator") or "").strip()
+            label_snapshots, str(config.get("task_submission_creator") or "").strip()
         )
         allowed_dates = {
             parsed
@@ -975,7 +993,8 @@ def reconcile_daily_quantity(
                 warnings.append(f"统计分页不存在：{sheet}")
                 continue
             try:
-                row, col = _find_cell(snapshots[sheet], day, slot, creator, category)
+                row, col = _find_cell(snapshots[sheet], day, slot, creator,
+                                      category, label_snapshots.get(sheet))
                 raw = _value(snapshots[sheet], row, col)
                 current = _number(raw)
             except (ValueError, TypeError) as exc:
