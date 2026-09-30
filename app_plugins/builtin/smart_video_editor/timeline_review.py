@@ -352,10 +352,18 @@ class SmartVideoTimelineReview(QtWidgets.QWidget):
         )
         legend.setStyleSheet("color:#616B7E;")
         legend.setWordWrap(True)
+        legend.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Preferred,
+            QtWidgets.QSizePolicy.Policy.Maximum,
+        )
         timeline_layout.addWidget(legend)
 
         self.subtitle_settings_panel = QtWidgets.QGroupBox(
             "字幕参数（即时预览 / 最终 SRT）", timeline_column
+        )
+        self.subtitle_settings_panel.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Preferred,
+            QtWidgets.QSizePolicy.Policy.Maximum,
         )
         subtitle_layout = QtWidgets.QGridLayout(self.subtitle_settings_panel)
         subtitle_layout.setContentsMargins(8, 5, 8, 5)
@@ -456,6 +464,10 @@ class SmartVideoTimelineReview(QtWidgets.QWidget):
             "任务语音与当前片段核对", timeline_column
         )
         self.comparison_panel = comparison
+        comparison.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Preferred,
+            QtWidgets.QSizePolicy.Policy.Expanding,
+        )
         comparison_layout = QtWidgets.QGridLayout(comparison)
         comparison_layout.addWidget(QtWidgets.QLabel("正确原文", comparison), 0, 0)
         comparison_layout.addWidget(QtWidgets.QLabel("视频识别", comparison), 0, 1)
@@ -474,14 +486,14 @@ class SmartVideoTimelineReview(QtWidgets.QWidget):
         comparison_layout.addWidget(task_script_label, 2, 0, 1, 2)
         self.task_script_text = QtWidgets.QPlainTextEdit(comparison)
         self.task_script_text.setReadOnly(True)
-        self.task_script_text.setMaximumHeight(76)
+        self.task_script_text.setMinimumHeight(110)
         self.task_script_text.setToolTip(
             "这里显示完整任务原文；点击时间线片段、字幕块或缺段警告时，"
             "会高亮它在全文中的位置。"
         )
         comparison_layout.addWidget(self.task_script_text, 3, 0, 1, 2)
-        comparison.setMaximumHeight(190)
-        timeline_layout.addWidget(comparison)
+        comparison_layout.setRowStretch(3, 1)
+        timeline_layout.addWidget(comparison, 1)
 
         right = QtWidgets.QWidget(body)
         self.issue_panel = right
