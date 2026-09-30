@@ -56,6 +56,7 @@ def collect_delivery_todos(upload_records, review_items, daily_history, review_f
 
     upload_keys = set()
     latest = {}
+    uploads_by_drive_id = {}
     review_items = [item for item in (review_items or ()) if isinstance(item, dict)]
     reviewed_keys = {
         str(item.get("key") or canonical_review_link(item.get("link")) or "")
@@ -71,6 +72,8 @@ def collect_delivery_todos(upload_records, review_items, daily_history, review_f
         if key not in latest or str(record.get("recorded_at") or "") >= str(latest[key].get("recorded_at") or ""):
             latest[key] = record
     for record in latest.values():
+        if record.get("drive_file_id"):
+            uploads_by_drive_id[str(record["drive_file_id"])] = record
         name = str(record.get("file_name") or "未命名视频")
         day = str(record.get("batch_date") or "")
         slot = str(record.get("batch_slot") or "")
@@ -85,6 +88,8 @@ def collect_delivery_todos(upload_records, review_items, daily_history, review_f
             "link": str(record.get("drive_link") or ""),
             "local_file": str(record.get("local_file") or ""),
             "note": "", "source_time": str(record.get("recorded_at") or ""),
+            "drive_file_id": str(record.get("drive_file_id") or ""),
+            "folder_id": str(record.get("remote_parent_id") or ""),
         }
         if sheet.get("status") in {"failed", "not_matched", "pending"}:
             add("sheet", day or _day(record.get("recorded_at")), admin,
@@ -113,9 +118,14 @@ def collect_delivery_todos(upload_records, review_items, daily_history, review_f
         name = str(review.get("name") or "未命名视频")
         admin = str(review.get("admin") or "")
         source_time = str(review.get("status_updated_at") or review.get("submitted_at") or "")
+        drive_id = key.removeprefix("google:") if key.startswith("google:") else ""
+        uploaded = uploads_by_drive_id.get(drive_id, {})
         add(kind, _day(source_time), admin, {
             "id": "review:" + _task_id(key, revision, status), "name": name,
-            "link": link, "local_file": "", "note": str(review.get("note") or ""),
+            "link": link, "local_file": str(uploaded.get("local_file") or ""),
+            "drive_file_id": drive_id,
+            "folder_id": str(uploaded.get("remote_parent_id") or ""),
+            "note": str(review.get("note") or ""),
             "source_time": source_time, "review_key": key,
             "review_revision": revision, "review_status": status,
         })

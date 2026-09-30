@@ -5,10 +5,12 @@ from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from qt_compat import QtCore, QtWidgets
+from qt_compat import QtCore, QtGui, QtWidgets
 from app_plugins.builtin.task_delivery_board import DeliveryBoardDialog
 from app_plugins.builtin.task_delivery import TaskDeliveryPlugin
 from model.DeliveryTodoStore import DeliveryTodoStore, collect_delivery_todos
+from model.DeliveryTodoMedia import verify_sendable_folders
+from model.ClipboardHelper import INTERNAL_CLIPBOARD_MIME, set_internal_clipboard_links
 from types import SimpleNamespace
 from unittest import mock
 
@@ -146,18 +148,103 @@ class DeliveryTodoBoardTests(unittest.TestCase):
             store.add_sources(collect_delivery_todos([], review, {}))
             dialog = DeliveryBoardDialog(store)
             row = store.list_tasks()[0]
-            with mock.patch("app_plugins.builtin.task_delivery_board.set_internal_clipboard_text") as copy:
+            with mock.patch("app_plugins.builtin.task_delivery_board.set_internal_clipboard_links") as copy:
                 dialog._copy_id(row["id"])
-                self.assertEqual(copy.call_args.args[0].splitlines(),
+                self.assertEqual([link for _name, link in copy.call_args.args[0]],
                                  [review[0]["link"], review[1]["link"]])
             seen = []
             def inspect_details(modal):
                 table = modal.findChild(QtWidgets.QTableWidget)
-                seen.extend(table.item(index, 0).text() for index in range(table.rowCount()))
+                seen.extend(table.item(index, 1).text() for index in range(table.rowCount()))
                 return QtWidgets.QDialog.DialogCode.Accepted
             with mock.patch.object(QtWidgets.QDialog, "exec", inspect_details):
                 dialog._show_details(row["id"])
             self.assertEqual(seen, ["1.mp4", "2.mp4"])
+            dialog.close()
+
+    def test_clipboard_links_include_rich_hyperlinks_and_plain_urls(self):
+        set_internal_clipboard_links([("视频 A", "https://drive.google.com/file/d/a/view")])
+        mime = self.app.clipboard().mimeData()
+        self.assertEqual(mime.text(), "https://drive.google.com/file/d/a/view")
+        self.assertIn('href="https://drive.google.com/file/d/a/view"', mime.html())
+        self.assertIn("视频 A", mime.html())
+        self.assertTrue(mime.hasFormat(INTERNAL_CLIPBOARD_MIME))
+
+    def test_folder_is_offered_only_when_every_remote_child_is_in_send_batch(self):
+        items = [{"folder_id": "folder-1", "drive_file_id": "a"},
+                 {"folder_id": "folder-1", "drive_file_id": "b"}]
+        files = SimpleNamespace()
+        service = SimpleNamespace(files=lambda: files)
+        def list_files(**_kwargs):
+            return SimpleNamespace(execute=lambda: {"files": [
+                {"id": "a", "mimeType": "video/mp4"},
+                {"id": "b", "mimeType": "video/mp4"},
+            ]})
+        files.list = list_files
+        self.assertEqual(verify_sendable_folders(items, service), {
+            "folder-1": "https://drive.google.com/drive/folders/folder-1",
+        })
+        items.pop()
+        self.assertEqual(verify_sendable_folders(items, service), {})
+        items.append({"folder_id": "folder-1", "drive_file_id": "b"})
+        files.list = lambda **_kwargs: SimpleNamespace(execute=lambda: {"files": [
+            {"id": "a", "mimeType": "video/mp4"},
+            {"id": "b", "mimeType": "video/mp4"},
+            {"id": "extra", "mimeType": "application/vnd.google-apps.folder"},
+        ]})
+        self.assertEqual(verify_sendable_folders(items, service), {})
+
+    def test_review_item_uses_matching_upload_for_preview_and_folder(self):
+        upload = [{"event_id": "e1", "file_name": "A.mp4", "drive_file_id": "file-1",
+                   "drive_link": "https://drive.google.com/file/d/file-1/view",
+                   "batch_date": "2026-09-28", "review_routed": True,
+                   "local_file": "C:/videos/A.mp4", "remote_parent_id": "folder-1"}]
+        review = [{"key": "google:file-1", "name": "A.mp4", "status": "passed",
+                   "link": upload[0]["drive_link"], "review_revision": "v1"}]
+        item = collect_delivery_todos(upload, review, {})[0]["items"][0]
+        self.assertEqual(item["local_file"], "C:/videos/A.mp4")
+        self.assertEqual(item["folder_id"], "folder-1")
+        self.assertEqual(item["drive_file_id"], "file-1")
+
+    def test_detail_ctrl_c_copies_link_not_filename(self):
+        review = [{"key": "google:file-1", "name": "A.mp4", "status": "passed",
+                   "link": "https://drive.google.com/file/d/file-1/view",
+                   "review_revision": "v1"}]
+        with tempfile.TemporaryDirectory() as directory:
+            store = DeliveryTodoStore(Path(directory) / "todos.sqlite3")
+            store.add_sources(collect_delivery_todos([], review, {}))
+            dialog = DeliveryBoardDialog(store)
+            row = store.list_tasks()[0]
+            def inspect_details(modal):
+                table = modal.findChild(QtWidgets.QTableWidget)
+                table.selectRow(0)
+                event = QtGui.QKeyEvent(
+                    QtCore.QEvent.Type.KeyPress, QtCore.Qt.Key.Key_C,
+                    QtCore.Qt.KeyboardModifier.ControlModifier,
+                )
+                table.keyPressEvent(event)
+                self.assertEqual(self.app.clipboard().text(), review[0]["link"])
+                return QtWidgets.QDialog.DialogCode.Accepted
+            with mock.patch.object(QtWidgets.QDialog, "exec", inspect_details):
+                dialog._show_details(row["id"])
+            dialog.close()
+
+    def test_board_ctrl_c_copies_drive_link(self):
+        review = [{"key": "google:file-1", "name": "A.mp4", "status": "passed",
+                   "link": "https://drive.google.com/file/d/file-1/view",
+                   "review_revision": "v1"}]
+        with tempfile.TemporaryDirectory() as directory:
+            store = DeliveryTodoStore(Path(directory) / "todos.sqlite3")
+            store.add_sources(collect_delivery_todos([], review, {}))
+            dialog = DeliveryBoardDialog(store)
+            card_list = dialog.lists[0]
+            card_list.setCurrentItem(card_list.item(0))
+            event = QtGui.QKeyEvent(
+                QtCore.QEvent.Type.KeyPress, QtCore.Qt.Key.Key_C,
+                QtCore.Qt.KeyboardModifier.ControlModifier,
+            )
+            card_list.keyPressEvent(event)
+            self.assertEqual(self.app.clipboard().text(), review[0]["link"])
             dialog.close()
 
     def test_older_upload_failure_is_not_imported_after_success(self):

@@ -1,13 +1,16 @@
 """Four-quadrant delivery to-do board; only the user can complete a task."""
 
 import json
+import threading
 from datetime import datetime
 from pathlib import Path
 
 from qt_compat import QtCore, QtGui, QtWidgets
 
-from model.ClipboardHelper import set_internal_clipboard_text
+from model.ClipboardHelper import set_internal_clipboard_links, set_internal_clipboard_text
+from model.DeliveryTodoMedia import candidate_folders, thumbnail_bytes, verify_sendable_folders
 from model.DeliveryTodoStore import QUADRANTS
+from model.GoogleDriveHelper import TOKEN_FILE, load_drive_service
 
 
 MIME_TYPE = "application/x-lzx-delivery-todo"
@@ -34,6 +37,7 @@ def _completed_time(value):
 
 class _QuadrantList(QtWidgets.QListWidget):
     dropped = QtCore.pyqtSignal(str, int)
+    copy_requested = QtCore.pyqtSignal(str)
 
     def __init__(self, quadrant, parent=None):
         super().__init__(parent)
@@ -74,6 +78,132 @@ class _QuadrantList(QtWidgets.QListWidget):
         else:
             super().dropEvent(event)
 
+    def keyPressEvent(self, event):
+        item = self.currentItem()
+        if item and event.matches(QtGui.QKeySequence.StandardKey.Copy):
+            self.copy_requested.emit(str(item.data(QtCore.Qt.ItemDataRole.UserRole)))
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+
+class _HistoryTree(QtWidgets.QTreeWidget):
+    copy_requested = QtCore.pyqtSignal(str)
+
+    def keyPressEvent(self, event):
+        item = self.currentItem()
+        if item and event.matches(QtGui.QKeySequence.StandardKey.Copy):
+            self.copy_requested.emit(str(item.data(0, QtCore.Qt.ItemDataRole.UserRole)))
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+
+class _DetailTable(QtWidgets.QTableWidget):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.copy_links = None
+
+    def keyPressEvent(self, event):
+        if event.matches(QtGui.QKeySequence.StandardKey.Copy) and self.copy_links:
+            self.copy_links()
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+
+class _DetailMediaSignals(QtCore.QObject):
+    folders_ready = QtCore.pyqtSignal(object, str)
+    thumbnail_ready = QtCore.pyqtSignal(int, bytes)
+    finished = QtCore.pyqtSignal()
+
+
+class _DetailMediaWorker(QtCore.QRunnable):
+
+    def __init__(self, items, verify_folders=False):
+        super().__init__()
+        self.setAutoDelete(False)
+        self.items = list(items)
+        self.verify_folders = bool(verify_folders)
+        self.signals = _DetailMediaSignals()
+        self.cancelled = threading.Event()
+
+    def run(self):
+        try:
+            missing = []
+            for index, item in enumerate(self.items):
+                if self.cancelled.is_set():
+                    break
+                data = thumbnail_bytes(item)
+                if data:
+                    self.signals.thumbnail_ready.emit(index, data)
+                else:
+                    missing.append((index, item))
+            if self.cancelled.is_set():
+                return
+            service = None
+            if TOKEN_FILE.is_file() and (missing or (self.verify_folders and candidate_folders(self.items))):
+                try:
+                    service = load_drive_service()
+                except (Exception, SystemExit):
+                    pass
+            folders = candidate_folders(self.items) if self.verify_folders else {}
+            if folders and service:
+                try:
+                    self.signals.folders_ready.emit(verify_sendable_folders(self.items, service), "")
+                except Exception as error:
+                    self.signals.folders_ready.emit({}, f"文件夹核验失败：{error}")
+            elif folders:
+                self.signals.folders_ready.emit({}, "未找到网盘授权，暂不能核验文件夹")
+            for index, item in missing:
+                if self.cancelled.is_set():
+                    break
+                data = thumbnail_bytes(item, service)
+                self.signals.thumbnail_ready.emit(index, data)
+        finally:
+            self.signals.finished.emit()
+
+
+class _DeliveryDetailsDialog(QtWidgets.QDialog):
+    def __init__(self, owner, task_id, items):
+        super().__init__(owner)
+        self.owner = owner
+        self.task_id = task_id
+        self.items = items
+        self.folder_info = None
+        self.table = None
+
+    @QtCore.pyqtSlot(object, str)
+    def show_folders(self, links, error):
+        if not self.isVisible():
+            return
+        from html import escape
+        signature = tuple(sorted(str(item.get("id")) for item in self.items))
+        self.owner._verified_folders[self.task_id] = (signature, links)
+        if links:
+            self.folder_info.setText("可直接发送的文件夹：" + " · ".join(
+                f'<a href="{escape(url, quote=True)}">{escape(folder_id)}</a>'
+                for folder_id, url in links.items()
+            ) + "；复制可发送链接会优先使用这些文件夹。")
+        else:
+            self.folder_info.setText(error or "文件夹中还有其他内容，继续使用单个视频链接。")
+
+    @QtCore.pyqtSlot(int, bytes)
+    def show_thumbnail(self, index, data):
+        if not self.isVisible():
+            return
+        preview = self.table.cellWidget(index, 0)
+        if preview is None:
+            return
+        pixmap = QtGui.QPixmap()
+        if data and pixmap.loadFromData(data):
+            preview.setPixmap(pixmap.scaled(
+                160, 96, QtCore.Qt.AspectRatioMode.KeepAspectRatio,
+                QtCore.Qt.TransformationMode.SmoothTransformation,
+            ))
+        else:
+            preview.setText("无预览")
+
 
 class DeliveryBoardDialog(QtWidgets.QDialog):
     def __init__(self, store, sync_sources=None, parent=None):
@@ -81,6 +211,8 @@ class DeliveryBoardDialog(QtWidgets.QDialog):
         self.store = store
         self.sync_sources = sync_sources
         self.rows = {}
+        self._verified_folders = {}
+        self._media_workers = set()
         self._rendering = False
         self.setObjectName("delivery_todo_board")
         self.setWindowTitle("交付待办")
@@ -184,6 +316,7 @@ class DeliveryBoardDialog(QtWidgets.QDialog):
                 lambda position, widget=tasks: self._card_menu(widget, position)
             )
             tasks.dropped.connect(self.move_task)
+            tasks.copy_requested.connect(self._copy_id)
             tasks.itemSelectionChanged.connect(
                 lambda widget=tasks: self._quadrant_selected(widget)
             )
@@ -220,12 +353,13 @@ class DeliveryBoardDialog(QtWidgets.QDialog):
         self.render()
 
     def _make_history_tree(self):
-        tree = QtWidgets.QTreeWidget()
+        tree = _HistoryTree()
         tree.setHeaderLabels(("完成时间", "待办", "管理员", "来源"))
         tree.setRootIsDecorated(False)
         tree.setAlternatingRowColors(True)
         tree.header().setSectionResizeMode(1, QtWidgets.QHeaderView.ResizeMode.Stretch)
         tree.itemDoubleClicked.connect(lambda _item, _column: self.open_selected())
+        tree.copy_requested.connect(self._copy_id)
         return tree
 
     def refresh_sources(self):
@@ -365,11 +499,17 @@ class DeliveryBoardDialog(QtWidgets.QDialog):
         row = self.rows.get(task_id)
         if not row:
             return
-        links = [item.get("link", "") for item in self._items(row) if item.get("link")]
-        if links:
-            set_internal_clipboard_text("\n".join(dict.fromkeys(links)))
+        items = self._items(row)
+        verified = self._verified_folders.get(task_id)
+        signature = tuple(sorted(str(item.get("id")) for item in items))
+        folder_links = verified[1] if row["kind"] == "send" and not row["stale"] and verified and verified[0] == signature else {}
+        pairs = [("文件夹", url) for url in folder_links.values()]
+        pairs.extend((item.get("name") or "视频", item.get("link")) for item in items
+                     if item.get("link") and item.get("folder_id") not in folder_links)
+        if pairs:
+            set_internal_clipboard_links(list(dict.fromkeys(pairs)))
         elif row["link"]:
-            set_internal_clipboard_text(row["link"])
+            set_internal_clipboard_links([(row["title"], row["link"])])
 
     @staticmethod
     def _items(row):
@@ -385,20 +525,41 @@ class DeliveryBoardDialog(QtWidgets.QDialog):
         items = self._items(row)
         if not items:
             return
-        dialog = QtWidgets.QDialog(self)
+        dialog = _DeliveryDetailsDialog(self, task_id, items)
         dialog.setWindowTitle(row["title"])
-        dialog.resize(950, 490)
+        dialog.resize(1100, 600)
         layout = QtWidgets.QVBoxLayout(dialog)
-        layout.addWidget(QtWidgets.QLabel(f"{len(items)} 个视频。双击打开链接；可单独复制，也可一次复制全部。"))
-        table = QtWidgets.QTableWidget(len(items), 3, dialog)
-        table.setHorizontalHeaderLabels(("视频", "备注 / 审核意见", "谷歌网盘链接"))
+        layout.addWidget(QtWidgets.QLabel(f"{len(items)} 个视频。双击打开；Ctrl+C 复制所选视频的可点击链接。"))
+        can_check_folders = row["kind"] == "send" and not row["stale"] and bool(candidate_folders(items))
+        folder_info = QtWidgets.QLabel(
+            "正在核验可发送的文件夹…" if can_check_folders else
+            ("需修改、核对或已过期的视频不提供文件夹链接。" if row["kind"] != "send" or row["stale"] else
+             "暂无可核验的文件夹，使用单个视频链接。")
+        )
+        folder_info.setWordWrap(True)
+        folder_info.setOpenExternalLinks(True)
+        folder_info.setTextInteractionFlags(
+            QtCore.Qt.TextInteractionFlag.TextBrowserInteraction
+        )
+        dialog.folder_info = folder_info
+        layout.addWidget(folder_info)
+        table = _DetailTable(len(items), 4, dialog)
+        dialog.table = table
+        table.setHorizontalHeaderLabels(("预览", "视频", "备注 / 审核意见", "谷歌网盘链接"))
         table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
+        table.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.ExtendedSelection)
         table.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
-        table.horizontalHeader().setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeMode.Stretch)
         table.horizontalHeader().setSectionResizeMode(1, QtWidgets.QHeaderView.ResizeMode.Stretch)
         table.horizontalHeader().setSectionResizeMode(2, QtWidgets.QHeaderView.ResizeMode.Stretch)
+        table.horizontalHeader().setSectionResizeMode(3, QtWidgets.QHeaderView.ResizeMode.Stretch)
+        table.setColumnWidth(0, 170)
         for index, video in enumerate(items):
-            for column, value in enumerate((video.get("name", ""), video.get("note", ""), video.get("link", ""))):
+            table.setRowHeight(index, 102)
+            preview = QtWidgets.QLabel("加载预览…" if video.get("local_file") or video.get("drive_file_id") else "无预览")
+            preview.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+            preview.setFixedSize(160, 96)
+            table.setCellWidget(index, 0, preview)
+            for column, value in enumerate((video.get("name", ""), video.get("note", ""), video.get("link", "")), 1):
                 table.setItem(index, column, QtWidgets.QTableWidgetItem(str(value)))
         table.itemDoubleClicked.connect(lambda item: self._open_video_item(items[item.row()]))
         table.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
@@ -409,18 +570,27 @@ class DeliveryBoardDialog(QtWidgets.QDialog):
             video = items[item.row()]
             menu = QtWidgets.QMenu(dialog)
             menu.addAction("复制文件名", lambda: set_internal_clipboard_text(video.get("name", "")))
-            menu.addAction("复制网盘链接", lambda: set_internal_clipboard_text(video.get("link", "")))
+            menu.addAction("复制网盘链接", lambda: set_internal_clipboard_links(
+                [(video.get("name", "视频"), video.get("link", ""))]
+            ))
             menu.addAction("打开视频", lambda: self._open_video_item(video))
             menu.exec(table.viewport().mapToGlobal(position))
         table.customContextMenuRequested.connect(show_row_menu)
+        def copy_selected_rows():
+            selected = sorted({index.row() for index in table.selectionModel().selectedRows()})
+            if not selected and table.currentRow() >= 0:
+                selected = [table.currentRow()]
+            set_internal_clipboard_links([
+                (items[index].get("name") or "视频", items[index].get("link"))
+                for index in selected if items[index].get("link")
+            ])
+        table.copy_links = copy_selected_rows
         layout.addWidget(table, 1)
         buttons = QtWidgets.QHBoxLayout()
         copy_one = QtWidgets.QPushButton("复制选中链接")
-        copy_one.clicked.connect(lambda: set_internal_clipboard_text(
-            items[table.currentRow()].get("link", "") if table.currentRow() >= 0 else ""
-        ))
+        copy_one.clicked.connect(copy_selected_rows)
         buttons.addWidget(copy_one)
-        copy_all = QtWidgets.QPushButton("复制全部链接")
+        copy_all = QtWidgets.QPushButton("复制可发送链接")
         copy_all.clicked.connect(lambda: self._copy_id(task_id))
         buttons.addWidget(copy_all)
         buttons.addStretch(1)
@@ -428,7 +598,22 @@ class DeliveryBoardDialog(QtWidgets.QDialog):
         close.clicked.connect(dialog.accept)
         buttons.addWidget(close)
         layout.addLayout(buttons)
+        worker = _DetailMediaWorker(items, verify_folders=can_check_folders)
+        self._media_workers.add(worker)
+        worker.signals.folders_ready.connect(dialog.show_folders)
+        worker.signals.thumbnail_ready.connect(dialog.show_thumbnail)
+        worker.signals.finished.connect(self._media_finished)
+        dialog.finished.connect(lambda _code: worker.cancelled.set())
+        QtCore.QThreadPool.globalInstance().start(worker)
         dialog.exec()
+        worker.cancelled.set()
+
+    @QtCore.pyqtSlot()
+    def _media_finished(self):
+        signal_source = self.sender()
+        self._media_workers = {
+            worker for worker in self._media_workers if worker.signals is not signal_source
+        }
 
     @staticmethod
     def _open_video_item(item):
