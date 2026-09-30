@@ -748,6 +748,8 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
     }
 
     printSignal = pyqtSignal(str,str)
+    logUiSignal = pyqtSignal(str)
+    notificationUiSignal = pyqtSignal(str, str, bool)
 
 
     def __init__(self, parent=None):
@@ -757,6 +759,8 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
         self.setWindowFlag(QtCore.Qt.WindowMaximizeButtonHint, True)
         self.app_logger, self.app_log_file = configure_application_logging()
         self.setupUi(self)
+        self.logUiSignal.connect(self._appendLogUi)
+        self.notificationUiSignal.connect(self._showDesktopNotificationUi)
         self.log_text_edit.setReadOnly(True)
         self.log_text_edit.setUndoRedoEnabled(False)
         self.log_text_edit.document().setMaximumBlockCount(self.log_max_blocks)
@@ -1352,6 +1356,13 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
         self.notification_tray_icon.show()
 
     def showDesktopNotification(self, title, message, critical=False):
+        if QtCore.QThread.currentThread() != self.thread():
+            self.notificationUiSignal.emit(str(title), str(message), bool(critical))
+            return
+        self._showDesktopNotificationUi(str(title), str(message), bool(critical))
+
+    @QtCore.pyqtSlot(str, str, bool)
+    def _showDesktopNotificationUi(self, title, message, critical):
         QtWidgets.QApplication.beep()
         if self.notification_tray_icon is not None:
             icon = (
@@ -1941,6 +1952,13 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
         if not content:
             return
         self.app_logger.log(level, content)
+        if QtCore.QThread.currentThread() != self.thread():
+            self.logUiSignal.emit(content)
+            return
+        self._appendLogUi(content)
+
+    @QtCore.pyqtSlot(str)
+    def _appendLogUi(self, content):
         cursor = self.log_text_edit.textCursor()
         cursor.movePosition(QtGui.QTextCursor.End)
         if not self.log_text_edit.document().isEmpty():
@@ -2182,10 +2200,15 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
                 # plugin restart. Reapplying every setting here can tear down
                 # active Qt workers while this modal dialog is closing.
                 return
-            apply_ui_theme(
-                QtWidgets.QApplication.instance(),
-                settings.get(UI_THEME_CONFIG_KEY),
-            )
+            if previous_config.get(UI_THEME_CONFIG_KEY) != settings.get(UI_THEME_CONFIG_KEY):
+                # Avoid unnecessary restyling during QDialog.exec() teardown.
+                # Apply a genuine theme change on the next event-loop turn.
+                QtCore.QTimer.singleShot(
+                    0,
+                    lambda theme=settings.get(UI_THEME_CONFIG_KEY): apply_ui_theme(
+                        QtWidgets.QApplication.instance(), theme,
+                    ),
+                )
             self.audio_settings = self._load_audio_settings()
             previous_flow_guard_settings = dict(self.flow_guard_settings)
             self.flow_guard_settings = normalize_flow_guard_settings(
@@ -2236,24 +2259,23 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
                     and selected_whisper_model != loaded_whisper_model
                     else ""
                 )
-                QMessageBox.information(
-                    self,
-                    '设置',
-                    '设置已保存。\n'
+                message = (
+                    '设置已保存。 '
                     + hotkey_label('启动下一个浏览器', self.chrome_plugin.global_hotkey,
-                                   self.chrome_plugin.hotkey_manager) + '\n'
+                                   self.chrome_plugin.hotkey_manager) + '；'
                     + hotkey_label('整理任务结果', self.task_delivery_plugin.global_hotkey,
-                                   self.task_delivery_plugin.controller.hotkey_manager) + '\n'
+                                   self.task_delivery_plugin.controller.hotkey_manager) + '；'
                     + hotkey_label('加载当前任务', self.load_task_global_hotkey,
-                                   self.load_task_hotkey_manager) + '\n'
+                                   self.load_task_hotkey_manager) + '；'
                     + hotkey_label('库存与素材管理器', self.inventory_plugin.global_hotkey,
-                                   self.inventory_plugin.hotkey_manager) + '\n'
+                                   self.inventory_plugin.hotkey_manager) + '；'
                     'Flow 参数守卫：{}（{}）{}'.format(
                         '已启用' if self.flow_guard_settings['enabled'] else '已关闭',
                         format_flow_guard_targets(self.flow_guard_settings),
                         restart_note,
-                    ),
+                    )
                 )
+                self.appendLog('[设置] ' + message)
             else:
                 # 设置窗口先写入配置；注册失败时用仍然生效的旧值覆盖回来。
                 self.saveCurrentConfig()

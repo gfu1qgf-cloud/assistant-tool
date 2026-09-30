@@ -20,6 +20,7 @@ os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 from model.AppLogger import (
     configure_application_logging,
     install_exception_hooks,
+    install_qt_message_logging,
     shutdown_application_logging,
 )
 
@@ -44,6 +45,7 @@ def main():
     globalValue.get_whisper_model()
 
     app = QtWidgets.QApplication(sys.argv)
+    install_qt_message_logging()
     apply_configured_ui_theme(app, APP_ROOT / "config.json")
     app.combo_box_wheel_guard = ComboBoxWheelGuard(app)
     app.installEventFilter(app.combo_box_wheel_guard)

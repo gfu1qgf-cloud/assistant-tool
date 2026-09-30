@@ -18,6 +18,7 @@ FAULT_LOG_MAX_BYTES = 1024 * 1024
 _log_file_path = None
 _fault_stream = None
 _hooks_installed = False
+_qt_message_handler = None
 
 
 def _candidate_log_directories():
@@ -164,6 +165,51 @@ def install_exception_hooks():
             original_unraisable_hook(args)
 
         sys.unraisablehook = unraisable_exception_hook
+
+
+def install_qt_message_logging():
+    """Keep Qt's fatal diagnostic even when the native process aborts."""
+    global _qt_message_handler
+    if _qt_message_handler is not None:
+        return
+    from qt_compat import QtCore
+
+    logger = get_application_logger()
+    fatal = QtCore.QtMsgType.QtFatalMsg
+    critical = QtCore.QtMsgType.QtCriticalMsg
+    warning = QtCore.QtMsgType.QtWarningMsg
+
+    def handle_qt_message(mode, context, message):
+        if mode not in (fatal, critical, warning):
+            return
+        try:
+            if mode == fatal and _fault_stream is not None:
+                os.write(
+                    _fault_stream.fileno(),
+                    ("Qt fatal: {}\n".format(message)).encode("utf-8", "replace"),
+                )
+            location = "{}:{}".format(
+                getattr(context, "file", "") or "Qt",
+                getattr(context, "line", 0) or 0,
+            )
+            level = (
+                logging.CRITICAL if mode == fatal else
+                logging.ERROR if mode == critical else logging.WARNING
+            )
+            logger.log(
+                level, "Qt %s at %s: %s",
+                getattr(mode, "name", str(mode)), location, message,
+            )
+            if mode == fatal:
+                for handler in logger.handlers:
+                    handler.flush()
+        except Exception:
+            # A logging failure must never turn a recoverable Qt warning into
+            # another exception inside the native Qt message callback.
+            pass
+
+    _qt_message_handler = handle_qt_message
+    QtCore.qInstallMessageHandler(_qt_message_handler)
 
 
 def shutdown_application_logging():
