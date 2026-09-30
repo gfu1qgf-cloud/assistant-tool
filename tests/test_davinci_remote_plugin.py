@@ -10,6 +10,7 @@ from app_plugins.builtin.davinci_remote.ui import DaVinciRemoteDialog
 from app_plugins.host import PluginHost
 import davinci_remote_worker
 from davinci_legacy import subtitle_review
+from davinci_legacy.timeline_naming import get_timeline_task_name
 
 
 class FakeWindow(QtWidgets.QWidget):
@@ -87,6 +88,13 @@ class DaVinciRemoteTests(unittest.TestCase):
         self.assertEqual(dialog.export_name.text(), "0930")
         self.assertIn("新时间线", dialog.connection.text())
         self.assertIn("V1：3 段", dialog.video_info.text())
+
+    def test_timeline_date_name_does_not_require_resolve_sdk(self):
+        class Timeline:
+            def GetName(self):
+                return "2026年9月17日-reels11"
+
+        self.assertEqual(get_timeline_task_name(Timeline()), "0917")
 
     def test_probe_reads_video_tracks_even_without_subtitles(self):
         class Named:

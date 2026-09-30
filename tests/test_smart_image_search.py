@@ -123,7 +123,7 @@ class ImageSearchIndexTests(unittest.TestCase):
         self.assertEqual(second["new_or_changed"], 0)
         self.assertEqual(self.index.search(self.encoder.model_id, [1, 0],
                                            source_kind="folder")[0]["path"].casefold(),
-                         str(image).casefold())
+                         str(image.resolve()).casefold())
 
     def test_external_move_removes_only_moved_index_record(self):
         library = self.root / "图库"

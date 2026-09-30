@@ -11,6 +11,8 @@ import sys
 import time
 import traceback
 
+from davinci_legacy.timeline_naming import get_timeline_task_name
+
 
 RESULT_PREFIX = "__DAVINCI_RESULT__"
 
@@ -116,8 +118,7 @@ def _probe(_payload):
     return {
         "project": str(project.GetName() or ""),
         "timeline": str(timeline.GetName() or ""),
-        "task_name": __import__("davinci_legacy.batch_export", fromlist=["get_timeline_task_name"])
-            .get_timeline_task_name(timeline),
+        "task_name": get_timeline_task_name(timeline),
         "subtitle_count": len(subtitles),
         "video_tracks": video_tracks,
         "subtitles": [

@@ -76,7 +76,9 @@ def _number(value):
 
 
 def _project_ods(root, record, table_name):
-    local_file = Path(str(record.get("local_file") or ""))
+    # Windows may report the same TEMP directory with an 8.3 short name in
+    # upload history while ``root.resolve()`` expands it to the long name.
+    local_file = Path(str(record.get("local_file") or "")).resolve()
     try:
         relative = local_file.relative_to(root)
     except ValueError:

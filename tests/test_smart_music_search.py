@@ -94,7 +94,7 @@ class SmartMusicSearchTests(unittest.TestCase):
             encoder = _FakeEncoder()
             self.assertEqual(len(discover_music(root)), 2)
             with patch("app_plugins.builtin.smart_music_search.index.media_duration",
-                       side_effect=lambda path, _probe: 120 if Path(path) == first else 40), patch(
+                       side_effect=lambda path, _probe: 120 if Path(path).resolve() == first.resolve() else 40), patch(
                 "app_plugins.builtin.smart_music_search.index.decode_segment",
                 return_value=np.ones(48000, dtype=np.float32),
             ):
@@ -104,7 +104,7 @@ class SmartMusicSearchTests(unittest.TestCase):
                 self.assertEqual(index.sync(root, encoder, "ffmpeg", "ffprobe")["updated"], 0)
                 self.assertEqual(encoder.calls, calls)
                 results = index.search(encoder.model_id, [1, 0], seconds=60)
-                self.assertEqual([r["path"] for r in results], [str(first)])
+                self.assertEqual([r["path"] for r in results], [str(first.resolve())])
                 self.assertEqual(len(index.search(encoder.model_id, [1, 0],
                                                   seconds=60, include_short=True)), 2)
                 first.write_bytes(b"changed")
