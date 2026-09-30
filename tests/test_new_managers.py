@@ -26,6 +26,7 @@ from model.GoogleDriveHelper import (
 )
 from model.GoogleDriveDownloader import (
     download_one,
+    error_from_html,
     jfif_content_extension,
     normalize_jfif_filename,
     parse_drive_link,
@@ -311,6 +312,29 @@ class ApplicationLoggingTests(unittest.TestCase):
         self.assertIn("正在尝试 ElevenLabs API Key", progress_text)
         self.assertIn("音频已保存", progress_text)
         self.assertNotIn(api_key, progress_text)
+
+    @patch("model.AudioHelper.ElevenLabs")
+    def test_audio_api_error_never_logs_key_or_provider_exception(self, client_class):
+        key = "abcdefghijklmno"
+        client_class.side_effect = RuntimeError("provider echoed " + key)
+        messages = []
+        with tempfile.TemporaryDirectory() as directory, self.assertLogs(
+            "assistant_tool.audio", level="WARNING"
+        ) as captured:
+            created = _save_audio_with_api_keys(
+                [key], str(Path(directory) / "task_audio.mp3"),
+                lambda _client: [b"audio-data"],
+                api_key_status_config=None,
+                progress_callback=messages.append,
+            )
+        self.assertFalse(created)
+        self.assertNotIn(key, "\n".join(messages + captured.output))
+        self.assertNotIn("provider echoed", "\n".join(messages + captured.output))
+
+    def test_html_error_ignores_script_tag_with_extra_space(self):
+        page = '<p>Request access</p><script >secret text</script ><style >hidden</style >'
+        self.assertEqual(error_from_html(page),
+                         "没有访问权限；请把文件共享方式设为“知道链接的任何人”")
 
 
 class InventoryTests(unittest.TestCase):

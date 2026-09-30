@@ -2513,10 +2513,9 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
 
         mode = selection.get('mode')
         if mode == 'waiting_exhausted':
-            next_key = selection.get('next_key', '')
             emit(
                 f"所有 ElevenLabs API Key 的额度都已用完。"
-                f"距离刷新最近的 Key (...{next_key[-4:]}) 将在 "
+                f"距离刷新最近的 Key 将在 "
                 f"{format_unix_time(selection.get('next_retry_unix'))} 后测试。"
             )
         elif mode == 'waiting_cooldown':

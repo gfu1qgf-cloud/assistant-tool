@@ -27,10 +27,12 @@ def canonical_review_link(value):
         text = formula.group(1).strip()
     try:
         parsed = urlsplit(text)
+        host = (parsed.hostname or "").casefold()
     except ValueError:
         return text.casefold()
-    host = parsed.netloc.casefold().split(":", 1)[0]
-    if host.endswith("drive.google.com") or host.endswith("docs.google.com"):
+    if host in {"drive.google.com", "docs.google.com"} or host.endswith(
+        (".drive.google.com", ".docs.google.com")
+    ):
         path_match = re.search(
             r"/(?:file/d|document/d|spreadsheets/d|presentation/d|folders)/([^/?#]+)",
             parsed.path,

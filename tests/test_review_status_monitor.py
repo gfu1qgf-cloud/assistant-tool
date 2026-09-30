@@ -69,6 +69,12 @@ class ReviewStatusParsingTests(unittest.TestCase):
         formula = '=HYPERLINK("https://drive.google.com/file/d/abc_123/view","video")'
         self.assertEqual(canonical_review_link(direct), canonical_review_link(formula))
 
+    def test_drive_link_key_rejects_lookalike_host(self):
+        fake = "https://notdrive.google.com/file/d/abc_123/view"
+        self.assertNotEqual(canonical_review_link(fake), "google:abc_123")
+        fake = "https://drive.google.com.evil.example/file/d/abc_123/view"
+        self.assertNotEqual(canonical_review_link(fake), "google:abc_123")
+
     def test_current_headers_are_detected_by_name_not_position(self):
         columns = detect_review_columns(HEADERS)
         self.assertEqual(columns["link"], 2)

@@ -34,12 +34,6 @@ def _emit_progress(progress_callback, message):
         progress_callback(message)
 
 
-def _mask_api_key(api_key):
-    if len(api_key) <= 10:
-        return '*' * len(api_key)
-    return f"{api_key[:6]}...{api_key[-4:]}"
-
-
 def _api_error_details(error):
     body = getattr(error, 'body', None)
     if isinstance(body, dict):
@@ -111,8 +105,8 @@ def _record_status(config_path, api_key, progress_callback=None, **updates):
     try:
         record_api_key_status(config_path, api_key, **updates)
     except Exception as e:
-        logger.warning("记录 API Key 状态失败", exc_info=True)
-        _emit_progress(progress_callback, f"记录 API Key 状态失败: {e}")
+        logger.warning("记录 API Key 状态失败：%s", type(e).__name__)
+        _emit_progress(progress_callback, f"记录 API Key 状态失败：{type(e).__name__}")
 
 
 def _record_quota_exhausted(config_path, api_key, details,
@@ -132,10 +126,10 @@ def _record_quota_exhausted(config_path, api_key, details,
         # 如果状态接口临时不可用，隔天只探测一次，避免把 Key 错封一个月。
         reset_unix = now + 24 * 60 * 60
         reset_source = 'fallback_daily_probe'
-        logger.warning("未能读取精确额度刷新时间", exc_info=True)
+        logger.warning("未能读取精确额度刷新时间：%s", type(e).__name__)
         _emit_progress(
             progress_callback,
-            f"未能读取精确额度刷新时间，将在 24 小时后探测: {e}",
+            f"未能读取精确额度刷新时间，将在 24 小时后探测：{type(e).__name__}",
         )
 
     if reset_unix <= now:
@@ -152,7 +146,7 @@ def _record_quota_exhausted(config_path, api_key, details,
         character_limit=character_limit,
         last_failure_unix=now,
         last_error_code=details.get('code') or details.get('status') or 'quota_exceeded',
-        last_error_message=details.get('message', ''),
+        last_error_message='quota_exceeded',
         retry_after_unix=None,
         progress_callback=progress_callback,
     )
@@ -173,7 +167,7 @@ def _save_audio_with_api_keys(api_keys, filename, convert_audio,
             _emit_progress(
                 progress_callback,
                 f"正在尝试 ElevenLabs API Key "
-                f"{index}/{len(api_keys)} ({_mask_api_key(api_key)})"
+                f"{index}/{len(api_keys)}"
             )
             elevenlabs_client = ElevenLabs(api_key=api_key)
             audio = convert_audio(elevenlabs_client)
@@ -204,15 +198,14 @@ def _save_audio_with_api_keys(api_keys, filename, convert_audio,
             _emit_progress(progress_callback, f"音频已保存：{filename}")
             return True
         except Exception as e:
-            logger.warning(
-                "ElevenLabs 音频生成请求失败（Key %s）",
-                _mask_api_key(api_key),
-                exc_info=True,
-            )
             if os.path.exists(temp_filename):
                 os.remove(temp_filename)
 
             error_type, details = _classify_api_error(e)
+            logger.warning(
+                "ElevenLabs 音频生成请求失败（第 %s 个 Key，%s，HTTP %s）",
+                index, type(e).__name__, details.get('status_code'),
+            )
             now = int(time.time())
 
             if error_type == 'quota':
@@ -224,7 +217,7 @@ def _save_audio_with_api_keys(api_keys, filename, convert_audio,
                 )
                 _emit_progress(
                     progress_callback,
-                    f"API Key {_mask_api_key(api_key)} 额度已用完，"
+                    f"第 {index} 个 API Key 额度已用完，"
                     f"刷新时间 {time.strftime('%Y-%m-%d %H:%M', time.localtime(reset_unix))}；"
                     f"尝试下一个 Key"
                 )
@@ -237,13 +230,13 @@ def _save_audio_with_api_keys(api_keys, filename, convert_audio,
                     status='invalid',
                     last_failure_unix=now,
                     last_error_code=details.get('code') or details.get('status') or 'invalid_api_key',
-                    last_error_message=details.get('message', ''),
+                    last_error_message='invalid_api_key',
                     retry_after_unix=None,
                     progress_callback=progress_callback,
                 )
                 _emit_progress(
                     progress_callback,
-                    f"API Key {_mask_api_key(api_key)} 无效，已停止后续尝试；"
+                    f"第 {index} 个 API Key 无效，已停止后续尝试；"
                     f"尝试下一个 Key"
                 )
                 continue
@@ -257,12 +250,12 @@ def _save_audio_with_api_keys(api_keys, filename, convert_audio,
                     retry_after_unix=retry_after_unix,
                     last_failure_unix=now,
                     last_error_code=details.get('code') or details.get('status') or 'rate_limit',
-                    last_error_message=details.get('message', ''),
+                    last_error_message='rate_limit',
                     progress_callback=progress_callback,
                 )
                 _emit_progress(
                     progress_callback,
-                    f"API Key {_mask_api_key(api_key)} 暂时限流，冷却 5 分钟；"
+                    f"第 {index} 个 API Key 暂时限流，冷却 5 分钟；"
                     f"尝试下一个 Key"
                 )
                 continue
@@ -275,14 +268,15 @@ def _save_audio_with_api_keys(api_keys, filename, convert_audio,
                     retry_after_unix=now + 5 * 60,
                     last_failure_unix=now,
                     last_error_code=details.get('code') or details.get('status') or 'temporary_error',
-                    last_error_message=details.get('message', ''),
+                    last_error_message='temporary_error',
                     progress_callback=progress_callback,
                 )
 
             # 参数、模型、Voice 或服务故障并非换 Key 能解决，避免遍历全部 Key。
             _emit_progress(
                 progress_callback,
-                f"音频生成失败（{_mask_api_key(api_key)}）: {e}；"
+                f"音频生成失败（第 {index} 个 Key，{type(e).__name__}，"
+                f"HTTP {details.get('status_code')}）；"
                 f"本次不再反复尝试其他 Key"
             )
             break

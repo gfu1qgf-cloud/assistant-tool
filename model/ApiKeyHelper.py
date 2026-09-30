@@ -45,7 +45,7 @@ def rotate_api_keys(api_keys, start_index=0):
 
 
 def api_key_id(api_key):
-    """返回不暴露 Key 内容的稳定标识。"""
+    """高熵 API Key 的稳定索引，不用于密码验证；保持算法以兼容已有额度状态。"""
     return hashlib.sha256(api_key.encode('utf-8')).hexdigest()[:20]
 
 

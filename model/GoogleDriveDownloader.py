@@ -308,10 +308,32 @@ def copy_response(response: BinaryIO, target: Path, total: int | None) -> None:
         raise DownloadError(f"文件大小不完整：预期 {total} 字节，实际 {written} 字节")
 
 
+class _ErrorTextParser(HTMLParser):
+    """Read visible error text without treating HTML as a regular language."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.parts: list[str] = []
+        self.hidden: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag in {"script", "style"}:
+            self.hidden.append(tag)
+
+    def handle_endtag(self, tag: str) -> None:
+        if self.hidden and tag == self.hidden[-1]:
+            self.hidden.pop()
+
+    def handle_data(self, data: str) -> None:
+        if not self.hidden:
+            self.parts.append(data)
+
+
 def error_from_html(page: str) -> str:
-    text = re.sub(r"<script\b[^>]*>.*?</script>", " ", page, flags=re.I | re.S)
-    text = re.sub(r"<style\b[^>]*>.*?</style>", " ", text, flags=re.I | re.S)
-    text = html.unescape(re.sub(r"<[^>]+>", " ", text))
+    parser = _ErrorTextParser()
+    parser.feed(page)
+    parser.close()
+    text = " ".join(parser.parts)
     text = re.sub(r"\s+", " ", text).strip()
     lower = text.lower()
     if "too many users have viewed or downloaded" in lower or "download quota" in lower:
