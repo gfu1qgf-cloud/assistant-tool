@@ -4,10 +4,11 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from qt_compat import QtWidgets
+from qt_compat import QtCore, QtWidgets
 
 from PYUI.main_setting_pyui import _write_config_with_rolling_backups
 
@@ -162,6 +163,62 @@ class TaskAudioSubtitlePluginTests(unittest.TestCase):
             default = root / "task_audio.wav"
             default.write_bytes(b"default")
             self.assertEqual(find_task_audio_file(root, "My Task"), default)
+
+    def test_non_slovak_audio_warning_can_cancel_or_mute_only_this_run(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            parent = QtWidgets.QWidget()
+            plugin = TaskAudioSubtitlePlugin()
+            plugin.context = SimpleNamespace(parent_widget=parent)
+            task = SimpleNamespace(task_name="English task", task_audio_text="Hello world")
+            jobs = [{
+                "label": "7 | English task", "target_dir": temporary,
+                "task": task, "language": "en", "detected_language": "en",
+            }]
+            seen = []
+
+            def answer(choice, mute=False):
+                def respond():
+                    dialog = QtWidgets.QApplication.activeModalWidget()
+                    seen.append(dialog.text())
+                    if mute:
+                        dialog.checkBox().setChecked(True)
+                    dialog.button(choice).click()
+                QtCore.QTimer.singleShot(0, respond)
+                return plugin._confirm_audio_language(jobs, {"use_task_name": False})
+
+            try:
+                self.assertFalse(answer(QtWidgets.QMessageBox.StandardButton.No, mute=True))
+                self.assertFalse(plugin._suppress_language_warning_this_run)
+                self.assertTrue(answer(QtWidgets.QMessageBox.StandardButton.Yes, mute=True))
+                self.assertTrue(plugin._suppress_language_warning_this_run)
+                self.assertTrue(plugin._confirm_audio_language(jobs, {}))
+                self.assertEqual(len(seen), 2)
+                self.assertIn("斯洛伐克语", seen[0])
+                self.assertFalse(TaskAudioSubtitlePlugin()._suppress_language_warning_this_run)
+            finally:
+                parent.deleteLater()
+
+    def test_audio_language_warning_skips_existing_outputs(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            parent = QtWidgets.QWidget()
+            plugin = TaskAudioSubtitlePlugin()
+            plugin.context = SimpleNamespace(parent_widget=parent)
+            Path(temporary, "task_audio.mp3").write_bytes(b"already generated")
+            jobs = [{
+                "label": "English", "target_dir": temporary,
+                "task": SimpleNamespace(task_audio_text="Hello world", task_name="English"),
+                "language": "en", "detected_language": "en",
+            }]
+            try:
+                self.assertTrue(plugin._confirm_audio_language(jobs, {}))
+                with patch.object(plugin, "_target_jobs", return_value=jobs), \
+                     patch.object(plugin, "_confirm_audio_language", return_value=False), \
+                     patch("app_plugins.builtin.task_audio_subtitle.TaskAudioSubtitleWorker") as worker:
+                    plugin.context.log = lambda *_args: None
+                    plugin.start_audio([0])
+                    worker.assert_not_called()
+            finally:
+                parent.deleteLater()
 
     def test_audio_operation_uses_requested_filename_and_optional_subtitle(self):
         with tempfile.TemporaryDirectory() as temporary:

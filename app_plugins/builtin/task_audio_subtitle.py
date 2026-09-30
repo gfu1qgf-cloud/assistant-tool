@@ -45,6 +45,11 @@ DEFAULT_TASK_AUDIO_SUBTITLE_SETTINGS = {
     "overwrite_existing_subtitles": False,
 }
 AUDIO_SUFFIXES = (".wav", ".mp3", ".m4a")
+BASELINE_AUDIO_LANGUAGE = "sk"
+NON_BASELINE_LANGUAGE_NAMES = {
+    "ar": "阿拉伯语", "cs": "捷克语", "en": "英语", "pl": "波兰语",
+    "ru": "俄语", "sk": "斯洛伐克语", "unknown": "未识别",
+}
 
 
 def _bounded_int(value, default, minimum, maximum):
@@ -543,6 +548,7 @@ class TaskAudioSubtitlePlugin:
         self._key_index = 0
         self._bound = False
         self.quick_actions = None
+        self._suppress_language_warning_this_run = False
 
     def register(self, context):
         self.context = context
@@ -727,14 +733,71 @@ class TaskAudioSubtitlePlugin:
             task = target.get("task")
             if task is None:
                 continue
-            language = self.context.task_language(task)
+            language = str(self.context.task_language(task) or "unknown").strip().lower()
             jobs.append({
                 "label": target.get("label") or str(getattr(task, "task_id", "")),
                 "target_dir": str(target.get("target_dir") or ""),
                 "task": task,
                 "language": language if language and language != "unknown" else "sk",
+                "detected_language": language or "unknown",
             })
         return jobs
+
+    @staticmethod
+    def _audio_output_path(job, use_task_name):
+        task = job["task"]
+        stem = (
+            str(getattr(task, "task_name", "") or "").strip()
+            if use_task_name else "task_audio"
+        ) or "task_audio"
+        return Path(job["target_dir"]) / (stem + ".mp3")
+
+    def _confirm_audio_language(self, jobs, options):
+        if self._suppress_language_warning_this_run:
+            return True
+        use_task_name = bool(options.get("use_task_name", False))
+        unusual = [
+            job for job in jobs
+            if job.get("detected_language", job.get("language", "unknown")) != BASELINE_AUDIO_LANGUAGE
+            and str(getattr(job["task"], "task_audio_text", "") or "").strip()
+            and not self._audio_output_path(job, use_task_name).exists()
+        ]
+        if not unusual:
+            return True
+        lines = []
+        for job in unusual:
+            code = job.get("detected_language", "unknown")
+            name = NON_BASELINE_LANGUAGE_NAMES.get(code, code)
+            lines.append(f"{job['label']}：{name}（{code}）")
+        dialog = QtWidgets.QMessageBox(self.parent)
+        dialog.setIcon(QtWidgets.QMessageBox.Icon.Warning)
+        dialog.setWindowTitle("生成音频前检查语言")
+        dialog.setText(
+            f"待生成音频的 {len(unusual)} 个任务不是基准语言（斯洛伐克语），"
+            "或语言未能识别。"
+        )
+        preview = "\n".join(lines[:6])
+        if len(lines) > 6:
+            preview += f"\n……另有 {len(lines) - 6} 个任务（点击‘显示详细信息’查看）"
+        dialog.setInformativeText(
+            preview + "\n\n请核对任务语音文案；短句的自动识别也可能误判。"
+        )
+        if len(lines) > 6:
+            dialog.setDetailedText("\n".join(lines))
+        dialog.setStandardButtons(
+            QtWidgets.QMessageBox.StandardButton.Yes |
+            QtWidgets.QMessageBox.StandardButton.No
+        )
+        dialog.button(QtWidgets.QMessageBox.StandardButton.Yes).setText("继续生成")
+        dialog.button(QtWidgets.QMessageBox.StandardButton.No).setText("取消生成")
+        dialog.setDefaultButton(QtWidgets.QMessageBox.StandardButton.No)
+        checkbox = QtWidgets.QCheckBox("本次程序运行不再提醒（重启后恢复）", dialog)
+        dialog.setCheckBox(checkbox)
+        if dialog.exec() != QtWidgets.QMessageBox.StandardButton.Yes:
+            return False
+        if checkbox.isChecked():
+            self._suppress_language_warning_this_run = True
+        return True
 
     def start_audio(self, rows, with_subtitles=False, use_task_name=False):
         options = self.current_subtitle_settings()
@@ -755,6 +818,9 @@ class TaskAudioSubtitlePlugin:
             return
         jobs = self._target_jobs(rows)
         if not jobs:
+            return
+        if operation == "audio" and not self._confirm_audio_language(jobs, options):
+            self.context.log("[任务音频] 用户取消：检测到非斯洛伐克语或未识别语言。")
             return
         worker = TaskAudioSubtitleWorker(
             self, operation, jobs, options, parent=self.parent
@@ -953,11 +1019,7 @@ class TaskAudioSubtitlePlugin:
                 progress(f"[{index}/{total}] {label}")
                 if operation == "audio":
                     use_task_name = bool(options.get("use_task_name", False))
-                    stem = (
-                        str(getattr(task, "task_name", "") or "").strip()
-                        if use_task_name else "task_audio"
-                    ) or "task_audio"
-                    audio_file = target_dir / (stem + ".mp3")
+                    audio_file = self._audio_output_path(job, use_task_name)
                     if audio_file.exists():
                         stats["audio_existing"] += 1
                         progress(f"已有音频，跳过生成：{audio_file.name}")
