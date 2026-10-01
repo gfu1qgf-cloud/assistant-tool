@@ -1,7 +1,7 @@
 # Validated on Windows x64 / Python 3.10. The transitive pins are generated
 # from the fully tested independent environment, not the global Python.
 -c packaging/constraints-win-py310.txt
-comtypes==1.4.16
+comtypes==1.4.17
 defusedxml==0.7.1
 edge_tts==7.2.7
 elevenlabs==2.27.0
