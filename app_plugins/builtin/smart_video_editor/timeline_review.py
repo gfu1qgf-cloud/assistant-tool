@@ -1243,6 +1243,8 @@ class SmartVideoTimelineReview(QtWidgets.QWidget):
                 clip["issues"].extend(clip.get("boundary_warnings", []) or [])
                 clip["issues"].extend(clip.get("boundary_decisions", []) or [])
             for left, right in clip.get("pause_removals", []) or []:
+                if any(min(right, end) > max(left, start) for start, end in clip.get("repeated_speech_removals", []) or []):
+                    continue
                 recognized = " ".join(
                     str(word.get("text") or "").strip()
                     for word in clip.get("words", []) or []

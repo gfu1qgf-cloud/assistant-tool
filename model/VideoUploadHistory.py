@@ -172,6 +172,7 @@ def _record_from_upload(
         "remote_prefix": str(record.get("remote_prefix") or "").strip(),
         "remote_parent_id": str(record.get("remote_prefix_folder_id") or "").strip(),
         "review_routed": record.get("review_routed"),
+        "final_review_decision": record.get("final_review_decision"),
         "task": {
             "date": str(record.get("local_task_date") or "").strip(),
             "id": str(record.get("local_task_id") or "").strip(),

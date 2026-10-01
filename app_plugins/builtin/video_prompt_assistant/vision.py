@@ -39,9 +39,12 @@ def parse_scene(text):
     }
 
 
-def analyze_image(jpeg_bytes, api_keys, model="gemini-2.5-flash"):
+def analyze_image(jpeg_bytes, api_keys=None, model="gemini-2.5-flash", gemini_keys=None):
+    if gemini_keys is not None:
+        api_keys = gemini_keys.request_keys(model)
     if not api_keys:
-        raise ValueError("未配置 Gemini Key；可先在程序设置中添加，或直接使用通用方案")
+        raise ValueError(gemini_keys.unavailable_message(model) if gemini_keys is not None
+                         else "未配置 Gemini Key；可先在程序设置中添加，或直接使用通用方案")
     body = {
         "contents": [{"role": "user", "parts": [
             {"text": SYSTEM_PROMPT},
@@ -51,21 +54,36 @@ def analyze_image(jpeg_bytes, api_keys, model="gemini-2.5-flash"):
     }
     errors = []
     for number, key in enumerate(api_keys, 1):
+        if gemini_keys is not None and not gemini_keys.is_available(key, model):
+            continue
         url = ("https://generativelanguage.googleapis.com/v1beta/models/"
-               + urllib.parse.quote(model, safe="") + ":generateContent?key="
-               + urllib.parse.quote(key, safe=""))
+               + urllib.parse.quote(model, safe="") + ":generateContent")
         request = urllib.request.Request(
             url, data=json.dumps(body).encode("utf-8"),
-            headers={"Content-Type": "application/json"}, method="POST",
+            headers={"Content-Type": "application/json", "x-goog-api-key": key}, method="POST",
         )
         try:
             with urllib.request.urlopen(request, timeout=90) as response:
-                result = json.loads(response.read().decode("utf-8"))
+                payload = response.read().decode("utf-8")
+            if gemini_keys is not None:
+                gemini_keys.report_success(key, model)
+            result = json.loads(payload)
             parts = result["candidates"][0]["content"]["parts"]
             content = "\n".join(part.get("text", "") for part in parts if part.get("text"))
             return parse_scene(content)
-        except (urllib.error.URLError, ValueError, KeyError, IndexError, TypeError) as error:
-            # Never log the URL: it contains the API key.
+        except (urllib.error.URLError, ValueError, KeyError, IndexError, TypeError, TimeoutError, OSError) as error:
+            # Do not expose request data or credential-bearing headers in logs.
             code = getattr(error, "code", None)
+            if gemini_keys is not None:
+                if isinstance(error, urllib.error.HTTPError):
+                    body = error.read().decode("utf-8", errors="replace")
+                    retry = error.headers.get("Retry-After") if error.headers else None
+                    if not retry:
+                        import re
+                        match = re.search(r"retry in\s+([0-9.]+)s", body, re.I)
+                        retry = match.group(1) if match else None
+                    gemini_keys.report_failure(key, model, code, retry, body)
+                elif isinstance(error, (urllib.error.URLError, TimeoutError, OSError)):
+                    gemini_keys.report_failure(key, model)
             errors.append(f"Key {number}: HTTP {code}" if code else f"Key {number}: {type(error).__name__}")
     raise RuntimeError("图片分析失败（" + "、".join(errors) + "）。仍可手动选择类型并使用通用方案。")

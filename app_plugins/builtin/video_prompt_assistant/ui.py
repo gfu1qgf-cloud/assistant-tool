@@ -44,13 +44,15 @@ class AnalyzeThread(QtCore.QThread):
     succeeded = QtCore.pyqtSignal(dict)
     failed = QtCore.pyqtSignal(str)
 
-    def __init__(self, image, keys, model, parent=None):
+    def __init__(self, image, keys, model, parent=None, gemini_keys=None):
         super().__init__(parent)
         self.image, self.keys, self.model = image, list(keys), model
+        self.gemini_keys = gemini_keys
 
     def run(self):
         try:
-            self.succeeded.emit(analyze_image(self.image, self.keys, self.model))
+            self.succeeded.emit(analyze_image(self.image, self.keys, self.model,
+                                             gemini_keys=self.gemini_keys))
         except Exception as error:
             self.failed.emit(str(error))
 
@@ -246,20 +248,21 @@ class VideoPromptDialog(QtWidgets.QDialog):
         return self.worker is not None and self.worker.isRunning()
 
     def _api_keys(self):
-        import re
-        raw = self.context.load_config().get("gemini_api_keys") or []
-        if isinstance(raw, str):
-            raw = re.split(r"[,;；，\s]+", raw)
-        return [str(key).strip() for key in raw if str(key).strip()]
+        # Also allow offline-only hosts that do not offer cloud services.
+        manager = getattr(self.context, "gemini_keys", None)
+        model = self.context.load_config().get("gemini_model") or "gemini-2.5-flash"
+        return manager.request_keys(model) if manager is not None else []
 
     def analyze(self):
         if not self.image_jpeg or self.is_busy():
             self.status.setText("请先加载一张图片。" if not self.image_jpeg else "正在分析，请稍候。")
             return
         config = self.context.load_config()
-        keys = self._api_keys()
+        manager = self.context.gemini_keys
+        model = config.get("gemini_model") or "gemini-2.5-flash"
+        keys = manager.request_keys(model)
         if not keys:
-            QtWidgets.QMessageBox.information(self, "缺少 Gemini Key", "请先在程序设置中配置 AI 检测的 Gemini Key；也可以手动选择画面类型。")
+            QtWidgets.QMessageBox.information(self, "Gemini Key 不可用", manager.unavailable_message(model))
             return
         if not self.cloud_approved:
             response = QtWidgets.QMessageBox.question(
@@ -272,7 +275,7 @@ class VideoPromptDialog(QtWidgets.QDialog):
             self.cloud_approved = True
         self.analyze_button.setEnabled(False)
         self.status.setText("正在分析图片…")
-        self.worker = AnalyzeThread(self.image_jpeg, keys, config.get("gemini_model") or "gemini-2.5-flash", self)
+        self.worker = AnalyzeThread(self.image_jpeg, keys, model, self, gemini_keys=manager)
         self.worker.succeeded.connect(self._analysis_done)
         self.worker.failed.connect(self._analysis_failed)
         self.worker.finished.connect(self._analysis_finished)

@@ -1,5 +1,6 @@
 """Non-modal Chinese image search for existing inventory material files."""
 
+import logging
 import shutil
 import time
 from pathlib import Path
@@ -8,7 +9,7 @@ from qt_compat import QtCore, QtGui, QtWidgets
 
 from model.InventoryManager import InventoryStore
 
-from .encoder import ChineseImageEncoder
+from .encoder import ChineseImageEncoder, MODEL_SPECS, combine_search_vectors
 from .index import ImageSearchIndex, discover_external_groups
 from .settings import normalize_settings
 
@@ -115,6 +116,7 @@ class _SearchWorker(QtCore.QThread):
                 self.progressChanged.emit, self.isInterruptionRequested
             ))
         except Exception as error:
+            logging.getLogger(__name__).exception("智能搜图后台任务失败")
             self.failed.emit(f"{type(error).__name__}: {error}")
 
 
@@ -173,15 +175,18 @@ def _restore_external(moved):
 
 
 class SmartImageSearchDialog(QtWidgets.QDialog):
+    settingsChanged = QtCore.pyqtSignal(object)
+
     def __init__(self, settings, parent=None, store=None, index=None, encoder=None):
         super().__init__(parent)
         self.setWindowTitle("智能搜图")
         self.resize(1060, 760)
         self.settings = normalize_settings(settings)
         self.store = store or InventoryStore()
-        self.index = index or ImageSearchIndex()
         self.encoder = encoder or ChineseImageEncoder(self.settings["model"])
+        self.index = index or ImageSearchIndex.for_encoder(self.encoder)
         self.worker = None
+        self._pending_settings = None
         self._search_rows = []
         self._shown = 0
         self._search_details = ""
@@ -194,6 +199,12 @@ class SmartImageSearchDialog(QtWidgets.QDialog):
         intro.setWordWrap(True)
         layout.addWidget(intro)
         index_row = QtWidgets.QHBoxLayout()
+        self.model_combo = QtWidgets.QComboBox()
+        for key, spec in MODEL_SPECS.items():
+            self.model_combo.addItem(spec["label"], key)
+        self.model_combo.setCurrentIndex(self.model_combo.findData(self.settings["model"]))
+        self.model_combo.setToolTip("新模型使用独立索引，Base 原索引不会丢失。")
+        index_row.addWidget(self.model_combo)
         self.index_status = QtWidgets.QLabel()
         index_row.addWidget(self.index_status, 1)
         self.index_button = QtWidgets.QPushButton("增量更新索引")
@@ -220,12 +231,32 @@ class SmartImageSearchDialog(QtWidgets.QDialog):
         self.search_tabs.addTab(text_page, "文字搜图")
 
         image_page = QtWidgets.QWidget()
-        image_layout = QtWidgets.QHBoxLayout(image_page)
+        image_layout = QtWidgets.QVBoxLayout(image_page)
+        image_row = QtWidgets.QHBoxLayout()
         self.query_image = _ImageDropEdit()
-        image_layout.addWidget(self.query_image, 1)
+        image_row.addWidget(self.query_image, 1)
         browse = QtWidgets.QPushButton("选择图片…")
         browse.clicked.connect(self._browse_image)
-        image_layout.addWidget(browse)
+        image_row.addWidget(browse)
+        image_layout.addLayout(image_row)
+        description_row = QtWidgets.QHBoxLayout()
+        description_row.addWidget(QtWidgets.QLabel("补充描述"))
+        self.image_description = QtWidgets.QLineEdit()
+        self.image_description.setPlaceholderText("可留空，例如：人物流泪、雨天、全身画面…")
+        self.image_description.returnPressed.connect(self.search)
+        description_row.addWidget(self.image_description, 1)
+        description_row.addWidget(QtWidgets.QLabel("文字侧重"))
+        self.text_weight = QtWidgets.QSpinBox()
+        self.text_weight.setRange(0, 100)
+        self.text_weight.setSingleStep(5)
+        self.text_weight.setSuffix(" %")
+        self.text_weight.setValue(self.settings["text_weight"])
+        self.text_weight.setToolTip(
+            "留空只按参考图搜索。有文字时：0% 只看图片，100% 只看文字；"
+            "中间值综合排序，不是严格筛选，也不会修改参考图片。"
+        )
+        description_row.addWidget(self.text_weight)
+        image_layout.addLayout(description_row)
         self.search_tabs.addTab(image_page, "以图找图")
         layout.addWidget(self.search_tabs)
 
@@ -277,22 +308,43 @@ class SmartImageSearchDialog(QtWidgets.QDialog):
         self.move_button.clicked.connect(lambda: self._transfer("move"))
         action_row.addWidget(self.move_button)
         layout.addLayout(action_row)
+        self.model_combo.currentIndexChanged.connect(self._search_options_changed)
+        self.text_weight.valueChanged.connect(self._search_options_changed)
         self._refresh_index_status()
 
     def _refresh_index_status(self):
         count = self.index.count(self.encoder.model_id)
-        self.index_status.setText(f"中文 CLIP Base · 已索引 {count} 张图片")
+        self.index_status.setText(f"已索引 {count:,} 张图片")
 
     def update_settings(self, settings):
-        self.settings = normalize_settings(settings)
-        if not self.is_busy() and self.encoder.model_key != self.settings["model"]:
-            self.encoder = ChineseImageEncoder(self.settings["model"])
+        updated = normalize_settings(settings)
+        if self.is_busy():
+            self._pending_settings = updated
+            return
+        if self.encoder.model_key != updated["model"]:
+            self.encoder = ChineseImageEncoder(updated["model"])
+            self.index = ImageSearchIndex.for_encoder(self.encoder, self.index.root)
             self._model_notice_acknowledged = False
             self.results.clear()
             self._search_rows = []
             self._shown = 0
             self.load_more_button.setVisible(False)
+            self._search_details = ""
+            self.status.setText("已切换模型，旧索引保留。新模型尚无索引时，请先增量更新索引。")
             self._refresh_index_status()
+        self.settings = updated
+        blockers = [QtCore.QSignalBlocker(self.model_combo), QtCore.QSignalBlocker(self.text_weight)]
+        self.model_combo.setCurrentIndex(self.model_combo.findData(updated["model"]))
+        self.text_weight.setValue(updated["text_weight"])
+        del blockers
+
+    def _search_options_changed(self, _value=None):
+        if self.is_busy():
+            return
+        updated = {**self.settings, "model": self.model_combo.currentData(),
+                   "text_weight": self.text_weight.value()}
+        self.update_settings(updated)
+        self.settingsChanged.emit(dict(self.settings))
 
     def _confirm_model(self):
         if self._model_notice_acknowledged:
@@ -301,7 +353,8 @@ class SmartImageSearchDialog(QtWidgets.QDialog):
             self._model_notice_acknowledged = True
             return True
         answer = QtWidgets.QMessageBox.question(
-            self, "中文模型", "首次使用可能需要联网下载约 753 MB 的中文模型。"
+            self, "中文模型", f"首次使用 {MODEL_SPECS[self.encoder.model_key]['label']} "
+            f"需要联网下载{MODEL_SPECS[self.encoder.model_key]['download']}的模型。"
             "下载完成后会保存在本机，之后不会重复下载。继续吗？",
         )
         self._model_notice_acknowledged = answer == QtWidgets.QMessageBox.StandardButton.Yes
@@ -315,7 +368,9 @@ class SmartImageSearchDialog(QtWidgets.QDialog):
             self.query_image.setText(path)
 
     def is_busy(self):
-        return self.worker is not None and self.worker.isRunning()
+        # Until the queued finished handler runs, the previous task still owns
+        # the encoder/index. Do not switch models or replace its worker early.
+        return self.worker is not None
 
     def cancel_work(self):
         if self.is_busy():
@@ -335,6 +390,10 @@ class SmartImageSearchDialog(QtWidgets.QDialog):
         self.move_button.setEnabled(False)
         self.copy_button.setEnabled(False)
         self.load_more_button.setEnabled(False)
+        self.model_combo.setEnabled(False)
+        self.text_weight.setEnabled(False)
+        self.search_tabs.setEnabled(False)
+        self.scope.setEnabled(False)
         self.results.setDragEnabled(False)
         self.cancel_button.setEnabled(True)
         self.status.setText(message)
@@ -346,12 +405,14 @@ class SmartImageSearchDialog(QtWidgets.QDialog):
     def update_index(self):
         if self.is_busy() or not self._confirm_model():
             return
+        roots = list(self.settings["library_roots"])
+        encoder, index = self.encoder, self.index
         def task(progress, cancelled):
             progress(0, 0, "正在扫描库存中的图片…")
             groups = self.store.list_image_groups()
             progress(0, 0, "正在扫描额外图片库…")
-            groups.extend(discover_external_groups(self.settings["library_roots"]))
-            result = self.index.sync(groups, self.encoder, progress, cancelled)
+            groups.extend(discover_external_groups(roots))
+            result = index.sync(groups, encoder, progress, cancelled)
             return {"kind": "sync", **result}
         self._start(task, "正在扫描素材库；新增图片才会运行中文模型…")
 
@@ -377,22 +438,36 @@ class SmartImageSearchDialog(QtWidgets.QDialog):
         if not self._confirm_model():
             return
         scope = str(self.scope.currentData() or "")
+        description = self.image_description.text().strip() if mode else ""
+        weight = self.text_weight.value() / 100
+        encoder, index = self.encoder, self.index
         def task(progress, _cancelled):
             load_start = time.perf_counter()
-            prepare = getattr(self.encoder, "prepare", None)
-            if callable(prepare) and not getattr(self.encoder, "is_loaded", False):
+            prepare = getattr(encoder, "prepare", None)
+            if callable(prepare) and not getattr(encoder, "is_loaded", False):
                 progress(0, 0, "正在加载中文模型（首次搜索需要数秒）…")
                 prepare()
             load_seconds = time.perf_counter() - load_start
             progress(0, 0, "正在分析搜索条件…")
             encode_start = time.perf_counter()
-            vector = self.encoder.text(query) if mode == 0 else self.encoder.image(query)
+            if mode == 0:
+                vector = encoder.text(query)
+                search_mode = "文字搜索"
+            elif description and weight == 1:
+                vector = encoder.text(description)
+                search_mode = "只按补充文字"
+            else:
+                image_vector = encoder.image(query)
+                text_vector = encoder.text(description) if description and weight > 0 else None
+                vector = combine_search_vectors(image_vector, text_vector, weight)
+                search_mode = f"图片＋文字（文字 {weight:.0%}）" if text_vector is not None else "参考图片"
             encode_seconds = time.perf_counter() - encode_start
             progress(0, 0, "正在检索已建立的图片索引…")
             search_start = time.perf_counter()
-            return {"kind": "search", "rows": self.index.search(
-                self.encoder.model_id, vector, None, scope
+            return {"kind": "search", "rows": index.search(
+                encoder.model_id, vector, None, scope
             ), "load_seconds": load_seconds,
+                "search_mode": search_mode,
                 "encode_seconds": encode_seconds,
                 "search_seconds": time.perf_counter() - search_start}
         self._start(task, "正在搜索…")
@@ -419,7 +494,7 @@ class SmartImageSearchDialog(QtWidgets.QDialog):
             )
         elif kind == "search":
             self._search_details = (
-                f"条件 {result['encode_seconds']:.2f} 秒 · "
+                f"{result['search_mode']} · 条件 {result['encode_seconds']:.2f} 秒 · "
                 f"检索 {result['search_seconds']:.2f} 秒"
             )
             if result["load_seconds"] >= 0.1:
@@ -448,10 +523,16 @@ class SmartImageSearchDialog(QtWidgets.QDialog):
         self.move_button.setEnabled(True)
         self.copy_button.setEnabled(True)
         self.load_more_button.setEnabled(True)
+        self.model_combo.setEnabled(True)
+        self.text_weight.setEnabled(True)
+        self.search_tabs.setEnabled(True)
+        self.scope.setEnabled(True)
         self.results.setDragEnabled(True)
         self.cancel_button.setEnabled(False)
         self.progress_bar.setVisible(False)
-        self.update_settings(self.settings)
+        if self._pending_settings is not None:
+            updated, self._pending_settings = self._pending_settings, None
+            self.update_settings(updated)
 
     def _show_results(self, rows):
         self.results.clear()

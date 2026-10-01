@@ -24,9 +24,21 @@ VIDEO_SUFFIXES = {
     ".mp4", ".mov", ".m4v", ".avi", ".mkv", ".webm", ".mts", ".m2ts"
 }
 MEDIA_SUFFIXES = IMAGE_SUFFIXES | VIDEO_SUFFIXES
+from model.ModelFeatures import feature_tensor
+
 MODEL_CHOICES = {
     "large": "openai/clip-vit-large-patch14",
     "base": "openai/clip-vit-base-patch32",
+}
+MODEL_REVISIONS = {
+    "openai/clip-vit-large-patch14": "32bd64288804d66eefd0ccbe215aa642df71cc41",
+    "openai/clip-vit-base-patch32": "3d74acf9a28c67741b2f4f2ea7635f0aaf6f0268",
+}
+MODEL_WEIGHT_REVISIONS = {
+    "openai/clip-vit-large-patch14": "32bd64288804d66eefd0ccbe215aa642df71cc41",
+    # Immutable official-repository SafeTensors conversion used by the existing
+    # cache. The original base/main revision contains only pickle weights.
+    "openai/clip-vit-base-patch32": "c237dc49a33fc61debc9276459120b7eac67e7ef",
 }
 PROMPT_TEMPLATES = (
     "a clear photo of {}.",
@@ -527,7 +539,8 @@ class ImageClassifierEngine:
                     "ignore", message="The torchvision.*namespaces are still Beta.*"
                 )
                 from PIL import Image, ImageOps
-                from transformers import CLIPModel, CLIPProcessor
+                from transformers import CLIPConfig, CLIPModel, CLIPProcessor
+                from huggingface_hub import hf_hub_download
         except Exception as error:
             raise RuntimeError(
                 "无法加载图片分类依赖。请安装 transformers、Pillow，并确认 "
@@ -542,15 +555,24 @@ class ImageClassifierEngine:
             else "cpu"
         )
         model_id = MODEL_CHOICES[self.settings["model"]]
-        cache_key = (model_id, device)
+        revision = MODEL_REVISIONS[model_id]
+        weights_revision = MODEL_WEIGHT_REVISIONS[model_id]
+        cache_key = (model_id, revision, weights_revision, device)
         with _MODEL_LOCK:
             cached = _MODEL_CACHE.get(cache_key)
             if cached is None:
                 processor = CLIPProcessor.from_pretrained(
-                    model_id, use_fast=False
+                    model_id, revision=revision, use_fast=False
+                )
+                model_config = CLIPConfig.from_pretrained(model_id, revision=revision)
+                # Config and SafeTensors can belong to distinct immutable revisions.
+                # A config's internal commit hint must not redirect the weight lookup
+                # to the original pickle-only revision.
+                weights_path = hf_hub_download(
+                    model_id, "model.safetensors", revision=weights_revision
                 )
                 model = CLIPModel.from_pretrained(
-                    model_id, use_safetensors=True
+                    str(Path(weights_path).parent), config=model_config, use_safetensors=True
                 ).to(device)
                 model.eval()
                 cached = (torch, Image, ImageOps, model, processor, device)
@@ -582,7 +604,7 @@ class ImageClassifierEngine:
                 inputs = processor(
                     text=batch, return_tensors="pt", padding=True
                 ).to(device)
-                features = model.get_text_features(**inputs)
+                features = feature_tensor(model.get_text_features(**inputs))
                 features = features / features.norm(p=2, dim=-1, keepdim=True)
                 feature_rows.append(features)
         all_features = torch.cat(feature_rows, dim=0)
@@ -632,7 +654,7 @@ class ImageClassifierEngine:
                     images=images[offset:offset + chunk_size],
                     return_tensors="pt",
                 ).pixel_values.to(device)
-                features = model.get_image_features(pixel_values=pixels)
+                features = feature_tensor(model.get_image_features(pixel_values=pixels))
                 rows.append(features / features.norm(p=2, dim=-1, keepdim=True))
         return torch.cat(rows, dim=0)
 

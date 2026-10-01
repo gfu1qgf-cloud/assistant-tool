@@ -1,6 +1,6 @@
 ﻿import shlex
 import subprocess
-import xml.etree.ElementTree as ET
+from defusedxml import ElementTree as ET
 from collections import deque
 from pathlib import Path
 
@@ -15,7 +15,8 @@ MAX_COMPRESSED_FILE_NAME_LENGTH = 180
 
 
 def read_shana_preset(preset_path):
-    tree = ET.parse(preset_path)
+    # Imported presets do not need DTDs or entity expansion.
+    tree = ET.parse(preset_path, forbid_dtd=True)
     root = tree.getroot()
 
     prefix = root.findtext("prefixtextBox") or SHANA_PREFIX

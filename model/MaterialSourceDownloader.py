@@ -176,7 +176,8 @@ def _valid_remote_file(path, metadata):
     expected_md5 = str(metadata.get("md5Checksum") or "").lower()
     if not re.fullmatch(r"[0-9a-f]{32}", expected_md5):
         return False
-    digest = hashlib.md5()
+    # Required to compare Drive's checksum; not a security trust decision.
+    digest = hashlib.md5(usedforsecurity=False)
     with path.open("rb") as stream:
         for block in iter(lambda: stream.read(4 * 1024 * 1024), b""):
             digest.update(block)

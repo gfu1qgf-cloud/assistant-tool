@@ -4,7 +4,6 @@ from qt_compat import QtWidgets
 
 from app_plugins.api import MAIN_MENU, PluginCommand, PluginMainWidget
 from app_plugins.builtin.task_delivery_controller import TaskDeliveryController
-from app_plugins.builtin.task_delivery_gemini import GeminiKeysDialog
 from app_plugins.builtin.task_delivery_board import DeliveryBoardDialog
 from model.DeliveryTodoStore import DeliveryTodoStore, collect_delivery_todos
 from model.ReviewSubmissionHistory import review_history_snapshot
@@ -119,13 +118,6 @@ class TaskDeliveryPlugin:
                 "按日期和管理员汇总待发送视频，并显示任务表与审核待办",
             ),
             (
-                "gemini_keys",
-                "管理 AI 检测 Gemini Key…",
-                self.open_gemini_keys,
-                40,
-                "添加或删除整理任务结果 AI 检测使用的 Gemini Key",
-            ),
-            (
                 "quick_upload",
                 "简易上传…",
                 self.open_quick_upload,
@@ -210,18 +202,8 @@ class TaskDeliveryPlugin:
         return added
 
     def open_gemini_keys(self):
-        dialog = GeminiKeysDialog(
-            self.controller.gemini_api_keys, self.context.parent_widget
-        )
-        if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
-            return False
-        previous = self.controller.gemini_api_keys
-        self.controller.gemini_api_keys = dialog.keys()
-        if not self.context.save_config():
-            self.controller.gemini_api_keys = previous
-            return False
-        self.context.log(f"AI 检测 Gemini Key 已保存，共 {len(dialog.keys())} 个。")
-        return True
+        # Compatibility entry point; the plugin no longer owns credentials.
+        return self.context.open_gemini_key_manager()
 
     def open_quick_upload(self):
         if self.quick_upload_dialog is None:

@@ -16,13 +16,14 @@ Google 服务需要用户自行创建 OAuth 桌面客户端，并把相应凭据
 - Python 3.10（从源码运行时）
 - Google Chrome（仅浏览器启动功能需要）
 - 可选的外部视频编码器及预设（仅启用视频压缩时需要）
-- 首次使用字幕识别时需要联网下载 Whisper `base` 模型
+- 首次使用字幕识别时需要联网下载所选 Whisper 模型
 
 从源码运行：
 
 ```powershell
-python -m pip install -r requirements.txt
-python main.py
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe main.py
 ```
 
 ## 发布包
@@ -41,10 +42,25 @@ GitHub Release 下载并校验 SHA-256；校验失败或文件缺失时会直接
 gh attestation verify AssistantTool-Windows.zip --repo secure-artifacts/assistant-tool
 ```
 
+如果从个人仓库下载，请将上面的仓库改为 `gfu1qgf-cloud/assistant-tool`。
+构建证明必须属于下载来源仓库，不能跨仓库复制证明。
+
+## 安全检查与发布
+
+GitHub 在提交和 Pull Request 上运行 CodeQL（security-extended）；每周继续扫描。
+Dependabot 跟踪依赖与 Actions 更新，仓库启用密钥扫描与推送保护。
+创建新的 `v*` 标签会自动运行完整隔离测试、构建、发布包隐私检查、生成构建证明和发布。
+发布完成后再运行一次 CodeQL，确保扫描结果晚于新 Release 的发布时间。
+不手工上传发布附件，不公开本机配置、Token、日志或模型缓存。
+
+当前 PyTorch 2.10 配套版本仍有已记录的条件性公告。程序不直接使用公告涉及的
+`.pt2` 加载与 `torch.jit.script`；保留已验证版本，不自动跳过测试或升级不兼容依赖。
+请只加载可信模型、插件和 Fusion 预设。扫描通过不代表不存在安全风险。
+
 ## 测试
 
 ```powershell
-python -m unittest discover -s tests -v
+.\.venv\Scripts\python.exe packaging/run_tests_isolated.py
 ```
 
 ## 许可

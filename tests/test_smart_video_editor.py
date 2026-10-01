@@ -1658,6 +1658,82 @@ class SmartVideoEditorTests(unittest.TestCase):
             self.assertAlmostEqual(issue["end"], 0.95, places=2)
             self.assertEqual(clip["status"], "orange")
 
+    def test_repeated_reading_is_cut_without_silence_and_can_be_restored(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "clip.mp4"
+            source.write_bytes(b"repeated speech")
+            bundle = analyze_smart_video_jobs([{
+                "task_id": "repeat", "task_dir": str(root),
+                "script": "alpha beta gamma delta", "language": "en",
+                "sources": [str(source)],
+            }], _DictionaryWhisperModel({"clip.mp4": "alpha beta beta gamma delta"}), {
+                "silence_detection_enabled": False, "voice_detection_enabled": False,
+            })
+            clip = bundle["tasks"][0]["clips"][0]
+            self.assertEqual(clip["repeated_speech_removals"], [[0.65, 0.95]])
+            self.assertTrue(any(issue["kind"] == "repeated_speech_cut" for issue in clip["issues"]))
+            self.assertFalse(any(issue["kind"] == "extra_words" for issue in clip["alignment_issues"]))
+            self.assertEqual(len(clip["word_timeline"]), 4)
+            self.assertAlmostEqual(clip["word_timeline"][1]["start"], 1.05)
+            self.assertTrue(all(not (left <= 0.8 < right) for left, right in clip["kept_ranges"]))
+            clip["manual_keep_ranges"] = [[0.65, 0.95]]
+            apply_manual_breath_overrides(clip, 0, clip["original_duration"], [])
+            self.assertTrue(any(left <= 0.8 < right for left, right in clip["kept_ranges"]))
+
+    def test_restart_with_fused_word_is_cut_but_unrelated_extra_words_are_not(self):
+        for spoken, should_cut in (
+            ("hovoril proti duchovoril proti duchu", True),
+            ("hovoril extra words proti duchu", False),
+            ("hovoril proti duchu", False),
+        ):
+            with self.subTest(spoken=spoken), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                source = root / "clip.mp4"
+                source.write_bytes(spoken.encode("utf-8"))
+                bundle = analyze_smart_video_jobs([{
+                    "task_id": "restart", "task_dir": str(root),
+                    "script": "hovoril proti duchu", "language": "sk",
+                    "sources": [str(source)],
+                }], _DictionaryWhisperModel({"clip.mp4": spoken}), {
+                    "silence_detection_enabled": False, "voice_detection_enabled": False,
+                })
+                clip = bundle["tasks"][0]["clips"][0]
+                self.assertEqual(bool(clip.get("repeated_speech_removals")), should_cut)
+
+    def test_repetition_written_in_task_script_is_preserved(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "clip.mp4"
+            source.write_bytes(b"intended repetition")
+            script = "alpha beta alpha beta gamma"
+            bundle = analyze_smart_video_jobs([{
+                "task_id": "intended", "task_dir": str(root),
+                "script": script, "language": "en", "sources": [str(source)],
+            }], _DictionaryWhisperModel({"clip.mp4": script}), {
+                "silence_detection_enabled": False, "voice_detection_enabled": False,
+            })
+            self.assertFalse(bundle["tasks"][0]["clips"][0].get("repeated_speech_removals"))
+
+    def test_boundary_repetition_is_removed_from_previous_clip(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            sources = [root / "1.mp4", root / "2.mp4"]
+            for source in sources:
+                source.write_bytes(source.name.encode())
+            script = "alpha beta gamma delta epsilon zeta"
+            bundle = analyze_smart_video_jobs([{
+                "task_id": "boundary", "task_dir": str(root), "script": script,
+                "language": "en", "sources": [str(source) for source in sources],
+            }], _DictionaryWhisperModel({
+                "1.mp4": "alpha beta gamma delta", "2.mp4": "gamma delta epsilon zeta",
+            }), {"silence_detection_enabled": False, "voice_detection_enabled": False})
+            task = bundle["tasks"][0]
+            clip = task["clips"][0]
+            self.assertEqual(clip["repeated_speech_removals"], [[1.05, 1.75]])
+            self.assertTrue(all(not (left <= 1.3 < right) for left, right in clip["kept_ranges"]))
+            self.assertEqual(text_units(" ".join(cue["text"] for cue in build_srt_cues(task, bundle["settings"]))), text_units(script))
+
     def test_srt_chunks_use_real_word_anchors_and_keep_punctuation(self):
         lines, words = build_script_word_records("Hello, world!")
         task = {

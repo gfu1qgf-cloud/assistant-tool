@@ -10,7 +10,7 @@ from pathlib import Path
 import numpy as np
 
 from app_paths import APP_ROOT
-from .encoder import ModelLoadError
+from .encoder import MODEL_IDS, ModelLoadError
 from model.InventoryManager import MATERIAL_IMAGE_SUFFIXES
 
 
@@ -37,12 +37,18 @@ def discover_external_groups(roots):
 
 
 class ImageSearchIndex:
-    def __init__(self, root=None):
+    def __init__(self, root=None, model_key="base"):
+        if model_key not in MODEL_IDS:
+            raise ValueError("不支持的图片索引模型")
+        self.model_key = model_key
         self.root = Path(root or INDEX_ROOT)
         self.root.mkdir(parents=True, exist_ok=True)
         self.thumbnails = self.root / "thumbnails"
         self.thumbnails.mkdir(parents=True, exist_ok=True)
-        self.path = self.root / "index.sqlite3"
+        # Base retains its exact legacy filename and model ID. New models must
+        # never overwrite Base vectors: switching back is instant.
+        filename = "index.sqlite3" if model_key == "base" else f"index-{model_key}.sqlite3"
+        self.path = self.root / filename
         self._lock = threading.RLock()
         self._matrix_cache = None
         self._inactive_indices = set()
@@ -66,6 +72,10 @@ class ImageSearchIndex:
                 "CREATE INDEX IF NOT EXISTS images_model ON images(model_id)"
             )
 
+    @classmethod
+    def for_encoder(cls, encoder, root=None):
+        return cls(root=root, model_key=encoder.model_key)
+
     def _connect(self):
         connection = sqlite3.connect(str(self.path), timeout=20)
         connection.row_factory = sqlite3.Row
@@ -87,7 +97,7 @@ class ImageSearchIndex:
 
     def _thumbnail(self, path):
         from PIL import Image, ImageOps
-        digest = hashlib.sha1(os.path.normcase(str(path)).encode("utf-8")).hexdigest()
+        digest = hashlib.sha1(os.path.normcase(str(path)).encode("utf-8"), usedforsecurity=False).hexdigest()
         target = self.thumbnails / f"{digest}_{THUMBNAIL_VERSION}.jpg"
         temporary = target.with_suffix(".tmp")
         with Image.open(path) as original:
@@ -100,6 +110,8 @@ class ImageSearchIndex:
 
     def sync(self, groups, encoder, progress=None, cancelled=None, batch_size=4):
         """Resume safely: committed batches remain available after cancellation."""
+        if encoder.model_key != self.model_key:
+            raise ValueError("请使用该模型的独立索引；不能覆盖其他模型的记录")
         progress = progress or (lambda _done, _total, _message: None)
         cancelled = cancelled or (lambda: False)
         current = {}
@@ -129,7 +141,8 @@ class ImageSearchIndex:
             existing = old.get(key)
             if (existing is not None and existing["size"] == stat.st_size
                     and existing["mtime_ns"] == stat.st_mtime_ns
-                    and existing["model_id"] == encoder.model_id):
+                    and existing["model_id"] == encoder.model_id
+                    and existing["has_vector"]):
                 if (existing["source_kind"] != source_kind
                         or existing["source_name"] != source_name):
                     metadata.append((source_kind, source_name, key))

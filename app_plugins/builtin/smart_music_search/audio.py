@@ -1,6 +1,7 @@
 """Bounded audio reads: never decode an entire long track just for indexing."""
 
 import json
+import math
 import shutil
 import subprocess
 from pathlib import Path
@@ -35,12 +36,17 @@ def media_duration(path, ffprobe):
     return duration
 
 
-def segment_starts(duration):
+def segment_starts(duration, coverage="legacy"):
     """Cover beginning, ending and the interior, without unbounded inference."""
     last = max(0.0, duration - SEGMENT_SECONDS)
     if last <= 0:
         return [0.0]
-    count = min(8, max(3, int(duration // 45) + 1))
+    if coverage == "full":
+        count = min(256, max(2, math.ceil(last / SEGMENT_SECONDS) + 1))
+    elif coverage == "balanced":
+        count = min(128, max(2, math.ceil(last / 20) + 1))
+    else:
+        count = min(8, max(3, int(duration // 45) + 1))
     return [round(last * index / (count - 1), 3) for index in range(count)]
 
 

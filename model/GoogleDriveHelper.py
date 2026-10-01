@@ -380,7 +380,8 @@ def get_or_create_remote_folder_path_with_root(
 
 
 def file_md5(file_path: Path) -> str:
-    digest = hashlib.md5()
+    # Drive supplies MD5 for content comparison, not authentication/signatures.
+    digest = hashlib.md5(usedforsecurity=False)
     with file_path.open("rb") as handle:
         for chunk in iter(lambda: handle.read(8 * 1024 * 1024), b""):
             digest.update(chunk)
@@ -741,5 +742,4 @@ def upload_local_dirs_to_drive_batch(
         print(f"\n开始上传本地目录：{local_dir}")
         sync_directory_contents(service, local_dir, slot_folder_id)
         print(f"上传完成：{local_dir}")
-
 

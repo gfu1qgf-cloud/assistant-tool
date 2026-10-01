@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from qt_compat import QtWidgets
+from .encoder import COVERAGE_LABELS, MODEL_SPECS
 
 CONFIG_KEY = "smart_music_search"
 DEFAULT_LIBRARY = r"D:\2.配乐库"
@@ -16,6 +17,9 @@ def normalize_settings(value=None):
         "library_root": str(value.get("library_root") or DEFAULT_LIBRARY).strip(),
         "ffmpeg_path": str(value.get("ffmpeg_path") or "").strip(),
         "result_limit": max(10, min(200, limit)),
+        "model_key": value.get("model_key") if value.get("model_key") in MODEL_SPECS else "general",
+        "coverage": value.get("coverage") if value.get("coverage") in COVERAGE_LABELS else "full",
+        "use_feedback": value.get("use_feedback", True) is not False,
     }
 
 
@@ -40,6 +44,17 @@ class SmartMusicSearchSettingsPage:
         self.ffmpeg = QtWidgets.QLineEdit()
         self.ffmpeg.setPlaceholderText("留空则查找 PATH 中的 ffmpeg；ffprobe 使用同目录程序")
         form.addRow("FFmpeg 路径", self.ffmpeg)
+        self.model = QtWidgets.QComboBox()
+        for key, spec in MODEL_SPECS.items():
+            self.model.addItem(spec["label"], key)
+        form.addRow("检索模型", self.model)
+        self.coverage = QtWidgets.QComboBox()
+        for key, label in COVERAGE_LABELS.items():
+            self.coverage.addItem(label, key)
+        self.coverage.setToolTip("精细：每约10秒，最多256段；均衡：每约20秒，最多128段。各模式索引独立，旧记录不删除。")
+        form.addRow("音乐覆盖", self.coverage)
+        self.feedback = QtWidgets.QCheckBox("参考我标记的情绪喜好")
+        form.addRow("个人偏好", self.feedback)
         self.limit = QtWidgets.QSpinBox()
         self.limit.setRange(10, 200)
         form.addRow("每批显示结果", self.limit)
@@ -58,11 +73,17 @@ class SmartMusicSearchSettingsPage:
         self.root.setText(value["library_root"])
         self.ffmpeg.setText(value["ffmpeg_path"])
         self.limit.setValue(value["result_limit"])
+        self.model.setCurrentIndex(self.model.findData(value["model_key"]))
+        self.coverage.setCurrentIndex(self.coverage.findData(value["coverage"]))
+        self.feedback.setChecked(value["use_feedback"])
 
     def update_config(self, config):
         config[CONFIG_KEY] = normalize_settings({
             "library_root": self.root.text(),
             "ffmpeg_path": self.ffmpeg.text(),
             "result_limit": self.limit.value(),
+            "model_key": self.model.currentData(),
+            "coverage": self.coverage.currentData(),
+            "use_feedback": self.feedback.isChecked(),
         })
         return config

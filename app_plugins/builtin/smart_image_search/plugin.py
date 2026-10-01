@@ -7,7 +7,7 @@ from .settings import CONFIG_KEY, SmartImageSearchSettingsPage, normalize_settin
 class SmartImageSearchPlugin:
     plugin_id = "smart_image_search"
     display_name = "智能搜图"
-    version = "1.0"
+    version = "1.1"
     required_api_version = 1
 
     def __init__(self):
@@ -43,6 +43,7 @@ class SmartImageSearchPlugin:
             self.dialog = SmartImageSearchDialog(
                 self.settings, parent=self.context.parent_widget
             )
+            self.dialog.settingsChanged.connect(self._save_search_settings)
         else:
             self.dialog.update_settings(self.settings)
         self.dialog.show()
@@ -56,6 +57,14 @@ class SmartImageSearchPlugin:
                 and not self.dialog.is_busy()):
             QtCore.QTimer.singleShot(0, self.dialog.update_index)
         return self.dialog
+
+    def _save_search_settings(self, settings):
+        self.settings = normalize_settings(settings)
+        try:
+            if not self.context.save_config():
+                self.context.log("搜图选项未能保存；本次仍可使用，请检查配置文件。")
+        except Exception as error:
+            self.context.log(f"保存搜图选项失败：{error}")
 
     def apply_settings(self, config):
         self.settings = normalize_settings(config.get(CONFIG_KEY))

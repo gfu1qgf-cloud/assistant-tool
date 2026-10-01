@@ -1,5 +1,6 @@
 import os
 import sys
+import subprocess
 
 from qt_compat import QDir, Qt
 from qt_compat import QTreeView, QApplication, QMessageBox, QMenu, QFileSystemModel
@@ -109,9 +110,9 @@ class FileExplorerTreeView(QTreeView):
             if sys.platform == 'win32':
                 os.startfile(os.path.dirname(file_path))
             elif sys.platform == 'darwin':
-                os.system(f'open "{os.path.dirname(file_path)}"')
+                subprocess.Popen(["open", os.path.dirname(file_path)])
             else:
-                os.system(f'xdg-open "{os.path.dirname(file_path)}"')
+                subprocess.Popen(["xdg-open", os.path.dirname(file_path)])
 
         elif action == properties_action:
             self.show_properties(file_path)

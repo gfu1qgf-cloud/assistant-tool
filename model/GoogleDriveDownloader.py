@@ -30,7 +30,7 @@ from urllib.parse import (
     urljoin,
     urlparse,
 )
-from urllib.request import HTTPCookieProcessor, Request, build_opener
+from urllib.request import HTTPCookieProcessor, HTTPRedirectHandler, Request, build_opener
 
 
 USER_AGENT = (
@@ -51,6 +51,25 @@ WINDOWS_RESERVED_NAMES = {
 
 class DownloadError(RuntimeError):
     """A readable error that should be shown for one configured link."""
+
+
+def allowed_download_url(url):
+    try:
+        parsed = urlparse(url)
+        host = (parsed.hostname or "").lower()
+        return (parsed.scheme == "https" and not parsed.username and not parsed.password
+                and parsed.port in (None, 443)
+                and (host in {"drive.google.com", "docs.google.com", "drive.usercontent.google.com",
+                              "accounts.google.com"} or host.endswith(".googleusercontent.com")))
+    except (ValueError, TypeError):
+        return False
+
+
+class GoogleDriveRedirectHandler(HTTPRedirectHandler):
+    def redirect_request(self, request, fp, code, message, headers, newurl):
+        if not allowed_download_url(newurl):
+            raise DownloadError("网盘下载重定向到非 Google 地址，已拒绝访问。")
+        return super().redirect_request(request, fp, code, message, headers, newurl)
 
 
 @dataclass(frozen=True)
@@ -349,6 +368,8 @@ def open_download_response(opener: object, url: str, timeout: int) -> BinaryIO:
     """Open a download, following a confirmation form up to three times."""
     current_url = url
     for _ in range(3):
+        if not allowed_download_url(current_url):
+            raise DownloadError("网盘下载只允许 HTTPS Google 地址。")
         request = Request(current_url, headers={"User-Agent": USER_AGENT})
         response = opener.open(request, timeout=timeout)  # type: ignore[attr-defined]
         if filename_from_headers(response.headers):
@@ -380,7 +401,7 @@ def download_one(
     export_formats: dict[str, str],
 ) -> tuple[str, Path]:
     cookie_jar = http.cookiejar.CookieJar()
-    opener = build_opener(HTTPCookieProcessor(cookie_jar))
+    opener = build_opener(HTTPCookieProcessor(cookie_jar), GoogleDriveRedirectHandler())
     response = open_download_response(opener, export_url(link, export_formats), timeout)
     try:
         google_name = filename_from_headers(response.headers) or link.file_id

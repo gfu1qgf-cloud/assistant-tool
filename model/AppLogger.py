@@ -8,6 +8,7 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 from app_paths import APP_ROOT
+from model.SensitiveData import redact_sensitive_text
 
 
 LOGGER_NAME = "assistant_tool"
@@ -19,6 +20,12 @@ _log_file_path = None
 _fault_stream = None
 _hooks_installed = False
 _qt_message_handler = None
+
+
+class RedactingFormatter(logging.Formatter):
+    def format(self, record):
+        # Format first so exception text and %-style arguments are covered too.
+        return redact_sensitive_text(super().format(record))
 
 
 def _candidate_log_directories():
@@ -38,7 +45,7 @@ def _create_file_handler(log_dir, max_bytes, backup_count):
         backupCount=backup_count,
         encoding="utf-8",
     )
-    handler.setFormatter(logging.Formatter(
+    handler.setFormatter(RedactingFormatter(
         "%(asctime)s | %(levelname)s | %(threadName)s | %(name)s | %(message)s"
     ))
     return handler, log_path
@@ -186,7 +193,7 @@ def install_qt_message_logging():
             if mode == fatal and _fault_stream is not None:
                 os.write(
                     _fault_stream.fileno(),
-                    ("Qt fatal: {}\n".format(message)).encode("utf-8", "replace"),
+                    ("Qt fatal: {}\n".format(redact_sensitive_text(message))).encode("utf-8", "replace"),
                 )
             location = "{}:{}".format(
                 getattr(context, "file", "") or "Qt",

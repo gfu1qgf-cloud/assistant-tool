@@ -12,8 +12,9 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from qt_compat import QtCore, QtGui, QtWidgets
 from app_plugins.builtin.smart_music_search.audio import encode_reference, segment_starts
 from app_plugins.builtin.smart_music_search.encoder import (
-    MODEL_ID, MusicEncoder, build_music_prompt,
+    MODEL_ID, MODEL_SPECS, MusicEncoder, build_music_prompt,
 )
+from app_plugins.builtin.smart_music_search.feedback import MusicFeedback, search_key
 from app_plugins.builtin.smart_music_search.index import MusicIndex, discover_music
 from app_plugins.builtin.smart_music_search.settings import normalize_settings
 from app_plugins.builtin.smart_music_search.ui import SmartMusicSearchDialog
@@ -160,7 +161,7 @@ class SmartMusicSearchTests(unittest.TestCase):
 
         self.assertEqual(
             build_music_prompt("", ("懊悔自责",), ("钢琴",), unexpected_translation),
-            "somber mournful introspective piano music",
+            "deeply sorrowful remorseful emotional pain piano music",
         )
         self.assertEqual(
             build_music_prompt("恐怖", ("恐怖",), (), unexpected_translation),
@@ -168,7 +169,7 @@ class SmartMusicSearchTests(unittest.TestCase):
         )
         self.assertEqual(
             MusicEncoder().translate("懊悔自责"),
-            "somber mournful introspective instrumental music",
+            "deeply sorrowful remorseful instrumental music, heavy sadness and emotional pain",
         )
 
     def test_text_encoding_uses_full_model_direction(self):
@@ -200,11 +201,175 @@ class SmartMusicSearchTests(unittest.TestCase):
         class Torch:
             inference_mode = staticmethod(nullcontext)
 
-        encoder = MusicEncoder()
+        encoder = MusicEncoder("general", "legacy")
         encoder._load_music = lambda: (Torch, Processor(), Model())
         happy, _ = encoder.text("happy")
         dark, _ = encoder.text("dark")
         self.assertLess(float(np.dot(happy, dark)), 0.1)
+
+    def test_music_model_is_pinned_safe_and_legacy_identity_preserved(self):
+        encoder = MusicEncoder()
+        self.assertEqual(encoder.model_key, "general")
+        self.assertEqual(len(encoder.spec["revision"]), 40)
+        self.assertIn("larger_clap_general", encoder.model_id)
+        self.assertEqual(MusicEncoder("general", "legacy").model_id, MODEL_ID)
+        with patch.object(encoder, "_cached", return_value=True) as cached:
+            self.assertTrue(encoder.music_is_cached())
+        cached.assert_called_once_with(MODEL_SPECS["general"]["repository"], MODEL_SPECS["general"]["revision"])
+        self.assertNotIn("music", MODEL_SPECS)
+        self.assertNotEqual(encoder.translate("懊悔"), encoder.translate("懊悔自责"))
+
+    def test_model_health_guard_rejects_collapsed_features(self):
+        class Tensor:
+            def __init__(self, values):
+                self.values = np.asarray(values, dtype=np.float32)
+            def detach(self):
+                return self
+            def cpu(self):
+                return self
+            def numpy(self):
+                return self.values
+        with self.assertRaisesRegex(RuntimeError, "几乎相同"):
+            MusicEncoder._validate_text_features([Tensor([1, 0, 0]) for _ in range(3)])
+        self.assertEqual(MusicEncoder._validate_text_features([
+            Tensor([1, 0, 0]), Tensor([0, 1, 0]), Tensor([0, 0, 1])]), 0.)
+
+    def test_finished_worker_keeps_options_locked_until_queued_cleanup(self):
+        # This models a finished native thread whose queued UI cleanup has not
+        # run yet: settings must remain deferred and no second task may start.
+        with tempfile.TemporaryDirectory() as directory:
+            dialog = SmartMusicSearchDialog({}, index=MusicIndex(directory), encoder=_FakeEncoder())
+            class FinishedWorker:
+                def isRunning(self):
+                    return False
+                def deleteLater(self):
+                    pass
+            dialog.worker = FinishedWorker()
+            self.assertTrue(dialog.is_busy())
+            dialog.update_settings({**dialog.settings, "coverage": "balanced"})
+            self.assertEqual(dialog.settings["coverage"], "full")
+            dialog._finished()
+            self.assertEqual(dialog.settings["coverage"], "balanced")
+            dialog.close()
+
+    def test_model_and_coverage_indexes_are_independent(self):
+        with tempfile.TemporaryDirectory() as directory:
+            legacy = MusicIndex.for_encoder(MusicEncoder("general", "legacy"), directory)
+            full = MusicIndex.for_encoder(MusicEncoder(), directory)
+            balanced = MusicIndex.for_encoder(MusicEncoder("general", "balanced"), directory)
+            self.assertEqual(legacy.path.name, "index.sqlite3")
+            self.assertEqual(len({legacy.path, full.path, balanced.path}), 3)
+            song = Path(directory) / "fixture.mp3"
+            song.write_bytes(b"audio")
+            with legacy._connect() as db:
+                db.execute("INSERT INTO tracks VALUES (?,?,?,?,?,?,?)",
+                           (str(song), 5, 0, 60., MODEL_ID, "", 0.))
+            before = legacy.path.read_bytes()
+            full.count(MusicEncoder().model_id)
+            self.assertEqual(legacy.path.read_bytes(), before)
+            self.assertEqual(legacy.count(MODEL_ID), 1)
+
+    def test_precise_sampling_covers_all_normal_songs_and_is_bounded(self):
+        starts = MusicEncoder().segment_starts(600)
+        self.assertGreater(len(starts), 8)
+        self.assertEqual(starts[0], 0)
+        self.assertEqual(starts[-1], 590)
+        self.assertLessEqual(max(b-a for a, b in zip(starts, starts[1:])), 10.001)
+        self.assertLess(len(segment_starts(600, "balanced")), len(starts))
+        self.assertEqual(len(segment_starts(24 * 3600, "full")), 256)
+
+    def test_sync_uses_encoder_coverage_and_resume_skips_completed_tracks(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "songs"
+            root.mkdir()
+            (root / "song.mp3").write_bytes(b"audio")
+            encoder = _FakeEncoder()
+            encoder.segment_starts = lambda duration: [0., 10., 20., 30.]
+            index = MusicIndex(Path(directory) / "index")
+            with patch("app_plugins.builtin.smart_music_search.index.media_duration", return_value=40.), patch(
+                "app_plugins.builtin.smart_music_search.index.decode_segment", return_value=np.ones(48000)
+            ):
+                index.sync(root, encoder, "ffmpeg", "ffprobe")
+                self.assertEqual(encoder.calls, 4)
+                self.assertEqual(index.sync(root, encoder, "ffmpeg", "ffprobe")["updated"], 0)
+
+    def test_stable_ranking_does_not_reward_only_one_isolated_peak(self):
+        with tempfile.TemporaryDirectory() as directory:
+            index = MusicIndex(Path(directory) / "index")
+            with index._connect() as db:
+                for name, scores in (("spike.mp3", [.99, .1, .1, .1]),
+                                     ("consistent.mp3", [.8, .8, .8, .8])):
+                    path = Path(directory) / name
+                    path.write_bytes(b"audio")
+                    db.execute("INSERT INTO tracks VALUES (?,?,?,?,?,?,?)", (str(path), 5, 0, 40., "test", "", 0.))
+                    for start, score in enumerate(scores):
+                        vector = [score, np.sqrt(1-score*score)]
+                        db.execute("INSERT INTO segments VALUES (?,?,?)", (str(path), start*10., np.asarray(vector, dtype=np.float16).tobytes()))
+            self.assertEqual(Path(index.search("test", [1, 0])[0]["path"]).name, "spike.mp3")
+            self.assertEqual(Path(index.search("test", [1, 0], stable=True)[0]["path"]).name, "consistent.mp3")
+            with self.assertRaises(ValueError):
+                index.search("test", [float("nan"), 0])
+
+    def test_feedback_is_persistent_query_specific_and_not_cumulative(self):
+        with tempfile.TemporaryDirectory() as directory:
+            paths = [Path(directory) / "first.mp3", Path(directory) / "second.mp3"]
+            for path in paths:
+                path.write_bytes(b"audio")
+            rows = [{"path": str(path), "score": score, "duration": 60., "start": 0., "short": False}
+                    for path, score in zip(paths, [.5, .48])]
+            key = search_key("恐怖", ("紧张",), ())
+            feedback = MusicFeedback(directory)
+            feedback.set(key, paths[1], 1)
+            ranked = MusicFeedback(directory).apply(rows, key)
+            self.assertEqual(ranked[0]["path"], str(paths[1]))
+            self.assertAlmostEqual(ranked[0]["audio_score"], .48)
+            self.assertEqual(feedback.apply(ranked, key)[0]["score"], ranked[0]["score"])
+            self.assertEqual(feedback.apply(rows, search_key("平静"))[0]["path"], str(paths[0]))
+            self.assertEqual(feedback.apply(rows, key, False)[0]["path"], str(paths[0]))
+            paths[1].write_bytes(b"changed music")
+            self.assertEqual(feedback.apply(rows, key)[0]["path"], str(paths[0]))
+            feedback.set(key, paths[1], -1)
+            self.assertEqual(feedback.apply(rows, key)[1]["preference"], -1)
+            feedback.set(key, paths[1], 0)
+            self.assertTrue(all(row["preference"] == 0 for row in feedback.apply(rows, key)))
+
+    def test_dialog_model_switch_is_lazy_and_settings_defer_during_worker(self):
+        with tempfile.TemporaryDirectory() as directory:
+            encoder = MusicEncoder()
+            dialog = SmartMusicSearchDialog({"library_root": directory},
+                index=MusicIndex.for_encoder(encoder, directory))
+            changed = []
+            dialog.settingsChanged.connect(changed.append)
+            with patch.object(MusicEncoder, "_load_music", side_effect=AssertionError("must stay lazy")):
+                dialog.model_combo.setCurrentIndex(dialog.model_combo.findData("unfused"))
+                self.assertEqual(dialog.encoder.model_key, "unfused")
+                self.assertEqual(changed[-1]["model_key"], "unfused")
+            old_encoder = dialog.encoder
+            class Worker:
+                def isRunning(self):
+                    return True
+                def deleteLater(self):
+                    pass
+            dialog.worker = Worker()
+            dialog.update_settings({**dialog.settings, "model_key": "general"})
+            self.assertIs(dialog.encoder, old_encoder)
+            dialog._finished()
+            self.assertEqual(dialog.encoder.model_key, "general")
+            dialog.close()
+
+    def test_result_feedback_marks_are_visible_and_can_be_cleared(self):
+        with tempfile.TemporaryDirectory() as directory:
+            song = Path(directory) / "song.mp3"
+            song.write_bytes(b"audio")
+            dialog = SmartMusicSearchDialog({}, index=MusicIndex(directory), encoder=_FakeEncoder())
+            dialog._feedback_key = search_key("恐怖")
+            row = {"path": str(song), "score": .4, "duration": 60., "start": 0., "short": False}
+            dialog._show_results([row])
+            dialog._mark_feedback(row, 1)
+            self.assertIn("符合", dialog.table.item(0, 0).text())
+            dialog._mark_feedback(row, 0)
+            self.assertNotIn("符合", dialog.table.item(0, 0).text())
+            dialog.close()
 
     def test_audio_retrieval_distinguishes_nearly_parallel_tracks(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -18,6 +18,12 @@ task_table_template = project_root / "任务登记表格.ods"
 if task_table_template.is_file():
     datas.append((str(task_table_template), "."))
 
+waste_data = project_root / "app_plugins" / "builtin" / "waste_reminder" / "data"
+for data_file in waste_data.rglob("*"):
+    if data_file.is_file():
+        destination = data_file.parent.relative_to(project_root).as_posix()
+        datas.append((str(data_file), destination))
+
 mpv_runtime = project_root / "runtime" / "mpv"
 required_mpv_files = ("mpv.exe", "vulkan-1.dll")
 missing_mpv_files = [
@@ -50,6 +56,7 @@ for package_name in (
     "transformers",
     "pycaw",
     "comtypes",
+    "yt_dlp",
 ):
     package_datas, package_binaries, package_hiddenimports = collect_all(package_name)
     datas += package_datas

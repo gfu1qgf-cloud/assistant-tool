@@ -3,6 +3,7 @@ import shutil
 import sqlite3
 import tempfile
 import unittest
+from unittest.mock import Mock, patch
 from pathlib import Path
 
 import numpy as np
@@ -11,11 +12,17 @@ from PIL import Image
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from qt_compat import QtCore, QtWidgets
-from app_plugins.builtin.smart_image_search.encoder import ModelLoadError
+from app_plugins.builtin.smart_image_search.encoder import (
+    ChineseImageEncoder, MODEL_IDS, MODEL_REVISION, MODEL_SPECS,
+    ModelLoadError, combine_search_vectors,
+)
 from app_plugins.builtin.smart_image_search.index import (
     ImageSearchIndex, discover_external_groups,
 )
-from app_plugins.builtin.smart_image_search.settings import normalize_settings
+from app_plugins.builtin.smart_image_search.settings import (
+    SmartImageSearchSettingsPage, normalize_settings,
+)
+from app_plugins.builtin.smart_image_search.plugin import SmartImageSearchPlugin
 from app_plugins.builtin.smart_image_search.ui import (
     SmartImageSearchDialog, _fitted_icon, _move_external,
 )
@@ -46,6 +53,53 @@ class FakeEncoder:
 
     def text(self, _query):
         return np.array([1, 0], dtype=np.float32)
+
+
+class ImageEncoderTests(unittest.TestCase):
+    def test_pinned_models_keep_exact_legacy_base_id(self):
+        base = ChineseImageEncoder()
+        self.assertEqual(base.model_id, f"{MODEL_IDS['base']}@{MODEL_REVISION}")
+        ids = [ChineseImageEncoder(key).model_id for key in MODEL_IDS]
+        self.assertEqual(len(set(ids)), 3)
+        for spec in MODEL_SPECS.values():
+            self.assertEqual(len(spec["revision"]), 40)
+        self.assertFalse(base.is_loaded)
+
+    def test_combined_search_weight_and_endpoints(self):
+        np.testing.assert_allclose(combine_search_vectors([2, 0]), [1, 0])
+        np.testing.assert_allclose(combine_search_vectors([1, 0], [0, 1], 0), [1, 0])
+        np.testing.assert_allclose(combine_search_vectors([1, 0], [0, 1], 1), [0, 1])
+        vector = combine_search_vectors([1, 0], [0, 1], .8)
+        self.assertGreater(vector[1], vector[0])
+        self.assertAlmostEqual(float(np.linalg.norm(vector)), 1, places=6)
+
+    def test_combination_rejects_invalid_or_mixed_features(self):
+        for image, text, weight in [([0, 0], None, .5), ([np.nan, 0], None, .5),
+                                    ([1, 0], [0, 1, 2], .5), ([1, 0], [0, 1], 2),
+                                    ([1, 0], [0, 1], np.nan)]:
+            with self.assertRaises(ValueError):
+                combine_search_vectors(image, text, weight)
+
+    def test_reference_cache_invalidates_changed_image(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "reference.png"
+            Image.new("RGB", (8, 8), "red").save(path)
+            encoder = ChineseImageEncoder()
+            encoder.images = Mock(return_value=[np.array([1, 0], np.float32)])
+            returned = encoder.image(path)
+            returned[0] = 0
+            np.testing.assert_allclose(encoder.image(path), [1, 0])
+            self.assertEqual(encoder.images.call_count, 1)
+            Image.new("RGB", (12, 12), "blue").save(path)
+            encoder.image(path)
+            self.assertEqual(encoder.images.call_count, 2)
+
+    def test_query_cache_is_bounded(self):
+        encoder = ChineseImageEncoder()
+        for i in range(80):
+            encoder._remember(("text", str(i)), np.array([1, 0], np.float32))
+        self.assertEqual(len(encoder._query_cache), 64)
+        self.assertIsNone(encoder._cached(("text", "0")))
 
 
 def group(*paths, kind="material", name="素材组"):
@@ -167,6 +221,29 @@ class ImageSearchIndexTests(unittest.TestCase):
         with Image.open(row["thumbnail"]) as thumb:
             self.assertEqual(thumb.size, (300, 600))
 
+    def test_models_use_independent_databases_without_overwriting_base(self):
+        self.index.sync(group(self.red), self.encoder)
+        large = FakeEncoder()
+        large.model_key = "large336"
+        large.model_id = "test/large336"
+        upgraded = ImageSearchIndex.for_encoder(large, self.index.root)
+        self.assertEqual(self.index.path.name, "index.sqlite3")
+        self.assertEqual(upgraded.path.name, "index-large336.sqlite3")
+        upgraded.sync(group(self.blue), large)
+        self.assertEqual(self.index.count(self.encoder.model_id), 1)
+        self.assertEqual(upgraded.count(large.model_id), 1)
+        with self.assertRaises(ValueError):
+            self.index.sync(group(self.blue), large)
+        self.assertEqual(self.index.count(self.encoder.model_id), 1)
+
+    def test_failed_images_can_be_retried_without_source_change(self):
+        class FailsOnce(FakeEncoder):
+            def images(self, paths):
+                raise ValueError("临时解码失败")
+        self.index.sync(group(self.red), FailsOnce())
+        self.assertEqual(self.index.count(), 0)
+        self.assertEqual(self.index.sync(group(self.red), self.encoder)["new_or_changed"], 1)
+
 
 class ImageSearchDialogTests(unittest.TestCase):
     @classmethod
@@ -211,6 +288,101 @@ class ImageSearchDialogTests(unittest.TestCase):
                 self.assertIn("red.png", dialog.results.item(0).text())
             finally:
                 dialog.close()
+
+    def test_combined_image_and_text_runs_in_worker(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            red, blue = root / "red.png", root / "blue.png"
+            Image.new("RGB", (8, 8), "red").save(red)
+            Image.new("RGB", (8, 8), "blue").save(blue)
+            encoder = FakeEncoder()
+            encoder.text = Mock(return_value=np.array([0, 1], np.float32))
+            index = ImageSearchIndex(root / "index")
+            index.sync(group(red, blue), encoder)
+            dialog = SmartImageSearchDialog({}, index=index, encoder=encoder, store=object())
+            try:
+                dialog.search_tabs.setCurrentIndex(1)
+                dialog.query_image.setText(str(red))
+                dialog.image_description.setText("蓝色")
+                dialog.text_weight.setValue(80)
+                dialog.search()
+                self.assertFalse(dialog.model_combo.isEnabled())
+                loop = QtCore.QEventLoop()
+                dialog.worker.finished.connect(loop.quit)
+                QtCore.QTimer.singleShot(3000, loop.quit)
+                loop.exec()
+                self.assertFalse(dialog.is_busy())
+                self.assertIn("blue.png", dialog.results.item(0).text())
+                self.assertIn("图片＋文字", dialog.status.text())
+                encoder.text.assert_called_once_with("蓝色")
+            finally:
+                dialog.close()
+
+    def test_model_switch_keeps_base_index_without_loading_model(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            image = root / "red.png"
+            Image.new("RGB", (8, 8), "red").save(image)
+            index = ImageSearchIndex(root / "index")
+            encoder = FakeEncoder()
+            index.sync(group(image), encoder)
+            dialog = SmartImageSearchDialog({}, index=index, encoder=encoder, store=object())
+            try:
+                saved = Mock()
+                dialog.settingsChanged.connect(saved)
+                dialog.model_combo.setCurrentIndex(dialog.model_combo.findData("large336"))
+                self.assertEqual(dialog.encoder.model_key, "large336")
+                self.assertFalse(dialog.encoder.is_loaded)
+                self.assertEqual(dialog.index.count(), 0)
+                self.assertEqual(index.count(), 1)
+                self.assertEqual(saved.call_args[0][0]["model"], "large336")
+                dialog.model_combo.setCurrentIndex(dialog.model_combo.findData("base"))
+                self.assertEqual(dialog.index.path, index.path)
+                self.assertEqual(dialog.index.count(), 1)
+            finally:
+                dialog.close()
+
+    def test_settings_wait_for_queued_worker_finished_handler(self):
+        with tempfile.TemporaryDirectory() as folder:
+            encoder = FakeEncoder()
+            dialog = SmartImageSearchDialog({}, index=ImageSearchIndex(folder),
+                                           encoder=encoder, store=object())
+            try:
+                # Ownership remains even if the underlying thread already ended.
+                dialog.worker = QtCore.QObject(dialog)
+                dialog.update_settings({"model": "large", "text_weight": 70})
+                self.assertTrue(dialog.is_busy())
+                self.assertIs(dialog.encoder, encoder)
+                self.assertEqual(dialog.settings["model"], "base")
+                dialog._finished()
+                self.assertEqual(dialog.encoder.model_key, "large")
+                self.assertEqual(dialog.text_weight.value(), 70)
+                self.assertFalse(dialog.encoder.is_loaded)
+            finally:
+                dialog.close()
+
+    def test_settings_page_round_trip_preserves_roots_and_weight(self):
+        page = SmartImageSearchSettingsPage()
+        try:
+            page.load_config({"smart_image_search": {"model": "large336",
+                "library_roots": ["D:/图库"], "text_weight": 60, "result_limit": 80}})
+            value = page.update_config({"other": 123})
+            self.assertEqual(value["other"], 123)
+            self.assertEqual(value["smart_image_search"]["model"], "large336")
+            self.assertEqual(value["smart_image_search"]["library_roots"], ["D:/图库"])
+            self.assertEqual(value["smart_image_search"]["text_weight"], 60)
+        finally:
+            page.widget.close()
+
+    def test_plugin_saves_search_options_without_touching_other_config(self):
+        plugin = SmartImageSearchPlugin()
+        plugin.context = Mock()
+        plugin.context.save_config.return_value = True
+        plugin._save_search_settings({"model": "large336", "library_roots": ["D:/图片"]})
+        plugin.context.save_config.assert_called_once_with()
+        config = plugin.update_config({"other": {"keep": True}})
+        self.assertEqual(config["other"], {"keep": True})
+        self.assertEqual(config["smart_image_search"]["model"], "large336")
 
     def test_results_are_paged_without_losing_remaining_matches(self):
         with tempfile.TemporaryDirectory() as folder:

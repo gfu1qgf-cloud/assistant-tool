@@ -8,7 +8,8 @@ from qt_compat import QtCore, QtGui, QtMultimedia, QtWidgets
 from model.ClipboardHelper import set_internal_clipboard_text
 
 from .audio import encode_reference, media_duration, resolve_tools
-from .encoder import MusicEncoder, build_music_prompt
+from .encoder import COVERAGE_LABELS, MODEL_SPECS, MusicEncoder, build_music_prompt
+from .feedback import MusicFeedback, search_key
 from .index import MusicIndex
 from .settings import normalize_settings
 from .tag_input import MusicTagInput
@@ -97,13 +98,20 @@ class _DraggableMusicResults(QtWidgets.QTableWidget):
 
 
 class SmartMusicSearchDialog(QtWidgets.QDialog):
+    settingsChanged = QtCore.pyqtSignal(object)
+
     def __init__(self, settings, parent=None, index=None, encoder=None):
         super().__init__(parent)
         self.setWindowTitle("智能搜音乐")
         self.resize(1010, 690)
         self.settings = normalize_settings(settings)
-        self.index = index or MusicIndex()
-        self.encoder = encoder or MusicEncoder()
+        self._managed_encoder = encoder is None
+        self._managed_index = index is None
+        self.encoder = encoder or MusicEncoder(self.settings["model_key"], self.settings["coverage"])
+        self.index = index or MusicIndex.for_encoder(self.encoder)
+        self.feedback = MusicFeedback(self.index.root)
+        self._feedback_key = ""
+        self._pending_settings = None
         self.worker = None
         self._task_kind = ""
         self._results = []
@@ -131,6 +139,30 @@ class SmartMusicSearchDialog(QtWidgets.QDialog):
         self.stop_button.clicked.connect(self.cancel_work)
         line.addWidget(self.stop_button)
         layout.addLayout(line)
+        model_line = QtWidgets.QHBoxLayout()
+        model_line.addWidget(QtWidgets.QLabel("检索模型"))
+        self.model_combo = QtWidgets.QComboBox()
+        for key, spec in MODEL_SPECS.items():
+            self.model_combo.addItem(spec["label"], key)
+        self.model_combo.setCurrentIndex(self.model_combo.findData(self.settings["model_key"]))
+        self.model_combo.setToolTip("可切回旧模型对比；新旧索引分别保存，切换不会加载模型或覆盖旧记录。")
+        model_line.addWidget(self.model_combo)
+        model_line.addWidget(QtWidgets.QLabel("音乐覆盖"))
+        self.coverage_combo = QtWidgets.QComboBox()
+        for key, label in COVERAGE_LABELS.items():
+            self.coverage_combo.addItem(label, key)
+        self.coverage_combo.setCurrentIndex(self.coverage_combo.findData(self.settings["coverage"]))
+        self.coverage_combo.setToolTip("精细：每约10秒，最多256段；均衡：每约20秒，最多128段。旧版抽样仅3～8段。")
+        model_line.addWidget(self.coverage_combo)
+        self.use_feedback = QtWidgets.QCheckBox("参考我的喜好")
+        self.use_feedback.setChecked(self.settings["use_feedback"])
+        self.use_feedback.setToolTip("结果右键标记符合／不符合本次情绪；只影响相同搜索条件，不训练模型。")
+        model_line.addWidget(self.use_feedback)
+        model_line.addStretch(1)
+        self.model_combo.currentIndexChanged.connect(self._search_options_changed)
+        self.coverage_combo.currentIndexChanged.connect(self._search_options_changed)
+        self.use_feedback.toggled.connect(self._search_options_changed)
+        layout.addLayout(model_line)
         self.progress = QtWidgets.QProgressBar()
         self.progress.hide()
         layout.addWidget(self.progress)
@@ -251,17 +283,49 @@ class SmartMusicSearchDialog(QtWidgets.QDialog):
         return self.tag_input.selected_tags()
 
     def update_settings(self, settings):
-        self.settings = normalize_settings(settings)
+        if self.is_busy():
+            self._pending_settings = normalize_settings(settings)
+            return
+        updated = normalize_settings(settings)
+        changed = any(updated[key] != self.settings[key] for key in ("model_key", "coverage"))
+        self.settings = updated
+        if changed and self._managed_encoder:
+            self.stop_preview()
+            self.encoder = MusicEncoder(updated["model_key"], updated["coverage"])
+            if self._managed_index:
+                self.index = MusicIndex.for_encoder(self.encoder, self.index.root)
+            self._feedback_key = ""
+            self._show_results([])
+            self.english.clear()
+        for widget, key in ((self.model_combo, "model_key"), (self.coverage_combo, "coverage")):
+            with QtCore.QSignalBlocker(widget):
+                widget.setCurrentIndex(widget.findData(updated[key]))
+        with QtCore.QSignalBlocker(self.use_feedback):
+            self.use_feedback.setChecked(updated["use_feedback"])
         self._refresh_count()
+
+    def _search_options_changed(self, *_args):
+        if self.is_busy():
+            return
+        updated = {**self.settings, "model_key": self.model_combo.currentData(),
+                   "coverage": self.coverage_combo.currentData(),
+                   "use_feedback": self.use_feedback.isChecked()}
+        self.update_settings(updated)
+        if self._results:
+            self._show_results(self.feedback.apply(self._results, self._feedback_key,
+                                                   self.settings["use_feedback"]))
+        self.settingsChanged.emit(dict(self.settings))
 
     def _refresh_count(self):
         count = self.index.count(self.encoder.model_id)
-        hint = "（更换模型后需重建）" if not count else ""
+        hint = "（当前模型尚未建索引；旧索引保留）" if not count else ""
         self.status.setText(f"已索引 {count} 首{hint} | 配乐库："
                             f"{self.settings['library_root']}")
 
     def is_busy(self):
-        return self.worker is not None and self.worker.isRunning()
+        # Retain ownership until the queued finished handler runs. Otherwise a
+        # second task can start before the first finished signal is processed.
+        return self.worker is not None
 
     def _start(self, kind, task):
         if self.is_busy():
@@ -275,6 +339,9 @@ class SmartMusicSearchDialog(QtWidgets.QDialog):
         self.index_button.setEnabled(False)
         self.search_button.setEnabled(False)
         self.reference_button.setEnabled(False)
+        self.model_combo.setEnabled(False)
+        self.coverage_combo.setEnabled(False)
+        self.use_feedback.setEnabled(False)
         self.stop_button.setEnabled(True)
         self.progress.setRange(0, 0)
         self.progress.show()
@@ -289,9 +356,17 @@ class SmartMusicSearchDialog(QtWidgets.QDialog):
         self.index_button.setEnabled(True)
         self.search_button.setEnabled(True)
         self.reference_button.setEnabled(True)
+        self.model_combo.setEnabled(True)
+        self.coverage_combo.setEnabled(True)
+        self.use_feedback.setEnabled(True)
         self.stop_button.setEnabled(False)
         self.progress.hide()
-        self.worker = None
+        worker, self.worker = self.worker, None
+        if worker is not None:
+            worker.deleteLater()
+        if self._pending_settings is not None:
+            updated, self._pending_settings = self._pending_settings, None
+            self.update_settings(updated)
 
     def _failed(self, message):
         self.status.setText("智能搜音乐出错：" + message)
@@ -352,7 +427,8 @@ class SmartMusicSearchDialog(QtWidgets.QDialog):
         if not self.encoder.music_is_cached():
             answer = QtWidgets.QMessageBox.question(
                 self, "首次下载模型",
-                "建立语义索引需要首次下载约 776 MB 的本地音乐模型。"
+                f"当前选择：{getattr(self.encoder, 'label', '音乐模型')}。\n"
+                "建立语义索引需要首次下载约 615～776 MB 的本地音乐模型。"
                 "这只在首次使用时进行；库中歌曲不会上传。继续吗？"
             )
             if answer != QtWidgets.QMessageBox.StandardButton.Yes:
@@ -371,6 +447,10 @@ class SmartMusicSearchDialog(QtWidgets.QDialog):
             return
         self._show_results([])
         self.english.setText("")
+        self._feedback_key = search_key(query, moods, sounds)
+        feedback_key = self._feedback_key
+        use_feedback = self.settings["use_feedback"]
+        stable = self.settings["coverage"] != "legacy"
         seconds = self.duration.value()
         include_short = self.include_short.isChecked()
         filename_hits = (
@@ -405,11 +485,11 @@ class SmartMusicSearchDialog(QtWidgets.QDialog):
             if cancelled():
                 return filename_hits, translated, len(filename_hits)
             semantic = self.index.search(self.encoder.model_id, vector, seconds=seconds,
-                                         limit=None, include_short=include_short)
+                                         limit=None, include_short=include_short, stable=stable)
             named_paths = {os.path.normcase(row["path"]) for row in filename_hits}
             rows = filename_hits + [row for row in semantic
                                     if os.path.normcase(row["path"]) not in named_paths]
-            return rows, translated, len(filename_hits)
+            return self.feedback.apply(rows, feedback_key, use_feedback), translated, len(filename_hits)
         self._start("search", work)
 
     def search_reference(self):
@@ -430,6 +510,8 @@ class SmartMusicSearchDialog(QtWidgets.QDialog):
         start = self.reference_start.value()
         seconds = self.duration.value()
         include_short = self.include_short.isChecked()
+        self._feedback_key = ""  # Emotion feedback must not leak into audio-to-audio searches.
+        stable = self.settings["coverage"] != "legacy"
         def work(_progress, cancelled):
             if cancelled():
                 return [], ""
@@ -437,7 +519,7 @@ class SmartMusicSearchDialog(QtWidgets.QDialog):
             if cancelled():
                 return [], ""
             rows = self.index.search(self.encoder.model_id, vector, seconds=seconds,
-                                     limit=None, include_short=include_short)
+                                     limit=None, include_short=include_short, stable=stable)
             # An indexed reference song is not a useful "similar" recommendation.
             source = os.path.normcase(os.path.abspath(path))
             rows = [row for row in rows
@@ -463,7 +545,10 @@ class SmartMusicSearchDialog(QtWidgets.QDialog):
                 folder = str(path.parent.relative_to(root))
             except ValueError:
                 folder = str(path.parent)
-            match_label = "文件名命中" if result.get("match_type") == "filename" else f"{result['score']:.3f}"
+            match_label = "文件名命中" if result.get("match_type") == "filename" else f"{result.get('audio_score', result['score']):.3f}"
+            preference = result.get("preference", 0)
+            if preference:
+                match_label += "·符合" if preference > 0 else "·不符"
             fields = [match_label, path.name, folder,
                       format_time(result["duration"]), format_time(result["start"])]
             for column, value in enumerate(fields):
@@ -474,6 +559,12 @@ class SmartMusicSearchDialog(QtWidgets.QDialog):
             if result.get("match_type") == "filename":
                 self.table.item(row_index, 0).setToolTip("文件名直接匹配；不代表音频情绪相似度")
                 self.table.item(row_index, 0).setBackground(QtGui.QColor("#e4efff"))
+            elif preference:
+                self.table.item(row_index, 0).setToolTip(
+                    "显示的是原始音频相似度；你曾标记为"
+                    + ("符合本次情绪" if preference > 0 else "不符合本次情绪")
+                    + ("，排序已参考该偏好。" if self.settings["use_feedback"] else "；偏好排序当前关闭。")
+                )
             if result["short"]:
                 for column in range(5):
                     self.table.item(row_index, column).setBackground(QtGui.QColor("#fff0d6"))
@@ -579,6 +670,9 @@ class SmartMusicSearchDialog(QtWidgets.QDialog):
         self._seek_dragging = False
 
     def _context_menu(self, position):
+        clicked = self.table.indexAt(position)
+        if clicked.isValid():
+            self.table.setCurrentCell(clicked.row(), 0)
         result = self._selected()
         if not result:
             return
@@ -587,7 +681,27 @@ class SmartMusicSearchDialog(QtWidgets.QDialog):
         menu.addAction("以此曲找相似配乐", lambda: self._reference_from_result(result))
         menu.addAction("复制文件路径", lambda: set_internal_clipboard_text(result["path"]))
         menu.addAction("打开所在目录", lambda: self._open_file(str(Path(result["path"]).parent)))
+        if self._feedback_key and not self.is_busy():
+            menu.addSeparator()
+            menu.addAction("符合本次情绪", lambda: self._mark_feedback(result, 1))
+            menu.addAction("不符合本次情绪", lambda: self._mark_feedback(result, -1))
+            menu.addAction("清除本次情绪标记", lambda: self._mark_feedback(result, 0))
         menu.exec(self.table.viewport().mapToGlobal(position))
+
+    def _mark_feedback(self, result, preference):
+        if self.is_busy() or not self._feedback_key:
+            return
+        try:
+            self.feedback.set(self._feedback_key, result["path"], preference)
+            rows = self.feedback.apply(self._results, self._feedback_key, self.settings["use_feedback"])
+            self._show_results(rows)
+            position = next((i for i, row in enumerate(rows) if row["path"] == result["path"]), -1)
+            if 0 <= position < self.table.rowCount():
+                self.table.setCurrentCell(position, 0)
+            self.status.setText("已保存本次搜索条件的情绪偏好；模型和原音乐不变。")
+        except Exception as exc:
+            logger.exception("保存音乐情绪偏好失败")
+            QtWidgets.QMessageBox.warning(self, "情绪偏好未保存", str(exc))
 
     @staticmethod
     def _open_file(path):

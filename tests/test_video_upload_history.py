@@ -112,11 +112,13 @@ class VideoUploadHistoryTests(unittest.TestCase):
             video = uploaded_record("file-no-review", "A.mp4", "md5")
             video["review_routed"] = False
             video["review_required_override"] = False
+            video["final_review_decision"] = "normal_upload"
             record_video_uploads(config, [video], "2026-09-28", "1",
                                  confirmed_report("A.mp4"))
             saved = load_video_upload_history(config)["records"][0]
             self.assertIs(saved["review_routed"], False)
             self.assertIs(saved["task"]["review_required"], False)
+            self.assertEqual(saved["final_review_decision"], "normal_upload")
 
     def test_sync_file_updates_preferred_previous_batch_id_in_place(self):
         remote = {

@@ -5,6 +5,7 @@ import pathlib
 import random
 import shutil
 import traceback
+from model.SensitiveData import redact_sensitive_text
 
 from qt_compat import QtWidgets, QtCore, QtGui
 from qt_compat import QDate, pyqtSignal
@@ -15,7 +16,9 @@ from app_plugins.builtin import (
     AudioSplitterPlugin,
     ChromeLauncherPlugin,
     CodexAccountSwitcherPlugin,
+    CookingAssistantPlugin,
     DailyTasksPlugin,
+    FacebookContactSheetPlugin,
     DaVinciRemotePlugin,
     ImageClassifierPlugin,
     InventoryPlugin,
@@ -27,9 +30,17 @@ from app_plugins.builtin import (
     VideoPromptAssistantPlugin,
     TaskAudioSubtitlePlugin,
     TaskDeliveryPlugin,
+    WasteReminderPlugin,
 )
 from PYUI.main_setting_pyui import MainSettingDialog
+from PYUI.gemini_keys_pyui import GeminiKeysDialog
+from model.GeminiKeyManager import (
+    GeminiKeyManager, KEYS_CONFIG_KEY, STATUSES_CONFIG_KEY,
+    key_id, merge_statuses, normalize_keys,
+)
+from model.GeminiKeyRecovery import preserve_unedited_keys
 from model.AppTheme import UI_THEME_CONFIG_KEY, apply_ui_theme
+from model.ConfigHotReload import ConfigHotReload
 from PYUI.utility_managers_pyui import (
     AboutDialog,
     GoogleSheetMonitorDialog,
@@ -806,6 +817,12 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
         self.review_status_state = "未启动"
 
         self.init()
+        self.gemini_keys = GeminiKeyManager(self.load_config(), self)
+        self.gemini_save_timer = QtCore.QTimer(self)
+        self.gemini_save_timer.setSingleShot(True)
+        self.gemini_save_timer.setInterval(3000)
+        self.gemini_save_timer.timeout.connect(self.flushGeminiKeyStatus)
+        self.gemini_keys.changed.connect(self.scheduleGeminiKeySave, QtCore.Qt.ConnectionType.QueuedConnection)
         self.setupToolsMenu()
         self.setupNotificationTray()
         self.plugin_host = PluginHost(self)
@@ -819,9 +836,20 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
         self.smart_music_search_plugin = self.plugin_host.install(
             SmartMusicSearchPlugin()
         )
+        self.waste_reminder_plugin = self.plugin_host.install(WasteReminderPlugin())
+        self.cooking_assistant_plugin = self.plugin_host.install(CookingAssistantPlugin())
         self.video_prompt_assistant_plugin = self.plugin_host.install(
             VideoPromptAssistantPlugin()
         )
+        self.facebook_contact_sheet_plugin = None
+        if FacebookContactSheetPlugin is not None:
+            try:
+                self.facebook_contact_sheet_plugin = self.plugin_host.install(
+                    FacebookContactSheetPlugin()
+                )
+            except Exception:
+                self.appendLog("Facebook 分镜插件加载失败，已跳过。", level=logging.ERROR)
+                logging.exception("Facebook 分镜插件加载失败")
         self.material_organizer_plugin = self.plugin_host.install(
             MaterialOrganizerPlugin()
         )
@@ -900,6 +928,13 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
 
         self.audio_settings = self._load_audio_settings()
 
+        self.config_reload = ConfigHotReload(
+            self.config_name, self.dump, self.applyExternalConfig, self.appendLog, self,
+        )
+        self.reload_config_action = self.tools_menu.addAction('重新读取配置文件')
+        self.reload_config_action.setToolTip('安全设置实时应用；AI 模型、后台服务和项目路径不强制热切换')
+        self.reload_config_action.triggered.connect(lambda: self.config_reload.poll(force=True))
+
         if self.app_log_file is not None:
             log_hint = (
                 f"本地日志：{self.app_log_file}\n"
@@ -913,6 +948,9 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
         self.main_menu_bar = QtWidgets.QMenuBar(self)
         self.main_menu_bar.setObjectName('main_menu_bar')
         self.tools_menu = self.main_menu_bar.addMenu('工具')
+        self.gemini_keys_action = self.tools_menu.addAction('AI 密钥管理 · Gemini…')
+        self.gemini_keys_action.setToolTip('所有插件共用的 Gemini Key、可用状态与冷却时间')
+        self.gemini_keys_action.triggered.connect(self.openGeminiKeyManager)
         self.task_submission_audit_action = self.tools_menu.addAction('任务提交表自查')
         self.task_submission_audit_action.setToolTip(
             '按上传历史检查所有任务类型：列出未填写、视频类型为空和重复登记的条目，'
@@ -1948,7 +1986,7 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
 
 
     def appendLog(self, text, end="", level=logging.INFO):
-        content = f"{text}{end}".rstrip("\r\n")
+        content = redact_sensitive_text(f"{text}{end}").rstrip("\r\n")
         if not content:
             return
         self.app_logger.log(level, content)
@@ -2181,6 +2219,59 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
             show_error=show_error,
         )
 
+    def applyExternalConfig(self, previous, current):
+        """Apply a small safe subset, never restart workers/models on file changes."""
+        changed = {key for key in set(previous) | set(current)
+                   if previous.get(key) != current.get(key)}
+        if not changed:
+            return set()
+        applied, retry = set(), set()
+        gemini_fields = {KEYS_CONFIG_KEY, STATUSES_CONFIG_KEY}
+        if changed & gemini_fields:
+            self.gemini_keys.apply_config(current)
+            applied.update(changed & gemini_fields)
+        if 'cooking_assistant' in changed:
+            self.cooking_assistant_plugin.apply_settings(current)
+            applied.add('cooking_assistant')
+        if UI_THEME_CONFIG_KEY in changed:
+            apply_ui_theme(QtWidgets.QApplication.instance(), current.get(UI_THEME_CONFIG_KEY))
+            applied.add(UI_THEME_CONFIG_KEY)
+        audio_keys = {'audio_settings', 'task_audio_subtitle', 'audio_use_task_name',
+                      'subtitle_include_line_breaks', 'subtitle_max_words_per_block', 'subtitle_block_gap_ms'}
+        if changed & audio_keys:
+            if self.task_audio_subtitle_plugin.is_running():
+                retry.update(changed & audio_keys)
+            else:
+                self.task_audio_subtitle_plugin.apply_settings(current)
+                self.audio_settings = self._load_audio_settings()
+                applied.update(changed & audio_keys)
+        if 'waste_reminder' in changed:
+            if self.waste_reminder_plugin.is_updating():
+                retry.add('waste_reminder')
+            else:
+                self.waste_reminder_plugin.apply_settings(current)
+                applied.add('waste_reminder')
+        if 'config_hot_reload' in changed:
+            applied.add('config_hot_reload')
+        # These are already read directly from disk when a new operation starts.
+        dynamic = {'daily_quantity_sheet_url', 'task_submission_sheet_url', 'elevenlabs_api_keys',
+                   'elevenlabs_api_key_statuses', 'task_table_schema'}
+        applied.update(changed & dynamic)
+        deferred = changed - applied - retry
+        parts = []
+        if applied:
+            parts.append('已安全更新：' + '、'.join(sorted(applied)))
+        if retry:
+            parts.append('任务完成后自动应用：' + '、'.join(sorted(retry)))
+        if deferred:
+            parts.append('其他配置已保留在文件中，请重启后生效：' + '、'.join(sorted(deferred)))
+        note = '；'.join(parts)
+        if note != getattr(self, '_config_reload_last_note', None):
+            self._config_reload_last_note = note
+            self.appendLog('[配置热更新] ' + note)
+            self.showDesktopNotification('检测到配置文件更新', note)
+        return retry
+
     def openSettings(self, focus_daily_quantity=False):
         """打开设置对话框"""
         previous_config = self.load_config()
@@ -2190,7 +2281,19 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
             focus_daily_quantity=focus_daily_quantity,
         )
         if settings:
+            if isinstance(getattr(self, 'config_reload', None), ConfigHotReload):
+                QtCore.QTimer.singleShot(0, self.config_reload.note_written)
             current_config = self.load_config()
+            self.gemini_keys.apply_config(current_config)
+            changed_fields = {k for k in set(previous_config) | set(current_config)
+                              if previous_config.get(k) != current_config.get(k)}
+            if changed_fields and changed_fields <= {KEYS_CONFIG_KEY, STATUSES_CONFIG_KEY}:
+                self.appendLog('[AI 密钥] Gemini 配置已更新，无需重启插件或模型。')
+                return
+            if changed_fields and changed_fields <= {'cooking_assistant'}:
+                self.cooking_assistant_plugin.apply_settings(current_config)
+                self.appendLog('[做饭小助手] 设置已更新；新模型从下一次生成开始使用。')
+                return
             previous_other = dict(previous_config)
             current_other = dict(current_config)
             previous_url = previous_other.pop("daily_quantity_sheet_url", "")
@@ -2382,18 +2485,79 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
         if self.load_task_hotkey_manager is not None:
             self.load_task_hotkey_manager.close()
         self.plugin_host.stop_all()
+        self.gemini_save_timer.stop()
+        if hasattr(self, 'config_reload'):
+            self.config_reload.timer.stop()
         if self.notification_tray_icon is not None:
             self.notification_tray_icon.hide()
               
         super().closeEvent(event)
 
-    def saveCurrentConfig(self):
+    def openGeminiKeyManager(self):
+        dialog = GeminiKeysDialog(parent=self, config=self.gemini_keys.snapshot())
+        if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
+            return False
+        if not self.saveCurrentConfig(gemini_config=dialog.get_config()):
+            return False
+        self.appendLog(f'[AI 密钥] Gemini 配置已保存，共 {len(self.gemini_keys.snapshot()[KEYS_CONFIG_KEY])} 个 Key。')
+        return True
+
+    @QtCore.pyqtSlot()
+    def scheduleGeminiKeySave(self):
+        # Worker feedback is queued to this main-thread slot.
+        if not self.gemini_save_timer.isActive():
+            self.gemini_save_timer.start()
+
+    @QtCore.pyqtSlot()
+    def flushGeminiKeyStatus(self):
+        if not self.gemini_keys.dirty:
+            return
+        if QtWidgets.QApplication.activeModalWidget() is not None:
+            self.gemini_save_timer.start()
+            return
+        if not self.saveCurrentConfig(show_errors=False) or self.gemini_keys.dirty:
+            self.gemini_save_timer.start(15000)
+
+    def saveCurrentConfig(self, show_errors=True, gemini_config=None):
         temp_path = f'{self.config_name}.main.tmp'
         try:
+            gemini_revision = self.gemini_keys.revision
             config = self.dump()
+            if gemini_config is not None:
+                config[KEYS_CONFIG_KEY] = gemini_config[KEYS_CONFIG_KEY]
+                config[STATUSES_CONFIG_KEY] = merge_statuses(config.get(STATUSES_CONFIG_KEY),
+                                                            gemini_config.get(STATUSES_CONFIG_KEY))
+            local_statuses = config.get(STATUSES_CONFIG_KEY, {})
+            if hasattr(self, 'config_reload'):
+                config, conflicts = self.config_reload.merge_for_save(config)
+                config[STATUSES_CONFIG_KEY] = merge_statuses(config.get(STATUSES_CONFIG_KEY), local_statuses)
+                conflicts = [field for field in conflicts if not field.startswith(STATUSES_CONFIG_KEY + '.')
+                             and field != STATUSES_CONFIG_KEY]
+                if conflicts:
+                    self.appendLog('[配置] 同时修改的字段：' + '、'.join(conflicts), level=logging.WARNING)
+                    if show_errors:
+                        QMessageBox.warning(self, '配置存在并发修改',
+                            '外部程序和当前窗口同时修改了同一设置，未覆盖任何配置。\n'
+                            '请重新读取配置后再修改：' + '、'.join(conflicts))
+                    return False
+            if gemini_config is None and os.path.exists(self.config_name):
+                with open(self.config_name, 'r', encoding='utf-8-sig') as disk_file:
+                    disk_config = json.load(disk_file)
+                if preserve_unedited_keys(config, disk_config):
+                    self.appendLog('[AI 密钥] 已阻止自动保存清空 Gemini Key，保留磁盘中的配置。', level=logging.WARNING)
+            config[KEYS_CONFIG_KEY] = normalize_keys(config.get(KEYS_CONFIG_KEY, []))
+            configured_ids = {key_id(key) for key in config[KEYS_CONFIG_KEY]}
+            config[STATUSES_CONFIG_KEY] = {k: v for k, v in config.get(STATUSES_CONFIG_KEY, {}).items()
+                                           if k in configured_ids}
             with open(temp_path, 'w', encoding='utf-8') as config_file:
                 json.dump(config, config_file, indent=4, ensure_ascii=False)
+            if hasattr(self, 'config_reload'):
+                self.config_reload.check_before_commit()
             os.replace(temp_path, self.config_name)
+            self.gemini_keys.apply_config(config)
+            self.gemini_keys.mark_saved(gemini_revision)
+            if hasattr(self, 'config_reload'):
+                self.config_reload.note_written()
             return True
         except (OSError, ValueError, TypeError) as error:
             try:
@@ -2401,7 +2565,9 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
                     os.remove(temp_path)
             except OSError:
                 pass
-            QMessageBox.critical(self, '配置保存失败', str(error))
+            self.appendLog(f'[配置] 保存失败：{type(error).__name__}: {error}', level=logging.ERROR)
+            if show_errors:
+                QMessageBox.critical(self, '配置保存失败', str(error))
             return False
 
     def dump(self):
@@ -2426,6 +2592,7 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
             self.flow_guard_settings
         )
         self.plugin_host.update_runtime_config(existing_config)
+        self.gemini_keys.update_config(existing_config)
         
         return existing_config
 
@@ -2718,5 +2885,3 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
 
     def printEmit(self,text,end='\n'):
         self.printSignal.emit(text,end)
-
-

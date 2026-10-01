@@ -1,6 +1,7 @@
 import os
 import unittest
-from unittest.mock import patch
+from copy import deepcopy
+from unittest.mock import MagicMock, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -121,6 +122,133 @@ class DaVinciRemoteTests(unittest.TestCase):
         self.assertEqual(result["video_tracks"], [
             {"track": 1, "count": 3}, {"track": 2, "count": 1},
         ])
+
+    def test_connect_reads_fresh_timeline_without_foregrounding_resolve(self):
+        old, current = object(), object()
+        api = MagicMock()
+        resolve = api.scriptapp.return_value
+        project = resolve.GetProjectManager.return_value.GetCurrentProject.return_value
+        project.GetCurrentTimeline.side_effect = [old, current]
+        with patch.object(davinci_remote_worker, "_resolve_module", return_value=api), \
+                patch.object(davinci_remote_worker.time, "sleep"), \
+                patch("ctypes.WinDLL", create=True) as win_api:
+            result = davinci_remote_worker._current_timeline()
+        win_api.assert_not_called()
+        self.assertIs(result[2], current)
+        self.assertEqual(project.GetCurrentTimeline.call_count, 2)
+
+    def test_node_presets_survive_restart_and_keep_other_settings(self):
+        self.plugin.settings["export"] = {"category": "reels"}
+        self.window.config["unrelated"] = "keep"
+        entry = self.plugin.save_fusion_preset("常用动画", "{ Tools = {} }", {
+            "entries": ["A.Input"], "exit": "A.Output", "track": 8, "clip_keys": ["old"],
+        })
+        self.assertEqual(self.window.config["unrelated"], "keep")
+        self.assertEqual(self.plugin.settings["export"], {"category": "reels"})
+        self.assertNotIn("track", entry)
+        self.assertNotIn("clip_keys", entry)
+        window = FakeWindow()
+        window.config = deepcopy(self.window.config)
+        window.plugin_host = PluginHost(window)
+        try:
+            reopened = window.plugin_host.install(DaVinciRemotePlugin())
+            self.assertEqual(reopened.fusion_presets(), [entry])
+            copy = reopened.fusion_presets()
+            copy[0]["text"] = "must not mutate"
+            self.assertEqual(reopened.fusion_presets()[0]["text"], entry["text"])
+        finally:
+            window.close()
+
+    def test_node_preset_overwrite_rename_delete_and_validation(self):
+        with self.assertRaises(ValueError):
+            self.plugin.save_fusion_preset("", "nodes")
+        with self.assertRaises(ValueError):
+            self.plugin.save_fusion_preset("name", "  ")
+        original = self.plugin.save_fusion_preset("Zoom", "one")
+        replaced = self.plugin.save_fusion_preset("zoom", "two")
+        self.assertEqual(original["id"], replaced["id"])
+        self.assertEqual(len(self.plugin.fusion_presets()), 1)
+        second = self.plugin.save_fusion_preset("second", "three")
+        with self.assertRaises(ValueError):
+            self.plugin.rename_fusion_preset(second["id"], "ZOOM")
+        self.plugin.rename_fusion_preset(second["id"], "renamed")
+        self.assertEqual(self.plugin.fusion_presets()[1]["name"], "renamed")
+        self.assertTrue(self.plugin.delete_fusion_preset(original["id"]))
+        self.assertFalse(self.plugin.delete_fusion_preset(original["id"]))
+        self.assertEqual(len(self.plugin.fusion_presets()), 1)
+
+    def test_failed_node_preset_save_restores_in_memory_library(self):
+        self.plugin.save_fusion_preset("original", "nodes")
+        before = deepcopy(self.plugin.settings)
+        with patch.object(self.plugin.context, "save_config", return_value=False):
+            with self.assertRaises(RuntimeError):
+                self.plugin.save_fusion_preset("new", "different")
+        self.assertEqual(self.plugin.settings, before)
+        with patch.object(self.plugin.context, "save_config", side_effect=OSError("disk full")):
+            with self.assertRaises(OSError):
+                self.plugin.delete_fusion_preset(self.plugin.fusion_presets()[0]["id"])
+        self.assertEqual(self.plugin.settings, before)
+
+    def _fusion_preview_result(self):
+        return {
+            "inputs": ["A.Input", "B.Foreground"], "outputs": ["A.Output", "B.Output"],
+            "nodes": ["A (Transform)", "B (Merge)"], "internal_links": [],
+            "allowed_exits": {"A.Input": ["A.Output", "B.Output"], "B.Foreground": ["B.Output"]},
+            "project": "new timeline", "track": 1, "digest": "digest",
+            "clips": [{"name": "new clip", "key": "fresh", "status": "可应用"}],
+        }
+
+    def test_loading_node_preset_is_offline_and_restores_ports_after_fresh_preview(self):
+        entry = self.plugin.save_fusion_preset("动画", "nodes", {
+            "entries": ["B.Foreground"], "exit": "B.Output",
+        })
+        dialog = DaVinciRemoteDialog(self.plugin, self.window)
+        self.plugin.dialog = dialog
+        dialog.fusion_presets.setCurrentIndex(dialog.fusion_presets.findData(entry["id"]))
+        with patch.object(dialog, "_start") as start:
+            dialog._load_fusion_preset()
+        start.assert_not_called()
+        self.assertEqual(dialog.fusion_text.toPlainText(), "nodes")
+        self.assertFalse(dialog.fusion_apply.isEnabled())
+        dialog._handle_result("fusion_preview", self._fusion_preview_result())
+        self.assertEqual(dialog._selected_fusion_entries(), ["B.Foreground"])
+        self.assertEqual(dialog.fusion_exit.currentData(), "B.Output")
+        self.assertTrue(dialog.fusion_apply.isEnabled())
+        dialog.fusion_track.setValue(2)
+        self.assertFalse(dialog.fusion_apply.isEnabled())
+        dialog._handle_result("fusion_preview", self._fusion_preview_result())
+        self.assertEqual(dialog._selected_fusion_entries(), ["B.Foreground"])
+        dialog.fusion_text.setPlainText("edited nodes")
+        self.assertIsNone(dialog._fusion_pending_mapping)
+        self.assertFalse(dialog.fusion_apply.isEnabled())
+
+    def test_save_node_ui_keeps_mapping_and_cancelled_overwrite_does_not_save(self):
+        dialog = DaVinciRemoteDialog(self.plugin, self.window)
+        self.plugin.dialog = dialog
+        dialog.fusion_text.setPlainText("nodes")
+        dialog._handle_result("fusion_preview", self._fusion_preview_result())
+        with patch.object(QtWidgets.QInputDialog, "getText", return_value=("动画", True)):
+            dialog._save_fusion_preset()
+        entry = self.plugin.fusion_presets()[0]
+        self.assertEqual(entry["entries"], ["A.Input"])
+        self.assertEqual(entry["exit"], "A.Output")
+        dialog.fusion_text.setPlainText("changed nodes")
+        with patch.object(QtWidgets.QInputDialog, "getText", return_value=("动画", True)), \
+                patch.object(QtWidgets.QMessageBox, "question", return_value=QtWidgets.QMessageBox.StandardButton.No):
+            dialog._save_fusion_preset()
+        self.assertEqual(self.plugin.fusion_presets()[0], entry)
+
+    def test_node_preset_with_missing_output_does_not_silently_apply(self):
+        entry = self.plugin.save_fusion_preset("动画", "nodes", {
+            "entries": ["A.Input"], "exit": "Missing.Output",
+        })
+        dialog = DaVinciRemoteDialog(self.plugin, self.window)
+        self.plugin.dialog = dialog
+        dialog.fusion_presets.setCurrentIndex(dialog.fusion_presets.findData(entry["id"]))
+        dialog._load_fusion_preset()
+        dialog._handle_result("fusion_preview", self._fusion_preview_result())
+        self.assertFalse(dialog.fusion_apply.isEnabled())
+        self.assertIsNone(dialog.fusion_exit.currentData())
 
     def test_fusion_tab_requires_fresh_preview_and_passes_selected_ports(self):
         dialog = DaVinciRemoteDialog(self.plugin, self.window)

@@ -1,7 +1,15 @@
 from .audio_splitter import AudioSplitterPlugin
 from .chrome_launcher import ChromeLauncherPlugin
 from .codex_account_switcher import CodexAccountSwitcherPlugin
+from .cooking_assistant import CookingAssistantPlugin
 from .daily_tasks import DailyTasksPlugin
+try:
+    from .facebook_contact_sheet import FacebookContactSheetPlugin
+except ModuleNotFoundError as exc:
+    # This experimental built-in can be removed without disabling the host.
+    if exc.name != "app_plugins.builtin.facebook_contact_sheet":
+        raise
+    FacebookContactSheetPlugin = None
 from .davinci_remote import DaVinciRemotePlugin
 from .inventory import InventoryPlugin
 from .image_classifier import ImageClassifierPlugin
@@ -13,12 +21,15 @@ from .smart_music_search import SmartMusicSearchPlugin
 from .video_prompt_assistant import VideoPromptAssistantPlugin
 from .task_audio_subtitle import TaskAudioSubtitlePlugin
 from .task_delivery import TaskDeliveryPlugin
+from .waste_reminder import WasteReminderPlugin
 
 __all__ = [
     "AudioSplitterPlugin",
     "ChromeLauncherPlugin",
     "CodexAccountSwitcherPlugin",
+    "CookingAssistantPlugin",
     "DailyTasksPlugin",
+    "FacebookContactSheetPlugin",
     "DaVinciRemotePlugin",
     "InventoryPlugin",
     "ImageClassifierPlugin",
@@ -30,4 +41,5 @@ __all__ = [
     "VideoPromptAssistantPlugin",
     "TaskAudioSubtitlePlugin",
     "TaskDeliveryPlugin",
+    "WasteReminderPlugin",
 ]

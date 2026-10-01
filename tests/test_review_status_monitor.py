@@ -169,6 +169,11 @@ class ReviewResubmissionTests(unittest.TestCase):
         rows, tracked = self._plan(other)
         self.assertEqual((rows, tracked), ([], []))
 
+    def test_explicit_no_review_in_final_list_overrides_old_review_link(self):
+        rows, tracked = self._plan(dict(self.record, review_routed=False,
+                                       final_review_decision="normal_upload"))
+        self.assertEqual((rows, tracked), ([], []))
+
     def test_retry_after_sheet_failure_adds_new_version_once(self):
         key = canonical_review_link(self.link)
         history = {"items": {key: {
@@ -199,6 +204,10 @@ class ReviewResubmissionTests(unittest.TestCase):
         self.assertFalse(pending[0]["review_routed"])
         rows, _ = self._plan(pending[0], history=history)
         self.assertEqual(len(rows), 1)
+        ledger["records"][0]["final_review_decision"] = "normal_upload"
+        with mock.patch("model.TaskResultOrganizer.read_review_history", return_value=history), \
+             mock.patch("model.TaskResultOrganizer.load_video_upload_history", return_value=ledger):
+            self.assertEqual(pending_review_recovery_records(config), [])
 
     def test_resubmission_resets_previous_approval_once(self):
         with tempfile.TemporaryDirectory() as temp_dir:

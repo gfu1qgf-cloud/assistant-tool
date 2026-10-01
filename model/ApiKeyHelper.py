@@ -6,6 +6,7 @@ import time
 import urllib.request
 from datetime import datetime
 from pathlib import Path
+from model.SensitiveData import register_sensitive_values
 
 
 API_KEY_STATUSES_CONFIG_KEY = 'elevenlabs_api_key_statuses'
@@ -31,6 +32,7 @@ def normalize_api_keys(value):
         if key and key not in seen:
             keys.append(key)
             seen.add(key)
+    register_sensitive_values(keys)
     return keys
 
 

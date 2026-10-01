@@ -1,0 +1,1199 @@
+{
+  "schema_version": 1,
+  "commune": "Valle Lomellina (PV)",
+  "year": 2026,
+  "timezone": "Europe/Rome",
+  "provider": "TeknoService",
+  "verified_on": "2026-10-01",
+  "exposure": {
+    "from": "22:00",
+    "until": "06:00"
+  },
+  "types": {
+    "carta": {
+      "it": "Carta e Cartone",
+      "zh": "纸和纸板",
+      "emoji": "📦"
+    },
+    "umido": {
+      "it": "Umido / Organico",
+      "zh": "厨余垃圾",
+      "emoji": "🍎"
+    },
+    "plastica": {
+      "it": "Plastica",
+      "zh": "塑料包装",
+      "emoji": "🧴"
+    },
+    "vetro": {
+      "it": "Vetro e Lattine",
+      "zh": "玻璃和金属罐",
+      "emoji": "🍾"
+    },
+    "secco": {
+      "it": "Secco / Indifferenziato",
+      "zh": "其他不可回收垃圾",
+      "emoji": "🗑️"
+    },
+    "verde": {
+      "it": "Verde",
+      "zh": "园林垃圾",
+      "emoji": "🌿"
+    },
+    "pannolini": {
+      "it": "Pannolini",
+      "zh": "尿布专项收运（请确认适用性）",
+      "emoji": "👶",
+      "optional": true
+    }
+  },
+  "sources": [
+    {
+      "title": "TeknoService 官方年度日历（含分类说明）",
+      "file": "sources/valle_lomellina_2026.pdf",
+      "url": "https://teknoserviceitalia.b-cdn.net/wp-content/uploads/2025/12/Calendario-raccolta-rifiuti-2026-VALLE-LOMELLINA.pdf",
+      "sha256": "319c97fcd820394c02bee3ecb8e13c3cfa658ffacd21fe3a55bf068e6afda5ff"
+    },
+    {
+      "title": "Comune 官方日历图片",
+      "file": "sources/comune_calendar_2026.jpg",
+      "url": "https://www.comune.vallelomellina.pv.it/it-it/download/calendario-414824-4-1505-62c17669ba75c826672a734dda3ac1ef",
+      "sha256": "7f95a08ed4762b3f4a61b7357abb12d0de7300085486ff4eddcb3b67ad2b0e87"
+    },
+    {
+      "title": "Comune 官方分类说明图片",
+      "file": "sources/comune_instructions_2026.jpg",
+      "url": "https://www.comune.vallelomellina.pv.it/it-it/download/istruzioni-414825-4-1505-297d28c27a2a1199bee8c97a406836a2",
+      "sha256": "5dec03e20843bb9df45ea710acf898f5eb2e1698ef80ea4e5341ce491c979cea"
+    },
+    {
+      "title": "2026 年 7 月起禁止黑袋：新通知优先于旧图例",
+      "file": "sources/notice_black_bags_2026.pdf",
+      "url": "https://www.teknoserviceitalia.com/wp-content/uploads/2026/05/Avviso-sacchi-neri-Valle-lomellina-1.pdf",
+      "sha256": "a4048ffd7e91a1d7ec1c17a8ef96a88bffaabcb083f9881301a5b6df07436484"
+    },
+    {
+      "title": "TeknoService 当地服务网页",
+      "file": "sources/teknoservice_local_page.html",
+      "url": "https://www.teknoserviceitalia.com/lombardia/pavia/valle-lomellina/",
+      "sha256": "8b94286c727843b159abf0758876d8bc643c874017ce4eb989bf2722e0f9baf6"
+    }
+  ],
+  "dates": {
+    "2026-01-01": [],
+    "2026-01-02": [
+      "umido",
+      "plastica"
+    ],
+    "2026-01-03": [
+      "pannolini"
+    ],
+    "2026-01-04": [],
+    "2026-01-05": [
+      "umido"
+    ],
+    "2026-01-06": [
+      "secco"
+    ],
+    "2026-01-07": [
+      "carta"
+    ],
+    "2026-01-08": [
+      "umido"
+    ],
+    "2026-01-09": [
+      "plastica"
+    ],
+    "2026-01-10": [
+      "pannolini"
+    ],
+    "2026-01-11": [],
+    "2026-01-12": [
+      "umido"
+    ],
+    "2026-01-13": [
+      "secco",
+      "vetro"
+    ],
+    "2026-01-14": [
+      "carta"
+    ],
+    "2026-01-15": [
+      "umido"
+    ],
+    "2026-01-16": [
+      "plastica"
+    ],
+    "2026-01-17": [
+      "pannolini"
+    ],
+    "2026-01-18": [],
+    "2026-01-19": [
+      "umido"
+    ],
+    "2026-01-20": [
+      "secco"
+    ],
+    "2026-01-21": [
+      "carta"
+    ],
+    "2026-01-22": [
+      "umido"
+    ],
+    "2026-01-23": [
+      "plastica"
+    ],
+    "2026-01-24": [
+      "pannolini"
+    ],
+    "2026-01-25": [],
+    "2026-01-26": [
+      "umido",
+      "verde"
+    ],
+    "2026-01-27": [
+      "secco",
+      "vetro"
+    ],
+    "2026-01-28": [
+      "carta"
+    ],
+    "2026-01-29": [
+      "umido"
+    ],
+    "2026-01-30": [
+      "plastica"
+    ],
+    "2026-01-31": [
+      "pannolini"
+    ],
+    "2026-02-01": [],
+    "2026-02-02": [
+      "umido"
+    ],
+    "2026-02-03": [
+      "secco"
+    ],
+    "2026-02-04": [
+      "carta"
+    ],
+    "2026-02-05": [
+      "umido"
+    ],
+    "2026-02-06": [
+      "plastica"
+    ],
+    "2026-02-07": [
+      "pannolini"
+    ],
+    "2026-02-08": [],
+    "2026-02-09": [
+      "umido"
+    ],
+    "2026-02-10": [
+      "secco",
+      "vetro"
+    ],
+    "2026-02-11": [
+      "carta"
+    ],
+    "2026-02-12": [
+      "umido"
+    ],
+    "2026-02-13": [
+      "plastica"
+    ],
+    "2026-02-14": [
+      "pannolini"
+    ],
+    "2026-02-15": [],
+    "2026-02-16": [
+      "umido"
+    ],
+    "2026-02-17": [
+      "secco"
+    ],
+    "2026-02-18": [
+      "carta"
+    ],
+    "2026-02-19": [
+      "umido"
+    ],
+    "2026-02-20": [
+      "plastica"
+    ],
+    "2026-02-21": [
+      "pannolini"
+    ],
+    "2026-02-22": [],
+    "2026-02-23": [
+      "umido",
+      "verde"
+    ],
+    "2026-02-24": [
+      "secco",
+      "vetro"
+    ],
+    "2026-02-25": [
+      "carta"
+    ],
+    "2026-02-26": [
+      "umido"
+    ],
+    "2026-02-27": [
+      "plastica"
+    ],
+    "2026-02-28": [
+      "pannolini"
+    ],
+    "2026-03-01": [],
+    "2026-03-02": [
+      "umido",
+      "verde"
+    ],
+    "2026-03-03": [
+      "secco"
+    ],
+    "2026-03-04": [
+      "carta"
+    ],
+    "2026-03-05": [
+      "umido"
+    ],
+    "2026-03-06": [
+      "plastica"
+    ],
+    "2026-03-07": [
+      "pannolini"
+    ],
+    "2026-03-08": [],
+    "2026-03-09": [
+      "umido"
+    ],
+    "2026-03-10": [
+      "secco",
+      "vetro"
+    ],
+    "2026-03-11": [
+      "carta"
+    ],
+    "2026-03-12": [
+      "umido"
+    ],
+    "2026-03-13": [
+      "plastica"
+    ],
+    "2026-03-14": [
+      "pannolini"
+    ],
+    "2026-03-15": [],
+    "2026-03-16": [
+      "umido",
+      "verde"
+    ],
+    "2026-03-17": [
+      "secco"
+    ],
+    "2026-03-18": [
+      "carta"
+    ],
+    "2026-03-19": [
+      "umido"
+    ],
+    "2026-03-20": [
+      "plastica"
+    ],
+    "2026-03-21": [
+      "pannolini"
+    ],
+    "2026-03-22": [],
+    "2026-03-23": [
+      "umido"
+    ],
+    "2026-03-24": [
+      "secco",
+      "vetro"
+    ],
+    "2026-03-25": [
+      "carta"
+    ],
+    "2026-03-26": [
+      "umido"
+    ],
+    "2026-03-27": [
+      "plastica"
+    ],
+    "2026-03-28": [
+      "pannolini"
+    ],
+    "2026-03-29": [],
+    "2026-03-30": [
+      "umido",
+      "verde"
+    ],
+    "2026-03-31": [
+      "secco"
+    ],
+    "2026-04-01": [
+      "carta"
+    ],
+    "2026-04-02": [
+      "umido"
+    ],
+    "2026-04-03": [
+      "plastica"
+    ],
+    "2026-04-04": [
+      "pannolini"
+    ],
+    "2026-04-05": [],
+    "2026-04-06": [
+      "umido"
+    ],
+    "2026-04-07": [
+      "secco",
+      "vetro"
+    ],
+    "2026-04-08": [
+      "carta"
+    ],
+    "2026-04-09": [
+      "umido"
+    ],
+    "2026-04-10": [
+      "plastica"
+    ],
+    "2026-04-11": [
+      "pannolini"
+    ],
+    "2026-04-12": [],
+    "2026-04-13": [
+      "umido",
+      "verde"
+    ],
+    "2026-04-14": [
+      "secco"
+    ],
+    "2026-04-15": [
+      "carta"
+    ],
+    "2026-04-16": [
+      "umido"
+    ],
+    "2026-04-17": [
+      "plastica"
+    ],
+    "2026-04-18": [
+      "pannolini"
+    ],
+    "2026-04-19": [],
+    "2026-04-20": [
+      "umido"
+    ],
+    "2026-04-21": [
+      "secco",
+      "vetro"
+    ],
+    "2026-04-22": [
+      "carta"
+    ],
+    "2026-04-23": [
+      "umido"
+    ],
+    "2026-04-24": [
+      "plastica"
+    ],
+    "2026-04-25": [
+      "pannolini"
+    ],
+    "2026-04-26": [],
+    "2026-04-27": [
+      "umido",
+      "verde"
+    ],
+    "2026-04-28": [
+      "secco"
+    ],
+    "2026-04-29": [
+      "carta"
+    ],
+    "2026-04-30": [
+      "umido",
+      "plastica"
+    ],
+    "2026-05-01": [],
+    "2026-05-02": [
+      "pannolini"
+    ],
+    "2026-05-03": [],
+    "2026-05-04": [
+      "umido"
+    ],
+    "2026-05-05": [
+      "secco",
+      "vetro"
+    ],
+    "2026-05-06": [
+      "carta"
+    ],
+    "2026-05-07": [
+      "umido"
+    ],
+    "2026-05-08": [
+      "plastica"
+    ],
+    "2026-05-09": [
+      "pannolini"
+    ],
+    "2026-05-10": [],
+    "2026-05-11": [
+      "umido",
+      "verde"
+    ],
+    "2026-05-12": [
+      "secco"
+    ],
+    "2026-05-13": [
+      "carta"
+    ],
+    "2026-05-14": [
+      "umido"
+    ],
+    "2026-05-15": [
+      "plastica"
+    ],
+    "2026-05-16": [
+      "pannolini"
+    ],
+    "2026-05-17": [],
+    "2026-05-18": [
+      "umido"
+    ],
+    "2026-05-19": [
+      "secco",
+      "vetro"
+    ],
+    "2026-05-20": [
+      "carta"
+    ],
+    "2026-05-21": [
+      "umido"
+    ],
+    "2026-05-22": [
+      "plastica"
+    ],
+    "2026-05-23": [
+      "pannolini"
+    ],
+    "2026-05-24": [],
+    "2026-05-25": [
+      "umido",
+      "verde"
+    ],
+    "2026-05-26": [
+      "secco"
+    ],
+    "2026-05-27": [
+      "carta"
+    ],
+    "2026-05-28": [
+      "umido"
+    ],
+    "2026-05-29": [
+      "plastica"
+    ],
+    "2026-05-30": [
+      "pannolini"
+    ],
+    "2026-05-31": [],
+    "2026-06-01": [
+      "umido"
+    ],
+    "2026-06-02": [
+      "secco",
+      "vetro"
+    ],
+    "2026-06-03": [
+      "carta"
+    ],
+    "2026-06-04": [
+      "umido"
+    ],
+    "2026-06-05": [
+      "plastica"
+    ],
+    "2026-06-06": [
+      "pannolini"
+    ],
+    "2026-06-07": [],
+    "2026-06-08": [
+      "umido",
+      "verde"
+    ],
+    "2026-06-09": [
+      "secco"
+    ],
+    "2026-06-10": [
+      "carta"
+    ],
+    "2026-06-11": [
+      "umido"
+    ],
+    "2026-06-12": [
+      "plastica"
+    ],
+    "2026-06-13": [
+      "pannolini"
+    ],
+    "2026-06-14": [],
+    "2026-06-15": [
+      "umido"
+    ],
+    "2026-06-16": [
+      "secco",
+      "vetro"
+    ],
+    "2026-06-17": [
+      "carta"
+    ],
+    "2026-06-18": [
+      "umido"
+    ],
+    "2026-06-19": [
+      "plastica"
+    ],
+    "2026-06-20": [
+      "pannolini"
+    ],
+    "2026-06-21": [],
+    "2026-06-22": [
+      "umido",
+      "verde"
+    ],
+    "2026-06-23": [
+      "secco"
+    ],
+    "2026-06-24": [
+      "carta"
+    ],
+    "2026-06-25": [
+      "umido"
+    ],
+    "2026-06-26": [
+      "plastica"
+    ],
+    "2026-06-27": [
+      "pannolini"
+    ],
+    "2026-06-28": [],
+    "2026-06-29": [
+      "umido"
+    ],
+    "2026-06-30": [
+      "secco",
+      "vetro"
+    ],
+    "2026-07-01": [
+      "carta"
+    ],
+    "2026-07-02": [
+      "umido"
+    ],
+    "2026-07-03": [
+      "plastica"
+    ],
+    "2026-07-04": [
+      "pannolini"
+    ],
+    "2026-07-05": [],
+    "2026-07-06": [
+      "umido",
+      "verde"
+    ],
+    "2026-07-07": [
+      "secco"
+    ],
+    "2026-07-08": [
+      "carta"
+    ],
+    "2026-07-09": [
+      "umido"
+    ],
+    "2026-07-10": [
+      "plastica"
+    ],
+    "2026-07-11": [
+      "pannolini"
+    ],
+    "2026-07-12": [],
+    "2026-07-13": [
+      "umido"
+    ],
+    "2026-07-14": [
+      "secco",
+      "vetro"
+    ],
+    "2026-07-15": [
+      "carta"
+    ],
+    "2026-07-16": [
+      "umido"
+    ],
+    "2026-07-17": [
+      "plastica"
+    ],
+    "2026-07-18": [
+      "pannolini"
+    ],
+    "2026-07-19": [],
+    "2026-07-20": [
+      "umido",
+      "verde"
+    ],
+    "2026-07-21": [
+      "secco"
+    ],
+    "2026-07-22": [
+      "carta"
+    ],
+    "2026-07-23": [
+      "umido"
+    ],
+    "2026-07-24": [
+      "plastica"
+    ],
+    "2026-07-25": [
+      "pannolini"
+    ],
+    "2026-07-26": [],
+    "2026-07-27": [
+      "umido"
+    ],
+    "2026-07-28": [
+      "secco",
+      "vetro"
+    ],
+    "2026-07-29": [
+      "carta"
+    ],
+    "2026-07-30": [
+      "umido"
+    ],
+    "2026-07-31": [
+      "plastica"
+    ],
+    "2026-08-01": [
+      "pannolini"
+    ],
+    "2026-08-02": [],
+    "2026-08-03": [
+      "umido",
+      "verde"
+    ],
+    "2026-08-04": [
+      "secco"
+    ],
+    "2026-08-05": [
+      "carta"
+    ],
+    "2026-08-06": [
+      "umido"
+    ],
+    "2026-08-07": [
+      "plastica"
+    ],
+    "2026-08-08": [
+      "pannolini"
+    ],
+    "2026-08-09": [],
+    "2026-08-10": [
+      "umido"
+    ],
+    "2026-08-11": [
+      "secco",
+      "vetro"
+    ],
+    "2026-08-12": [
+      "carta"
+    ],
+    "2026-08-13": [
+      "umido"
+    ],
+    "2026-08-14": [
+      "plastica"
+    ],
+    "2026-08-15": [],
+    "2026-08-16": [],
+    "2026-08-17": [
+      "umido",
+      "verde"
+    ],
+    "2026-08-18": [
+      "secco"
+    ],
+    "2026-08-19": [
+      "carta"
+    ],
+    "2026-08-20": [
+      "umido"
+    ],
+    "2026-08-21": [
+      "plastica"
+    ],
+    "2026-08-22": [
+      "pannolini"
+    ],
+    "2026-08-23": [],
+    "2026-08-24": [
+      "umido"
+    ],
+    "2026-08-25": [
+      "secco",
+      "vetro"
+    ],
+    "2026-08-26": [
+      "carta"
+    ],
+    "2026-08-27": [
+      "umido"
+    ],
+    "2026-08-28": [
+      "plastica"
+    ],
+    "2026-08-29": [
+      "pannolini"
+    ],
+    "2026-08-30": [],
+    "2026-08-31": [
+      "umido",
+      "verde"
+    ],
+    "2026-09-01": [
+      "secco"
+    ],
+    "2026-09-02": [
+      "carta"
+    ],
+    "2026-09-03": [
+      "umido"
+    ],
+    "2026-09-04": [
+      "plastica"
+    ],
+    "2026-09-05": [
+      "pannolini"
+    ],
+    "2026-09-06": [],
+    "2026-09-07": [
+      "umido"
+    ],
+    "2026-09-08": [
+      "secco",
+      "vetro"
+    ],
+    "2026-09-09": [
+      "carta"
+    ],
+    "2026-09-10": [
+      "umido"
+    ],
+    "2026-09-11": [
+      "plastica"
+    ],
+    "2026-09-12": [
+      "pannolini"
+    ],
+    "2026-09-13": [],
+    "2026-09-14": [
+      "umido",
+      "verde"
+    ],
+    "2026-09-15": [
+      "secco"
+    ],
+    "2026-09-16": [
+      "carta"
+    ],
+    "2026-09-17": [
+      "umido"
+    ],
+    "2026-09-18": [
+      "plastica"
+    ],
+    "2026-09-19": [
+      "pannolini"
+    ],
+    "2026-09-20": [],
+    "2026-09-21": [
+      "umido"
+    ],
+    "2026-09-22": [
+      "secco",
+      "vetro"
+    ],
+    "2026-09-23": [
+      "carta"
+    ],
+    "2026-09-24": [
+      "umido"
+    ],
+    "2026-09-25": [
+      "plastica"
+    ],
+    "2026-09-26": [
+      "pannolini"
+    ],
+    "2026-09-27": [],
+    "2026-09-28": [
+      "umido",
+      "verde"
+    ],
+    "2026-09-29": [
+      "secco"
+    ],
+    "2026-09-30": [
+      "carta"
+    ],
+    "2026-10-01": [
+      "umido"
+    ],
+    "2026-10-02": [
+      "plastica"
+    ],
+    "2026-10-03": [
+      "pannolini"
+    ],
+    "2026-10-04": [],
+    "2026-10-05": [
+      "umido"
+    ],
+    "2026-10-06": [
+      "secco",
+      "vetro"
+    ],
+    "2026-10-07": [
+      "carta"
+    ],
+    "2026-10-08": [
+      "umido"
+    ],
+    "2026-10-09": [
+      "plastica"
+    ],
+    "2026-10-10": [
+      "pannolini"
+    ],
+    "2026-10-11": [],
+    "2026-10-12": [
+      "umido",
+      "verde"
+    ],
+    "2026-10-13": [
+      "secco"
+    ],
+    "2026-10-14": [
+      "carta"
+    ],
+    "2026-10-15": [
+      "umido"
+    ],
+    "2026-10-16": [
+      "plastica"
+    ],
+    "2026-10-17": [
+      "pannolini"
+    ],
+    "2026-10-18": [],
+    "2026-10-19": [
+      "umido"
+    ],
+    "2026-10-20": [
+      "secco",
+      "vetro"
+    ],
+    "2026-10-21": [
+      "carta"
+    ],
+    "2026-10-22": [
+      "umido"
+    ],
+    "2026-10-23": [
+      "plastica"
+    ],
+    "2026-10-24": [
+      "pannolini"
+    ],
+    "2026-10-25": [],
+    "2026-10-26": [
+      "umido",
+      "verde"
+    ],
+    "2026-10-27": [
+      "secco"
+    ],
+    "2026-10-28": [
+      "carta"
+    ],
+    "2026-10-29": [
+      "umido"
+    ],
+    "2026-10-30": [
+      "plastica"
+    ],
+    "2026-10-31": [
+      "pannolini"
+    ],
+    "2026-11-01": [],
+    "2026-11-02": [
+      "umido"
+    ],
+    "2026-11-03": [
+      "secco",
+      "vetro"
+    ],
+    "2026-11-04": [
+      "carta"
+    ],
+    "2026-11-05": [
+      "umido"
+    ],
+    "2026-11-06": [
+      "plastica"
+    ],
+    "2026-11-07": [
+      "pannolini"
+    ],
+    "2026-11-08": [],
+    "2026-11-09": [
+      "umido",
+      "verde"
+    ],
+    "2026-11-10": [
+      "secco"
+    ],
+    "2026-11-11": [
+      "carta"
+    ],
+    "2026-11-12": [
+      "umido"
+    ],
+    "2026-11-13": [
+      "plastica"
+    ],
+    "2026-11-14": [
+      "pannolini"
+    ],
+    "2026-11-15": [],
+    "2026-11-16": [
+      "umido"
+    ],
+    "2026-11-17": [
+      "secco",
+      "vetro"
+    ],
+    "2026-11-18": [
+      "carta"
+    ],
+    "2026-11-19": [
+      "umido"
+    ],
+    "2026-11-20": [
+      "plastica"
+    ],
+    "2026-11-21": [
+      "pannolini"
+    ],
+    "2026-11-22": [],
+    "2026-11-23": [
+      "umido",
+      "verde"
+    ],
+    "2026-11-24": [
+      "secco"
+    ],
+    "2026-11-25": [
+      "carta"
+    ],
+    "2026-11-26": [
+      "umido"
+    ],
+    "2026-11-27": [
+      "plastica"
+    ],
+    "2026-11-28": [
+      "pannolini"
+    ],
+    "2026-11-29": [],
+    "2026-11-30": [
+      "umido"
+    ],
+    "2026-12-01": [
+      "secco",
+      "vetro"
+    ],
+    "2026-12-02": [
+      "carta"
+    ],
+    "2026-12-03": [
+      "umido"
+    ],
+    "2026-12-04": [
+      "plastica"
+    ],
+    "2026-12-05": [
+      "pannolini"
+    ],
+    "2026-12-06": [],
+    "2026-12-07": [
+      "umido"
+    ],
+    "2026-12-08": [
+      "secco"
+    ],
+    "2026-12-09": [
+      "carta"
+    ],
+    "2026-12-10": [
+      "umido"
+    ],
+    "2026-12-11": [
+      "plastica"
+    ],
+    "2026-12-12": [
+      "pannolini"
+    ],
+    "2026-12-13": [],
+    "2026-12-14": [
+      "umido",
+      "verde"
+    ],
+    "2026-12-15": [
+      "secco",
+      "vetro"
+    ],
+    "2026-12-16": [
+      "carta"
+    ],
+    "2026-12-17": [
+      "umido"
+    ],
+    "2026-12-18": [
+      "plastica"
+    ],
+    "2026-12-19": [
+      "pannolini"
+    ],
+    "2026-12-20": [],
+    "2026-12-21": [
+      "umido"
+    ],
+    "2026-12-22": [
+      "secco"
+    ],
+    "2026-12-23": [
+      "carta"
+    ],
+    "2026-12-24": [
+      "umido",
+      "plastica"
+    ],
+    "2026-12-25": [],
+    "2026-12-26": [],
+    "2026-12-27": [],
+    "2026-12-28": [
+      "umido"
+    ],
+    "2026-12-29": [
+      "secco",
+      "vetro"
+    ],
+    "2026-12-30": [
+      "carta"
+    ],
+    "2026-12-31": [
+      "umido"
+    ]
+  },
+  "guidance": {
+    "verified_on": "2026-10-01",
+    "rules": [
+      {
+        "title": "投放时间 / Orario",
+        "zh": "仅在收运日前晚 22:00 至收运当天 06:00 之间，把当次应收垃圾放到道路边指定位置；用配发的容器，收运后尽快收回桶。不要因为提醒而提前投放。",
+        "it": "Esporre a bordo strada dalle 22:00 del giorno precedente alle 06:00 del giorno di raccolta, con i contenitori in dotazione. Ritirare i mastelli dopo lo svuotamento.",
+        "source": 0
+      },
+      {
+        "title": "新规：黑袋不收 / Stop sacchi neri",
+        "zh": "自 2026-07-01 起：干垃圾使用扎好的半透明袋，放进指定垃圾桶。黑色袋或桶外的干垃圾不予收取。旧日历图例中的“不使用袋子”已被这份较新通知更新。被贴不合规标记的垃圾要按要求纠正后重新投放；缺桶可向 Comune 的 Ufficio Tecnico 申请。",
+        "it": "Dal 01/07/2026: secco nel mastello con sacchi semitrasparenti ben chiusi. Sacchi neri o rifiuti fuori dal mastello non saranno ritirati. L'avviso aggiorna la vecchia legenda; correggere i conferimenti non conformi. Per il mastello rivolgersi all'Ufficio Tecnico.",
+        "source": 3
+      },
+      {
+        "title": "纸和纸板 / Carta e Cartone",
+        "zh": "不用塑料袋。使用纸袋/纸箱或天然纤维绳捆好；Tetra Pak 饮料纸盒排空后可投入。蜡纸、塑化纸、化学纸、油污纸和危险品包装不要混入。",
+        "it": "Senza sacchetti di plastica: scatole/buste di carta o spago naturale. Tetra Pak vuoto ammesso. No carta cerata, plastificata, chimica o imballaggi pericolosi.",
+        "source": 0
+      },
+      {
+        "title": "厨余 / Umido",
+        "zh": "可堆肥袋放入棕色桶。食物残渣、蛋壳、果蔬、茶包/咖啡渣可投；先去掉包装。液体、油、塑料包装、合成猫砂、修剪的树枝草叶不要混入厨余。",
+        "it": "Sacchetti compostabili nel mastello marrone. Scarti alimentari senza imballaggi, gusci, frutta/verdura, tè e caffè. No liquidi, oli, imballaggi, lettiere sintetiche o potature.",
+        "source": 0
+      },
+      {
+        "title": "塑料包装 / Plastica",
+        "zh": "放进半透明黄色袋，不用桶。重点是塑料包装，不是所有塑料：瓶、包装盒/袋、包装泡沫可投。塑料玩具、家具、家用耐用品和装过胶/油漆/溶剂的容器不要混入。",
+        "it": "Imballaggi nei sacchi gialli semitrasparenti, senza mastello. Bottiglie, vaschette, buste e polistirolo da imballaggio. No giocattoli, mobili, oggetti durevoli o contenitori di colle, vernici e solventi.",
+        "source": 0
+      },
+      {
+        "title": "玻璃和金属罐 / Vetro e Lattine",
+        "zh": "当地金属罐与玻璃一起收：绿色桶，不套袋。瓶罐、金属食品罐和铝托盘/铝箔可投。陶瓷、瓷器、Pyrex、晶质玻璃、灯泡/灯管、窗玻璃、镜子不要混进去。",
+        "it": "Vetro e lattine insieme nel mastello verde, senza sacchetto. Bottiglie, barattoli, vaschette e fogli di alluminio. No ceramica, porcellana, Pyrex, cristallo, lampadine/neon, vetri da finestra o specchi.",
+        "source": 0
+      },
+      {
+        "title": "干垃圾 / Secco",
+        "zh": "使用配发的灰色 RFID 桶，并遵守 7 月的新袋子规定。可放不可回收小物、卫生用品等。可回收物、建筑垃圾、电池、药品、墨盒/硒鼓、大件不要当普通干垃圾投放。",
+        "it": "Mastello grigio con tag RFID, rispettando il nuovo avviso sui sacchi. Piccoli rifiuti non riciclabili e prodotti igienici; no riciclabili, macerie, pile, farmaci, toner o ingombranti.",
+        "source": 0
+      },
+      {
+        "title": "园林垃圾 / Verde",
+        "zh": "日历中有专门收运日期，不能假设全年每周都有。草、花、枝条和修剪物可以；土、塑料、纸、胶带、泡沫不要混入。大堆枝条、包装方式和服务适用性请先向收运方确认。",
+        "it": "Seguire le date specifiche del calendario. Sfalci, fiori, rami e potature; no terra, plastica, carta, nastro o polistirolo. Verificare con il gestore modalità e limiti per grandi quantità.",
+        "source": 0
+      },
+      {
+        "title": "尿布专项 / Pannolini",
+        "zh": "已完整记录日历中的 Pannolini 日期。官方年度图例未说明专项服务的登记/适用条件，默认不提醒此类；有需要请拨打 800 681 650 确认，再在设置中启用。不要自行猜测袋子和投放方式。",
+        "it": "Le date Pannolini sono incluse. La legenda non chiarisce l'accesso al servizio: promemoria disattivato di default. Verificare requisiti e modalità al numero 800 681 650 prima di attivarlo.",
+        "source": 0
+      },
+      {
+        "title": "大件和电器 / Ingombranti e RAEE",
+        "zh": "当地网页提供每月第一个星期一免费上门服务，须预约，最多 3 件，放在道路层、便于搬运且无锐边。油漆、油、陶瓷、建筑废料、轮胎不属于该预约服务，需询问专门去处。不要自己随意放在桶旁。",
+        "it": "Ritiro gratuito su prenotazione il primo lunedì del mese, massimo 3 pezzi, a piano strada, maneggevoli e senza spigoli vivi. Vernici, oli, ceramiche, macerie e pneumatici non rientrano in questo servizio.",
+        "source": 4
+      },
+      {
+        "title": "需要问谁 / Contatti",
+        "zh": "TeknoService 免费电话：800 681 650。当地网页列的 ecocentro 位于 Strada Cascina Prati，周一/周六 09–11、周三 14–16；出发前再确认节假日和最新通知。危险废物等不确定物品先问，不要靠其他 Comune 的规则判断。",
+        "it": "TeknoService: 800 681 650. Ecocentro in Strada Cascina Prati: lunedì/sabato 09–11, mercoledì 14–16 secondo la pagina locale; verificare variazioni e festività prima di partire.",
+        "source": 4
+      },
+      {
+        "title": "信息边界 / Avvertenza",
+        "zh": "这些中文说明核对于 2026-10-01。程序会联网检查官方日历和公告，但新公告保留意大利语原文，不用猜测自动改写中文规则。请查看上次成功检查时间和最新原件；离线时可能有未获知的临时变更。没有核实当地罚款金额，不引用其他地区罚款，也不能保证遵守工具就绝对免罚。",
+        "it": "Queste sintesi sono verificate al 01/10/2026. Calendari e avvisi sono controllati online; i nuovi avvisi mantengono il testo originale. Verificare data dell'ultimo controllo e documenti ufficiali. Nessun importo di sanzione locale è stato verificato; lo strumento non garantisce l'assenza di sanzioni.",
+        "source": 4
+      }
+    ]
+  },
+  "extraction": {
+    "method": "PDF raster-cell colour decoding, all 365 dates cross-checked against official Comune JPG",
+    "dates_cross_checked": 365,
+    "disagreements": 0
+  }
+}

@@ -223,6 +223,14 @@ class PluginContext:
     def save_config(self):
         return self._host.main_window.saveCurrentConfig()
 
+    @property
+    def gemini_keys(self):
+        """Shared, thread-safe key broker. Workers may request and report results."""
+        return self._host.main_window.gemini_keys
+
+    def open_gemini_key_manager(self):
+        return self._host.main_window.openGeminiKeyManager()
+
     def log(self, message, level=logging.INFO):
         self._host.main_window.appendLog(
             f"[插件/{self.plugin_id}] {message}",

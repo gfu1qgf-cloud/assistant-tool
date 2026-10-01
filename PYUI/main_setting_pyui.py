@@ -5,6 +5,7 @@ import shutil
 from datetime import datetime
 from pathlib import Path
 from qt_compat import QtCore, QtGui, QtWidgets
+from PYUI.gemini_keys_pyui import GeminiKeysEditor
 from qt_compat import QMessageBox
 
 from QTUI.main_setting_ui import Ui_MainSettingDialog
@@ -24,6 +25,7 @@ from model.AppTheme import (
     UI_THEME_CONFIG_KEY,
     normalize_ui_theme,
 )
+from model.ConfigHotReload import merge_runtime_changes
 from model.ApiKeyHelper import (
     API_KEY_STATUSES_CONFIG_KEY,
     api_key_id,
@@ -284,6 +286,7 @@ class MainSettingDialog(QtWidgets.QDialog, Ui_MainSettingDialog):
             self.chrome_hotkey_help_label.hide()
         self._build_additional_hotkey_editors()
         self._build_appearance_tab()
+        self._build_gemini_tab()
         self._build_flow_guard_tab()
         self.audio_settings = {}
         if self._audio_managed_by_plugin:
@@ -380,10 +383,15 @@ class MainSettingDialog(QtWidgets.QDialog, Ui_MainSettingDialog):
             load_task_hotkey = DEFAULT_LOAD_TASK_HOTKEY
         self.load_task_hotkey_edit.setKeySequence(QtGui.QKeySequence(load_task_hotkey))
         self._load_flow_guard_settings(flow_guard_settings)
+        self.gemini_keys_editor.load_config(config)
         theme_index = self.ui_theme_combo.findData(ui_theme)
         self.ui_theme_combo.setCurrentIndex(max(0, theme_index))
         if self.plugin_host is not None:
             self.plugin_host.load_settings_pages(config)
+        self.config_hot_reload_checkbox.setChecked(config.get('config_hot_reload', {}).get('enabled', True))
+        self._config_form_baseline = copy.deepcopy(self.get_config())
+        self._config_form_baseline[API_KEY_STATUSES_CONFIG_KEY] = copy.deepcopy(self.api_key_statuses)
+        self._config_disk_baseline = json.loads(Path('config.json').read_text(encoding='utf-8-sig')) if Path('config.json').exists() else {}
 
     def _build_additional_hotkey_editors(self):
         insert_index = max(0, self.hotkey_layout.count() - 1)
@@ -827,9 +835,6 @@ class MainSettingDialog(QtWidgets.QDialog, Ui_MainSettingDialog):
         self.task_result_report_name_edit = QtWidgets.QLineEdit()
         self.task_result_report_name_edit.setPlaceholderText('视频检测报告.json')
         self.task_result_gemini_model_edit = QtWidgets.QLineEdit()
-        self.task_result_gemini_keys_edit = QtWidgets.QLineEdit()
-        self.task_result_gemini_keys_edit.setEchoMode(QtWidgets.QLineEdit.Password)
-        self.task_result_gemini_keys_edit.setPlaceholderText('多个 Key 用逗号或分号分隔')
         form.addRow('目标名称：', self.task_result_target_name_edit)
         form.addRow('目标说明：', self.task_result_target_description_edit)
         form.addRow('判定规则：', self.task_result_detection_rules_edit)
@@ -838,7 +843,6 @@ class MainSettingDialog(QtWidgets.QDialog, Ui_MainSettingDialog):
         form.addRow('模糊描述词：', self.task_result_ambiguous_keywords_edit)
         form.addRow('检测报告名：', self.task_result_report_name_edit)
         form.addRow('Gemini 模型：', self.task_result_gemini_model_edit)
-        form.addRow('Gemini API Keys：', self.task_result_gemini_keys_edit)
 
         form.addRow(self._section_label('视频压缩', scroll_content))
         self.task_result_compress_checkbox = QtWidgets.QCheckBox('上传前按关键词压缩视频')
@@ -1116,7 +1120,6 @@ class MainSettingDialog(QtWidgets.QDialog, Ui_MainSettingDialog):
         if skip_index >= 0:
             self.task_result_detection_mode_combo.setItemText(skip_index, f'不检测，全部按无{target_name}处理')
         self.task_result_gemini_model_edit.setText(task_result_config_str(config, 'gemini_model', 'gemini-2.5-flash-lite'))
-        self.task_result_gemini_keys_edit.setText('; '.join(task_result_config_list(config, 'gemini_api_keys')))
         self.task_result_compress_checkbox.setChecked(task_result_config_bool(config, 'compress_enabled', True))
         self.task_result_compress_keywords_edit.setText('; '.join(task_result_config_list(config, 'compress_name_keywords')))
         self.task_result_shana_ffmpeg_edit.setText(task_result_config_str(config, 'shana_ffmpeg_path'))
@@ -1187,7 +1190,6 @@ class MainSettingDialog(QtWidgets.QDialog, Ui_MainSettingDialog):
             self.task_result_ambiguous_keywords_edit,
             self.task_result_report_name_edit,
             self.task_result_gemini_model_edit,
-            self.task_result_gemini_keys_edit,
         ):
             widget.setEnabled(detection_enabled)
         for widget in (
@@ -1238,7 +1240,6 @@ class MainSettingDialog(QtWidgets.QDialog, Ui_MainSettingDialog):
             'video_detection_ambiguous_keywords': self._split_config_lines(self.task_result_ambiguous_keywords_edit.text()),
             'video_detection_report_name': self.task_result_report_name_edit.text().strip(),
             'gemini_model': self.task_result_gemini_model_edit.text().strip(),
-            'gemini_api_keys': task_result_config_list({'value': self.task_result_gemini_keys_edit.text()}, 'value'),
             'compress_enabled': self.task_result_compress_checkbox.isChecked(),
             'compress_name_keywords': task_result_config_list({'value': self.task_result_compress_keywords_edit.text()}, 'value'),
             'shana_ffmpeg_path': self.task_result_shana_ffmpeg_edit.text().strip(),
@@ -1334,6 +1335,7 @@ class MainSettingDialog(QtWidgets.QDialog, Ui_MainSettingDialog):
             UI_THEME_CONFIG_KEY: normalize_ui_theme(
                 self.ui_theme_combo.currentData()
             ),
+            'config_hot_reload': {'enabled': self.config_hot_reload_checkbox.isChecked()},
         }
         if self._audio_managed_by_plugin:
             config.pop('audio_settings', None)
@@ -1344,9 +1346,14 @@ class MainSettingDialog(QtWidgets.QDialog, Ui_MainSettingDialog):
                 )
             )
         config.update(self._get_task_result_config())
+        config.update(self.gemini_keys_editor.get_config())
         if self.plugin_host is not None:
             self.plugin_host.update_settings_config(config)
         return config
+
+    def _build_gemini_tab(self):
+        self.gemini_keys_editor = GeminiKeysEditor(parent=self.settingTabWidget)
+        self.settingTabWidget.addTab(self.gemini_keys_editor, 'AI 密钥')
 
     def _build_appearance_tab(self):
         self.appearance_tab = QtWidgets.QWidget(self.settingTabWidget)
@@ -1356,6 +1363,9 @@ class MainSettingDialog(QtWidgets.QDialog, Ui_MainSettingDialog):
         for label, value in THEME_CHOICES:
             self.ui_theme_combo.addItem(label, value)
         form.addRow("界面主题：", self.ui_theme_combo)
+        self.config_hot_reload_checkbox = QtWidgets.QCheckBox('自动检测外部配置变更（安全项实时生效）')
+        self.config_hot_reload_checkbox.setToolTip('不会强制重载 AI 模型或重启正在工作的线程；其他设置提示重启。')
+        form.addRow('配置热更新：', self.config_hot_reload_checkbox)
         layout.addLayout(form)
         note = QtWidgets.QLabel(
             "浅色模式是默认值，可避免 Windows 深色外观与旧界面颜色混用。"
@@ -1380,12 +1390,19 @@ class MainSettingDialog(QtWidgets.QDialog, Ui_MainSettingDialog):
             
             # 更新API key
             new_config = self.get_config()
-            config.update(new_config)
-            config.pop('elevenlabs_api_key', None)
-            config[API_KEY_STATUSES_CONFIG_KEY] = prune_api_key_statuses(
+            new_config[API_KEY_STATUSES_CONFIG_KEY] = prune_api_key_statuses(
                 self.api_key_statuses,
                 new_config['elevenlabs_api_keys'],
             )
+            config, conflicts = merge_runtime_changes(
+                getattr(self, '_config_form_baseline', {}), new_config,
+                getattr(self, '_config_disk_baseline', {}), config,
+            )
+            if conflicts:
+                QMessageBox.warning(self, '配置同时被修改',
+                    '未覆盖任何配置。请重新打开设置再修改这些字段：' + '、'.join(conflicts))
+                return False
+            config.pop('elevenlabs_api_key', None)
             
             # 即使某个设置页以后出现回归，也能从最近十次保存中恢复。
             _write_config_with_rolling_backups(config_path, config)

@@ -308,6 +308,8 @@ def _plan_review_rows(config: Dict, records: List[Dict], values: List[List[str]]
     submitted = []
 
     for record in records:
+        if record.get("final_review_decision") == "normal_upload":
+            continue
         link = drive_link_from_record(record)
         if not link:
             continue

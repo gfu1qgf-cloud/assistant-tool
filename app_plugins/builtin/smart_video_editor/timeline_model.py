@@ -102,6 +102,14 @@ def _merged_deleted_ranges(clip, duration):
             values.append((left, right, "句内气口"))
     if trim_end < duration - 0.001:
         values.append((trim_end, duration, "片尾气口"))
+    for left, right in clip.get("repeated_speech_removals", []) or []:
+        # Only label portions that are still deleted; restored regions stay
+        # playable even though the automatic repetition evidence is retained.
+        for deleted_left, deleted_right, _reason in list(values):
+            start = max(float(left), deleted_left)
+            end = min(float(right), deleted_right)
+            if end > start + 0.001:
+                values.append((start, end, "重复朗读"))
     return sorted(values, key=lambda value: (value[0], value[1]))
 
 
@@ -138,13 +146,14 @@ def build_task_review_timeline(task):
             if source_end <= source_start + 0.001:
                 continue
             middle = (source_start + source_end) / 2.0
-            deletion = next(
+            deletion = min(
                 (
                     (left, right, reason)
                     for left, right, reason in deleted
                     if left - 0.0005 <= middle <= right + 0.0005
                 ),
-                None,
+                key=lambda value: value[2] != "重复朗读",
+                default=None,
             )
             span = source_end - source_start
             segments.append({

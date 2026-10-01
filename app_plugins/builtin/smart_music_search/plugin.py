@@ -6,7 +6,7 @@ from .settings import CONFIG_KEY, SmartMusicSearchSettingsPage, normalize_settin
 class SmartMusicSearchPlugin:
     plugin_id = "smart_music_search"
     display_name = "智能搜音乐"
-    version = "1.0"
+    version = "1.1"
     required_api_version = 1
 
     def __init__(self):
@@ -37,6 +37,7 @@ class SmartMusicSearchPlugin:
         if self.dialog is None:
             from .ui import SmartMusicSearchDialog
             self.dialog = SmartMusicSearchDialog(self.settings, self.context.parent_widget)
+            self.dialog.settingsChanged.connect(self._save_search_settings)
         else:
             self.dialog.update_settings(self.settings)
         self.dialog.show()
@@ -44,6 +45,14 @@ class SmartMusicSearchPlugin:
         self.dialog.raise_()
         self.dialog.activateWindow()
         return self.dialog
+
+    def _save_search_settings(self, settings):
+        self.settings = normalize_settings(settings)
+        try:
+            if not self.context.save_config():
+                self.context.log("检索选项未能保存；当前会话仍可使用，请检查配置文件。")
+        except Exception as error:
+            self.context.log(f"保存音乐检索选项失败：{error}")
 
     def apply_settings(self, config):
         self.settings = self._settings_from_config(config)

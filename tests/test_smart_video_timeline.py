@@ -16,6 +16,19 @@ from app_plugins.builtin.smart_video_editor.waveform import (
 
 
 class SmartVideoTimelineModelTests(unittest.TestCase):
+    def test_repeated_speech_has_its_own_deleted_region_label(self):
+        task = {"clips": [{
+            "included": True, "original_duration": 4.0, "trim_start": 0.0, "trim_end": 4.0,
+            "pause_removals": [[1.0, 2.0]], "repeated_speech_removals": [[1.0, 2.0]],
+        }]}
+        segments, _duration = build_task_review_timeline(task)
+        removed = [segment for segment in segments if segment["is_removed"]]
+        self.assertEqual(len(removed), 1)
+        self.assertEqual(removed[0]["remove_reason"], "重复朗读")
+        task["clips"][0]["pause_removals"] = []
+        restored, _duration = build_task_review_timeline(task)
+        self.assertFalse(any(segment["is_removed"] for segment in restored))
+
     def setUp(self):
         self.task = {
             "clips": [

@@ -32,7 +32,7 @@ SMART_VIDEO_PENDING_CONFIG_KEY = "smart_video_pending_reviews"
 SMART_VIDEO_EDITOR_REPORT_NAME = "智能剪辑审核.json"
 SMART_VIDEO_EDITOR_TEXT_REPORT_NAME = "智能剪辑问题报告.txt"
 BREATH_CUT_OUTPUT_FOLDER_NAME = "气口剪辑结果"
-SMART_VIDEO_ANALYSIS_CACHE_VERSION = 10
+SMART_VIDEO_ANALYSIS_CACHE_VERSION = 11
 VOICE_ACTIVITY_CACHE_VERSION = 1
 VIDEO_SUFFIXES = {".mp4", ".mov", ".m4v", ".avi", ".mkv", ".webm", ".mts"}
 BREATH_DETECTION_MODES = (
@@ -1116,6 +1116,8 @@ _DUPLICATE_CANDIDATE_STATE_FIELDS = (
     "automatic_trim_end",
     "pause_removals",
     "automatic_pause_removals",
+    "repeated_speech_removals",
+    "repeated_speech_decisions",
     "kept_ranges",
     "removed_seconds",
     "boundary_removed_seconds",
@@ -1260,7 +1262,7 @@ def _mark_duplicate_clips(clips, transcriptions, order_evidence):
         winner = clips[winner_index]
         group_seed = "|".join(sorted(normalized_paths[index] for index in indexes))
         group_id = hashlib.sha1(
-            group_seed.encode("utf-8", "replace")
+            group_seed.encode("utf-8", "replace"), usedforsecurity=False
         ).hexdigest()[:12]
         for index in indexes:
             candidate = clips[index]
@@ -1397,6 +1399,11 @@ def select_duplicate_group_clip(task, selected_clip_index, settings=None):
         selected["status"] = status
         selected["issue_reason"] = reason
 
+    if script_words and script_lines:
+        _apply_repeated_speech_cuts(
+            selected, script_words, script_lines,
+            normalize_smart_video_editor_settings(settings),
+        )
     selected["duplicate_candidate_state"] = _capture_duplicate_candidate_state(
         selected
     )
@@ -2051,6 +2058,9 @@ def apply_manual_breath_overrides(
     clip["automatic_pause_removals"] = automatic_removals
 
     deleted = list(automatic_removals)
+    # Repeated speech is a script-based cut, independent of dB/VAD settings.
+    # Keep it separate so re-detecting breaths cannot silently restore it.
+    deleted.extend(clip.get("repeated_speech_removals", []) or [])
     if automatic_trim_start > 0.001:
         deleted.append([0.0, automatic_trim_start])
     if automatic_trim_end < duration - 0.001:
@@ -2254,6 +2264,117 @@ def _recognized_text_in_range(words, start, end):
         and str(word.get("text") or "").strip()
     ]
     return " ".join(values)
+
+
+def _adjacent_repeated_words(inserted, before, after):
+    """Recognize a repeated phrase/restart, not arbitrary added speech."""
+    norms = [item["norm"] for item in inserted]
+    count = len(norms)
+    if not count:
+        return False
+    for adjacent in (before[-count:], after[:count]):
+        if len(adjacent) == count and all(
+            _token_equivalent(left, right["norm"])
+            for left, right in zip(norms, adjacent)
+        ):
+            return True
+    # ASR can fuse a partial word with a restarted word, e.g. Slovak
+    # "hovoril proti duchovoril proti Duchu": the insertion is "proti
+    # duchovoril". Require an exact next-word repetition plus a long,
+    # recognizable restart of the immediately preceding word.
+    return bool(
+        count == 2 and before and after
+        and len(norms[0]) >= 3
+        and _diacritic_fold(norms[0]) == _diacritic_fold(after[0]["norm"])
+        and min(len(norms[-1]), len(before[-1]["norm"])) >= 4
+        and _edit_similarity(
+            _diacritic_fold(norms[-1]), _diacritic_fold(before[-1]["norm"])
+        ) >= 0.70
+    )
+
+
+def _apply_repeated_speech_cuts(clip, script_words, script_lines, settings):
+    start = int(clip.get("script_word_start", -1))
+    end = int(clip.get("script_word_end", -1))
+    if start < 0 or end < start or not clip.get("included", True):
+        return
+    expected = script_words[start:end + 1]
+    existing = list(clip.get("repeated_speech_removals", []) or [])
+    records = [
+        word for word in _recognized_word_records(clip.get("words", []))
+        if not any(left <= (word["start"] + word["end"]) / 2 < right for left, right in existing)
+    ]
+    units = _alignment_unit_records(records)
+    pairs = _token_lcs_pairs(
+        [word["norm"] for word in expected], [word["norm"] for word in units]
+    )
+    if len(pairs) < max(1, math.ceil(len(expected) * 0.60)):
+        return
+    decisions = list(clip.get("repeated_speech_decisions", []) or [])
+    previous_script = previous_observed = -1
+    for script_index, observed_index in pairs + [(len(expected), len(units))]:
+        added = units[previous_observed + 1:observed_index]
+        if script_index == previous_script + 1 and _adjacent_repeated_words(
+            added, expected[:script_index], expected[script_index:]
+        ):
+            indexes = {unit["record_index"] for unit in added}
+            # Never infer a cut inside one multi-character ASR timestamp.
+            complete_records = all(
+                unit in added for unit in units if unit["record_index"] in indexes
+            )
+            left = min(unit["start"] for unit in added)
+            right = max(unit["end"] for unit in added)
+            neighbor_left = units[previous_observed]["end"] if previous_observed >= 0 else 0.0
+            neighbor_right = units[observed_index]["start"] if observed_index < len(units) else clip["original_duration"]
+            if (
+                complete_records and right - left >= 0.08
+                and left >= neighbor_left - 0.02 and right <= neighbor_right + 0.02
+                and all(float(records[index].get("probability") or 0.0) >= 0.60 for index in indexes)
+            ):
+                left, right = round(max(left, neighbor_left), 3), round(min(right, neighbor_right), 3)
+                existing.append([left, right])
+                decisions.append({
+                    "severity": "info", "kind": "repeated_speech_cut",
+                    "start": left, "end": right, "title": "重复朗读自动裁剪",
+                    "expected": "", "recognized": " ".join(records[index]["raw"] for index in sorted(indexes)),
+                    "detail": "该读音与相邻台词重复，默认删除并保留另一遍；可在时间线灰色区试听、取消删除。",
+                })
+        previous_script, previous_observed = script_index, observed_index
+    if not existing:
+        return
+    clip["repeated_speech_removals"] = _merge_time_ranges(existing, clip["original_duration"])
+    clip["repeated_speech_decisions"] = decisions
+    if any(issue.get("kind") == "missing_script_boundary_guard" for issue in clip.get("issues", [])):
+        apply_manual_breath_overrides(clip, clip["trim_start"], clip["trim_end"])
+    else:
+        apply_manual_breath_overrides(clip)
+    retained = [
+        word for word in _recognized_word_records(clip.get("words", []))
+        if not any(left <= (word["start"] + word["end"]) / 2 < right for left, right in clip["repeated_speech_removals"])
+    ]
+    clip["word_timeline"] = _interpolate_script_word_times(expected, retained)
+    clip["cues"] = _cue_plans_from_timeline(clip["word_timeline"], script_words, script_lines)
+    old_issues = clip.get("alignment_issues", [])
+    clip["alignment_issues"] = _alignment_issues(expected, retained, script_lines)
+    clip["issues"] = [
+        issue for issue in clip.get("issues", [])
+        if issue not in old_issues and issue.get("kind") not in {"repeated_speech_cut", "match_quality"}
+        and not (issue.get("kind") == "internal_silence_cut" and any(
+            min(float(issue.get("end") or 0), right) > max(float(issue.get("start") or 0), left)
+            for left, right in clip["repeated_speech_removals"]
+        ))
+    ] + clip["alignment_issues"] + decisions
+    score = _sequence_score([word["norm"] for word in expected], [unit["norm"] for unit in _alignment_unit_records(retained)])
+    clip["status"], clip["issue_reason"] = _classify(
+        score, clip.get("expected_text", ""), " ".join(word["raw"] for word in retained), settings,
+    )
+    if sum(word.get("anchor", False) for word in clip["word_timeline"]) / max(1, len(expected)) < 0.68 and clip["status"] == "green":
+        clip["status"], clip["issue_reason"] = "orange", "部分单词时间由相邻读音推算，请试听核对"
+    for severity in ("pink", "orange"):
+        problem = next((issue for issue in clip["issues"] if issue.get("severity") == severity), None)
+        if problem:
+            clip["status"], clip["issue_reason"] = severity, _issue_summary(problem)
+            break
 
 
 def _build_clip_plan(
@@ -3430,6 +3551,34 @@ def _trim_boundary_overlaps(clips, script_words, script_lines, settings):
             <= previous["script_word_end"]
         ):
             continue
+        shared_indexes = {
+            int(item["script_word_index"])
+            for item in following.get("word_timeline", [])
+            if item.get("anchor") and item.get("script_word_index") is not None
+        }
+        repeated = [
+            item for item in previous.get("word_timeline", [])
+            if item.get("anchor")
+            and int(item.get("script_word_index", -1)) >= following_start
+            and int(item.get("script_word_index", -1)) in shared_indexes
+        ]
+        if repeated:
+            left = min(float(item["start"]) for item in repeated)
+            retained_end = max((
+                float(item["end"]) for item in previous.get("word_timeline", [])
+                if int(item.get("script_word_index", -1)) < following_start
+            ), default=0.0)
+            if left >= retained_end - 0.02:
+                left = max(left, retained_end)
+                right = max(float(item["end"]) for item in repeated)
+                if right - left >= 0.08:
+                    previous.setdefault("repeated_speech_removals", []).append([left, right])
+                    previous.setdefault("repeated_speech_decisions", []).append({
+                        "severity": "info", "kind": "repeated_speech_cut",
+                        "start": left, "end": right, "title": "相邻片段重复朗读裁剪",
+                        "recognized": _recognized_text_in_range(previous.get("words", []), left, right),
+                        "detail": "下一片段已包含这段台词，默认删除本片段重复的尾部；灰色区可取消删除。",
+                    })
         previous["script_word_end"] = following_start - 1
         _refresh_clip_after_script_range(
             previous, script_words, script_lines, settings
@@ -4340,6 +4489,10 @@ def analyze_smart_video_jobs(jobs, model, settings=None, progress=None, cancelle
             ]
         if order_warning is not None:
             _add_order_warning(active_clips, *order_warning)
+        for clip in active_clips:
+            _apply_repeated_speech_cuts(clip, script_words, script_lines, settings)
+            if clip.get("repeated_speech_removals"):
+                progress(f"[智能剪辑] {clip['file_name']}：已标记 {len(clip['repeated_speech_removals'])} 处重复朗读，导出时自动裁剪。")
         task_output_dir = task_dir / settings["output_folder_name"]
         task_result = {
             "task_id": str(job.get("task_id") or ""),

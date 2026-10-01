@@ -13,7 +13,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 GEMINI_API_KEY_ENV = "GEMINI_API_KEY"
 DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"
-GEMINI_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
+GEMINI_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 RUNTIME_CONFIG: Dict[str, Any] = {}
 
 DEFAULT_TARGET_NAME = "目标元素"
@@ -306,7 +306,7 @@ def extract_gemini_text(response_json: Dict[str, Any]) -> str:
 
 
 def call_gemini_once(api_key: str, contact_sheet_jpeg: bytes, prompt: str) -> Dict[str, Any]:
-    url = GEMINI_ENDPOINT.format(model=get_gemini_model(), api_key=api_key)
+    url = GEMINI_ENDPOINT.format(model=get_gemini_model())
     body = {
         "contents": [
             {
@@ -323,7 +323,7 @@ def call_gemini_once(api_key: str, contact_sheet_jpeg: bytes, prompt: str) -> Di
     request = urllib.request.Request(
         url,
         data=json.dumps(body).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
+        headers={"Content-Type": "application/json", "x-goog-api-key": api_key},
         method="POST",
     )
 
@@ -419,7 +419,7 @@ def tighten_detection_result(result: Dict[str, Any]) -> Dict[str, Any]:
 
     return result
 
-def ask_gemini(contact_sheet_jpeg: bytes, frames: List[Dict[str, Any]], video_path: Path, stats: Dict[str, Any], api_keys: List[str]) -> Dict[str, Any]:
+def ask_gemini(contact_sheet_jpeg: bytes, frames: List[Dict[str, Any]], video_path: Path, stats: Dict[str, Any], api_keys: List[str], gemini_keys=None) -> Dict[str, Any]:
     target_name = get_target_name()
     target_description = get_target_description()
     if not target_description:
@@ -471,7 +471,10 @@ JSON 格式：
 
     errors = []
     for index, api_key in enumerate(api_keys, start=1):
-        if gemini_key_is_blocked(api_key):
+        if gemini_keys is not None and not gemini_keys.is_available(api_key, get_gemini_model()):
+            errors.append(f"key #{index}: 本轮跳过，主程序已记录该模型的不可用状态")
+            continue
+        if gemini_keys is None and gemini_key_is_blocked(api_key):
             remain_seconds = int(GEMINI_KEY_BLOCK_UNTIL[api_key] - time.time())
             reason = GEMINI_KEY_BLOCK_REASON.get(api_key, "之前已经失败")
             errors.append(f"key #{index}: 本轮跳过，{reason}，约 {remain_seconds}s 后再试")
@@ -480,6 +483,8 @@ JSON 格式：
         for attempt in range(2):
             try:
                 response_json = call_gemini_once(api_key, contact_sheet_jpeg, prompt)
+                if gemini_keys is not None:
+                    gemini_keys.report_success(api_key, get_gemini_model())
                 content = extract_gemini_text(response_json)
                 result = tighten_detection_result(parse_json_from_text(content))
                 result["model"] = get_gemini_model()
@@ -505,19 +510,33 @@ JSON 格式：
 
                 if exc.code == 429:
                     if retry_seconds and retry_seconds <= 20 and attempt == 0:
+                        if gemini_keys is not None:
+                            gemini_keys.report_failure(api_key, get_gemini_model(), 429, retry_seconds)
                         print(f"key #{index} 触发短暂限速，等待 {retry_seconds}s 后重试一次。")
                         time.sleep(retry_seconds + 1)
                         continue
 
                     block_seconds = (retry_seconds + 5) if retry_seconds else 600
-                    block_gemini_key(api_key, index, block_seconds, "429 额度或频率限制")
+                    if gemini_keys is None:
+                        block_gemini_key(api_key, index, block_seconds, "429 额度或频率限制")
                 elif exc.code == 403:
-                    block_gemini_key(api_key, index, 24 * 60 * 60, "403 项目无权限")
+                    if gemini_keys is None:
+                        block_gemini_key(api_key, index, 24 * 60 * 60, "403 项目无权限")
+
+                if gemini_keys is not None:
+                    retry_seconds = retry_seconds or (exc.headers.get("Retry-After") if exc.headers else None)
+                    gemini_keys.report_failure(api_key, get_gemini_model(), exc.code, retry_seconds, body)
+                    error_text = gemini_keys.redact(error_text)
 
                 errors.append(f"key #{index}: {error_text}")
                 break
             except Exception as exc:
-                errors.append(f"key #{index}: {type(exc).__name__}: {exc}")
+                if gemini_keys is not None:
+                    if isinstance(exc, (urllib.error.URLError, TimeoutError, OSError)):
+                        gemini_keys.report_failure(api_key, get_gemini_model())
+                    errors.append(f"key #{index}: {type(exc).__name__}")
+                else:
+                    errors.append(f"key #{index}: {type(exc).__name__}: {exc}")
                 break
 
     raise RuntimeError("所有 Gemini API Key 当前都不可用：\n" + "\n".join(errors[-20:]))
@@ -842,7 +861,7 @@ def save_detection_report(video_path: Path, result: Dict[str, Any]) -> None:
     print(f"保存视频检测报告：{report_path}")
 
 
-def detect_video_element(video_path: Path, api_keys: Optional[List[str]] = None, detection_mode: Optional[str] = None) -> Dict[str, Any]:
+def detect_video_element(video_path: Path, api_keys: Optional[List[str]] = None, detection_mode: Optional[str] = None, gemini_keys=None) -> Dict[str, Any]:
     video_path = Path(video_path)
 
     if is_compressed_video(video_path):
@@ -874,10 +893,14 @@ def detect_video_element(video_path: Path, api_keys: Optional[List[str]] = None,
         save_detection_report(video_path, result)
         return result
 
-    keys = read_gemini_api_keys(api_keys)
+    keys = (gemini_keys.request_keys(get_gemini_model()) if gemini_keys is not None
+            else read_gemini_api_keys(api_keys))
+    if not keys and gemini_keys is not None:
+        raise RuntimeError(gemini_keys.unavailable_message(get_gemini_model()))
     frames, stats = extract_changed_frames(video_path)
     contact_sheet_jpeg = build_contact_sheet(frames)
-    result = ask_gemini(contact_sheet_jpeg, frames, video_path, stats, keys)
+    result = ask_gemini(contact_sheet_jpeg, frames, video_path, stats, keys,
+                       **({"gemini_keys": gemini_keys} if gemini_keys is not None else {}))
     result["mode"] = "ai"
     save_detection_report(video_path, result)
     return result

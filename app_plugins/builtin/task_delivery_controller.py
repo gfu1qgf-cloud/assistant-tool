@@ -36,12 +36,11 @@ from model.ReviewStatusMonitor import (
 from model.ReviewSubmissionHistory import review_history_snapshot
 from model.TaskResultOrganizer import (
     TaskResultOrganizerThread,
-    config_list,
     load_effective_config as load_task_result_config,
 )
 from PYUI.daily_links_pyui import DailyLinksDialog
 from PYUI.review_status_pyui import ReviewStatusDialog
-from PYUI.task_delivery_pyui import UpdatedFilesDetectionDialog
+from PYUI.task_delivery_pyui import TaskReviewListDialog, UpdatedFilesDetectionDialog
 
 
 class TaskDeliveryController:
@@ -57,7 +56,6 @@ class TaskDeliveryController:
         self.daily_link_history = normalize_daily_link_history({})
         self.daily_link_archive = {}
         self.global_hotkey = DEFAULT_TASK_RESULT_HOTKEY
-        self.gemini_api_keys = []
         self.hotkey_manager = None
 
     @property
@@ -91,7 +89,6 @@ class TaskDeliveryController:
             self.context.log(f"每日链接归档加载失败：{error}", logging.ERROR)
         self.review_status_settings = normalize_review_status_settings(config)
         self.review_status_config = load_task_result_config(config)
-        self.gemini_api_keys = config_list(config, "gemini_api_keys")
         try:
             self.global_hotkey = normalize_hotkey_sequence(
                 config.get(
@@ -117,7 +114,6 @@ class TaskDeliveryController:
         self.start_review_status_monitor()
 
     def update_config(self, config):
-        config["gemini_api_keys"] = list(self.gemini_api_keys)
         config[TASK_RESULT_HOTKEY_CONFIG_KEY] = self.global_hotkey
         # A stale controller must not erase links that another settings save
         # already wrote to disk. Resolved task-sheet failures still follow the
@@ -142,7 +138,6 @@ class TaskDeliveryController:
         return config
 
     def apply_settings(self, config):
-        self.gemini_api_keys = config_list(config, "gemini_api_keys")
         previous_settings = dict(self.review_status_settings)
         previous_config = dict(self.review_status_config)
         self.review_status_settings = normalize_review_status_settings(config)
@@ -255,9 +250,11 @@ class TaskDeliveryController:
             config,
             self.window,
             interactive_detection_choice=True,
+            gemini_keys=self.context.gemini_keys,
         )
         thread.log.connect(self.on_task_result_log)
         thread.detection_choice_requested.connect(self.on_detection_choice_requested)
+        thread.review_plan_requested.connect(self.on_review_plan_requested)
         thread.completed.connect(self.on_task_result_completed)
         thread.failed.connect(self.on_task_result_failed)
         thread.finished.connect(self.on_task_result_finished)
@@ -272,6 +269,19 @@ class TaskDeliveryController:
 
     def on_task_result_log(self, text):
         self.context.log(text)
+
+    def on_review_plan_requested(self, entries):
+        choices = None
+        try:
+            dialog = TaskReviewListDialog(entries, self.window)
+            if dialog.exec() == QtWidgets.QDialog.DialogCode.Accepted:
+                choices = dialog.decisions()
+        except Exception as error:
+            logging.getLogger(__name__).exception("显示视频审核清单失败")
+            self.context.log(f"显示视频审核清单失败，已取消上传：{error}", logging.ERROR)
+        finally:
+            if self.task_result_thread is not None:
+                self.task_result_thread.set_review_plan(choices)
 
     def on_detection_choice_requested(self, updated_files):
         selected_mode = "cancel"
@@ -290,7 +300,7 @@ class TaskDeliveryController:
         mode_names = {
             "ai": "使用 AI 检测",
             "skip": "无需检测",
-            "manual": "逐个手动审核",
+            "manual": "人工清单审核",
             "cancel": "取消本次操作，保留待处理列表",
         }
         self.context.log(

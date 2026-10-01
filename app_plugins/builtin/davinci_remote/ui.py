@@ -406,6 +406,10 @@ class DaVinciRemoteDialog(QtWidgets.QDialog):
         self.fusion_track = _spin(1, 1, 64, page)
         row.addWidget(self.fusion_track)
         row.addStretch(1)
+        self.fusion_apply = QtWidgets.QPushButton("应用到此视频轨所有片段", page)
+        self.fusion_apply.setEnabled(False)
+        self.fusion_apply.clicked.connect(self._run_fusion_apply)
+        row.addWidget(self.fusion_apply)
         outer.addLayout(row)
         columns = QtWidgets.QHBoxLayout()
         outer.addLayout(columns, 1)
@@ -417,10 +421,35 @@ class DaVinciRemoteDialog(QtWidgets.QDialog):
         right_layout = QtWidgets.QVBoxLayout(right)
         right_layout.setContentsMargins(0, 0, 0, 0)
         columns.addWidget(right, 1)
+        library = QtWidgets.QHBoxLayout()
+        library.addWidget(QtWidgets.QLabel("常用节点", page))
+        self.fusion_presets = QtWidgets.QComboBox(page)
+        self.fusion_presets.setMinimumContentsLength(12)
+        self.fusion_presets.setSizeAdjustPolicy(
+            QtWidgets.QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        library.addWidget(self.fusion_presets, 1)
+        self.fusion_load_preset = QtWidgets.QPushButton("载入", page)
+        self.fusion_load_preset.clicked.connect(self._load_fusion_preset)
+        library.addWidget(self.fusion_load_preset)
+        left_layout.addLayout(library)
+        library_actions = QtWidgets.QHBoxLayout()
+        self.fusion_save_preset = QtWidgets.QPushButton("保存节点…", page)
+        self.fusion_save_preset.setToolTip(
+            "命名保存节点文本及当前输入／输出连接选择，关闭程序后仍保留；应用前需要重新预检轨道。")
+        self.fusion_save_preset.clicked.connect(self._save_fusion_preset)
+        library_actions.addWidget(self.fusion_save_preset)
+        self.fusion_rename_preset = QtWidgets.QPushButton("改名…", page)
+        self.fusion_rename_preset.clicked.connect(self._rename_fusion_preset)
+        library_actions.addWidget(self.fusion_rename_preset)
+        self.fusion_delete_preset = QtWidgets.QPushButton("删除…", page)
+        self.fusion_delete_preset.clicked.connect(self._delete_fusion_preset)
+        library_actions.addWidget(self.fusion_delete_preset)
+        library_actions.addStretch(1)
+        left_layout.addLayout(library_actions)
         self.fusion_text = QtWidgets.QPlainTextEdit(page)
         self.fusion_text.setPlaceholderText("在 Fusion 中选中一个或多个节点，Ctrl+C，然后粘贴到这里…")
-        self.fusion_text.setMinimumHeight(120)
-        self.fusion_text.setMaximumHeight(160)
+        self.fusion_text.setMinimumHeight(100)
+        self.fusion_text.setMaximumHeight(140)
         left_layout.addWidget(self.fusion_text)
         preview = QtWidgets.QPushButton("分析节点与预览轨道", page)
         preview.clicked.connect(self._run_fusion_preview)
@@ -432,7 +461,7 @@ class DaVinciRemoteDialog(QtWidgets.QDialog):
         self.fusion_inputs.setHorizontalHeaderLabels(("节点输入端", "连接来源"))
         self.fusion_inputs.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
         self.fusion_inputs.horizontalHeader().setStretchLastSection(True)
-        self.fusion_inputs.setMaximumHeight(115)
+        self.fusion_inputs.setMaximumHeight(100)
         left_layout.addWidget(self.fusion_inputs)
         mapping = QtWidgets.QFormLayout()
         self.fusion_exit = QtWidgets.QComboBox(page)
@@ -443,10 +472,6 @@ class DaVinciRemoteDialog(QtWidgets.QDialog):
         self.fusion_graph.setTextInteractionFlags(QtCore.Qt.TextInteractionFlag.TextSelectableByMouse)
         left_layout.addWidget(self.fusion_graph)
         left_layout.addStretch(1)
-        self.fusion_apply = QtWidgets.QPushButton("应用到此视频轨所有片段", page)
-        self.fusion_apply.setEnabled(False)
-        self.fusion_apply.clicked.connect(self._run_fusion_apply)
-        left_layout.addWidget(self.fusion_apply)
         right_layout.addWidget(QtWidgets.QLabel("目标轨道片段／逐项结果", page))
         self.fusion_clips = QtWidgets.QTableWidget(0, 2, page)
         self.fusion_clips.setHorizontalHeaderLabels(("片段", "预检／执行结果"))
@@ -455,9 +480,118 @@ class DaVinciRemoteDialog(QtWidgets.QDialog):
         self.fusion_clips.setMinimumHeight(170)
         right_layout.addWidget(self.fusion_clips, 1)
         self._fusion_preview_data = None
-        self.fusion_text.textChanged.connect(self._invalidate_fusion_preview)
+        self._fusion_pending_mapping = None
+        self.fusion_text.textChanged.connect(self._fusion_text_changed)
         self.fusion_track.valueChanged.connect(self._invalidate_fusion_preview)
         self.fusion_exit.currentIndexChanged.connect(self._refresh_fusion_apply)
+        self.fusion_presets.currentIndexChanged.connect(self._refresh_fusion_preset_buttons)
+        self._refresh_fusion_presets()
+
+    def _refresh_fusion_presets(self, selected_id=None):
+        selected_id = selected_id or self.fusion_presets.currentData()
+        with QtCore.QSignalBlocker(self.fusion_presets):
+            self.fusion_presets.clear()
+            self.fusion_presets.addItem("选择常用节点…", None)
+            for item in self.plugin.fusion_presets():
+                self.fusion_presets.addItem(item["name"], item["id"])
+                self.fusion_presets.setItemData(
+                    self.fusion_presets.count() - 1, item["name"], QtCore.Qt.ItemDataRole.ToolTipRole)
+            self.fusion_presets.setCurrentIndex(max(0, self.fusion_presets.findData(selected_id)))
+        self._refresh_fusion_preset_buttons()
+
+    def _refresh_fusion_preset_buttons(self):
+        selected = bool(self.fusion_presets.currentData())
+        for button in (self.fusion_load_preset, self.fusion_rename_preset, self.fusion_delete_preset):
+            button.setEnabled(selected)
+
+    def _selected_fusion_preset(self):
+        return next((item for item in self.plugin.fusion_presets()
+                     if item["id"] == self.fusion_presets.currentData()), None)
+
+    def _fusion_library_error(self, exc):
+        message = "常用 Fusion 节点操作失败：{}".format(exc)
+        self.plugin.context.log(message)
+        QtWidgets.QMessageBox.warning(self, "常用节点", message)
+
+    def _current_fusion_mapping(self):
+        if self._fusion_preview_data:
+            return {"entries": self._selected_fusion_entries(), "exit": self.fusion_exit.currentData()}
+        return self._fusion_pending_mapping
+
+    def _save_fusion_preset(self):
+        text = self.fusion_text.toPlainText().strip()
+        if not text:
+            QtWidgets.QMessageBox.warning(self, "缺少节点", "请先粘贴 Fusion 节点文本。")
+            return
+        selected = self._selected_fusion_preset()
+        name, accepted = QtWidgets.QInputDialog.getText(
+            self, "保存常用节点", "节点名称：", text=selected["name"] if selected else "")
+        if not accepted:
+            return
+        if any(item["name"].casefold() == name.strip().casefold() for item in self.plugin.fusion_presets()):
+            if QtWidgets.QMessageBox.question(self, "覆盖常用节点", "已有同名节点，要用当前内容覆盖吗？") != \
+                    QtWidgets.QMessageBox.StandardButton.Yes:
+                return
+        try:
+            entry = self.plugin.save_fusion_preset(name, text, self._current_fusion_mapping())
+        except Exception as exc:
+            self._fusion_library_error(exc)
+            return
+        self._refresh_fusion_presets(entry["id"])
+        self.log.appendPlainText("常用节点已保存：" + entry["name"])
+
+    def _load_fusion_preset(self):
+        entry = self._selected_fusion_preset()
+        if not entry:
+            return
+        current = self.fusion_text.toPlainText().strip()
+        if current and current != entry["text"]:
+            if QtWidgets.QMessageBox.question(self, "载入常用节点", "替换当前输入框中的节点文本吗？") != \
+                    QtWidgets.QMessageBox.StandardButton.Yes:
+                return
+        self._invalidate_fusion_preview()
+        with QtCore.QSignalBlocker(self.fusion_text):
+            self.fusion_text.setPlainText(entry["text"])
+        self._fusion_pending_mapping = None
+        if entry.get("has_mapping"):
+            entries = entry.get("entries", [])
+            self._fusion_pending_mapping = {
+                "entries": [port for port in entries if isinstance(port, str)] if isinstance(entries, list) else [],
+                "exit": str(entry.get("exit") or ""),
+            }
+        self.fusion_inputs.setRowCount(0)
+        self.fusion_exit.clear()
+        self.fusion_clips.setRowCount(0)
+        self.fusion_graph.setText("已载入：{}。请分析节点与预览当前轨道后再应用。".format(entry["name"]))
+        self.log.appendPlainText("常用节点已载入：" + entry["name"])
+
+    def _rename_fusion_preset(self):
+        entry = self._selected_fusion_preset()
+        if not entry:
+            return
+        name, accepted = QtWidgets.QInputDialog.getText(self, "节点改名", "节点名称：", text=entry["name"])
+        if not accepted:
+            return
+        try:
+            self.plugin.rename_fusion_preset(entry["id"], name)
+        except Exception as exc:
+            self._fusion_library_error(exc)
+            return
+        self._refresh_fusion_presets(entry["id"])
+
+    def _delete_fusion_preset(self):
+        entry = self._selected_fusion_preset()
+        if not entry:
+            return
+        if QtWidgets.QMessageBox.question(self, "删除常用节点", "删除“{}”？不会删除达芬奇中的节点。".format(
+                entry["name"])) != QtWidgets.QMessageBox.StandardButton.Yes:
+            return
+        try:
+            self.plugin.delete_fusion_preset(entry["id"])
+        except Exception as exc:
+            self._fusion_library_error(exc)
+            return
+        self._refresh_fusion_presets()
 
     def _selected_fusion_entries(self):
         return [self.fusion_inputs.item(row, 0).text()
@@ -473,8 +607,15 @@ class DaVinciRemoteDialog(QtWidgets.QDialog):
             row["status"].startswith("可应用") for row in data.get("clips") or [])))
 
     def _invalidate_fusion_preview(self):
+        if self._fusion_preview_data:
+            self._fusion_pending_mapping = self._current_fusion_mapping()
         self._fusion_preview_data = None
         self.fusion_apply.setEnabled(False)
+
+    def _fusion_text_changed(self):
+        self._invalidate_fusion_preview()
+        # An edited template must not inherit a different graph's port choices.
+        self._fusion_pending_mapping = None
 
     def _run_fusion_preview(self):
         text = self.fusion_text.toPlainText().strip()
@@ -659,6 +800,7 @@ class DaVinciRemoteDialog(QtWidgets.QDialog):
     def _handle_result(self, action, data):
         if action == "fusion_preview":
             self._fusion_preview_data = data
+            saved_mapping = self._fusion_pending_mapping
             inputs = data.get("inputs") or []
             self.fusion_inputs.setRowCount(len(inputs))
             for row, port in enumerate(inputs):
@@ -666,13 +808,17 @@ class DaVinciRemoteDialog(QtWidgets.QDialog):
                 choice = QtWidgets.QComboBox(self.fusion_inputs)
                 choice.addItem("不连接", "none")
                 choice.addItem("接原画面", "upstream")
-                choice.setCurrentIndex(1 if row == 0 else 0)
+                upstream = port in saved_mapping["entries"] if saved_mapping is not None else row == 0
+                choice.setCurrentIndex(1 if upstream else 0)
                 choice.currentIndexChanged.connect(self._refresh_fusion_apply)
                 self.fusion_inputs.setCellWidget(row, 1, choice)
             self.fusion_inputs.resizeColumnToContents(0)
             self.fusion_exit.clear()
             for port in data.get("outputs") or []:
                 self.fusion_exit.addItem(port, port)
+            if saved_mapping is not None:
+                index = self.fusion_exit.findData(saved_mapping["exit"])
+                self.fusion_exit.setCurrentIndex(index)
             self.fusion_graph.setText("节点：{}\n内部连线：{}\n空闲输入：{}；空闲输出：{}".format(
                 "、".join(data.get("nodes") or []),
                 "、".join(data.get("internal_links") or []) or "无",
@@ -682,8 +828,7 @@ class DaVinciRemoteDialog(QtWidgets.QDialog):
             return
         if action == "fusion_apply":
             self._show_fusion_rows(data.get("results") or [], "status")
-            self._fusion_preview_data = None
-            self.fusion_apply.setEnabled(False)
+            self._invalidate_fusion_preview()
         if action == "probe":
             tracks = data.get("video_tracks") or []
             clip_count = sum(int(track.get("count") or 0) for track in tracks)

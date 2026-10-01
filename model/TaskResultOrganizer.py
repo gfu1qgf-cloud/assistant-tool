@@ -552,8 +552,13 @@ def build_routed_batches(
     changed_file_batches: Iterable[Tuple[Path, Iterable[Path]]],
     config: Dict,
     task_by_file: Optional[Dict[str, Any]] = None,
+    review_plan_resolver=None,
+    review_decisions=None,
+    gemini_keys=None,
 ) -> List[Tuple[Path, List[Path], Path]]:
+    changed_file_batches = [(Path(root), list(files)) for root, files in changed_file_batches]
     routed = []
+    review_plan = []
     api_keys = None
     detection_enabled = config_bool(config, "enable_video_review_detection", True)
     detection_mode = config_str(config, "video_detection_mode", "ai").lower()
@@ -581,6 +586,8 @@ def build_routed_batches(
             )
             if is_detectable_video and review_override is False:
                 normal_files.append(file_path)
+                review_plan.append({"file_path": str(file_path), "decision": "normal_upload",
+                                    "summary": "本地任务设置为无需审核", "result": {}})
                 print(f"本地任务设置为无需审核，已跳过检测：{file_path.name}")
                 continue
 
@@ -599,25 +606,37 @@ def build_routed_batches(
             if should_detect:
                 print(f"\n开始检测视频元素：{file_path.name}")
                 try:
-                    if effective_mode == "ai" and api_keys is None:
+                    if effective_mode == "ai" and api_keys is None and gemini_keys is None:
                         configured_keys = config_list(config, "gemini_api_keys")
                         if not configured_keys:
                             raise RuntimeError("没有可用的 Gemini API Key，请在程序设置中添加")
                         api_keys = video_element_detector.read_gemini_api_keys(configured_keys)
-                    result = detect_video_element(
-                        file_path,
-                        api_keys=api_keys,
-                        detection_mode=effective_mode,
-                    )
-                    print(f"检测结果：{summarize_detection(result)}")
+                    if effective_mode == "manual" and review_plan_resolver is not None:
+                        result = video_element_detector.read_cached_detection(file_path, "manual")
+                        if result is None:
+                            result = {"found": True, "confidence": 1.0, "mode": "manual",
+                                      "manual_pending": True, "summary": "待人工标记（默认需要审核）"}
+                    else:
+                        result = detect_video_element(
+                            file_path, api_keys=api_keys, detection_mode=effective_mode,
+                            **({"gemini_keys": gemini_keys} if gemini_keys is not None else {}),
+                        )
+                    result_summary = result.get("summary") if result.get("manual_pending") else summarize_detection(result)
+                    print(f"检测结果：{result_summary}")
                     if result.get("skip_upload"):
+                        review_plan.append({"file_path": str(file_path), "decision": "skip_upload",
+                                            "summary": summarize_detection(result), "result": result})
                         print(f"人工审核标记为视频有问题，本轮不上传：{file_path.name}")
                         continue
                     if is_positive_detection(result, min_confidence):
                         review_files.append(file_path)
+                        decision = "review"
                         print(f"进入人工检查队列：{file_path.name}")
                     else:
                         normal_files.append(file_path)
+                        decision = "normal_upload"
+                    review_plan.append({"file_path": str(file_path), "decision": decision,
+                                        "summary": result_summary, "result": result})
                 except BaseException as error:
                     print(f"视频检测失败：{file_path.name} -> {type(error).__name__}: {error}")
                     if failure_goes_to_review:
@@ -625,8 +644,14 @@ def build_routed_batches(
                         print(f"检测失败，按保守策略进入人工检查队列：{file_path.name}")
                     else:
                         normal_files.append(file_path)
+                    review_plan.append({"file_path": str(file_path),
+                                        "decision": "review" if failure_goes_to_review else "normal_upload",
+                                        "summary": f"检测失败：{type(error).__name__}: {error}", "result": {}})
             else:
                 normal_files.append(file_path)
+                if is_detectable_video:
+                    review_plan.append({"file_path": str(file_path), "decision": "normal_upload",
+                                        "summary": "本轮未检测", "result": {}})
 
         normal_file_groups = {}
         for normal_file in normal_files:
@@ -641,7 +666,58 @@ def build_routed_batches(
             routed.append((root_dir, grouped_files, remote_prefix))
         if review_files:
             routed.append((root_dir, review_files, Path(review_folder_name)))
+    if review_plan_resolver is not None and review_plan:
+        choices = review_plan_resolver(review_plan)
+        if choices is None:
+            raise TaskResultReviewCancelled()
+        selected_results = {
+            file_identity(path): value.get("result")
+            for path, value in choices.items() if isinstance(value, dict) and value.get("result")
+        }
+        by_identity = {
+            file_identity(path): value.get("decision") if isinstance(value, dict) else value
+            for path, value in choices.items()
+        }
+        allowed = {"normal_upload", "review", "skip_upload"}
+        for entry in review_plan:
+            identity = file_identity(entry["file_path"])
+            if by_identity.get(identity) not in allowed:
+                raise ValueError("审核清单没有返回完整的有效选择，已停止上传")
+        # Persist only explicit edits/new manual choices after the whole list
+        # is accepted. Closing the table leaves previous cached decisions intact.
+        for entry in review_plan:
+            decision = by_identity[file_identity(entry["file_path"])]
+            detail_result = selected_results.get(file_identity(entry["file_path"]))
+            if decision != entry["decision"] or entry["result"].get("manual_pending") or detail_result:
+                video_element_detector.save_detection_report(Path(entry["file_path"]), {
+                    **(detail_result or entry["result"]), "mode": "manual", "found": decision == "review",
+                    "skip_upload": decision == "skip_upload", "confidence": 1.0,
+                })
+        if review_decisions is not None:
+            review_decisions.update(by_identity)
+        routed = []
+        for root_dir, files in changed_file_batches:
+            groups = {}
+            for file_path in files:
+                file_path = Path(file_path)
+                decision = by_identity.get(file_identity(file_path), "normal_upload")
+                if decision == "skip_upload":
+                    continue
+                if decision == "review":
+                    prefix = Path(review_folder_name)
+                else:
+                    person = get_upload_person_name(file_path, root_dir, creator_marker)
+                    prefix = Path(person) if person else Path(".")
+                    subcategory = subcategory_path_for_file(task_by_file, file_path)
+                    if person and str(subcategory) not in {"", "."}:
+                        prefix /= subcategory
+                groups.setdefault(prefix, []).append(file_path)
+            routed.extend((root_dir, files, prefix) for prefix, files in groups.items())
     return routed
+
+
+class TaskResultReviewCancelled(Exception):
+    """The review list was closed before confirming the upload plan."""
 
 
 def compress_routed_batches(
@@ -649,6 +725,8 @@ def compress_routed_batches(
     config: Dict,
     task_by_file: Optional[Dict[str, Any]] = None,
     upload_task_by_file: Optional[Dict[str, Any]] = None,
+    review_decisions=None,
+    upload_review_decisions=None,
 ) -> List[Tuple[Path, List[Path], Path]]:
     compressed_batches = []
     for root_dir, file_list, remote_prefix in routed_batches:
@@ -664,6 +742,9 @@ def compress_routed_batches(
             task = task_for_file(task_by_file, source_path)
             if task is not None and upload_task_by_file is not None:
                 upload_task_by_file[file_identity(upload_path)] = task
+            decision = (review_decisions or {}).get(file_identity(source_path))
+            if decision and upload_review_decisions is not None:
+                upload_review_decisions[file_identity(upload_path)] = decision
         if upload_files:
             compressed_batches.append((root_dir, upload_files, remote_prefix))
     return compressed_batches
@@ -764,6 +845,8 @@ def pending_review_recovery_records(config: Dict) -> List[Dict]:
 
     pending = []
     for file_id, item in latest.items():
+        if item.get("final_review_decision") == "normal_upload":
+            continue
         previous = history["google:" + file_id]
         modified = str(item["drive_modified_at"])
         revision = "time:" + modified
@@ -795,6 +878,8 @@ def run_task_result_organizer(
     base_dir: Path,
     config: Optional[Dict] = None,
     detection_mode_resolver: Optional[Callable[[List[Path]], str]] = None,
+    review_plan_resolver=None,
+    gemini_keys=None,
 ) -> Dict:
     config = load_effective_config(config)
     video_element_detector.set_runtime_config(config)
@@ -895,6 +980,26 @@ def run_task_result_organizer(
             print(summary["message"])
             return summary
 
+    routed_batches = None
+    review_decisions = {}
+    if only_changed:
+        try:
+            routed_batches = build_routed_batches(
+                changed_file_batches, config, task_by_file=task_by_file,
+                review_plan_resolver=review_plan_resolver,
+                review_decisions=review_decisions,
+                **({"gemini_keys": gemini_keys} if gemini_keys is not None else {}),
+            )
+        except TaskResultReviewCancelled:
+            summary["cancelled"] = True
+            summary["message"] = "已取消审核清单；待处理文件已保留，下次整理可继续，尚未上传。"
+            print(summary["message"])
+            return summary
+        if not routed_batches:
+            clear_pending_changed_file_batches(config, base_dir, task_dates)
+            summary["message"] = "没有需要上传的文件。"
+            return summary
+
     configured_parent = config_str(config, "drive_parent_folder_id")
     if not configured_parent:
         raise ValueError("Google Drive 父目录不能为空，请在程序设置中填写")
@@ -906,21 +1011,15 @@ def run_task_result_organizer(
     summary["upload_slot"] = batch_slot
 
     if only_changed:
-        routed_batches = build_routed_batches(
-            changed_file_batches,
-            config,
-            task_by_file=task_by_file,
-        )
-        if not routed_batches:
-            clear_pending_changed_file_batches(config, base_dir, task_dates)
-            summary["message"] = "没有需要上传的文件。"
-            return summary
         upload_task_by_file = {}
+        upload_review_decisions = {}
         routed_batches = compress_routed_batches(
             routed_batches,
             config,
             task_by_file=task_by_file,
             upload_task_by_file=upload_task_by_file,
+            review_decisions=review_decisions,
+            upload_review_decisions=upload_review_decisions,
         )
         preferred_file_ids = {}
         if config_bool(config, "video_upload_replace_old_enabled", True):
@@ -942,6 +1041,10 @@ def run_task_result_organizer(
             preferred_file_ids=preferred_file_ids,
         )
         attach_local_task_metadata(uploaded_records, upload_task_by_file, config)
+        for record in uploaded_records:
+            decision = upload_review_decisions.get(file_identity(record.get("local_file") or ""))
+            if decision:
+                record["final_review_decision"] = decision
         summary["uploaded_file_count"] = len(uploaded_records)
         summary["shortcut_created_count"] = sum(
             bool(record.get("shortcut_id")) for record in uploaded_records
@@ -1076,6 +1179,7 @@ class TaskResultOrganizerThread(QtCore.QThread):
     completed = QtCore.pyqtSignal(object)
     failed = QtCore.pyqtSignal(str)
     detection_choice_requested = QtCore.pyqtSignal(object)
+    review_plan_requested = QtCore.pyqtSignal(object)
 
     def __init__(
         self,
@@ -1084,14 +1188,18 @@ class TaskResultOrganizerThread(QtCore.QThread):
         config,
         parent=None,
         interactive_detection_choice=False,
+        gemini_keys=None,
     ):
         super().__init__(parent)
         self.task_dates = list(task_dates)
         self.base_dir = Path(base_dir)
         self.config = dict(config or {})
+        self.gemini_keys = gemini_keys
         self.interactive_detection_choice = bool(interactive_detection_choice)
         self._detection_choice = "cancel"
         self._detection_choice_event = threading.Event()
+        self._review_plan_choice = None
+        self._review_plan_event = threading.Event()
 
     def set_detection_choice(self, detection_mode):
         selected_mode = str(detection_mode or "cancel").strip().lower()
@@ -1111,6 +1219,19 @@ class TaskResultOrganizerThread(QtCore.QThread):
                 return "cancel"
         return self._detection_choice
 
+    def set_review_plan(self, choices):
+        self._review_plan_choice = choices
+        self._review_plan_event.set()
+
+    def _request_review_plan(self, entries):
+        self._review_plan_choice = None
+        self._review_plan_event.clear()
+        self.review_plan_requested.emit(entries)
+        while not self._review_plan_event.wait(0.2):
+            if self.isInterruptionRequested():
+                return None
+        return self._review_plan_choice
+
     def run(self):
         writer = _SignalWriter(self.log)
         try:
@@ -1125,6 +1246,8 @@ class TaskResultOrganizerThread(QtCore.QThread):
                     self.base_dir,
                     self.config,
                     detection_mode_resolver=resolver,
+                    review_plan_resolver=(self._request_review_plan if self.interactive_detection_choice else None),
+                    **({"gemini_keys": self.gemini_keys} if self.gemini_keys is not None else {}),
                 )
             writer.flush()
             self.completed.emit(result)

@@ -1,6 +1,5 @@
 import os
 import unittest
-from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -31,6 +30,9 @@ class FakeContext:
     def log(self, _message):
         pass
 
+    def open_gemini_key_manager(self):
+        return "main-key-manager"
+
 
 class GeminiKeysDialogTests(unittest.TestCase):
     @classmethod
@@ -50,25 +52,15 @@ class GeminiKeysDialogTests(unittest.TestCase):
         dialog.accept()
         self.assertEqual(dialog.keys(), ["new-secret", "third-secret"])
 
-    def test_menu_entry_persists_keys_and_rolls_back_failed_save(self):
+    def test_plugin_forwards_management_and_never_overwrites_shared_keys(self):
         context = FakeContext()
         plugin = TaskDeliveryPlugin()
         context.plugin = plugin
         plugin.register(context)
-        plugin.controller.gemini_api_keys = ["existing"]
-
-        with patch("app_plugins.builtin.task_delivery.GeminiKeysDialog") as dialog:
-            dialog.return_value.exec.return_value = QtWidgets.QDialog.DialogCode.Accepted
-            dialog.return_value.keys.return_value = ["existing", "new"]
-            self.assertTrue(plugin.open_gemini_keys())
-        self.assertEqual(context.saved["gemini_api_keys"], ["existing", "new"])
-
-        context.save_success = False
-        with patch("app_plugins.builtin.task_delivery.GeminiKeysDialog") as dialog:
-            dialog.return_value.exec.return_value = QtWidgets.QDialog.DialogCode.Accepted
-            dialog.return_value.keys.return_value = ["failed"]
-            self.assertFalse(plugin.open_gemini_keys())
-        self.assertEqual(plugin.controller.gemini_api_keys, ["existing", "new"])
+        self.assertEqual(plugin.open_gemini_keys(), "main-key-manager")
+        plugin.controller.gemini_api_keys = ["stale-old-plugin-copy"]
+        result = plugin.update_config({"gemini_api_keys": ["main-owned"]})
+        self.assertEqual(result["gemini_api_keys"], ["main-owned"])
 
 
 if __name__ == "__main__":

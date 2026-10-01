@@ -37,10 +37,12 @@ def discover_music(root, cancelled=lambda: False):
 
 
 class MusicIndex:
-    def __init__(self, root=None):
+    def __init__(self, root=None, filename="index.sqlite3"):
         self.root = Path(root or INDEX_ROOT)
         self.root.mkdir(parents=True, exist_ok=True)
-        self.path = self.root / "index.sqlite3"
+        if Path(filename).name != filename:
+            raise ValueError("索引文件名不能包含目录")
+        self.path = self.root / filename
         with self._connect() as db:
             db.execute("PRAGMA journal_mode=WAL")
             db.execute("""CREATE TABLE IF NOT EXISTS tracks (
@@ -55,6 +57,15 @@ class MusicIndex:
                 FOREIGN KEY (path) REFERENCES tracks(path) ON DELETE CASCADE
             )""")
             db.execute("CREATE INDEX IF NOT EXISTS tracks_model ON tracks(model_id)")
+
+    @classmethod
+    def for_encoder(cls, encoder, root=None):
+        from .encoder import MODEL_ID
+        # Preserve the original database byte-for-byte when using new models.
+        filename = "index.sqlite3" if encoder.model_id == MODEL_ID else (
+            f"index-{encoder.model_key}-{encoder.coverage}-v3.sqlite3"
+        )
+        return cls(root, filename)
 
     @contextmanager
     def _connect(self):
@@ -159,7 +170,9 @@ class MusicIndex:
                     error = "SKIP: too short"
                     skipped += 1
                 else:
-                    for start in segment_starts(duration):
+                    starts = (encoder.segment_starts(duration) if hasattr(encoder, "segment_starts")
+                              else segment_starts(duration))
+                    for start in starts:
                         if cancelled():
                             break
                         samples = decode_segment(path, start, ffmpeg)
@@ -214,9 +227,12 @@ class MusicIndex:
                 "failed": failed, "skipped": skipped, "total": len(files)}
 
     def search(self, model_id, query_vector, *, seconds=0, limit=50,
-               include_short=False):
-        query = np.asarray(query_vector, dtype=np.float32).reshape(-1)
-        query /= max(1e-8, float(np.linalg.norm(query)))
+               include_short=False, stable=False):
+        query = np.asarray(query_vector, dtype=np.float32).reshape(-1).copy()
+        norm = float(np.linalg.norm(query))
+        if not np.isfinite(query).all() or not np.isfinite(norm) or norm < 1e-8:
+            raise ValueError("查询特征无效，不能进行音乐搜索")
+        query /= norm
         with self._connect() as db:
             rows = db.execute("""SELECT t.path,t.duration,s.start,s.vector
                 FROM tracks AS t JOIN segments AS s ON s.path=t.path
@@ -224,39 +240,69 @@ class MusicIndex:
                 (model_id,),
             ).fetchall()
         parsed = []
+        existing = {}
         for row in rows:
             path = row["path"]
-            if not Path(path).is_file():
+            if path not in existing:
+                existing[path] = Path(path).is_file()
+            if not existing[path]:
                 continue
             duration = float(row["duration"])
             vector = np.frombuffer(row["vector"], dtype=np.float16).astype(np.float32)
-            if vector.size != query.size:
+            norm = float(np.linalg.norm(vector))
+            if vector.size != query.size or not np.isfinite(vector).all() or norm < 1e-8:
                 continue
-            vector /= max(1e-8, float(np.linalg.norm(vector)))
+            vector /= norm
             parsed.append((path, duration, float(row["start"]), vector))
         if not parsed:
             return []
         grouped = {}
-        for path, duration, start, vector in parsed:
+        similarities = np.stack([row[3] for row in parsed]) @ query
+        for (path, duration, start, _vector), similarity in zip(parsed, similarities):
             if seconds and duration < seconds and not include_short:
                 continue
-            similarity = float(np.dot(vector, query))
             grouped.setdefault(path, {"duration": duration, "points": []})["points"].append(
-                (start, similarity)
+                (start, float(similarity))
             )
         results = []
         for path, info in grouped.items():
             duration, points = info["duration"], info["points"]
             best = None
-            for start, point_score in points:
-                candidate = min(start, max(0.0, duration - seconds)) if seconds else start
-                covered = [score for position, score in points
-                           if candidate <= position < candidate + seconds] if seconds else [point_score]
-                if not covered:
-                    covered = [point_score]
-                score = 0.8 * float(np.mean(covered)) + 0.2 * min(covered)
-                if best is None or score > best[0]:
-                    best = score, candidate
+            window_seconds = seconds or (min(30.0, duration) if stable else 0)
+            global_mean = float(np.mean([score for _start, score in points]))
+            if stable:
+                # Evaluate all candidate windows together; calling percentile
+                # in a Python loop makes dense indexes needlessly slow.
+                positions, scores = np.asarray(points, dtype=np.float64).T
+                candidates = np.unique(np.minimum(positions, max(0., duration-window_seconds)))
+                mask = ((positions[None, :] >= candidates[:, None])
+                        & (positions[None, :] < candidates[:, None]+window_seconds))
+                counts = mask.sum(axis=1)
+                valid = counts > 0
+                candidates, mask, counts = candidates[valid], mask[valid], counts[valid]
+                ordered = np.sort(np.where(mask, scores[None, :], np.inf), axis=1)
+                quantiles = (counts-1) * .25
+                lower = quantiles.astype(int)
+                upper = np.ceil(quantiles).astype(int)
+                fraction = quantiles-lower
+                row_ids = np.arange(len(candidates))
+                low_scores = (ordered[row_ids, lower]*(1-fraction)
+                              + ordered[row_ids, upper]*fraction)
+                means = np.where(mask, scores[None, :], 0.).sum(axis=1)/counts
+                totals = .65*means + .25*low_scores + .10*global_mean
+                if len(totals):
+                    chosen = int(np.argmax(totals))
+                    best = float(totals[chosen]), float(candidates[chosen])
+            else:
+                for start, point_score in points:
+                    candidate = min(start, max(0.0, duration - window_seconds)) if window_seconds else start
+                    covered = [score for position, score in points
+                               if candidate <= position < candidate + window_seconds] if window_seconds else [point_score]
+                    if not covered:
+                        covered = [point_score]
+                    score = 0.8 * float(np.mean(covered)) + 0.2 * min(covered)
+                    if best is None or score > best[0]:
+                        best = score, candidate
             if best:
                 results.append({"path": path, "duration": duration,
                                 "start": best[1], "score": best[0],

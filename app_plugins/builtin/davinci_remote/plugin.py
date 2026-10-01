@@ -1,5 +1,9 @@
 """One plugin for the existing DaVinci remote tab and its tools."""
 
+from copy import deepcopy
+from datetime import datetime, timezone
+import uuid
+
 from app_plugins.api import MAIN_MENU, PluginCommand, PluginTabPage
 from .ui import DaVinciRemotePanel
 
@@ -18,7 +22,7 @@ class DaVinciRemotePlugin:
     def register(self, context):
         self.context = context
         raw = context.load_config().get("davinci_remote_settings", {})
-        self.settings = raw if isinstance(raw, dict) else {}
+        self.settings = deepcopy(raw) if isinstance(raw, dict) else {}
         context.register_command(PluginCommand(
             command_id="open",
             title="达芬奇遥控器",
@@ -60,6 +64,69 @@ class DaVinciRemotePlugin:
             saved.pop("task_name", None)
         self.settings[section] = saved
         self.context.save_config()
+
+    def fusion_presets(self):
+        """Return detached node templates from the private main configuration."""
+        raw = self.settings.get("fusion_presets", [])
+        if not isinstance(raw, list):
+            return []
+        return [deepcopy(item) for item in raw if isinstance(item, dict)
+                and isinstance(item.get("id"), str) and item["id"]
+                and isinstance(item.get("name"), str) and item["name"].strip()
+                and isinstance(item.get("text"), str) and item["text"].strip()]
+
+    def _write_fusion_presets(self, presets):
+        previous = deepcopy(self.settings)
+        self.settings["fusion_presets"] = presets
+        try:
+            if self.context.save_config() is False:
+                raise RuntimeError("配置未能保存，常用节点未修改。请查看程序日志。")
+        except Exception:
+            self.settings = previous
+            raise
+
+    def save_fusion_preset(self, name, text, mapping=None):
+        name, text = name.strip(), text.strip()
+        if not name or not text:
+            raise ValueError("节点名称和节点文本不能为空。")
+        presets = self.fusion_presets()
+        old = next((item for item in presets if item["name"].casefold() == name.casefold()), None)
+        entry = deepcopy(old) if old else {"id": uuid.uuid4().hex}
+        entry.update(name=name, text=text, updated_at=datetime.now(timezone.utc).isoformat(timespec="seconds"))
+        # Only named ports are reusable. Track/timeline/clip identities must
+        # always come from a fresh preview, never from a saved template.
+        mapping = mapping or {}
+        entry["entries"] = [port for port in mapping.get("entries", []) if isinstance(port, str)]
+        entry["exit"] = str(mapping.get("exit") or "")
+        entry["has_mapping"] = bool(mapping)
+        if old:
+            presets[presets.index(old)] = entry
+        else:
+            presets.append(entry)
+        self._write_fusion_presets(presets)
+        return deepcopy(entry)
+
+    def rename_fusion_preset(self, preset_id, name):
+        name = name.strip()
+        if not name:
+            raise ValueError("节点名称不能为空。")
+        presets = self.fusion_presets()
+        entry = next((item for item in presets if item["id"] == preset_id), None)
+        if entry is None:
+            raise ValueError("该节点已不存在，请重新选择。")
+        if any(item["id"] != preset_id and item["name"].casefold() == name.casefold()
+               for item in presets):
+            raise ValueError("已有同名节点，请换一个名称。")
+        entry["name"] = name
+        self._write_fusion_presets(presets)
+
+    def delete_fusion_preset(self, preset_id):
+        presets = self.fusion_presets()
+        remaining = [item for item in presets if item["id"] != preset_id]
+        if len(remaining) == len(presets):
+            return False
+        self._write_fusion_presets(remaining)
+        return True
 
     def report_status(self, status):
         if self.panel is not None:
