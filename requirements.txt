@@ -6,7 +6,7 @@ defusedxml==0.7.1
 edge_tts==7.2.7
 elevenlabs==2.27.0
 faster_whisper==1.2.1
-google-api-python-client==2.198.0
+google-api-python-client==2.200.0
 google-auth==2.43.0
 google-auth-oauthlib==0.4.6
 langdetect==1.0.9
