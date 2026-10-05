@@ -1,4 +1,5 @@
 import copy
+import gc
 from pathlib import Path
 import tempfile
 import unittest
@@ -19,6 +20,18 @@ class DragUnitsTests(unittest.TestCase):
     def setUpClass(cls):
         cls.app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
         ensure_fonts()
+
+    @classmethod
+    def tearDownClass(cls):
+        # Keep QApplication alive while Qt destroys widgets retained by signal
+        # cycles. Interpreter finalization otherwise destroys them in an
+        # unpredictable order and can access freed native Qt state on Windows.
+        for widget in cls.app.topLevelWidgets():
+            widget.close()
+            widget.deleteLater()
+        QtCore.QCoreApplication.sendPostedEvents(None, QtCore.QEvent.Type.DeferredDelete)
+        cls.app.processEvents()
+        gc.collect()
 
     def layer(self,identifier="title"):
         layer = next(layer for layer in componentize_layers(None,DEFAULTS) if layer["id"] == identifier)
