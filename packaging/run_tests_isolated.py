@@ -12,6 +12,17 @@ import sys
 from pathlib import Path
 
 
+def test_environment():
+    environment = os.environ.copy()
+    environment.setdefault("QT_QPA_PLATFORM", "offscreen")
+    # GitHub Windows uses RUNNER~1 for TEMP/TMP. Test fixtures must use the
+    # same canonical spelling as application Path.resolve(), not 8.3 aliases.
+    for name in ("TEMP", "TMP", "TMPDIR"):
+        if environment.get(name):
+            environment[name] = str(Path(environment[name]).resolve())
+    return environment
+
+
 def main() -> int:
     project_root = Path(__file__).resolve().parents[1]
     modules = sorted(path.stem for path in (project_root / "tests").glob("test_*.py"))
@@ -19,8 +30,7 @@ def main() -> int:
         print("No test modules found.", file=sys.stderr)
         return 1
 
-    environment = os.environ.copy()
-    environment.setdefault("QT_QPA_PLATFORM", "offscreen")
+    environment = test_environment()
     failed = []
     for module in modules:
         name = f"tests.{module}"
