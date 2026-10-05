@@ -42,16 +42,16 @@ jobs:
       - name: Check installed dependency consistency
         run: python -m pip check
 
-      - name: Run tests
-        env:
-          PYTHONDONTWRITEBYTECODE: "1"
-        run: python packaging/run_tests_isolated.py
-
       - name: Fetch pinned mpv runtime
         run: python packaging/fetch_mpv.py
 
       - name: Fetch pinned standard FFmpeg runtime
         run: python packaging/fetch_ffmpeg.py
+
+      - name: Run tests
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: python packaging/run_tests_isolated.py
 
       - name: Build Windows application
         run: pyinstaller --noconfirm --clean packaging/AssistantTool.spec
