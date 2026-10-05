@@ -70,7 +70,12 @@ class MonitorTests(unittest.TestCase):
         self.temp.cleanup()
 
     def write(self, data):
+        previous = self.path.stat()
         self.path.write_text(json.dumps(data), encoding='utf-8')
+        # Same-size writes can share a filesystem timestamp on Windows runners.
+        # Make the external-change fixture deterministic without bypassing poll
+        # or its debounce/no-repeat checks in the production monitor.
+        os.utime(self.path, ns=(previous.st_atime_ns, previous.st_mtime_ns + 1_000_000_000))
 
     def test_debounce_and_no_repeated_application(self):
         self.write({'safe': 2, 'model': 'large'})
