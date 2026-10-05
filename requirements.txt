@@ -17,7 +17,7 @@ Pillow==12.3.0
 pypdf==6.19.0
 pydub==0.25.1
 PyQt6==6.11.0
-psutil==7.1.0
+psutil==7.2.2
 pycaw==20251023
 python-dotenv==1.2.2
 stable_ts==2.19.1
