@@ -7,7 +7,7 @@ from .task_cache import cache_directory, cached_sheets, extract_facebook_referen
 class FacebookContactSheetPlugin:
     plugin_id = "facebook_contact_sheet"
     display_name = "Facebook 视频分镜速览"
-    version = "1.0"
+    version = "1.1"
     required_api_version = 1
 
     def __init__(self):
@@ -38,7 +38,7 @@ class FacebookContactSheetPlugin:
             title="查看 Facebook 参考大图…",
             callback=self.view_task_reference,
             locations=frozenset({TASK_CONTEXT_MENU}),
-            tooltip="只打开任务目录中已经生成的参考大图，不访问 Facebook",
+            tooltip="优先打开任务目录中的参考大图；没有缓存时自动在后台生成并打开",
             order=35,
         ))
 
@@ -82,21 +82,14 @@ class FacebookContactSheetPlugin:
             )
             return None
         choices = [
-            (target, url, sheets)
+            (target, url, cached_sheets(cache_directory(target["target_dir"], url), url))
             for target, url in references
-            if (sheets := cached_sheets(cache_directory(target["target_dir"], url), url))
         ]
-        if not choices:
-            QtWidgets.QMessageBox.information(
-                self.context.parent_widget, "尚未生成",
-                "所选任务还没有参考大图。请右键选择“生成 Facebook 参考大图…”先生成。",
-            )
-            return None
         selected_index = 0
         if len(choices) > 1:
             labels = [
-                f"{index + 1}. {target['label']} · {url[:90]}"
-                for index, (target, url, _sheets) in enumerate(choices)
+                f"{index + 1}. {target['label']} · {'已缓存' if sheets else '自动生成'} · {url[:90]}"
+                for index, (target, url, sheets) in enumerate(choices)
             ]
             label, accepted = QtWidgets.QInputDialog.getItem(
                 self.context.parent_widget,
@@ -108,6 +101,27 @@ class FacebookContactSheetPlugin:
                 return None
             selected_index = labels.index(label)
         target, url, sheets = choices[selected_index]
+        if not sheets:
+            # Reuse the existing worker and task-local cache instead of downloading on the GUI thread.
+            if self.batch_dialog is not None and self.batch_dialog.is_busy():
+                self.batch_dialog.show()
+                self.batch_dialog.raise_()
+                self.batch_dialog.activateWindow()
+                QtWidgets.QMessageBox.information(
+                    self.batch_dialog, "正在处理",
+                    "参考大图批量生成正在进行；请等待完成后再查看，避免重复下载。",
+                )
+                return None
+            dialog = self._show_dialog()
+            if dialog.is_busy():
+                QtWidgets.QMessageBox.information(
+                    dialog, "正在处理", "参考大图正在生成；完成或取消后再查看其他参考。",
+                )
+                return None
+            if dialog.start_task_reference(url, cache_directory(target["target_dir"], url)):
+                self.context.log(f"任务 {target['label']}：未找到参考大图，正在后台自动生成；完成后自动打开。")
+                return dialog
+            return None
         local = sheets[0] if len(sheets) == 1 else cache_directory(target["target_dir"], url)
         QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(str(local)))
         self.context.log(f"任务 {target['label']}：参考大图命中本地缓存，未访问 Facebook。")

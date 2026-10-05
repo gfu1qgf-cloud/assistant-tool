@@ -13,19 +13,21 @@ from app_plugins.builtin.task_delivery_quick_upload import (
     QuickUploadThread,
 )
 from app_plugins.builtin.task_delivery_daily_quantity import (
-    DailyQuantityCategoriesThread,
     DailyQuantityDateThread,
     DailyQuantityDialog,
     DailyQuantityFolderThread,
     DailyQuantityThread,
 )
 from model.DailyQuantityStats import (
+    daily_quantity_sync_progress,
     external_video_records,
     external_video_sources,
     pending_review_quantity_records,
     update_external_video_records,
 )
 from model.TaskResultOrganizer import load_effective_config
+from model.DailyQuantityCategories import CategoryStore
+from app_plugins.builtin.task_delivery_category_editor import CategoryEditorDialog
 
 
 class TaskDeliveryQuickActions(QtWidgets.QWidget):
@@ -79,7 +81,6 @@ class TaskDeliveryPlugin:
         self.quick_upload_thread = None
         self.daily_quantity_dialog = None
         self.daily_quantity_thread = None
-        self.daily_quantity_categories_thread = None
         self.daily_quantity_folder_thread = None
         self.daily_quantity_date_thread = None
         self.todo_store = None
@@ -227,6 +228,7 @@ class TaskDeliveryPlugin:
                 lambda: self.controller.request_review_status_check(manual=True)
             )
             dialog.edit_sheet_requested.connect(self.edit_daily_quantity_sheet)
+            dialog.edit_categories_requested.connect(self.edit_daily_quantity_categories)
             self.daily_quantity_dialog = dialog
             try:
                 dialog.show_external_records(external_video_records(
@@ -243,11 +245,23 @@ class TaskDeliveryPlugin:
         self.daily_quantity_dialog.set_sheet_url(
             self.context.load_config().get("daily_quantity_sheet_url")
         )
+        self._load_daily_quantity_progress()
         self.daily_quantity_dialog.show()
         self.daily_quantity_dialog.raise_()
         self.daily_quantity_dialog.activateWindow()
         self.load_daily_quantity_categories()
         return self.daily_quantity_dialog
+
+    def _load_daily_quantity_progress(self):
+        if self.daily_quantity_dialog is None:
+            return
+        try:
+            progress = daily_quantity_sync_progress(
+                self.context.load_config(), self.context.parent_widget.task_path_edit.text().strip(),
+            )
+        except ValueError:
+            progress = {}
+        self.daily_quantity_dialog.show_sync_progress(progress)
 
     def refresh_daily_quantity_review_queue(self):
         dialog = self.daily_quantity_dialog
@@ -268,47 +282,31 @@ class TaskDeliveryPlugin:
                 self.context.load_config().get("daily_quantity_sheet_url")
             )
         self.load_daily_quantity_categories()
+        self._load_daily_quantity_progress()
 
     def load_daily_quantity_categories(self):
         dialog = self.daily_quantity_dialog
         if dialog is None:
             return False
-        config = self.context.load_config()
-        url = str(config.get("daily_quantity_sheet_url") or "").strip()
-        if not url:
-            dialog.show_category_error("请先设置每日数量表格链接")
+        try:
+            dialog.show_category_options(CategoryStore(self.context.load_config()).initialize())
+            return True
+        except (ValueError, OSError) as exc:
+            dialog.show_category_error(str(exc))
+            self.context.log("每日数量本地类别加载失败：" + str(exc))
             return False
-        thread = self.daily_quantity_categories_thread
-        if thread is not None and thread.isRunning():
+
+    def edit_daily_quantity_categories(self):
+        try:
+            editor = CategoryEditorDialog(CategoryStore(self.context.load_config()), self.daily_quantity_dialog)
+        except (ValueError, OSError) as exc:
+            self.daily_quantity_dialog.show_category_error(str(exc))
             return False
-        thread = DailyQuantityCategoriesThread(config, self.context.parent_widget)
-        self.daily_quantity_categories_thread = thread
-        thread.completed.connect(lambda options: self._daily_quantity_categories_completed(thread, options))
-        thread.failed.connect(lambda error: self._daily_quantity_categories_failed(thread, error))
-        thread.finished.connect(lambda: self._daily_quantity_categories_finished(thread))
-        dialog.set_category_loading()
-        thread.start()
-        return True
-
-    def _daily_quantity_categories_completed(self, thread, options):
-        if (self.daily_quantity_dialog is not None
-                and thread.sheet_url == self.daily_quantity_dialog.sheet_url.text()):
-            self.daily_quantity_dialog.show_category_options(options)
-
-    def _daily_quantity_categories_failed(self, thread, error):
-        if (self.daily_quantity_dialog is not None
-                and thread.sheet_url == self.daily_quantity_dialog.sheet_url.text()):
-            self.daily_quantity_dialog.show_category_error(error)
-        self.context.log("每日数量分类读取失败：" + error)
-
-    def _daily_quantity_categories_finished(self, thread):
-        if self.daily_quantity_categories_thread is thread:
-            self.daily_quantity_categories_thread = None
-        thread.deleteLater()
-        if (self.daily_quantity_dialog is not None
-                and self.daily_quantity_dialog.sheet_url.text()
-                != thread.sheet_url):
+        if editor.exec() == QtWidgets.QDialog.DialogCode.Accepted:
             self.load_daily_quantity_categories()
+            self.context.log("每日数量固定类别已保存；历史视频分类未改动。")
+            return True
+        return False
 
     def refresh_daily_quantity(self):
         if self.daily_quantity_thread is not None and self.daily_quantity_thread.isRunning():
@@ -500,10 +498,29 @@ class TaskDeliveryPlugin:
             f"每日数量统计：已归类 {result.get('counted', 0)} 个视频，"
             f"更新 {len(result.get('updated', []))} 格，待处理 {len(warnings)} 条。"
         )
+        duplicates = result.get("duplicate_exclusions", [])
+        if duplicates:
+            self.context.log(f"每日数量：按内容去重，排除 {len(duplicates)} 个重复副本；不增加数量。")
+            for item in duplicates[:12]:
+                self.context.log(f"每日数量重复排除：{item['file_name']}（{item['date']}）；"
+                                 f"保留 {item['retained_date']} 首次交付；{item['reason']}。")
+            if len(duplicates) > 12:
+                self.context.log("每日数量：完整重复排除清单请在统计窗口的设置与记录中查看。")
+        for item in result.get("automatic_classifications", []):
+            self.context.log(
+                f"每日数量：{item['file_name']}（{item['duration_millis'] / 1000:.3f} 秒）"
+                f"统计类别自动调整：{item['from']} → {item['to']}；本地表格未改动。"
+            )
         if warnings:
+            # Log bounded, distinct write blockers, not just a warning count.
+            blockers = list(dict.fromkeys(text for text in warnings if any(marker in text for marker in (
+                "在本人区块匹配", "时段列匹配", "未来", "已有手填数字", "外部修改", "统计分页不存在",
+            ))))
+            for text in blockers[:12]:
+                self.context.log("每日数量未写入原因：" + text)
             self.context.notify(
                 "每日数量统计待核对",
-                f"有 {len(warnings)} 条漏填分类或表格冲突；在任务交付 → 每日数量统计中查看并刷新。",
+                f"有 {len(warnings)} 条分类、时长或表格待核对提示；在任务交付 → 每日数量统计中查看并刷新。",
                 critical=False,
             )
             if self.daily_quantity_dialog is not None:
@@ -602,8 +619,6 @@ class TaskDeliveryPlugin:
         return self.controller.update_config(config)
 
     def can_close(self):
-        if self.daily_quantity_categories_thread is not None and self.daily_quantity_categories_thread.isRunning():
-            return False, "每日数量分类正在读取，请稍等。"
         if self.daily_quantity_date_thread is not None and self.daily_quantity_date_thread.isRunning():
             return False, "每日数量日期目录正在扫描，请稍等。"
         if self.daily_quantity_folder_thread is not None and self.daily_quantity_folder_thread.isRunning():

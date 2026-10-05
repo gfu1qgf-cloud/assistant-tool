@@ -108,7 +108,8 @@ class ImageSearchIndex:
         os.replace(temporary, target)
         return str(target)
 
-    def sync(self, groups, encoder, progress=None, cancelled=None, batch_size=4):
+    def sync(self, groups, encoder, progress=None, cancelled=None, batch_size=4,
+             prune_missing=True):
         """Resume safely: committed batches remain available after cancellation."""
         if encoder.model_key != self.model_key:
             raise ValueError("请使用该模型的独立索引；不能覆盖其他模型的记录")
@@ -155,7 +156,9 @@ class ImageSearchIndex:
                 continue
             pending.append((key, path, stat.st_size, stat.st_mtime_ns,
                             source_kind, source_name))
-        removed = set(old) - set(current)
+        # A caller indexing selected inventory entries must not erase the rest
+        # of the shared library. Full-library sync retains its original behavior.
+        removed = (set(old) - set(current)) if prune_missing else set()
         total = len(pending)
         done = 0
         failures = 0

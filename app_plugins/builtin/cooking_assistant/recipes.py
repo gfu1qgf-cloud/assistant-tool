@@ -2,6 +2,7 @@
 import hashlib
 import json
 import re
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -19,6 +20,71 @@ SYSTEM_PROMPT = """你是给不会做饭的人使用的中文做饭助手。说�
 {"recipes":[{"title":"菜名","minutes":20,"reason":"为什么适合",
 "ingredients":["西红柿 2 个","盐少许"],"steps":["详细步骤"],
 "missing":[],"leftovers":"如何分装第二顿","warnings":[]}]}"""
+
+RECIPE_SCHEMA = {
+    "type": "object", "required": ["recipes"],
+    "properties": {"recipes": {
+        "type": "array", "minItems": 1, "maxItems": 3,
+        "items": {"type": "object",
+                  "required": ["title", "minutes", "reason", "ingredients", "steps", "missing", "leftovers", "warnings"],
+                  "properties": {
+                      **{name: {"type": "string"} for name in ("title", "reason", "leftovers")},
+                      "minutes": {"type": "integer"},
+                      **{name: {"type": "array", "items": {"type": "string"}}
+                         for name in ("ingredients", "steps", "missing", "warnings")},
+                  }},
+    }},
+}
+
+
+class RecipeResponseError(ValueError):
+    def __init__(self, reason, message, retryable=False):
+        super().__init__(message)
+        self.reason = reason
+        self.retryable = retryable
+
+
+def _response_code(value):
+    # Only API enum identifiers may reach logs, never finishMessage/raw output.
+    value = str(value or "")
+    return value if re.fullmatch(r"[A-Z_]{1,64}", value) else "UNKNOWN"
+
+
+def recipes_from_response(data, progress=None):
+    if not isinstance(data, dict):
+        raise RecipeResponseError("BAD_RESPONSE", "服务返回格式不完整。", True)
+    feedback = data.get("promptFeedback") or {}
+    block = _response_code(feedback.get("blockReason")) if isinstance(feedback, dict) else "UNKNOWN"
+    if block not in ("UNKNOWN", "BLOCK_REASON_UNSPECIFIED"):
+        raise RecipeResponseError(block, f"Gemini 拦截了本次请求（{block}）；请检查食材描述或偏好。")
+    candidates = data.get("candidates")
+    if not isinstance(candidates, list) or not candidates or not isinstance(candidates[0], dict):
+        raise RecipeResponseError("NO_CANDIDATE", "服务没有返回菜谱候选结果。", True)
+    candidate = candidates[0]
+    reason = _response_code(candidate.get("finishReason"))
+    usage = data.get("usageMetadata") or {}
+    if progress:
+        # Only non-sensitive response metadata is retained for diagnosis.
+        tokens = usage.get("candidatesTokenCount") if isinstance(usage, dict) else None
+        progress(f"[做饭响应] 结束原因={reason}；输出 token={tokens if isinstance(tokens, int) else '未知'}")
+    if reason == "MAX_TOKENS":
+        # Never show a partial recipe, even if its JSON happens to parse.
+        raise RecipeResponseError(reason, "菜谱输出达到长度上限，被截断。", True)
+    if reason in {"SAFETY", "RECITATION", "BLOCKLIST", "PROHIBITED_CONTENT", "SPII",
+                  "IMAGE_SAFETY", "IMAGE_PROHIBITED_CONTENT", "ESCALATION", "PUP_LIMITED_DISABLED"}:
+        raise RecipeResponseError(reason, f"Gemini 中止了生成（{reason}）；未展示不完整菜谱。")
+    if reason not in {"STOP", "UNKNOWN", "FINISH_REASON_UNSPECIFIED"}:
+        raise RecipeResponseError(reason, f"Gemini 未正常完成生成（{reason}）。", reason in {"OTHER", "MALFORMED_RESPONSE"})
+    content = candidate.get("content") or {}
+    parts = content.get("parts") if isinstance(content, dict) else None
+    text = "\n".join(part["text"] for part in (parts or [])
+                     if isinstance(part, dict) and isinstance(part.get("text"), str) and not part.get("thought")) if isinstance(parts, list) else ""
+    if not text.strip():
+        raise RecipeResponseError("EMPTY_OUTPUT", "模型没有返回菜谱正文。", True)
+    try:
+        return parse_recipes(text)
+    except (ValueError, TypeError):
+        raise RecipeResponseError("INVALID_RECIPE_JSON", "模型输出格式不完整，未能解析出安全可用的菜谱。", True) from None
 
 
 def request_id(payload, model):
@@ -60,40 +126,64 @@ def generate_recipes(payload, model, manager, progress=None):
         raise RuntimeError(manager.unavailable_message(model))
     body = {"systemInstruction": {"parts": [{"text": SYSTEM_PROMPT}]},
         "contents": [{"role": "user", "parts": [{"text": json.dumps(payload, ensure_ascii=False)}]}],
-        "generationConfig": {"responseMimeType": "application/json", "temperature": 0.6,
+        "generationConfig": {"responseMimeType": "application/json", "responseJsonSchema": RECIPE_SCHEMA,
+                             "temperature": 0.4,
                              "maxOutputTokens": 6000}}
     errors = []
     for index, key in enumerate(keys, 1):
         if not manager.is_available(key, model):
             continue
-        if progress:
-            progress(f"正在生成做饭方案（{model}，Key {index}）…")
         url = "https://generativelanguage.googleapis.com/v1beta/models/" + urllib.parse.quote(model, safe="") + ":generateContent"
-        request = urllib.request.Request(url, json.dumps(body).encode("utf-8"),
-            headers={"Content-Type": "application/json", "x-goog-api-key": key}, method="POST")
-        try:
-            with urllib.request.urlopen(request, timeout=90) as response:
-                raw = response.read().decode("utf-8")
-            manager.report_success(key, model)
-            data = json.loads(raw)
-            parts = data["candidates"][0]["content"]["parts"]
-            return parse_recipes("\n".join(part.get("text", "") for part in parts if not part.get("thought")))
-        except urllib.error.HTTPError as error:
-            detail = error.read().decode("utf-8", errors="replace")
-            retry = error.headers.get("Retry-After") if error.headers else None
-            match = re.search(r"retry in\s+([0-9.]+)s", detail, re.I)
-            manager.report_failure(key, model, error.code, retry or (match.group(1) if match else None), detail)
-            errors.append(f"Key {index}: HTTP {error.code}")
-            if error.code == 404:
-                raise RuntimeError("所选 Gemini 模型不可用，请在程序设置 → 做饭小助手中更换模型。") from None
-            if error.code == 400 and manager.is_available(key, model):
-                raise RuntimeError("Gemini 拒绝了请求参数，请查看模型设置或稍后重试（HTTP 400）。") from None
-        except (urllib.error.URLError, TimeoutError, OSError) as error:
-            manager.report_failure(key, model)
-            errors.append(f"Key {index}: {type(error).__name__}")
-        except (ValueError, KeyError, IndexError, TypeError):
-            # A malformed/blocked/truncated answer is not an invalid key.
-            raise RuntimeError("模型返回的菜谱不完整或被拦截，请减少食材数量后重试。库存未做任何扣减。") from None
+        for attempt in range(2):
+            if progress:
+                progress(f"正在生成做饭方案（{model}，Key {index}，尝试 {attempt + 1}/2）…")
+            request = urllib.request.Request(url, json.dumps(body).encode("utf-8"),
+                headers={"Content-Type": "application/json", "x-goog-api-key": key}, method="POST")
+            try:
+                with urllib.request.urlopen(request, timeout=90) as response:
+                    raw = response.read().decode("utf-8", errors="replace")
+                manager.report_success(key, model)
+                try:
+                    data = json.loads(raw)
+                except ValueError:
+                    raise RecipeResponseError("BAD_RESPONSE_JSON", "服务返回格式不完整（不是有效 JSON）。", True) from None
+                return recipes_from_response(data, progress)
+            except RecipeResponseError as error:
+                if progress:
+                    progress(f"[做饭响应] {error.reason}：{error}")
+                if error.retryable and attempt == 0:
+                    body["generationConfig"]["maxOutputTokens"] = 12000
+                    body["systemInstruction"]["parts"][0]["text"] = SYSTEM_PROMPT + "\n本次只给两个方案，措辞简短但做法完整，严格按指定 JSON 格式返回。"
+                    if progress:
+                        progress("自动重试一次：保留全部食材，缩短方案并增加输出预算；不扣减库存。")
+                    continue
+                raise RuntimeError(str(error) + " 库存未做任何扣减。" +
+                                   ("已自动重试一次，请稍后重试。" if error.retryable else "")) from None
+            except urllib.error.HTTPError as error:
+                detail = error.read().decode("utf-8", errors="replace")
+                retry = error.headers.get("Retry-After") if error.headers else None
+                match = re.search(r"retry in\s+([0-9.]+)s", detail, re.I)
+                manager.report_failure(key, model, error.code, retry or (match.group(1) if match else None), detail)
+                if error.code == 404:
+                    raise RuntimeError("所选 Gemini 模型不可用，请在程序设置 → 做饭小助手中更换模型。") from None
+                if error.code == 400 and manager.is_available(key, model):
+                    raise RuntimeError("Gemini 拒绝了请求参数，请查看模型设置或稍后重试（HTTP 400）。") from None
+                if error.code in (500, 502, 503, 504) and attempt == 0:
+                    if progress:
+                        progress(f"Gemini 暂时不可用（HTTP {error.code}），使用同一个 Key 重试一次…")
+                    time.sleep(1)
+                    continue
+                errors.append(f"Key {index}: HTTP {error.code}")
+                break
+            except (urllib.error.URLError, TimeoutError, OSError) as error:
+                manager.report_failure(key, model)
+                if attempt == 0:
+                    if progress:
+                        progress("网络请求中断，重试一次…")
+                    time.sleep(1)
+                    continue
+                errors.append(f"Key {index}: {type(error).__name__}")
+                break
     raise RuntimeError("暂时无法生成菜谱：" + "；".join(errors) + "。库存功能仍可使用。")
 
 

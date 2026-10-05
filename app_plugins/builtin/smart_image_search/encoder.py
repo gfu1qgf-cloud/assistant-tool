@@ -59,10 +59,13 @@ class ModelLoadError(RuntimeError):
 
 
 class ChineseImageEncoder:
-    def __init__(self, model_key="base"):
+    def __init__(self, model_key="base", *, device=None):
         if model_key not in MODEL_IDS:
             raise ValueError("不支持的中文搜图模型")
         self.model_key = model_key
+        if device not in {None, "cpu", "cuda"}:
+            raise ValueError("不支持的图片检索设备")
+        self.device = device
         self.repository_id = MODEL_IDS[model_key]
         self.revision = MODEL_SPECS[model_key]["revision"]
         self.model_id = f"{self.repository_id}@{self.revision}"
@@ -110,7 +113,7 @@ class ChineseImageEncoder:
                     f"中文模型 {self.model_id} 加载失败。首次使用需要下载模型；"
                     f"请检查网络或模型缓存。原始错误：{error}"
                 ) from error
-            device = "cuda" if torch.cuda.is_available() else "cpu"
+            device = self.device or ("cuda" if torch.cuda.is_available() else "cpu")
             model = model.to(device)
             self._runtime = (torch, Image, ImageOps, processor, model, device)
         return self._runtime

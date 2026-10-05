@@ -490,6 +490,10 @@ class InventoryStore:
                 image = available.get(source_key)
                 if image is None or not source.is_file():
                     raise ValueError(f"图片已经不在素材库中：{source}")
+                if "expected_size" in raw_assignment or "expected_mtime_ns" in raw_assignment:
+                    stat = source.stat()
+                    if (raw_assignment.get("expected_size"), raw_assignment.get("expected_mtime_ns")) != (stat.st_size, stat.st_mtime_ns):
+                        raise ValueError(f"图片已在核对后更新，请重新分析：{source.name}")
                 if source_key in seen_sources:
                     raise ValueError(f"同一张图片不能重复分配：{source.name}")
                 target_dir = Path(target_text).resolve()

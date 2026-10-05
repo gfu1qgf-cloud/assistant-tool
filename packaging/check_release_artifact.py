@@ -10,10 +10,20 @@ from zipfile import BadZipFile, ZipFile
 REQUIRED_FILES = {
     "assistanttool.exe",
     "readme.md",
+    "changelog.md",
+    "build_info.json",
+    "app_icon.png",
+    "app_icon.ico",
+    "_internal/任务登记表格.ods",
     "config.example.json",
     "_internal/runtime/mpv/mpv.exe",
+    "_internal/runtime/ffmpeg/ffmpeg.exe",
+    "_internal/runtime/ffmpeg/ffprobe.exe",
+    "_internal/runtime/ffmpeg/license",
 }
 PRIVATE_FILES = {
+    "config2.json",
+    "dailyquantitycategories.json",
     "googledrivecredentials.json",
     "googledrivetoken.json",
     "googlesheetscredentials.json",
@@ -32,6 +42,7 @@ PRIVATE_FILES = {
     "taskreferencedownloadstate.json",
 }
 PRIVATE_DIRECTORIES = {
+    ".venv",
     ".git",
     ".github",
     "logs",
@@ -40,6 +51,7 @@ PRIVATE_DIRECTORIES = {
     "smartimagesearch",
     "smartmusicsearch",
     "videopromptassistant",
+    "batchtextvideo",
     "cookingassistant",
     "videouploadhistoryarchives",
     "人脸数据库",
@@ -75,6 +87,10 @@ def validate_release_archive(path: str | Path) -> int:
                     or (parts and (parts[-1] == ".env" or
                         (parts[-1].startswith('.env.') and parts[-1] != '.env.example')))
                     or (parts[:2] == ['config', 'waste_reminder'])
+                    or (parts and parts[-1].startswith('.~lock.'))
+                    or (parts and parts[-1].startswith('deliverytodos.sqlite3'))
+                    or (len(parts) == 1 and parts[0].startswith('config')
+                        and parts[0][6:-5].isdigit() and parts[0].endswith('.json'))
                 ):
                     violations.append(name)
     except BadZipFile as error:

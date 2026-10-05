@@ -12,8 +12,16 @@ validate_release_archive = run_path(
 REQUIRED = (
     "AssistantTool.exe",
     "README.md",
+    "CHANGELOG.md",
+    "BUILD_INFO.json",
+    "app_icon.png",
+    "app_icon.ico",
+    "_internal/任务登记表格.ods",
     "config.example.json",
     "_internal/runtime/mpv/mpv.exe",
+    "_internal/runtime/ffmpeg/ffmpeg.exe",
+    "_internal/runtime/ffmpeg/ffprobe.exe",
+    "_internal/runtime/ffmpeg/LICENSE",
 )
 
 
@@ -51,12 +59,28 @@ class ReleaseArtifactTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "assistanttool.exe"):
             validate_release_archive(archive)
 
+    def test_missing_changelog_or_task_template_fails(self):
+        for name in ("CHANGELOG.md", "_internal/任务登记表格.ods"):
+            with self.subTest(name=name):
+                archive = self.make_archive([entry for entry in REQUIRED if entry != name])
+                with self.assertRaises(ValueError):
+                    validate_release_archive(archive)
+
     def test_env_variants_and_runtime_cache_are_not_publishable(self):
         for name in ('.env.local', '_internal/.env.production',
-                     'SmartMusicSearch/index.sqlite3', 'config/waste_reminder/state.json'):
+                     'SmartMusicSearch/index.sqlite3', 'config/waste_reminder/state.json',
+                     'BatchTextVideo/state.json', 'config2.json', 'config12.json',
+                     'DailyQuantityCategories.json', '.~lock.任务登记表格.ods#',
+                     'DeliveryTodos.sqlite3-wal', '.venv/pyvenv.cfg'):
             with self.subTest(name=name):
                 with self.assertRaises(ValueError):
                     validate_release_archive(self.make_archive((*REQUIRED, name)))
+
+    def test_both_icon_formats_are_required(self):
+        for name in ('app_icon.png', 'app_icon.ico'):
+            with self.subTest(name=name):
+                with self.assertRaises(ValueError):
+                    validate_release_archive(self.make_archive([entry for entry in REQUIRED if entry != name]))
 
     def test_empty_env_example_and_builtin_calendar_are_publishable(self):
         archive = self.make_archive((*REQUIRED, '.env.example',

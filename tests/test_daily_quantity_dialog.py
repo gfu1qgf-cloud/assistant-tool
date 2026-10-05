@@ -51,6 +51,30 @@ class DailyQuantityDialogTests(unittest.TestCase):
         finally:
             dialog.close()
 
+    def test_delivery_date_cannot_scroll_or_select_future_year(self):
+        from unittest.mock import Mock
+        dialog = DailyQuantityDialog()
+        try:
+            day = dialog.folder_day.date()
+            event = Mock()
+            dialog.folder_day.wheelEvent(event)
+            event.ignore.assert_called_once()
+            self.assertEqual(dialog.folder_day.date(), day)
+            dialog.folder_day.setDate(QtCore.QDate.currentDate().addYears(1))
+            self.assertLessEqual(dialog.folder_day.date(), QtCore.QDate.currentDate())
+        finally:
+            dialog.close()
+
+    def test_zero_updates_with_warning_never_claims_sheet_is_current(self):
+        dialog = DailyQuantityDialog()
+        try:
+            dialog.show_result({'counted': 81, 'warnings': ['类别匹配到 0 行'], 'updated': [], 'daily_counts': []})
+            self.assertIn('不能据此判断', dialog.status.text())
+            self.assertNotIn('现有表格已是最新', dialog.details.toPlainText())
+            self.assertIn('部分数量可能未写入', dialog.details.toPlainText())
+        finally:
+            dialog.close()
+
     def test_sheet_link_is_visible_and_change_button_opens_settings(self):
         dialog = DailyQuantityDialog()
         try:
@@ -66,7 +90,7 @@ class DailyQuantityDialogTests(unittest.TestCase):
             self.assertEqual(requests, [True])
             dialog.show_category_options({"旧分页": ["旧类别"]})
             dialog.set_sheet_url("https://docs.google.com/spreadsheets/d/another/edit")
-            self.assertEqual(dialog._category_options, {})
+            self.assertEqual(dialog._category_options, {"旧分页": ["旧类别"]})
             dialog.show_category_options({"口播": ["短口播"]})
             self.assertEqual(dialog.bulk_sheet.findData("口播"), 1)
         finally:
@@ -99,6 +123,26 @@ class DailyQuantityDialogTests(unittest.TestCase):
             dialog.folder_day.setDate(QtCore.QDate(2026, 9, 25))
             self.assertIn("合计 3 个", dialog.summary_heading.text())
             self.assertEqual(dialog.summary_table.item(1, 5).text(), "3")
+        finally:
+            dialog.close()
+
+    def test_refresh_result_never_overwrites_fixed_catalog_or_unsaved_choices(self):
+        dialog = DailyQuantityDialog()
+        try:
+            options = {"口播": ["短口播", "长口播"]}
+            dialog.show_category_options(options)
+            dialog.bulk_sheet.setCurrentIndex(dialog.bulk_sheet.findData("口播"))
+            dialog.bulk_category.setCurrentIndex(dialog.bulk_category.findData("长口播"))
+            for remote in ({}, {"未知分页": ["线上类别"]}):
+                dialog.show_result({"category_options": remote, "warnings": [], "updated": [], "counted": 0})
+                self.assertEqual(dialog._category_options, options)
+                self.assertEqual(dialog.bulk_category.currentData(), "长口播")
+            dialog.show_category_options({**options, "新增": ["静态"]})
+            self.assertEqual(dialog.bulk_category.currentData(), "长口播")
+            requests = []
+            dialog.edit_categories_requested.connect(lambda: requests.append(True))
+            dialog.edit_categories_button.click()
+            self.assertEqual(requests, [True])
         finally:
             dialog.close()
 
@@ -168,8 +212,9 @@ class DailyQuantityDialogTests(unittest.TestCase):
                 "daily_scan_date": "2026-09-26", "included": False,
             }])
             slot = dialog.external_table.cellWidget(0, 4)
-            self.assertEqual(slot.currentData(), "")
-            self.assertIn("时段待确认", dialog.external_table.item(0, 7).text())
+            self.assertEqual(slot.currentData(), "03")
+            self.assertNotIn("时段待确认", dialog.external_table.item(0, 7).text())
+            self.assertTrue(slot.isEnabled())
             self.assertEqual(dialog.changed_external_edits(), [])
             dialog.external_table.cellWidget(0, 5).setCurrentIndex(0)
             self.assertEqual(dialog.changed_external_edits(), [])
@@ -204,7 +249,7 @@ class DailyQuantityDialogTests(unittest.TestCase):
         finally:
             dialog.close()
 
-    def test_bulk_count_actions_skip_videos_without_period(self):
+    def test_bulk_count_actions_default_missing_period_to_last(self):
         dialog = DailyQuantityDialog()
         try:
             dialog.show_external_records([
@@ -215,8 +260,9 @@ class DailyQuantityDialogTests(unittest.TestCase):
             ])
             dialog._set_external_inclusion([0, 1], "check")
             self.assertTrue(dialog.external_edits()[0]["included"])
-            self.assertFalse(dialog.external_edits()[1]["included"])
-            self.assertIn("缺少有效时段", dialog.folder_status.text())
+            self.assertTrue(dialog.external_edits()[1]["included"])
+            self.assertEqual(dialog.external_edits()[1]["batch_slot"], "03")
+            self.assertNotIn("未勾选", dialog.folder_status.text())
             menu = dialog._external_context_menu([0])
             count_menu = next(action.menu() for action in menu.actions()
                               if action.text().startswith("计入每日数量"))
@@ -242,8 +288,9 @@ class DailyQuantityDialogTests(unittest.TestCase):
             ], day="2026-09-25")
             self.assertIn("合计 2 个", dialog.summary_heading.text())
             self.assertIn("已存清单 3 条", dialog.summary_heading.text())
-            self.assertIn("缺时段 1", dialog.summary_heading.text())
+            self.assertIn("缺时段 0", dialog.summary_heading.text())
             slot = dialog.external_table.cellWidget(2, 4)
+            slot.setCurrentIndex(slot.findData("01"))
             slot.setCurrentIndex(slot.findData("03"))
             self.assertIn("合计 3 个", dialog.summary_heading.text())
             self.assertEqual(dialog.summary_table.item(1, 5).text(), "3")

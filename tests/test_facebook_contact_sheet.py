@@ -260,9 +260,9 @@ class ContactSheetUiTests(unittest.TestCase):
             dialog.close()
         app.processEvents()
 
-    def test_view_only_does_not_download_when_cache_missing(self):
+    def test_view_starts_background_generation_when_cache_missing(self):
         os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-        from qt_compat import QtWidgets
+        from qt_compat import QtGui, QtWidgets
 
         app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
         plugin = self._plugin_module().FacebookContactSheetPlugin()
@@ -276,10 +276,104 @@ class ContactSheetUiTests(unittest.TestCase):
                 }],
                 log=lambda _message: None,
             )
-            with mock.patch.object(QtWidgets.QMessageBox, "information") as notice:
-                with mock.patch.object(plugin, "_show_dialog", side_effect=AssertionError("view must not generate")):
-                    self.assertIsNone(plugin.view_task_reference([0]))
-                    notice.assert_called_once()
+            dialog = mock.Mock()
+            dialog.is_busy.return_value = False
+            dialog.start_task_reference.return_value = True
+            with mock.patch.object(QtWidgets.QMessageBox, "information") as notice, \
+                 mock.patch.object(plugin, "_show_dialog", return_value=dialog), \
+                 mock.patch.object(QtGui.QDesktopServices, "openUrl") as opener:
+                self.assertIs(plugin.view_task_reference([0]), dialog)
+                dialog.start_task_reference.assert_called_once_with(
+                    "https://www.facebook.com/reel/789/",
+                    task_cache.cache_directory(folder, "https://www.facebook.com/reel/789/"),
+                )
+                notice.assert_not_called()
+                opener.assert_not_called()
+        app.processEvents()
+
+    def test_view_can_choose_uncached_reference_among_cached_ones(self):
+        from qt_compat import QtWidgets
+
+        app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+        plugin = self._plugin_module().FacebookContactSheetPlugin()
+        first = "https://www.facebook.com/reel/101/"
+        second = "https://www.facebook.com/reel/202/"
+        with tempfile.TemporaryDirectory() as root:
+            target = {"task": types.SimpleNamespace(task_reference_link=f"{first}\n{second}"),
+                      "target_dir": root, "label": "任务"}
+            plugin.context = types.SimpleNamespace(parent_widget=None, log=lambda _message: None,
+                                                   task_targets=lambda _rows: [target])
+            folder = task_cache.cache_directory(root, first)
+            folder.mkdir(parents=True)
+            image = folder / "old.jpg"
+            image.write_bytes(b"jpeg")
+            task_cache.remember_sheets(folder, first, [image])
+            dialog = mock.Mock()
+            dialog.is_busy.return_value = False
+            dialog.start_task_reference.return_value = True
+
+            def choose_missing(_parent, _title, _text, labels, *_args):
+                self.assertEqual(len(labels), 2)
+                self.assertIn("已缓存", labels[0])
+                self.assertIn("自动生成", labels[1])
+                return labels[1], True
+
+            with mock.patch.object(QtWidgets.QInputDialog, "getItem", side_effect=choose_missing), \
+                 mock.patch.object(plugin, "_show_dialog", return_value=dialog):
+                self.assertIs(plugin.view_task_reference([0]), dialog)
+                dialog.start_task_reference.assert_called_once_with(second, task_cache.cache_directory(root, second))
+            dialog.reset_mock()
+            with mock.patch.object(QtWidgets.QInputDialog, "getItem", return_value=("", False)), \
+                 mock.patch.object(plugin, "_show_dialog") as show:
+                self.assertIsNone(plugin.view_task_reference([0]))
+                show.assert_not_called()
+                dialog.start_task_reference.assert_not_called()
+        app.processEvents()
+
+    def test_view_does_not_replace_busy_generation_or_duplicate_batch(self):
+        from qt_compat import QtWidgets
+
+        app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+        plugin = self._plugin_module().FacebookContactSheetPlugin()
+        with tempfile.TemporaryDirectory() as root:
+            plugin.context = types.SimpleNamespace(
+                parent_widget=None, log=mock.Mock(), task_targets=lambda _rows: [{
+                    "task": types.SimpleNamespace(task_reference_link="https://www.facebook.com/reel/101/"),
+                    "target_dir": root, "label": "任务",
+                }],
+            )
+            # A QWidget parent is required by real Qt message boxes; these notices are mocked.
+            dialog = mock.Mock()
+            dialog.is_busy.return_value = True
+            with mock.patch.object(QtWidgets.QMessageBox, "information") as notice, \
+                 mock.patch.object(plugin, "_show_dialog", return_value=dialog):
+                self.assertIsNone(plugin.view_task_reference([0]))
+                notice.assert_called_once()
+                dialog.start_task_reference.assert_not_called()
+            plugin.batch_dialog = mock.Mock()
+            plugin.batch_dialog.is_busy.return_value = True
+            with mock.patch.object(QtWidgets.QMessageBox, "information") as notice, \
+                 mock.patch.object(plugin, "_show_dialog") as show:
+                self.assertIsNone(plugin.view_task_reference([0]))
+                notice.assert_called_once()
+                show.assert_not_called()
+            plugin.context.log.assert_not_called()
+        app.processEvents()
+
+    def test_view_unsupported_reference_does_not_generate(self):
+        from qt_compat import QtWidgets
+
+        app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+        plugin = self._plugin_module().FacebookContactSheetPlugin()
+        plugin.context = types.SimpleNamespace(parent_widget=None, log=mock.Mock(), task_targets=lambda _rows: [{
+            "task": types.SimpleNamespace(task_reference_link="https://example.com/video"),
+            "target_dir": "unused", "label": "任务",
+        }])
+        with mock.patch.object(QtWidgets.QMessageBox, "information") as notice, \
+             mock.patch.object(plugin, "_show_dialog") as show:
+            self.assertIsNone(plugin.view_task_reference([0]))
+            notice.assert_called_once()
+            show.assert_not_called()
         app.processEvents()
 
     def test_window_opens_offscreen(self):
@@ -395,6 +489,55 @@ class ContactSheetUiTests(unittest.TestCase):
                     self.assertEqual(plugin.view_task_reference([0]), sheets)
                     opener.assert_called_once()
             self.assertTrue(any("未访问 Facebook" in item for item in logs))
+
+    @unittest.skipUnless(importlib.util.find_spec("cv2"), "OpenCV not available")
+    def test_view_generates_real_sheet_then_reuses_cache(self):
+        import cv2
+        import numpy as np
+        from qt_compat import QtCore, QtGui, QtWidgets
+
+        app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+        module = self._ui_module()
+        plugin = self._plugin_module().FacebookContactSheetPlugin()
+        url = "https://www.facebook.com/reel/303/"
+        with tempfile.TemporaryDirectory() as root:
+            video = Path(root) / "sample.avi"
+            writer = cv2.VideoWriter(str(video), cv2.VideoWriter_fourcc(*"MJPG"), 10, (160, 90))
+            self.assertTrue(writer.isOpened())
+            try:
+                for color in ((30, 80, 160), (160, 80, 30)):
+                    for _ in range(10):
+                        writer.write(np.full((90, 160, 3), color, dtype=np.uint8))
+            finally:
+                writer.release()
+            task_dir = Path(root) / "task"
+            plugin.context = types.SimpleNamespace(parent_widget=None, log=lambda _message: None,
+                                                   task_targets=lambda _rows: [{
+                                                       "task": types.SimpleNamespace(task_reference_link=url),
+                                                       "target_dir": str(task_dir), "label": "任务303",
+                                                   }])
+            with mock.patch.object(module, "download_facebook_video", return_value=(video, "测试")) as downloader, \
+                 mock.patch.object(QtGui.QDesktopServices, "openUrl", return_value=True) as opener:
+                dialog = plugin.view_task_reference([0])
+                self.assertIs(dialog, plugin.dialog)
+                self.assertTrue(dialog.is_busy())
+                loop = QtCore.QEventLoop()
+                dialog._worker.finished.connect(loop.quit)
+                QtCore.QTimer.singleShot(10000, loop.quit)
+                loop.exec()
+                app.processEvents()
+                self.assertFalse(dialog.is_busy())
+                sheets = task_cache.cached_sheets(task_cache.cache_directory(task_dir, url), url)
+                self.assertTrue(sheets, dialog.status.text())
+                self.assertGreater(sheets[0].stat().st_size, 1000)
+                opener.assert_called_once()
+                self.assertEqual(Path(opener.call_args.args[0].toLocalFile()), sheets[0])
+                self.assertEqual(plugin.view_task_reference([0]), sheets)
+                self.assertEqual(opener.call_count, 2)
+                downloader.assert_called_once()
+            dialog.close()
+            dialog.dispose()
+        app.processEvents()
 
 
 if __name__ == "__main__":

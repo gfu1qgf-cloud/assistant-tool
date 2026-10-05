@@ -6,7 +6,9 @@ without uploading the video again.  Only the three period input cells are
 owned here; quotas and SUM formulas are never written.
 """
 
+import copy
 import json
+import logging
 import os
 import re
 import threading
@@ -16,6 +18,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from app_paths import APP_ROOT
+from model.DailyQuantityCategories import CategoryStore
 from model.GoogleSheetsHelper import (
     column_to_letter,
     extract_spreadsheet_id,
@@ -30,6 +33,59 @@ from model.VideoUploadHistory import (
     all_video_upload_records,
     normalize_video_identity,
 )
+from model.DailyQuantityDedup import (
+    deduplicate_video_groups, video_content_fields, video_content_key,
+)
+
+
+def _prepare_video_content(groups, records, cache, drive_service=None, verify=False):
+    """Recover legacy fingerprints; verify unresolved items before live counting.
+
+    History and versioned metadata cache avoid fetching the same hashes on every
+    refresh. Only metadata is requested, never video content. Verification fails
+    closed before any Sheets write rather than silently allowing an overcount.
+    """
+    historical = {}
+    for record in sorted(records, key=lambda item: str(item.get("recorded_at") or "")):
+        file_id = str(record.get("drive_file_id") or "")
+        if file_id and video_content_key(record):
+            historical[file_id] = record
+    result = {}
+    service = drive_service
+    for key, videos in groups.items():
+        prepared = []
+        for original in videos:
+            video = dict(original)
+            file_id = str(video.get("drive_file_id") or "")
+            version = str(video.get("duration_version") or "")
+            cache_key = json.dumps([file_id, version])
+            if not video_content_key(video):
+                source = cache.get(cache_key) or historical.get(file_id) or {}
+                if video_content_key(source):
+                    video.update(video_content_fields(source))
+            if verify and not video_content_key(video):
+                label = str(video.get("file_name") or "未知视频")
+                if not file_id:
+                    raise ValueError(f"{label}：缺少网盘文件 ID，无法核实重复内容；本次未写入数量。")
+                try:
+                    if service is None:
+                        from model.GoogleDriveHelper import load_drive_service
+                        service = load_drive_service()
+                    from model.MaterialDriveSync import _execute_with_retry
+                    metadata = _execute_with_retry(lambda: service.files().get(
+                        fileId=file_id, fields="md5Checksum,size,trashed", supportsAllDrives=True))
+                    if metadata.get("trashed") or not video_content_key(metadata):
+                        raise ValueError("文件不可用或缺少内容哈希")
+                    video.update(video_content_fields(metadata))
+                except (Exception, SystemExit) as exc:
+                    # Do not print credential-bearing API URLs or response bodies.
+                    raise RuntimeError(f"{label}：重复内容核验失败（{type(exc).__name__}）；"
+                                       "为避免虚报，本次未写入数量。请检查网盘访问后重试。") from None
+            if file_id and video_content_key(video):
+                cache[cache_key] = video_content_fields(video)
+            prepared.append(video)
+        result[key] = prepared
+    return result
 
 
 STATE_FILE = APP_ROOT / "DailyQuantityStats.json"
@@ -41,8 +97,117 @@ _PERIOD_LABELS = {
 }
 
 
+def effective_batch_slot(value):
+    """Missing period means the last period; malformed explicit values stay invalid."""
+    raw = str(value or "").strip()
+    return "03" if raw in {"", "00"} else raw.zfill(2)
+
+
 def _key(value):
     return re.sub(r"\s+", "", str(value or "")).casefold()
+
+
+def _valid_video_duration(value):
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        duration = int(value)
+        if isinstance(value, float) and value != duration:
+            return None
+        return duration if duration > 0 else None
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def _duration_fields(record, cache=None):
+    """Keep the video version beside its duration, independently of delivery date."""
+    metadata = record.get("videoMediaMetadata") or {}
+    duration = _valid_video_duration(record.get("duration_millis"))
+    if duration is None and isinstance(metadata, dict):
+        duration = _valid_video_duration(metadata.get("durationMillis"))
+    version = str(record.get("duration_version") or "")
+    modified = record.get("drive_modified_at") or record.get("modifiedTime")
+    checksum = record.get("md5") or record.get("md5Checksum")
+    if not version and (modified or checksum):
+        version = json.dumps([modified, checksum, record.get("size")], ensure_ascii=False)
+    fields = {
+        **video_content_fields(record),
+        "duration_millis": duration,
+        "duration_drive_file_id": str(record.get("duration_drive_file_id")
+                                      or record.get("drive_file_id") or record.get("id") or ""),
+        "duration_version": version,
+    }
+    if duration is None and fields["duration_drive_file_id"] and version and isinstance(cache, dict):
+        key = json.dumps([fields["duration_drive_file_id"], version])
+        fields["duration_millis"] = _valid_video_duration(cache.get(key))
+    return fields
+
+
+def _adjust_fl_oral_counts(groups, category_options=None, duration_cache=None,
+                           drive_service=None, read_remote=False):
+    """Promote only FL short oral counts; never rewrite local ODS classifications."""
+    from model.TaskSubmissionHelper import ORAL_SHORT_MAX_DURATION_MILLIS
+
+    cache = duration_cache if isinstance(duration_cache, dict) else {}
+    result, warnings, adjustments = defaultdict(list), [], []
+    used_cache, run_cache = {}, {}
+    remote_failed = False
+    for key, videos in groups.items():
+        sheet, day, slot, category, creator = key
+        if _key(category) != "fl短口播":
+            result[key].extend(videos)
+            continue
+        desired_label = re.sub(r"短\s*口\s*播", "长口播", category)
+        labels = (category_options or {}).get(sheet, [])
+        long_labels = [label for label in labels if _key(label) == "fl长口播"]
+        long_label = long_labels[0] if len(long_labels) == 1 else desired_label
+        for video in videos:
+            source = _duration_fields(video)
+            file_id = source["duration_drive_file_id"]
+            version = source["duration_version"]
+            cache_key = json.dumps([file_id, version]) if file_id and version else ""
+            duration = source["duration_millis"]
+            if duration is None and cache_key:
+                duration = _valid_video_duration(cache.get(cache_key))
+            if duration is None and file_id in run_cache:
+                duration = run_cache[file_id]
+            if duration is None and read_remote and file_id and file_id not in run_cache and not remote_failed:
+                try:
+                    from model.GoogleDriveHelper import load_drive_service
+                    from model.MaterialDriveSync import _execute_with_retry
+                    if drive_service is None:
+                        drive_service = load_drive_service()
+                    metadata = _execute_with_retry(lambda: drive_service.files().get(
+                        fileId=file_id, fields="id,videoMediaMetadata(durationMillis)",
+                        supportsAllDrives=True,
+                    ))
+                    duration = _duration_fields(metadata)["duration_millis"]
+                    run_cache[file_id] = duration
+                except Exception as error:
+                    logging.getLogger("assistant_tool").exception("每日数量：网盘视频时长读取失败")
+                    # Avoid retrying the same broken credentials/network for every video.
+                    status = getattr(getattr(error, "resp", None), "status", None)
+                    remote_failed = status not in {403, 404, 410}
+                    run_cache[file_id] = None
+            if duration is not None and cache_key:
+                used_cache[cache_key] = duration
+            target = category
+            if duration is not None and duration > ORAL_SHORT_MAX_DURATION_MILLIS:
+                if category_options is not None and len(long_labels) != 1:
+                    warnings.append(f"{video.get('file_name') or file_id}：超过 60 秒，但统计分页 {sheet} "
+                                    f"中的 FL 长口播匹配到 {len(long_labels)} 行；暂按原类别计数，请核对类别")
+                else:
+                    target = long_label
+                    adjustments.append({"file_name": video.get("file_name", file_id),
+                                        "date": day, "from": category, "to": target,
+                                        "duration_millis": duration})
+            elif duration is None and read_remote:
+                warnings.append(f"{video.get('file_name') or file_id}：口播时长未能确认，"
+                                f"暂按原类别 {category} 计数；请重新扫描网盘目录后刷新核对")
+            result[(sheet, day, slot, target, creator)].append(video)
+    cache.clear()
+    cache.update(dict(list(used_cache.items())[-5000:]))
+    return result, warnings, adjustments
 
 
 def _date(value):
@@ -124,7 +289,7 @@ def collect_assignments(config, root, records=None, allowed_dates=None,
     records = all_video_upload_records(config) if records is None else records
     review_history = read_review_history()
     review_statuses = _review_index(review_history)
-    first = {}
+    first, latest = {}, {}
     for record in records:
         if record.get("source") != "upload":
             continue
@@ -132,14 +297,16 @@ def collect_assignments(config, root, records=None, allowed_dates=None,
         if ods is None:
             continue
         day = _date(record.get("batch_date"))
-        slot = str(record.get("batch_slot") or "").zfill(2)
+        slot = effective_batch_slot(record.get("batch_slot"))
         logical = str(record.get("logical_key") or "").strip()
         if not day or slot not in _PERIOD_LABELS or not logical:
             continue
-        if allowed_dates is not None and day not in allowed_dates:
-            continue
         identity = f"{ods.parent.resolve()}|{logical}"
         order = (day, slot, str(record.get("recorded_at") or ""))
+        if identity not in latest or order >= latest[identity][0]:
+            latest[identity] = (order, record)
+        if allowed_dates is not None and day not in allowed_dates:
+            continue
         if identity not in first or order < first[identity][0]:
             first[identity] = (order, record, ods)
 
@@ -207,6 +374,8 @@ def collect_assignments(config, root, records=None, allowed_dates=None,
             warnings.append(f"{label}：每日统计分页/类别未填，暂不计数；填好后点刷新")
             continue
         groups[(sheet, day, slot, category, creator)].append({
+            **_duration_fields(latest[identity][1]),
+            **video_content_fields(record),
             "identity": identity,
             "file_name": label,
             "event_id": str(record.get("event_id") or ""),
@@ -243,22 +412,32 @@ def _find_cell(rows, day, slot, creator, category, label_rows=None):
 
 
 def _creator_category_rows(rows, creator):
-    """Find category rows in the creator's sections, even when B repeats on every row.
+    """Match explicit owners first; A may repeat on every category row.
 
-    Column A marks the next person's section.  The section's first row is a
-    quota/header row, not a category.  Older sheets leave B blank below that
-    row; newer sheets repeat the creator in B for every category row.
+    Blank B is inherited only within the older blank-A continuation layout.
+    Header/quota rows are excluded without skipping a person's first category.
     """
-    starts = [row for row in range(2, len(rows))
-              if str(_value(rows, row, 0)).strip()
-              and _key(_value(rows, row, 1)) == _key(creator)]
-    result = []
-    for start in starts:
-        end = next((row for row in range(start + 1, len(rows))
-                    if str(_value(rows, row, 0)).strip()), len(rows))
-        result.extend(row for row in range(start + 1, end)
-                      if not str(_value(rows, row, 1)).strip()
-                      or _key(_value(rows, row, 1)) == _key(creator))
+    wanted = _key(creator)
+    if not wanted:
+        return []
+    active, result = False, []
+    headers = {_key(text) for text in ("全时间", "尽本分时间", "类别", "统计类别",
+                                       "合计", "总计", "一天总数", "定额")}
+    for row in range(2, len(rows)):
+        group = str(_value(rows, row, 0)).strip()
+        owner = str(_value(rows, row, 1)).strip()
+        category = str(_value(rows, row, 2)).strip()
+        if owner:
+            active = _key(owner) == wanted
+        elif group:
+            # An unlabeled new section must not inherit someone else's owner.
+            active = False
+        if not active or not category or _key(category) in headers:
+            continue
+        try:
+            float(category)
+        except ValueError:
+            result.append(row)
     return result
 
 
@@ -275,43 +454,8 @@ def _category_options(snapshots, creator):
 
 
 def read_daily_quantity_categories(config, service=None):
-    """Read dropdown choices from the target sheet without reconciling counts."""
-    url = str(config.get("daily_quantity_sheet_url") or "").strip()
-    creator = str(config.get("task_submission_creator") or "").strip()
-    if not url:
-        raise ValueError("请先设置每日数量表格链接")
-    if not creator:
-        raise ValueError("请先在程序设置中填写任务制作人")
-    service = service or load_sheets_service(config, "task_submission_sheet")
-    spreadsheet_id = extract_spreadsheet_id(url)
-    metadata = service.spreadsheets().get(
-        spreadsheetId=spreadsheet_id,
-        fields="sheets(properties(title,gridProperties(rowCount,columnCount)))",
-    ).execute()
-    sheets = [item.get("properties", {}) for item in metadata.get("sheets", [])]
-    ranges = [
-        sheet_range(
-            item["title"],
-            "A1:{}{}".format(
-                column_to_letter(min(3, max(1, int(item.get("gridProperties", {}).get("columnCount") or 1)))),
-                max(1, int(item.get("gridProperties", {}).get("rowCount") or 1)),
-            ),
-        )
-        for item in sheets if item.get("title")
-    ]
-    response = service.spreadsheets().values().batchGet(
-        spreadsheetId=spreadsheet_id,
-        ranges=ranges,
-        valueRenderOption="FORMATTED_VALUE",
-    ).execute() if ranges else {"valueRanges": []}
-    snapshots = {
-        item["title"]: values.get("values", [])
-        for item, values in zip(
-            (item for item in sheets if item.get("title")),
-            response.get("valueRanges", []),
-        )
-    }
-    return _category_options(snapshots, creator)
+    """Compatibility API: choices are local even if a Sheets service is passed."""
+    return CategoryStore(config).load()[0]
 
 
 def _load_state(path):
@@ -337,13 +481,103 @@ def _scope_key(config, root):
     return f"{extract_spreadsheet_id(url)}|{Path(root).resolve()}"
 
 
+def _sync_progress_summary(previous):
+    """Describe committed local cell records, never scan dates or proposed writes.
+
+    The latest recorded date is not a promise that earlier dates are complete.
+    Keep unresolved-warning metadata beside it, without changing any counts.
+    """
+    previous = previous if isinstance(previous, dict) else {}
+    days = defaultdict(int)
+    cells = previous.get("cells", {})
+    for key, entry in (cells.items() if isinstance(cells, dict) else ()):
+        try:
+            identity = json.loads(key)
+            day = _date(identity[1]) if isinstance(identity, list) and len(identity) == 5 else ""
+        except (ValueError, TypeError, IndexError):
+            continue
+        if (day and day <= date.today().isoformat() and isinstance(entry, dict)
+                and "written" in entry):
+            days[day] += 1
+    dates = sorted(days)
+    warnings = previous.get("last_refresh_warning_count")
+    if not isinstance(warnings, int) or isinstance(warnings, bool) or warnings < 0:
+        warnings = None
+    return {"latest_date": dates[-1] if dates else "", "first_date": dates[0] if dates else "",
+            "dates": [{"date": day, "cells": days[day]} for day in dates],
+            "updated_at": str(previous.get("updated_at") or ""), "warning_count": warnings}
+
+
+def daily_quantity_sync_progress(config, root, state_path=None):
+    """Read the current spreadsheet/project's sync progress without network access."""
+    scope = _scope_key(config, root)
+    with _LOCK:
+        return _sync_progress_summary(_load_state(state_path or STATE_FILE).get(scope, {}))
+
+
+def _reject_future_date(day, today=None):
+    if day > (today or date.today()).isoformat():
+        raise ValueError(f"交付日期 {day} 在未来，请核对年份；未扫描或修改已有记录。")
+
+
+def repair_future_scan_dates(config, root, corrections, state_path=None, dry_run=False):
+    """Explicit, scoped repair. Never infer years or rewrite existing ownership cells."""
+    today = date.today().isoformat()
+    for old, new in corrections.items():
+        if (_date(old) != old or _date(new) != new or old <= today or new > today
+                or old[5:] != new[5:]):
+            raise ValueError("只允许将已确认的未来扫描日期改为同月日的过去日期。")
+    path = Path(state_path or STATE_FILE)
+    with _LOCK:
+        # A repair must fail closed on malformed state, not replace it with {}.
+        state = json.loads(path.read_text(encoding="utf-8"))
+        scope_key = _scope_key(config, root)
+        original = state.get(scope_key)
+        if not isinstance(original, dict):
+            raise ValueError("没有找到当前项目和数量表的统计记录。")
+        scope = copy.deepcopy(original)
+        if any(json.loads(key)[1] in corrections for key in scope.get("cells", {})):
+            raise ValueError("错误年份已有写入归属记录，需要先人工核对，未改动。")
+        scans = scope.setdefault("daily_scans", {})
+        merged = 0
+        for old, new in corrections.items():
+            if old not in scans:
+                continue
+            old_scan = scans[old]
+            existing = scans.get(new)
+            if existing and existing.get("folder_id") != old_scan.get("folder_id"):
+                raise ValueError(f"{new} 的扫描文件夹不一致，未合并或覆盖。")
+            if not existing or str(old_scan.get("scanned_at", "")) > str(existing.get("scanned_at", "")):
+                scans[new] = old_scan
+            del scans[old]
+            merged += 1
+        changed = 0
+        for item in scope.get("external_videos", []):
+            touched = False
+            for field in ("batch_date", "daily_scan_date"):
+                if item.get(field) in corrections:
+                    item[field] = corrections[item[field]]
+                    touched = True
+            changed += int(touched)
+        if not dry_run and (changed or merged):
+            state[scope_key] = scope
+            _save_state(path, state)
+        return {"changed_records": changed, "merged_scan_dates": merged,
+                "corrections": dict(corrections)}
+
+
 def _included(item):
     """Honor explicit exclusions, but migrate the old review-folder default."""
     if item.get("included", True):
         return True
-    return bool(item.get("review_path") and not item.get("manual_included")
-                and item.get("batch_slot") in _PERIOD_LABELS
-                and not item.get("possible_revision"))
+    if item.get("manual_included") or item.get("possible_revision"):
+        return False
+    # Older daily scans excluded files solely because no period folder existed.
+    # Recover those defaults, but never override a user's explicit exclusion.
+    return bool((item.get("review_path")
+                 and effective_batch_slot(item.get("batch_slot")) in _PERIOD_LABELS)
+                or (item.get("daily_scan_date")
+                    and str(item.get("batch_slot") or "").strip() in {"", "00"}))
 
 
 def _with_review_status(items):
@@ -359,7 +593,9 @@ def external_video_records(config, root, state_path=None):
     """Return copies of folder-imported videos for the editor."""
     with _LOCK:
         scope = _load_state(state_path or STATE_FILE).get(_scope_key(config, root), {})
-        return _with_review_status([dict(item, included=_included(item))
+        return _with_review_status([dict(item, **_duration_fields(item, scope.get("duration_cache")),
+                                        batch_slot=effective_batch_slot(item.get("batch_slot")),
+                                        included=_included(item))
                                     for item in scope.get("external_videos", [])])
 
 
@@ -398,7 +634,7 @@ def pending_review_quantity_records(config, root, state_path=None, records=None)
             "drive_file_id": file_id, "file_name": name,
             "drive_link": str(item.get("drive_link") or ""),
             "batch_date": str(item.get("batch_date") or ""),
-            "batch_slot": str(item.get("batch_slot") or ""),
+            "batch_slot": effective_batch_slot(item.get("batch_slot")),
             "status": status,
         }
     uploads = all_video_upload_records(config) if records is None else records
@@ -417,7 +653,7 @@ def pending_review_quantity_records(config, root, state_path=None, records=None)
             "file_name": str(record.get("file_name") or ""),
             "drive_link": str(record.get("drive_link") or ""),
             "batch_date": str(record.get("batch_date") or ""),
-            "batch_slot": str(record.get("batch_slot") or ""),
+            "batch_slot": effective_batch_slot(record.get("batch_slot")),
             "status": status,
         }
     return sorted(result.values(), key=lambda item: (
@@ -439,6 +675,7 @@ def scan_daily_drive_date(
     day = _date(batch_date)
     if not day:
         raise ValueError("请选择有效的交付日期。")
+    _reject_future_date(day)
     parent_id = extract_drive_folder_id(
         str(config.get("drive_parent_folder_id") or "").strip()
     )
@@ -540,7 +777,7 @@ def scan_daily_drive_date(
                     "id": uuid.uuid4().hex,
                     "folder_id": date_folder_id,
                     "first_seen_at": datetime.now().astimezone().isoformat(timespec="seconds"),
-                    "included": bool(detected_slot and not is_revision),
+                    "included": not is_revision,
                     "sheet": "", "category": "",
                 }
                 videos.append(entry)
@@ -550,10 +787,9 @@ def scan_daily_drive_date(
                     entry.get("review_path") and not entry.get("included", True)
                     and not entry.get("manual_included")
                 )
-                if not detected_slot and entry.get("daily_scan_date") != day:
-                    entry["included"] = False
+            was_included = _included(entry)
             manual_slot = str(entry.get("manual_batch_slot") or "")
-            slot = detected_slot or (manual_slot if manual_slot in _PERIOD_LABELS else "")
+            slot = detected_slot or (manual_slot if manual_slot in _PERIOD_LABELS else "03")
             if detected_slot:
                 entry.pop("manual_batch_slot", None)
             if not entry.get("sheet") or not entry.get("category"):
@@ -567,6 +803,7 @@ def scan_daily_drive_date(
             if is_review:
                 review += 1
             entry.update({
+                **_duration_fields(item),
                 "drive_file_id": drive_id,
                 "drive_link": f"https://drive.google.com/file/d/{drive_id}/view",
                 "folder_name": folder_name,
@@ -582,7 +819,7 @@ def scan_daily_drive_date(
                 "possible_revision": is_revision,
                 "review_path": is_review,
             })
-            if (is_review and _included(entry)) or (
+            if (was_included and not is_revision) or (is_review and _included(entry)) or (
                 was_auto_excluded_review and slot in _PERIOD_LABELS and not is_revision
             ):
                 entry["included"] = True
@@ -611,7 +848,7 @@ def scan_daily_drive_date(
                                       if entry.get("daily_scan_date") == day
                                       and not entry.get("missing_from_daily")
                                       and entry.get("possible_revision")),
-            "records": _with_review_status([dict(entry) for entry in videos
+            "records": _with_review_status([dict(entry, **_duration_fields(entry, scope.get("duration_cache"))) for entry in videos
                                             if entry.get("batch_date") == day]),
             "warnings": hint_warnings,
         }
@@ -632,9 +869,10 @@ def scan_external_video_folder(
     if not re.fullmatch(r"[A-Za-z0-9_-]{10,}", folder_id):
         raise ValueError("请粘贴有效的 Google Drive 文件夹链接。")
     day = _date(batch_date)
-    slot = str(batch_slot or "").zfill(2)
+    slot = effective_batch_slot(batch_slot)
     if not day or slot not in _PERIOD_LABELS:
         raise ValueError("请选择有效的交付日期和时段。")
+    _reject_future_date(day)
     service = service or load_drive_service()
     folder = _execute_with_retry(lambda: service.files().get(
         fileId=folder_id, fields="id,name,mimeType,trashed", supportsAllDrives=True
@@ -685,6 +923,7 @@ def scan_external_video_folder(
                     videos.append(entry)
                     added += 1
             entry.update({
+                **_duration_fields(item),
                 "drive_file_id": drive_id,
                 "drive_link": f"https://drive.google.com/file/d/{drive_id}/view",
                 "folder_name": str(folder.get("name") or folder_id),
@@ -711,7 +950,8 @@ def scan_external_video_folder(
         state[scope_key] = scope
         _save_state(state_path, state)
         return {"found": len(remote), "added": added, "replaced": replaced,
-                "records": [dict(item) for item in videos], "sources": folders}
+                "records": [dict(item, **_duration_fields(item, scope.get("duration_cache")))
+                            for item in videos], "sources": folders}
 
 
 def update_external_video_records(config, root, edits, state_path=None):
@@ -731,15 +971,15 @@ def update_external_video_records(config, root, edits, state_path=None):
             if edit is None:
                 continue
             day = _date(edit.get("batch_date"))
-            raw_slot = str(edit.get("batch_slot") or "").strip()
-            slot = raw_slot.zfill(2) if raw_slot and raw_slot != "00" else ""
+            slot = effective_batch_slot(edit.get("batch_slot"))
             included = bool(edit.get("included", True))
             if not day:
                 raise ValueError(f"{item.get('file_name')}：交付日期无效，请填写 YYYY-MM-DD")
+            _reject_future_date(day)
             if included and slot not in _PERIOD_LABELS:
                 raise ValueError(
-                    f"{item.get('file_name')}：已勾选计数，但时段为空或无效；"
-                    "请填写 01/02/03，或取消计数。"
+                    f"{item.get('file_name')}：已勾选计数，但时段无效；"
+                    "请填写 01/02/03；留空默认 03，或取消计数。"
                 )
             if item.get("daily_scan_date"):
                 detected_slot = item.get(
@@ -798,7 +1038,7 @@ def _external_assignments(scope, creator, local_groups):
         day = _date(item.get("batch_date"))
         return (bool(_included(item) and review_passed(item)
                      and item.get("sheet") and item.get("category"))
-                and str(item.get("batch_slot") or "").zfill(2) in _PERIOD_LABELS
+                and effective_batch_slot(item.get("batch_slot")) in _PERIOD_LABELS
                 and not item.get("missing_from_daily")
                 and not item.get("outside_daily_scan")
                 and (day not in scanned_days or item.get("daily_scan_date") == day))
@@ -835,6 +1075,9 @@ def _external_assignments(scope, creator, local_groups):
             continue
         label = str(item.get("file_name") or file_id)
         day = _date(item.get("batch_date"))
+        if day and day > date.today().isoformat():
+            warnings.append(f"流程外视频 {label}：交付日期 {day} 在未来，请核对年份；未计数")
+            continue
         if day in scanned_days and (
             item.get("daily_scan_date") != day or item.get("missing_from_daily")
         ):
@@ -844,12 +1087,13 @@ def _external_assignments(scope, creator, local_groups):
         if not sheet or not category:
             warnings.append(f"流程外视频 {label}：统计分页/类别待填写")
             continue
-        slot = str(item.get("batch_slot") or "").zfill(2)
+        slot = effective_batch_slot(item.get("batch_slot"))
         if not day or slot not in _PERIOD_LABELS:
             warnings.append(f"流程外视频 {label}：交付日期/时段无效")
             continue
         seen_ids.add(file_id)
         groups[(sheet, day, slot, category, creator)].append({
+            **_duration_fields(item),
             "identity": str(item.get("id") or file_id),
             "file_name": label,
             "drive_file_id": file_id,
@@ -878,29 +1122,40 @@ def preview_external_day(records, day):
     items = [item for item in records if _date(item.get("batch_date")) == day]
     missing_slot = missing_category = 0
     for item in items:
-        slot = str(item.get("batch_slot") or "").zfill(2)
+        slot = effective_batch_slot(item.get("batch_slot"))
         sheet = str(item.get("sheet") or "").strip()
         category = str(item.get("category") or "").strip()
         if slot not in _PERIOD_LABELS:
             missing_slot += 1
         if not sheet or not category:
             missing_category += 1
-    groups, _warnings = _external_assignments({"external_videos": items}, "", {})
+    groups, _warnings = _external_assignments({"external_videos": records}, "", {})
+    groups, excluded = deduplicate_video_groups(groups)
+    groups = {key: videos for key, videos in groups.items() if key[1] == day}
+    groups, _, _ = _adjust_fl_oral_counts(groups)
     daily_counts = _daily_count_rows(groups)
     counted = sum(row["total"] for row in daily_counts)
     return {"date": day, "total_files": len(items), "counted": counted,
             "not_counted": len(items) - counted,
             "missing_slot": missing_slot, "missing_category": missing_category,
-            "daily_counts": daily_counts}
+            "daily_counts": daily_counts,
+            "duplicate_exclusions": [item for item in excluded if item["date"] == day]}
 
 
 def reconcile_daily_quantity(
-    config, root, service=None, records=None, state_path=None, dry_run=False
+    config, root, service=None, records=None, state_path=None, dry_run=False,
+    drive_service=None, only_sheet=None, only_dates=None, verify_content=False,
 ):
     """Apply verified absolute counts; never guess over a nonempty manual cell."""
     scope = _scope_key(config, root)
     spreadsheet_id = scope.split("|", 1)[0]
     state_path = Path(state_path or STATE_FILE)
+    selected_dates = None if only_dates is None else set(only_dates)
+    if selected_dates is not None and any(_date(day) != day for day in selected_dates):
+        raise ValueError("定向补填日期必须为 YYYY-MM-DD。")
+    def selected(key):
+        return (only_sheet is None or key[0] == only_sheet) and (
+            selected_dates is None or key[1] in selected_dates)
     with _LOCK:
         state = _load_state(state_path)
         previous = state.get(scope, {})
@@ -914,6 +1169,8 @@ def reconcile_daily_quantity(
             item["properties"]["title"]: item["properties"].get("gridProperties", {})
             for item in metadata.get("sheets", [])
         }
+        if only_sheet is not None and only_sheet not in sizes:
+            raise ValueError("指定的统计分页不存在；未填写。")
         names = sorted(sizes)
         ranges = [sheet_range(name, "A1:{}{}".format(
             column_to_letter(sizes[name].get("columnCount", 1)),
@@ -976,15 +1233,35 @@ def reconcile_daily_quantity(
         for key, videos in external_groups.items():
             groups.setdefault(key, []).extend(videos)
         warnings.extend(external_warnings)
+        content_cache = dict(previous.get("content_cache", {}))
+        groups = _prepare_video_content(groups, records, content_cache,
+                                        drive_service, verify=verify_content)
+        groups, duplicate_exclusions = deduplicate_video_groups(groups)
+        groups = {key: videos for key, videos in groups.items() if selected(key)}
+        duplicate_exclusions = [item for item in duplicate_exclusions if selected((
+            item["sheet"], item["date"], item["slot"], item["category"], ""))]
+        duration_cache = dict(previous.get("duration_cache", {}))
+        groups, duration_warnings, adjustments = _adjust_fl_oral_counts(
+            groups, category_options, duration_cache, drive_service, read_remote=True
+        )
+        warnings.extend(duration_warnings)
         daily_counts = _daily_count_rows(groups)
         counted = sum(row["total"] for row in daily_counts)
         desired = {
             json.dumps(key, ensure_ascii=False): videos for key, videos in groups.items()
         }
-        relevant = set(desired) | set(old_cells)
+        relevant = {key for key in set(desired) | set(old_cells) if selected(json.loads(key))}
         if not relevant:
+            next_state = {**previous, "last_refresh_warning_count": len(warnings),
+                          "updated_at": datetime.now().astimezone().isoformat(timespec="seconds")}
+            if not dry_run:
+                state[scope] = next_state
+                _save_state(state_path, state)
             return {"updated": [], "warnings": warnings, "counted": 0,
-                    "category_options": category_options, "daily_counts": daily_counts}
+                    "duplicate_exclusions": duplicate_exclusions,
+                    "automatic_classifications": adjustments,
+                    "category_options": category_options, "daily_counts": daily_counts,
+                    "sync_progress": _sync_progress_summary(previous if dry_run else next_state)}
 
         updates = []
         pending = []
@@ -1039,12 +1316,18 @@ def reconcile_daily_quantity(
             next_cells[key] = entry
         if not dry_run:
             state[scope] = {**previous,
+                            "content_cache": content_cache,
+                            "duration_cache": duration_cache,
+                            "last_refresh_warning_count": len(warnings),
                             "updated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
                             "cells": next_cells}
             _save_state(state_path, state)
         return {"updated": [{"range": a1, "count": number}
                             for _, _, a1, number in pending],
                 "warnings": warnings,
+                "duplicate_exclusions": duplicate_exclusions,
+                "automatic_classifications": adjustments,
                 "counted": counted,
                 "daily_counts": daily_counts,
-                "category_options": category_options}
+                "category_options": category_options,
+                "sync_progress": _sync_progress_summary(previous if dry_run else state[scope])}

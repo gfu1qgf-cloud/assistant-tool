@@ -23,26 +23,15 @@ from model.DailyQuantityStats import (
 
 
 class DailyQuantityTests(unittest.TestCase):
-    def test_category_loading_reads_sheet_without_writing_counts(self):
-        config = {
-            "daily_quantity_sheet_url": "https://docs.google.com/spreadsheets/d/fake-id/edit",
-            "task_submission_creator": "本人",
-        }
-        grid = [[], [], ["组别", "名字"], ["AI组", "本人"],
-                ["", "", "短口播"], ["", "", "长口播"]]
-        service = MagicMock()
-        service.spreadsheets.return_value.get.return_value.execute.return_value = {
-            "sheets": [{"properties": {"title": "口播视频组",
-                         "gridProperties": {"rowCount": 6, "columnCount": 8}}}]
-        }
-        service.spreadsheets.return_value.values.return_value.batchGet.return_value.execute.return_value = {
-            "valueRanges": [{"values": grid}]
-        }
-        self.assertEqual(
-            read_daily_quantity_categories(config, service=service),
-            {"口播视频组": ["短口播", "长口播"]},
-        )
-        service.spreadsheets.return_value.values.return_value.batchUpdate.assert_not_called()
+    def test_category_loading_is_local_without_creator_url_or_network(self):
+        from model.DailyQuantityCategories import CategoryStore
+        with tempfile.TemporaryDirectory() as directory:
+            config = {"daily_quantity_categories_file": str(Path(directory) / "categories.json")}
+            CategoryStore(config).save({"口播视频组": ["短口播", "长口播"]}, None)
+            service = MagicMock()
+            self.assertEqual(read_daily_quantity_categories(config, service=service),
+                             {"口播视频组": ["短口播", "长口播"]})
+            service.spreadsheets.assert_not_called()
 
     def test_saved_day_preview_counts_included_videos_without_sheet_refresh(self):
         records = [
@@ -79,8 +68,8 @@ class DailyQuantityTests(unittest.TestCase):
                                               service=MagicMock(), state_path=path,
                                               records=[])
                 entry = first["records"][0]
-                self.assertFalse(entry["included"])
-                self.assertEqual(entry["batch_slot"], "")
+                self.assertTrue(entry["included"])
+                self.assertEqual(entry["batch_slot"], "03")
                 update_external_video_records(config, directory, [{
                     "id": entry["id"], "batch_date": day, "batch_slot": "02",
                     "included": True, "sheet": "口播", "category": "短口播",
@@ -123,11 +112,16 @@ class DailyQuantityTests(unittest.TestCase):
                     "sheet": "统计", "category": "短口播"}
             update_external_video_records(config, directory, [edit], state_path=path)
             saved = external_video_records(config, directory, path)[0]
-            self.assertEqual(saved["batch_slot"], "")
+            self.assertEqual(saved["batch_slot"], "03")
             self.assertEqual(saved["category"], "短口播")
+            self.assertFalse(saved["included"])
+            update_external_video_records(
+                config, directory, [dict(edit, included=True)], state_path=path
+            )
+            self.assertTrue(external_video_records(config, directory, path)[0]["included"])
             with self.assertRaisesRegex(ValueError, "已勾选计数"):
                 update_external_video_records(
-                    config, directory, [dict(edit, included=True)], state_path=path
+                    config, directory, [dict(edit, included=True, batch_slot="99")], state_path=path
                 )
 
     def test_old_task_revision_is_listed_but_not_counted_automatically(self):

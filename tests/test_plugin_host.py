@@ -366,7 +366,9 @@ class PluginHostTests(unittest.TestCase):
 
         self.assertEqual(plugin_menu.actions()[0].text(), "库存与素材管理器")
         self.assertEqual(task_actions[0].text(), "分配库存图片…")
+        self.assertIn("分配图片智能版…", [action.text() for action in task_actions])
         self.assertEqual(tabs.tabText(0), "库存插件")
+        self.assertIn("图片智能分配", [tabs.tabText(i) for i in range(tabs.count())])
 
     def test_chrome_plugin_registers_launcher_next_command_and_settings(self):
         self.host.install(ChromeLauncherPlugin())

@@ -1,5 +1,6 @@
 import logging
 import hashlib
+from pathlib import Path
 from collections import OrderedDict
 
 from qt_compat import QtCore, QtGui, QtWidgets
@@ -253,6 +254,18 @@ class PluginContext:
             rows,
             require_loaded=require_loaded,
         )
+
+    def current_task_table_path(self):
+        """Use the loaded project, never a date selector changed but not loaded."""
+        window = self._host.main_window
+        root = getattr(window,"loaded_project_dir",None)
+        if not root:
+            return None
+        config = window.load_config()
+        name = str(config.get("task_table_file_name") or "tasks.ods").strip()
+        if name in {"", ".", ".."} or Path(name).name != name:
+            raise ValueError("任务表格文件名无效，请检查主程序设置。")
+        return Path(root).resolve()/name
 
     def task_language(self, task):
         """Return the host's normalized language for one task."""

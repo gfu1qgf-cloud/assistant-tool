@@ -1,4 +1,6 @@
 from .audio_splitter import AudioSplitterPlugin
+from .batch_text_video import BatchTextVideoPlugin
+from .video_stitch import VideoStitchPlugin
 from .chrome_launcher import ChromeLauncherPlugin
 from .codex_account_switcher import CodexAccountSwitcherPlugin
 from .cooking_assistant import CookingAssistantPlugin
@@ -25,6 +27,8 @@ from .waste_reminder import WasteReminderPlugin
 
 __all__ = [
     "AudioSplitterPlugin",
+    "BatchTextVideoPlugin",
+    "VideoStitchPlugin",
     "ChromeLauncherPlugin",
     "CodexAccountSwitcherPlugin",
     "CookingAssistantPlugin",

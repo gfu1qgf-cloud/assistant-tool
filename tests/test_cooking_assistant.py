@@ -12,8 +12,8 @@ from unittest.mock import Mock, patch
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from qt_compat import QtCore, QtWidgets
 from app_plugins.builtin.cooking_assistant import CookingAssistantPlugin
-from app_plugins.builtin.cooking_assistant.recipes import generate_recipes, parse_recipes, request_id, recipe_text
-from app_plugins.builtin.cooking_assistant.settings import CookingSettingsPage, normalize_settings
+from app_plugins.builtin.cooking_assistant.recipes import generate_recipes, parse_recipes, request_id, recipe_text, recipes_from_response, RecipeResponseError
+from app_plugins.builtin.cooking_assistant.settings import DEFAULT_MODEL, CookingSettingsPage, normalize_settings
 from app_plugins.builtin.cooking_assistant.store import FoodStore, eligible_items, stock_status, today, validate_item
 from app_plugins.builtin.cooking_assistant.ui import CookingDialog, FoodEditDialog, RecipeThread
 from model.GeminiKeyManager import GeminiKeyManager
@@ -90,6 +90,84 @@ class FoodStoreTests(unittest.TestCase):
 
 
 class CookingRecipeTests(unittest.TestCase):
+    def metadata_response(self, data):
+        response = Mock()
+        response.__enter__ = Mock(return_value=response)
+        response.__exit__ = Mock(return_value=False)
+        response.read.return_value = json.dumps(data).encode()
+        return response
+
+    def test_structured_schema_is_sent_and_bad_format_retries_same_key_once(self):
+        manager = GeminiKeyManager({"gemini_api_keys": ["private-key"]})
+        progress = []
+        payload = {"ingredients": ["egg", "tomato"], "people": 1}
+        with patch("urllib.request.urlopen", side_effect=[self.response("not JSON"), self.response()]) as call:
+            result = generate_recipes(payload, DEFAULT_MODEL, manager, progress.append)
+        self.assertEqual(call.call_count, 2)
+        self.assertEqual(result[0]["title"], RECIPE["title"])
+        bodies = [json.loads(x.args[0].data) for x in call.call_args_list]
+        self.assertEqual(bodies[0]["contents"], bodies[1]["contents"])
+        self.assertEqual(bodies[1]["generationConfig"]["maxOutputTokens"], 12000)
+        self.assertIn("responseJsonSchema", bodies[0]["generationConfig"])
+        self.assertNotIn("private-key", "\n".join(progress))
+
+    def test_truncated_even_valid_json_is_not_returned_and_second_request_recovers(self):
+        manager = GeminiKeyManager({"gemini_api_keys": ["key"]})
+        incomplete = {"candidates": [{"finishReason": "MAX_TOKENS", "content": {"parts": [{"text": json.dumps({"recipes": [RECIPE]})}]}}]}
+        with patch("urllib.request.urlopen", side_effect=[self.metadata_response(incomplete), self.response()]) as call:
+            result = generate_recipes({"ingredients": ["egg"]}, DEFAULT_MODEL, manager)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(call.call_count, 2)
+
+    def test_safety_block_is_specific_and_never_retried_or_marks_key_invalid(self):
+        for data in ({"promptFeedback": {"blockReason": "SAFETY"}},
+                     {"candidates": [{"finishReason": "SAFETY"}]}):
+            manager = GeminiKeyManager({"gemini_api_keys": ["key"]})
+            with patch("urllib.request.urlopen", return_value=self.metadata_response(data)) as call:
+                with self.assertRaisesRegex(RuntimeError, "SAFETY"):
+                    generate_recipes({"ingredients": ["egg"]}, DEFAULT_MODEL, manager)
+            self.assertEqual(call.call_count, 1)
+            self.assertTrue(manager.is_available("key", DEFAULT_MODEL))
+
+    def test_empty_or_malformed_response_retry_is_bounded(self):
+        for data in ({}, {"candidates": []}, {"candidates": [None]},
+                     {"candidates": [{"finishReason": "STOP", "content": {"parts": {"text": "bad"}}}]},
+                     {"candidates": [{"content": {"parts": [{"thought": True, "text": "private"}]}}]}):
+            manager = GeminiKeyManager({"gemini_api_keys": ["key"]})
+            with patch("urllib.request.urlopen", return_value=self.metadata_response(data)) as call:
+                with self.assertRaises(RuntimeError):
+                    generate_recipes({"ingredients": ["egg"]}, DEFAULT_MODEL, manager)
+            self.assertEqual(call.call_count, 2)
+
+    def test_logs_only_safe_metadata_not_model_content(self):
+        progress = []
+        result = recipes_from_response({"usageMetadata": {"candidatesTokenCount": 100}, "candidates": [{
+            "finishReason": "STOP", "finishMessage": "private-key", "content": {"parts": [
+                {"text": json.dumps({"recipes": [RECIPE]})}, {"thought": True, "text": "private-key"}]}}]}, progress.append)
+        self.assertEqual(len(result), 1)
+        self.assertIn("STOP", "".join(progress))
+        self.assertNotIn("private-key", "".join(progress))
+        self.assertNotIn("番茄鸡蛋", "".join(progress))
+
+    def test_503_retries_same_key_before_rotating(self):
+        manager = GeminiKeyManager({"gemini_api_keys": ["first-key", "second-key"]})
+        error = urllib.error.HTTPError("https://example.test", 503, "busy", {}, io.BytesIO(b'{}'))
+        with patch("urllib.request.urlopen", side_effect=[error, self.response()]) as call, patch("time.sleep"):
+            generate_recipes({"ingredients": ["egg"]}, DEFAULT_MODEL, manager)
+        self.assertEqual(call.call_count, 2)
+        self.assertEqual([x.args[0].get_header("X-goog-api-key") for x in call.call_args_list], ["first-key", "first-key"])
+
+    def test_lightweight_default_preserves_explicit_model_choice(self):
+        self.assertEqual(DEFAULT_MODEL, "gemini-3.5-flash-lite")
+        self.assertEqual(normalize_settings()["model"], DEFAULT_MODEL)
+        self.assertEqual(normalize_settings({"model": "custom-model"})["model"], "custom-model")
+
+    def test_default_recipe_request_uses_lightweight_model(self):
+        manager = GeminiKeyManager({"gemini_api_keys": ["key"]})
+        with patch("urllib.request.urlopen", return_value=self.response()) as call:
+            generate_recipes({"ingredients": ["egg"]}, DEFAULT_MODEL, manager)
+        self.assertIn("/models/gemini-3.5-flash-lite:generateContent", call.call_args.args[0].full_url)
+
     def test_parse_and_human_readable_total(self):
         result = parse_recipes('```json\n' + json.dumps({"recipes": [RECIPE]}, ensure_ascii=False) + '\n```')
         text = recipe_text(result[0], 2, 2)
@@ -182,6 +260,8 @@ class CookingUiTests(unittest.TestCase):
             self.dialog.generate()
         self.assertIn("复用", self.dialog.status.text())
         page = CookingSettingsPage(self.context)
+        self.assertEqual(page.model.currentText(), DEFAULT_MODEL)
+        self.assertIn("gemini-3.1-flash-lite", [page.model.itemText(i) for i in range(page.model.count())])
         page.load_config({"cooking_assistant": {"model": "custom-model", "meals": 3}})
         config = page.update_config({})
         self.assertEqual(config["cooking_assistant"]["model"], "custom-model")
@@ -218,6 +298,22 @@ class CookingUiTests(unittest.TestCase):
             self.assertFalse(self.dialog.is_busy())
         self.assertIn("共 2 份", self.dialog.output.toPlainText())
         self.assertTrue(self.plugin.can_close()[0])
+
+    def test_progress_is_logged_on_gui_thread_and_redacted(self):
+        original_log = self.context.log
+        observed_threads = []
+        self.context.log = lambda message: (original_log(message), observed_threads.append(QtCore.QThread.currentThread()))
+        def generate(_payload, _model, _manager, progress):
+            progress("[做饭响应] STOP dummy-secret-one")
+            return [RECIPE]
+        self.dialog.extra.setPlainText("番茄 2 个")
+        with patch("app_plugins.builtin.cooking_assistant.ui.generate_recipes", side_effect=generate):
+            self.dialog.generate()
+            self.dialog.worker.wait(5000)
+            for _ in range(10):
+                self.app.processEvents()
+        self.assertEqual(observed_threads, [self.app.thread()])
+        self.assertNotIn("dummy-secret-one", original_log.call_args.args[0])
 
 
 if __name__ == "__main__":

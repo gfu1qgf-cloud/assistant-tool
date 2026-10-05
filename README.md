@@ -39,11 +39,17 @@ GitHub Release 下载并校验 SHA-256；校验失败或文件缺失时会直接
 验证发布包来源：
 
 ```powershell
-gh attestation verify AssistantTool-Windows.zip --repo secure-artifacts/assistant-tool
+gh attestation verify AssistantTool-Windows.zip --repo gfu1qgf-cloud/assistant-tool
 ```
 
-如果从个人仓库下载，请将上面的仓库改为 `gfu1qgf-cloud/assistant-tool`。
+如果从其他仓库下载，请将上面的仓库替换为实际下载来源。
 构建证明必须属于下载来源仓库，不能跨仓库复制证明。
+
+发布包根目录的 `BUILD_INFO.json` 记录版本标签、源码提交和实际依赖版本。
+核对其中的 `source_commit` 与 Release 标签指向的提交，可确认源码和安装包对应。
+v2.0.0 使用通过隔离媒体读取及模型兼容测试的 OpenCV 4.14 / NumPy 2.2；
+不会改动系统 Python 或其他软件环境。原生第三方库不属于 pip 漏洞扫描的完整覆盖范围，
+不能据此宣称零漏洞；基础 Python 迁移仍单独安排。
 
 ## 安全检查与发布
 
@@ -56,6 +62,12 @@ Dependabot 跟踪依赖与 Actions 更新，仓库启用密钥扫描与推送保
 当前 PyTorch 2.10 配套版本仍有已记录的条件性公告。程序不直接使用公告涉及的
 `.pt2` 加载与 `torch.jit.script`；保留已验证版本，不自动跳过测试或升级不兼容依赖。
 请只加载可信模型、插件和 Fusion 预设。扫描通过不代表不存在安全风险。
+
+## 更新日志
+
+在主界面点击“关于 → 更新日志”查看按发布版本整理的功能和修复，也可阅读发布包中的 [CHANGELOG.md](CHANGELOG.md)。仅为修复构建或测试而产生的版本会明确标记。
+
+每次发布前，必须在 `CHANGELOG.md` 为对应标签补充具体改动条目。发布工作流会验证该版本记录，用它作为 GitHub Release 正文，并把完整更新日志放进发布包；缺失或仍含占位文字时停止发布。尚未发布的本地改动不得补算到旧版本。
 
 ## 测试
 

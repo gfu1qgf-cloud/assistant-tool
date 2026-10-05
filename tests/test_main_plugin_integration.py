@@ -66,6 +66,7 @@ class MainPluginIntegrationTests(unittest.TestCase):
                 self.assertIn("素材整理…", plugin_titles)
                 self.assertIn("智能搜图…", plugin_titles)
                 self.assertIn("智能搜音乐…", plugin_titles)
+                self.assertIn("批量文案视频…", plugin_titles)
                 self.assertIn("监听剪贴板中的 Google 链接", plugin_titles)
                 self.assertIn("Chrome 启动器", plugin_titles)
                 self.assertIn("启动下一个 Chrome", plugin_titles)

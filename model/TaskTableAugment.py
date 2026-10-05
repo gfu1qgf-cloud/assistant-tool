@@ -26,7 +26,9 @@ def _header_cells(row):
 
 
 def _replace_blank_at(row, column, text):
+    end = 0
     for start, repeat, cell, value in _header_cells(row):
+        end = start + repeat
         if not start <= column < start + repeat:
             continue
         if value or cell.qname[1] != "table-cell":
@@ -49,6 +51,13 @@ def _replace_blank_at(row, column, text):
             tail = TableCell(stylename=style) if style else TableCell()
             tail.setAttribute("numbercolumnsrepeated", after)
             row.insertBefore(tail, new_cell.nextSibling)
+        return
+    if column == end:
+        # Minimal ODS writers omit trailing blank cells. Appending at the exact
+        # end is safe; never overwrite a header or invent intervening columns.
+        new_cell = TableCell()
+        new_cell.addElement(P(text=text))
+        row.addElement(new_cell)
         return
     raise ValueError("任务表格没有可追加统计表头的空列")
 

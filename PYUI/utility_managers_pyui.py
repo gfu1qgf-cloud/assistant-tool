@@ -5,6 +5,7 @@ from datetime import datetime
 from pathlib import Path
 
 from qt_compat import QtCore, QtGui, QtWidgets
+from PYUI.release_notes_pyui import ReleaseNotesDialog
 
 from model.ClipboardHelper import set_internal_clipboard_text
 from model.GoogleSheetMonitor import (
@@ -132,10 +133,13 @@ class AboutDialog(QtWidgets.QDialog):
 
         footer = QtWidgets.QHBoxLayout()
         copy_button = QtWidgets.QPushButton("复制维护复盘", self)
+        self.release_notes_button = QtWidgets.QPushButton("更新日志", self)
+        self.release_notes_button.clicked.connect(self.open_release_notes)
         close_button = QtWidgets.QPushButton("关闭", self)
         copy_button.clicked.connect(self.copy_lessons)
         close_button.clicked.connect(self.accept)
         footer.addWidget(copy_button)
+        footer.addWidget(self.release_notes_button)
         footer.addStretch(1)
         footer.addWidget(close_button)
         layout.addLayout(footer)
@@ -143,6 +147,9 @@ class AboutDialog(QtWidgets.QDialog):
     def copy_lessons(self):
         set_internal_clipboard_text(maintenance_lessons_text())
         self.lesson_browser.setToolTip("维护复盘已复制到剪贴板")
+
+    def open_release_notes(self):
+        ReleaseNotesDialog(self).exec()
 
 
 def _format_quantity(value):

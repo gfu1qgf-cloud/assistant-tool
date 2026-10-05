@@ -1,11 +1,13 @@
 """Nonblocking status and manual refresh for daily quantity statistics."""
 
+from datetime import datetime
+
 from qt_compat import QtCore, QtGui, QtWidgets
 
 from model.ClipboardHelper import set_internal_clipboard_text
 from model.DailyQuantityStats import (
+    effective_batch_slot,
     preview_external_day,
-    read_daily_quantity_categories,
     reconcile_daily_quantity,
     scan_daily_drive_date,
     scan_external_video_folder,
@@ -17,6 +19,17 @@ from model.ReviewSubmissionHistory import read_review_history
 class _NoWheelComboBox(QtWidgets.QComboBox):
     """Scrolling the inventory must not silently change a classification."""
 
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setSizeAdjustPolicy(QtWidgets.QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.setMinimumContentsLength(12)
+        self.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Fixed)
+
+    def wheelEvent(self, event):
+        event.ignore()
+
+
+class _NoWheelDateEdit(QtWidgets.QDateEdit):
     def wheelEvent(self, event):
         event.ignore()
 
@@ -32,23 +45,7 @@ class DailyQuantityThread(QtCore.QThread):
 
     def run(self):
         try:
-            self.completed.emit(reconcile_daily_quantity(self.config, self.root))
-        except Exception as exc:
-            self.failed.emit(f"{type(exc).__name__}: {exc}")
-
-
-class DailyQuantityCategoriesThread(QtCore.QThread):
-    completed = QtCore.pyqtSignal(object)
-    failed = QtCore.pyqtSignal(str)
-
-    def __init__(self, config, parent=None):
-        super().__init__(parent)
-        self.config = dict(config)
-        self.sheet_url = str(config.get("daily_quantity_sheet_url") or "").strip()
-
-    def run(self):
-        try:
-            self.completed.emit(read_daily_quantity_categories(self.config))
+            self.completed.emit(reconcile_daily_quantity(self.config, self.root, verify_content=True))
         except Exception as exc:
             self.failed.emit(f"{type(exc).__name__}: {exc}")
 
@@ -95,6 +92,7 @@ class DailyQuantityDateThread(QtCore.QThread):
 
 class DailyQuantityDialog(QtWidgets.QDialog):
     edit_sheet_requested = QtCore.pyqtSignal()
+    edit_categories_requested = QtCore.pyqtSignal()
     refresh_requested = QtCore.pyqtSignal()
     scan_requested = QtCore.pyqtSignal(str, str, str)
     scan_date_requested = QtCore.pyqtSignal(str)
@@ -114,13 +112,17 @@ class DailyQuantityDialog(QtWidgets.QDialog):
         self._show_preview = False
         self._visible_records = []
         self._populating_records = False
+        self._sync_progress = {}
+        self._progress_refresh_failed = False
 
         toolbar = QtWidgets.QHBoxLayout()
         toolbar.addWidget(QtWidgets.QLabel("交付日期"))
         batch_date, batch_slot = get_upload_batch({})
-        self.folder_day = QtWidgets.QDateEdit()
+        self.folder_day = _NoWheelDateEdit()
         self.folder_day.setDisplayFormat("yyyy-MM-dd")
         self.folder_day.setCalendarPopup(True)
+        self.folder_day.setMaximumDate(QtCore.QDate.currentDate())
+        self.folder_day.setToolTip("交付日期不能在未来；滚轮不会修改日期或年份。")
         self.folder_day.setDate(QtCore.QDate(batch_date.year, batch_date.month, batch_date.day))
         self.folder_day.dateChanged.connect(self._show_daily_summary)
         toolbar.addWidget(self.folder_day)
@@ -140,6 +142,27 @@ class DailyQuantityDialog(QtWidgets.QDialog):
         self.refresh_button.clicked.connect(self.refresh_requested.emit)
         toolbar.addWidget(self.refresh_button)
         layout.addLayout(toolbar)
+
+        progress_card = QtWidgets.QFrame(self)
+        progress_card.setFrameShape(QtWidgets.QFrame.Shape.StyledPanel)
+        progress_layout = QtWidgets.QVBoxLayout(progress_card)
+        progress_row = QtWidgets.QHBoxLayout()
+        self.sync_progress_heading = QtWidgets.QLabel("统计记录至：尚无成功同步记录", progress_card)
+        progress_font = self.sync_progress_heading.font()
+        progress_font.setBold(True)
+        progress_font.setPointSize(max(11, progress_font.pointSize() + 2))
+        self.sync_progress_heading.setFont(progress_font)
+        self.sync_progress_heading.setWordWrap(True)
+        progress_row.addWidget(self.sync_progress_heading, 1)
+        self.latest_date_button = QtWidgets.QPushButton("跳到最近统计日期", progress_card)
+        self.latest_date_button.setEnabled(False)
+        self.latest_date_button.clicked.connect(self._jump_to_latest_date)
+        progress_row.addWidget(self.latest_date_button)
+        progress_layout.addLayout(progress_row)
+        self.sync_progress_note = QtWidgets.QLabel("以本地成功同步记录为准；扫描清单不代表已填写谷歌数量表。", progress_card)
+        self.sync_progress_note.setWordWrap(True)
+        progress_layout.addWidget(self.sync_progress_note)
+        layout.addWidget(progress_card)
 
         self.tabs = QtWidgets.QTabWidget()
         layout.addWidget(self.tabs, 1)
@@ -268,7 +291,7 @@ class DailyQuantityDialog(QtWidgets.QDialog):
         self.edit_sheet_button.clicked.connect(self.edit_sheet_requested.emit)
         sheet_row.addWidget(self.edit_sheet_button)
         settings_layout.addLayout(sheet_row)
-        self.category_status = QtWidgets.QLabel("分类尚未读取（只读加载，不会修改表格）")
+        self.category_status = QtWidgets.QLabel("分类来自固定的本地列表，可通过“管理类别”增删改。")
         settings_layout.addWidget(self.category_status)
         settings_note = QtWidgets.QLabel(
             "根据首次交付日期计数；刷新时重读本地任务表，只写本人分类的三个时段，不修改定额和合计。"
@@ -316,6 +339,10 @@ class DailyQuantityDialog(QtWidgets.QDialog):
         bulk_row.addWidget(self.bulk_sheet)
         bulk_row.addWidget(self.bulk_category)
         bulk_row.addWidget(self.apply_bulk_button)
+        self.edit_categories_button = QtWidgets.QPushButton("管理类别…")
+        self.edit_categories_button.setToolTip("编辑固定的本地类别；刷新统计和更换表格链接不会覆盖。")
+        self.edit_categories_button.clicked.connect(self.edit_categories_requested.emit)
+        bulk_row.addWidget(self.edit_categories_button)
         source_layout.addLayout(bulk_row)
         self.save_external_button = QtWidgets.QPushButton("保存分类并刷新数量")
         self.save_external_button.clicked.connect(self.refresh_requested.emit)
@@ -340,9 +367,6 @@ class DailyQuantityDialog(QtWidgets.QDialog):
 
     def set_sheet_url(self, url):
         url = str(url or "").strip()
-        if url != self.sheet_url.text():
-            self.set_category_options({})
-            self.category_status.setText("表格链接已更改，正在等待读取分类…")
         self.sheet_url.setText(url)
 
     def show_pending_reviews(self, records):
@@ -353,7 +377,7 @@ class DailyQuantityDialog(QtWidgets.QDialog):
             row = self.review_queue.rowCount()
             self.review_queue.insertRow(row)
             date_text = "{} / {}".format(record.get("batch_date") or "日期待确认",
-                                          record.get("batch_slot") or "时段待确认")
+                                          effective_batch_slot(record.get("batch_slot")))
             for col, value in enumerate((date_text, record.get("file_name") or "",
                                          labels.get(record.get("status"), "待审核"))):
                 item = QtWidgets.QTableWidgetItem(str(value))
@@ -375,6 +399,7 @@ class DailyQuantityDialog(QtWidgets.QDialog):
         self.review_queue_toggle.setStyleSheet(
             "background-color:#FFF1CF;color:#202124;font-weight:bold;" if records else ""
         )
+        self._render_sync_progress()
 
     def _open_pending_review(self, row, _column):
         item = self.review_queue.item(row, 1)
@@ -383,14 +408,14 @@ class DailyQuantityDialog(QtWidgets.QDialog):
             QtGui.QDesktopServices.openUrl(QtCore.QUrl(link))
 
     def set_category_loading(self):
-        self.category_status.setText("正在只读加载统计分页和类别，不会修改表格…")
+        self.category_status.setText("正在加载本地类别列表…")
 
     def show_category_options(self, options):
         self.set_category_options(options)
         count = sum(len(values) for values in options.values())
         self.category_status.setText(
-            f"已读取 {len(options)} 个统计分页、{count} 个类别（只读）"
-            if count else "未找到当前制作人对应的分类；请核对制作人名称和表格结构。"
+            f"固定类别：{len(options)} 个统计分页、{count} 个类别（本地保存，不联网识别）"
+            if count else "类别列表为空；点击“管理类别”添加，刷新不会恢复已删除的选项。"
         )
 
     def show_category_error(self, error):
@@ -457,21 +482,21 @@ class DailyQuantityDialog(QtWidgets.QDialog):
                     item.setData(QtCore.Qt.UserRole + 1, str(record.get("file_name") or ""))
                 self.external_table.setItem(row, col, item)
             slot_combo = _NoWheelComboBox(self.external_table)
-            slot_combo.addItem("选择时段", "")
+            slot_combo.addItem("留空默认 03", "")
             for slot, label in (("01", "01 · 12点"), ("02", "02 · 18点"),
                                 ("03", "03 · 24点")):
                 slot_combo.addItem(label, slot)
-            saved_slot = str(record.get("batch_slot") or "")
+            saved_slot = effective_batch_slot(record.get("batch_slot"))
             slot_combo.setCurrentIndex(max(slot_combo.findData(saved_slot), 0))
             detected_slot = record.get(
                 "detected_batch_slot",
-                "" if record.get("manual_batch_slot") else saved_slot,
+                "" if record.get("manual_batch_slot") else str(record.get("batch_slot") or ""),
             )
             locked = bool(record.get("daily_scan_date") and detected_slot in {"01", "02", "03"})
             slot_combo.setEnabled(not locked)
             slot_combo.setToolTip(
                 "由网盘 01/02/03 目录确定，不能在此修改" if locked
-                else "选择时段后自动计入数量；疑似旧任务修订版除外"
+                else "没有时段默认计入 03（24点）；可手动修改，疑似旧任务修订版除外"
             )
             self.external_table.setCellWidget(row, 4, slot_combo)
             sheet_combo = _NoWheelComboBox(self.external_table)
@@ -520,8 +545,10 @@ class DailyQuantityDialog(QtWidgets.QDialog):
                 }.get(record.get("review_status"), " · 待审核")
                 if record.get("review_status") != "passed":
                     state += " · 暂不计数"
-            if record.get("daily_scan_date") and record.get("batch_slot") not in {"01", "02", "03"}:
-                state += " · 时段待确认"
+            if str(record.get("batch_slot") or "").strip() in {"", "00"}:
+                state += " · 默认时段 03"
+            elif effective_batch_slot(record.get("batch_slot")) not in {"01", "02", "03"}:
+                state += " · 时段值无效"
             if record.get("possible_duplicate"):
                 state += " · 疑似重复"
             if record.get("possible_revision"):
@@ -543,12 +570,13 @@ class DailyQuantityDialog(QtWidgets.QDialog):
         for choice in choices:
             choice = str(choice).strip()
             if choice and combo.findData(choice) < 0:
-                combo.addItem(choice, choice)
+                combo.addItem(" ".join(choice.split()), choice)
+                combo.setItemData(combo.count() - 1, choice, QtCore.Qt.ItemDataRole.ToolTipRole)
         index = combo.findData(selected)
         if selected and index < 0:
             combo.addItem(f"⚠ 未找到：{selected}", selected)
             index = combo.count() - 1
-            combo.setItemData(index, "当前表格中未找到此项；选择有效分类后再保存。",
+            combo.setItemData(index, "本地可选列表中未找到此项，原值仍保留；可到“管理类别”添加。\n" + selected,
                               QtCore.Qt.ItemDataRole.ToolTipRole)
         combo.setCurrentIndex(max(index, 0))
         combo.blockSignals(False)
@@ -570,12 +598,12 @@ class DailyQuantityDialog(QtWidgets.QDialog):
     def _row_slot_changed(self, row):
         include = self.external_table.item(row, 0)
         record = self._visible_records[row]
-        slot = self._combo_value(row, 4)
+        slot = effective_batch_slot(self._combo_value(row, 4))
         blocked = any(record.get(flag) for flag in (
             "possible_revision", "missing_from_daily", "outside_daily_scan"
         ))
         include.setCheckState(
-            QtCore.Qt.Checked if slot and not blocked else QtCore.Qt.Unchecked
+            QtCore.Qt.Checked if slot in {"01", "02", "03"} and not blocked else QtCore.Qt.Unchecked
         )
         self._update_row_status(row)
 
@@ -585,9 +613,9 @@ class DailyQuantityDialog(QtWidgets.QDialog):
             return
         state = "已分类" if self._combo_value(row, 5) and self._combo_value(row, 6) else "待分类"
         suffixes = [part for part in str(item.data(QtCore.Qt.UserRole) or "").split(" · ")
-                    if part and part != "时段待确认"]
+                    if part and part not in {"时段待确认", "默认时段 03"}]
         if not self._combo_value(row, 4):
-            suffixes.append("时段待确认")
+            suffixes.append("默认时段 03")
         item.setText(state + (" · " + " · ".join(suffixes) if suffixes else ""))
 
     def refresh_review_statuses(self):
@@ -631,7 +659,7 @@ class DailyQuantityDialog(QtWidgets.QDialog):
             result.append({
                 "id": include.data(QtCore.Qt.UserRole),
                 "included": include.checkState() == QtCore.Qt.Checked,
-                "batch_date": value(3), "batch_slot": value(4),
+                "batch_date": value(3), "batch_slot": effective_batch_slot(value(4)),
                 "sheet": value(5), "category": value(6),
             })
         return result
@@ -680,10 +708,14 @@ class DailyQuantityDialog(QtWidgets.QDialog):
     def set_category_options(self, options):
         self._category_options = dict(options or {})
         current = self.bulk_sheet.currentData()
+        current_category = self.bulk_category.currentData()
         self._set_combo_choices(
             self.bulk_sheet, sorted(self._category_options), current, "选择统计分页"
         )
         self._refresh_bulk_categories()
+        if current_category:
+            self._set_combo_choices(self.bulk_category, self._category_options.get(current, []),
+                                    current_category, "选择统计类别")
 
         for row in range(self.external_table.rowCount()):
             sheet_combo = self.external_table.cellWidget(row, 5)
@@ -811,7 +843,8 @@ class DailyQuantityDialog(QtWidgets.QDialog):
         changed = skipped = 0
         for row in rows:
             item = self.external_table.item(row, 0)
-            slot = self._combo_value(row, 4)
+            raw_slot = self._combo_value(row, 4)
+            slot = effective_batch_slot(raw_slot)
             if item is None:
                 continue
             current = item.checkState() == QtCore.Qt.Checked
@@ -819,12 +852,15 @@ class DailyQuantityDialog(QtWidgets.QDialog):
             if target and slot not in {"01", "02", "03"}:
                 skipped += 1
                 continue
+            if target and raw_slot in {"", "00"}:
+                combo = self.external_table.cellWidget(row, 4)
+                combo.setCurrentIndex(combo.findData("03"))
             if current != target:
                 item.setCheckState(QtCore.Qt.Checked if target else QtCore.Qt.Unchecked)
                 changed += 1
         message = f"已修改 {changed} 条视频的计数状态。"
         if skipped:
-            message += f"另有 {skipped} 条缺少有效时段（01/02/03），未勾选。"
+            message += f"另有 {skipped} 条时段值无效（应为01/02/03），未勾选。"
         self.folder_status.setText(message + " 点击“保存分类并刷新数量”后生效。")
 
     def _copy_current_list(self):
@@ -860,18 +896,23 @@ class DailyQuantityDialog(QtWidgets.QDialog):
             self.status.setText("正在读取上传历史、本地任务表和 Google 表格…")
 
     def show_result(self, result):
-        self.show_category_options(result.get("category_options", {}))
+        # Online labels are used by the writer to locate cells, not as choices.
+        # A partial response must never clear the user-owned local catalog.
         warnings = result.get("warnings", [])
         updated = result.get("updated", [])
         self._daily_counts = list(result.get("daily_counts", []))
         self._overall_count = int(result.get("counted", 0))
         self._has_summary = True
         self._show_preview = False
+        if "sync_progress" in result:
+            self.show_sync_progress(result["sync_progress"])
         self._show_daily_summary()
         self.status.setText(
             f"全部日期已归类视频 {self._overall_count} 个；本次更新数字格 {len(updated)} 个；"
             f"待处理提示 {len(warnings)} 条"
         )
+        if warnings and not updated:
+            self.status.setText("本次未写入，有待处理问题；不能据此判断线上数量已完整。 " + self.status.text())
         lines = [
             "以下是本次实际改写的谷歌表格单元格，不是今日视频总数。",
             "写入 0 表示该格原有的程序计数需要清零；今日数量请看上方统计概览。",
@@ -880,7 +921,19 @@ class DailyQuantityDialog(QtWidgets.QDialog):
         ]
         lines.extend(f"{item['range']} → {item['count']}" for item in updated)
         if not updated:
-            lines.append("本次无需改写数字格，现有表格已是最新。")
+            lines.append("本次未改写数字格；仍有待处理问题，部分数量可能未写入。" if warnings
+                         else "本次无需改写数字格，现有表格已是最新。")
+        duplicates = result.get("duplicate_exclusions", [])
+        if duplicates:
+            lines += ["", f"重复副本已排除（{len(duplicates)} 个，不增加数量）："]
+            lines.extend(f"• {item['file_name']}（{item['date']} / {item['category']}）："
+                         f"保留 {item['retained_date']} / {item['retained_category']}；"
+                         f"{item['reason']}" for item in duplicates)
+        adjustments = result.get("automatic_classifications", [])
+        if adjustments:
+            lines += ["", "按时长自动调整统计类别（本地表格未改动）："]
+            lines.extend(f"• {item['file_name']}（{item['duration_millis'] / 1000:.3f} 秒）："
+                         f"{item['from']} → {item['to']}" for item in adjustments)
         if warnings:
             lines += ["", "待处理："] + [f"• {text}" for text in warnings]
             self.details_toggle.setChecked(True)
@@ -890,6 +943,7 @@ class DailyQuantityDialog(QtWidgets.QDialog):
         self.details.setPlainText("\n".join(lines))
 
     def _show_daily_summary(self, _date=None):
+        self._render_sync_progress()
         day = self.folder_day.date().toString("yyyy-MM-dd")
         preview = self._inventory_preview if self._show_preview and self._preview_day == day else None
         if preview:
@@ -952,8 +1006,60 @@ class DailyQuantityDialog(QtWidgets.QDialog):
             self.summary_table.setItem(len(rows), column, cell)
 
     def show_error(self, error):
+        self._progress_refresh_failed = True
+        self._render_sync_progress()
         self.status.setText("刷新失败，原统计数据未改动")
         self.details.setPlainText(error)
         self.details_toggle.setChecked(True)
         self.tabs.setTabText(self.settings_tab_index, "设置与记录 · 错误")
         self.tabs.setCurrentIndex(self.settings_tab_index)
+
+    def show_sync_progress(self, progress):
+        self._sync_progress = dict(progress or {})
+        self._progress_refresh_failed = False
+        self._render_sync_progress()
+
+    def _render_sync_progress(self):
+        p = self._sync_progress
+        latest = str(p.get("latest_date") or "")
+        recorded = QtCore.QDate.fromString(latest, "yyyy-MM-dd")
+        valid = recorded.isValid() and recorded <= self.folder_day.maximumDate()
+        text = f"统计记录至：{latest}" if valid else "统计记录至：尚无成功同步记录"
+        raw = str(p.get("updated_at") or "")
+        if raw:
+            try:
+                text += "  ｜  上次刷新：" + datetime.fromisoformat(raw).astimezone().strftime("%Y-%m-%d %H:%M")
+            except ValueError:
+                text += "  ｜  上次刷新时间未知"
+        self.sync_progress_heading.setText(text)
+        self.latest_date_button.setEnabled(valid)
+        dates = list(p.get("dates") or [])
+        selected = self.folder_day.date().toString("yyyy-MM-dd")
+        count = next((item.get("cells", 0) for item in dates if item.get("date") == selected), 0)
+        selected_note = f"当前所选 {selected}：已有 {count} 条同步记录" if count else f"当前所选 {selected}：尚无同步记录"
+        warning_count = p.get("warning_count")
+        if isinstance(warning_count, int) and warning_count > 0:
+            detail = f"最近刷新仍有 {warning_count} 条待处理，不能视为全部完成。"
+        elif warning_count == 0:
+            detail = "最近刷新无待处理提示；这里只证明已有记录，不保证未扫描的视频都已统计。"
+        else:
+            detail = "历史记录未保存待处理数量，请刷新确认完整性。"
+        if self._progress_refresh_failed:
+            detail = "本次刷新失败；以上保留的是此前成功同步记录。"
+        queue = getattr(self, "review_queue", None)
+        if queue is not None and queue.rowCount():
+            detail += f" 另有 {queue.rowCount()} 条待审核未计数。"
+        range_note = f"记录范围 {p.get('first_date', '')} 至 {latest}（{len(dates)} 个日期）；" if dates else ""
+        self.sync_progress_note.setText(range_note + selected_note + "。\n" + detail)
+        self.sync_progress_heading.setToolTip(
+            "成功同步记录中的最晚交付日期，不代表之前每一天都完整；不把扫描日期当成同步日期。\n"
+            + "\n".join(f"{item.get('date')}：{item.get('cells', 0)} 条同步记录" for item in reversed(dates[-31:]))
+        )
+
+    def _jump_to_latest_date(self):
+        day = str(self._sync_progress.get("latest_date") or "")
+        value = QtCore.QDate.fromString(day, "yyyy-MM-dd")
+        if value.isValid() and value <= self.folder_day.maximumDate():
+            self.folder_day.setDate(value)
+            self.tabs.setCurrentIndex(0)
+            self.view_date_requested.emit(day)

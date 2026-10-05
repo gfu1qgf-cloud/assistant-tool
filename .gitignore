@@ -1,5 +1,7 @@
 # Local runtime configuration and API keys
 /config.json
+/config[0-9]*.json
+.~lock.*#
 .env
 .env.*
 !.env.example
@@ -30,9 +32,16 @@
 /MaterialLibrary/
 /MaterialOrganizer/
 /SmartImageSearch/
+/SmartImageAssignment/
 /SmartMusicSearch/
 /VideoPromptAssistant/
+/BatchTextVideo/
+
+# Standard FFmpeg runtime is downloaded and checksum-verified at build time.
+/runtime/ffmpeg/
 /CookingAssistant/
+/DailyQuantityCategories.json
+/DailyQuantityCategories.json.bak
 /config/
 /TaskReferenceDownloadState.json
 /人脸数据库/

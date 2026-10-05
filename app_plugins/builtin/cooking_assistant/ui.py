@@ -412,7 +412,7 @@ class CookingDialog(QtWidgets.QDialog):
         self.change_button.setEnabled(False)
         self.status.setText("正在生成…窗口可以继续使用，关闭只是隐藏，不会销毁后台任务。")
         self.worker = RecipeThread(payload, model, manager, self)
-        self.worker.progress.connect(self.status.setText)
+        self.worker.progress.connect(self.generation_progress)
         self.worker.succeeded.connect(self.generated)
         self.worker.failed.connect(self.generation_failed)
         self.worker.finished.connect(self.generation_finished)
@@ -425,6 +425,13 @@ class CookingDialog(QtWidgets.QDialog):
             self.status.setText("方案已生成并保存。库存没有扣减；做完可到“食材库存”记录使用量。")
         except Exception as error:
             self.show_error("菜谱已生成，但本地保存失败", error)
+
+    @QtCore.pyqtSlot(str)
+    def generation_progress(self, message):
+        # The worker only emits signals; widgets and logging stay on the GUI thread.
+        message = self.plugin.context.gemini_keys.redact(message)
+        self.status.setText(message)
+        self.plugin.context.log(message)
 
     def generation_failed(self, message, detail):
         self.status.setText(message)

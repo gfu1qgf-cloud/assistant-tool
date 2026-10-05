@@ -35,6 +35,7 @@ from qt_compat import QtCore, QtWidgets
 
 from model.ComboBoxWheelGuard import ComboBoxWheelGuard
 from model.AppTheme import apply_configured_ui_theme
+from model.AppIcon import application_icon
 
 
 from PYUI.main_pyui import MainDialog
@@ -45,6 +46,7 @@ def main():
     globalValue.get_whisper_model()
 
     app = QtWidgets.QApplication(sys.argv)
+    app.setWindowIcon(application_icon(APP_ROOT))
     install_qt_message_logging()
     apply_configured_ui_theme(app, APP_ROOT / "config.json")
     app.combo_box_wheel_guard = ComboBoxWheelGuard(app)

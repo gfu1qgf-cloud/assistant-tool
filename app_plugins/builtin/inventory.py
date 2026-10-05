@@ -30,6 +30,7 @@ from model.MaterialDriveSync import (
     update_material_sync_config,
 )
 from model.MaterialSourceDownloader import parse_material_drive_link
+from .smart_image_assignment.settings import SmartAssignmentSettingsPage
 from PYUI.utility_managers_pyui import (
     InventoryManagerDialog,
     MaterialGroupAssignmentDialog,
@@ -151,7 +152,7 @@ class InventorySettingsPage:
 class InventoryPlugin:
     plugin_id = "inventory"
     display_name = "库存与素材管理"
-    version = "1.0"
+    version = "1.1"
     required_api_version = 1
 
     def __init__(self):
@@ -173,6 +174,8 @@ class InventoryPlugin:
         self.material_sync_tab = None
         self.material_sync_table = None
         self.material_sync_status_label = None
+        self._smart_assignment_dialog = None
+        self._smart_assignment_picker = None
 
     def register(self, context):
         self.context = context
@@ -220,6 +223,19 @@ class InventoryPlugin:
                 order=200,
             )
         )
+        context.register_command(PluginCommand(
+            command_id="assign_images_smart",
+            title="分配图片智能版…",
+            callback=self.assign_images_smart,
+            locations=frozenset({TASK_CONTEXT_MENU}),
+            tooltip="按完整任务文案挑选库存图片，Gemini 看图核对，确认后才移动",
+            order=11,
+            enabled=lambda rows: bool(rows),
+        ))
+        context.register_settings_page(PluginSettingsPage(
+            page_id="smart_assignment", title="图片智能分配",
+            factory=SmartAssignmentSettingsPage, order=205,
+        ))
 
     def start(self):
         self.store = InventoryStore()
@@ -764,6 +780,41 @@ class InventoryPlugin:
             )
         self._alert_signature = signature
 
+    def assign_images_smart(self, rows=None):
+        for active in (self._smart_assignment_picker, self._smart_assignment_dialog):
+            if active is not None:
+                active.show()
+                active.raise_()
+                active.activateWindow()
+                return
+        rows = self.context.selected_task_rows() if rows is None else list(rows)
+        targets = self.context.task_targets(rows)
+        if not targets:
+            return
+        from .smart_image_assignment.ui import GroupPicker, SmartAssignmentDialog
+        picker = GroupPicker([], targets, self.context.parent_widget)
+        self._smart_assignment_picker = picker
+        try:
+            QtCore.QTimer.singleShot(0, lambda: picker.load_groups(self.store))
+            if picker.exec() != QtWidgets.QDialog.Accepted:
+                return
+            groups = picker.selected_groups()
+        finally:
+            self._smart_assignment_picker = None
+            picker.deleteLater()
+        dialog = SmartAssignmentDialog(groups, targets, self.store, self.context, self.context.parent_widget)
+        self._smart_assignment_dialog = dialog
+        try:
+            if dialog.exec() == QtWidgets.QDialog.Accepted and dialog.move_result is not None:
+                result = dialog.move_result
+                self._report_image_assignment(result, {
+                    "unassigned_count": len(targets) - len(result.get("moved", [])),
+                })
+        finally:
+            dialog.cleanup()
+            dialog.deleteLater()
+            self._smart_assignment_dialog = None
+
     def assign_images_to_tasks(self, rows=None):
         rows = self.context.selected_task_rows() if rows is None else list(rows)
         targets = self.context.task_targets(rows)
@@ -806,6 +857,9 @@ class InventoryPlugin:
         finally:
             QtWidgets.QApplication.restoreOverrideCursor()
 
+        self._report_image_assignment(result, distribution)
+
+    def _report_image_assignment(self, result, distribution):
         moved = result.get("moved", [])
         removed_materials = result.get("removed_materials", [])
         counts = {}
@@ -821,7 +875,9 @@ class InventoryPlugin:
         summary_lines = [f"已移动 {len(moved)} 张图片，分配到 {len(counts)} 个任务。"]
         if removed_materials:
             summary_lines.append(f"已清理 {len(removed_materials)} 个空素材条目。")
-        if distribution.get("missing_count"):
+        if distribution.get("unassigned_count"):
+            summary_lines.append(f"另有 {distribution['unassigned_count']} 个任务未分配；其素材和任务目录未改动。")
+        elif distribution.get("missing_count"):
             first_missing = distribution.get("first_missing_task") or "未知任务"
             summary_lines.append(
                 f"仍有 {distribution['missing_count']} 个任务缺图，从“{first_missing}”开始。"
@@ -838,6 +894,9 @@ class InventoryPlugin:
         )
 
     def can_close(self):
+        for dialog in (self._smart_assignment_picker, self._smart_assignment_dialog):
+            if dialog is not None and dialog.is_busy():
+                return False, "智能图片分配正在读取／核对或移动文件；请取消并等待后台任务安全结束。"
         thread = self.dialog.material_copy_thread if self.dialog is not None else None
         if thread is not None and thread.isRunning():
             self.open_manager()
@@ -852,6 +911,9 @@ class InventoryPlugin:
         return True, ""
 
     def stop(self):
+        for dialog in (self._smart_assignment_picker, self._smart_assignment_dialog):
+            if dialog is not None:
+                dialog.close()
         self.clipboard_monitor_enabled = False
         if self._clipboard_connected:
             try:

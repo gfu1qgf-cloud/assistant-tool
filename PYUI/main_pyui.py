@@ -4,6 +4,7 @@ import os
 import pathlib
 import random
 import shutil
+import sys
 import traceback
 from model.SensitiveData import redact_sensitive_text
 
@@ -14,6 +15,8 @@ from qt_compat import QMessageBox, QHeaderView
 from app_plugins import PluginHost
 from app_plugins.builtin import (
     AudioSplitterPlugin,
+    BatchTextVideoPlugin,
+    VideoStitchPlugin,
     ChromeLauncherPlugin,
     CodexAccountSwitcherPlugin,
     CookingAssistantPlugin,
@@ -51,7 +54,7 @@ from globalValue import globalValue
 from model.AppLogger import configure_application_logging
 from model.AudioHelper import CreateTTSAudio, CreateAudio, CreateAudio3
 from model.ClipboardHelper import set_internal_clipboard_text
-from model.ProjectInitializer import initialize_project_directory
+from model.ProjectInitializer import initialize_project_directory, task_table_template_candidates
 from model.ApiKeyHelper import (
     API_KEY_STATUSES_CONFIG_KEY,
     format_unix_time,
@@ -108,6 +111,26 @@ from model.TaskTableSchema import (
 )
 from model.UiInterval import IntervalPrompt
 from model.VideoHelper import FeatureMatcher
+
+
+def _missing_task_table_message(today_dir, file_name):
+    directory = pathlib.Path(today_dir).resolve()
+    message = (
+        "没有找到当前目标日期的任务登记表。\n\n"
+        f"程序查找的完整路径：\n{directory / file_name}\n\n"
+        f"请放在这个文件夹：\n{directory}\n"
+        f"文件名必须为：{file_name}\n\n"
+        "查找规则：任务路径 → 目标日期目录（MMDD）→ 登记表；"
+        "不会在任务根目录或其他子目录中自动搜索。\n"
+        "已有登记表：放入上面的文件夹，检查文件名、扩展名和目标日期。\n"
+        "还没有登记表：点击“创建任务文件夹”初始化项目目录并复制模板，不会覆盖已有表格。"
+    )
+    if directory.parent.name == directory.name:
+        message += (
+            f"\n\n当前任务路径可能已选到了日期文件夹 {directory.name}，"
+            f"导致日期重复。任务路径应选择它的上一级：\n{directory.parent.parent}"
+        )
+    return message
 
 
 class OralDurationCheckThread(QtCore.QThread):
@@ -770,6 +793,9 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
         self.setWindowFlag(QtCore.Qt.WindowMaximizeButtonHint, True)
         self.app_logger, self.app_log_file = configure_application_logging()
         self.setupUi(self)
+        self.setupTaskPathPicker()
+        self.setupProjectInitializer()
+        self.setupTaskTableShortcut()
         self.logUiSignal.connect(self._appendLogUi)
         self.notificationUiSignal.connect(self._showDesktopNotificationUi)
         self.log_text_edit.setReadOnly(True)
@@ -841,6 +867,8 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
         self.video_prompt_assistant_plugin = self.plugin_host.install(
             VideoPromptAssistantPlugin()
         )
+        self.batch_text_video_plugin = self.plugin_host.install(BatchTextVideoPlugin())
+        self.video_stitch_plugin = self.plugin_host.install(VideoStitchPlugin())
         self.facebook_contact_sheet_plugin = None
         if FacebookContactSheetPlugin is not None:
             try:
@@ -881,9 +909,6 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
             hotkey_id=LOAD_TASK_HOTKEY_ID,
         )
         self.load_task_hotkey_manager.activated.connect(self.triggerLoadTaskFromHotkey)
-        self.create_id_folder_btn.clicked.connect(
-            lambda clicked=False: self.initializeProjectDirectory()
-        )
         self.load_btn.clicked.connect(lambda clicked:self.loadTask())
         self.task_table_widget.cellDoubleClicked.connect(
             self.openTaskDirectoryForRow
@@ -1577,14 +1602,81 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
         )
 
     def getTodayDir(self):
-        task_dir = pathlib.Path(self.task_path_edit.text())
-        if not task_dir.is_dir():
-            self.Critical("任务路径不是一个目录！！")
+        root = self.task_path_edit.text().strip()
+        task_dir = pathlib.Path(root)
+        if not root or not task_dir.is_dir():
+            self.Critical(
+                f"任务根目录不存在或不是文件夹：\n{root or '（未填写）'}\n\n"
+                "请点击任务路径右侧的“…”选择包含每日日期文件夹的根目录，"
+                "例如选择“任务”，而不是它里面的“1005”。"
+            )
             return None
 
         task_date = self.dateEdit.date().toString("MMdd")
         today_dir = task_dir.joinpath(task_date)
         return today_dir
+
+    def setupTaskPathPicker(self):
+        self.open_task_path_btn.setToolTip(
+            "选择任务根目录（包含 1005 等每日日期文件夹），不是单个日期目录；选择后点击“加载”。"
+        )
+        self.open_task_path_btn.clicked.connect(self.chooseTaskPath)
+
+    def chooseTaskPath(self, _checked=False):
+        try:
+            current = self.task_path_edit.text().strip()
+            initial = pathlib.Path(current) if current else pathlib.Path.home()
+            if not initial.is_dir():
+                initial = initial.parent if initial.parent.is_dir() else pathlib.Path.home()
+            selected = QtWidgets.QFileDialog.getExistingDirectory(
+                self, "选择任务根目录（包含每日日期文件夹）", str(initial),
+            )
+            if selected:
+                self.task_path_edit.setText(QtCore.QDir.toNativeSeparators(selected))
+        except Exception as error:
+            logging.exception("选择任务根目录失败")
+            self.appendLog(f"选择任务根目录失败：{error}", level=logging.ERROR)
+            self.Critical(f"无法选择任务根目录：{error}")
+
+    def setupTaskTableShortcut(self):
+        self.open_today_table_btn = QtWidgets.QPushButton("打开今日表格", self)
+        self.open_today_table_btn.setObjectName("open_today_table_btn")
+        self.open_today_table_btn.setToolTip(
+            "打开当前目标日期目录里的本地任务登记表；修改目标日期可打开其他天的表格。"
+        )
+        self.open_today_table_btn.clicked.connect(
+            lambda _checked=False: self.openTodayTaskTable()
+        )
+        self.task_list_header_layout.insertWidget(1, self.open_today_table_btn)
+
+    def openTodayTaskTable(self):
+        try:
+            today_dir = self.getTodayDir()
+            if today_dir is None:
+                return False
+            file_name = str(self.load_config().get("task_table_file_name") or "tasks.ods").strip()
+            if (file_name in {"", ".", ".."}
+                    or pathlib.Path(file_name).name != file_name):
+                QMessageBox.warning(self, "打开今日表格", "任务表格文件名无效，请检查程序设置。")
+                return False
+            table_path = today_dir / file_name
+            if not table_path.is_file():
+                QMessageBox.warning(
+                    self, "打开今日表格",
+                    _missing_task_table_message(today_dir, file_name),
+                )
+                return False
+            if not QtGui.QDesktopServices.openUrl(
+                QtCore.QUrl.fromLocalFile(str(table_path.resolve()))
+            ):
+                raise OSError("系统无法打开表格，请安装或关联支持 ODS 的表格软件。")
+        except Exception as error:
+            logging.exception("打开任务登记表失败")
+            self.appendLog(f"打开任务登记表失败：{error}", level=logging.ERROR)
+            QMessageBox.warning(self, "打开今日表格", str(error))
+            return False
+        self.appendLog(f"已打开任务登记表：{table_path}")
+        return True
 
     def initializeProjectDirectory(self):
         """Create the selected project directory and seed its task workbook once."""
@@ -1601,10 +1693,9 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
             configured_template = str(
                 config.get("task_table_template_path") or ""
             ).strip()
-            template_candidates = []
-            if configured_template:
-                template_candidates.append(pathlib.Path(configured_template))
-            template_candidates.append(APP_ROOT / "任务登记表格.ods")
+            template_candidates = task_table_template_candidates(
+                APP_ROOT, configured_template, getattr(sys, "_MEIPASS", None),
+            )
             result = initialize_project_directory(
                 today_dir,
                 table_file_name,
@@ -1614,8 +1705,12 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
             )
             if result.get("missing_template"):
                 self.Critical(
-                    "项目目录已创建，但没有找到任务表格模板。\n"
-                    "请把模板放到程序根目录并命名为“任务登记表格.ods”。"
+                    f"日期目录已创建：\n{today_dir.resolve()}\n\n"
+                    "但没有找到任务表格模板，尚未生成登记表。\n"
+                    "已检查这些模板位置：\n"
+                    + "\n".join(str(path.resolve()) for path in template_candidates)
+                    + f"\n\n请把模板放到：\n{APP_ROOT / '任务登记表格.ods'}\n"
+                    "然后再次点击“创建任务文件夹”。",
                 )
                 return today_dir
             if result["copied"]:
@@ -1626,12 +1721,27 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
                 )
             self.file_explorer_tree_view.load_directory(today_dir)
             self.appendLog(f"项目目录初始化完成：{today_dir}")
+            QMessageBox.information(
+                self, "任务目录已准备好",
+                f"目标日期：{self.dateEdit.date().toString('yyyy-MM-dd')}\n"
+                f"目录：{today_dir.resolve()}\n登记表：{result['table_path'].resolve()}\n\n"
+                + ("已复制模板。" if result["copied"] else "已有登记表，已保留原内容。")
+                + "现在可以点击“加载”。",
+            )
             return today_dir
         except Exception as error:
             logging.exception("初始化项目目录失败")
             self.Critical(f"初始化项目目录失败：{error}")
             self.appendLog(f"初始化项目目录失败：{error}", level=logging.ERROR)
             return None
+
+    def setupProjectInitializer(self):
+        self.create_id_folder_btn.setToolTip(
+            "按当前目标日期创建 MMDD 文件夹并复制任务登记表模板；已有登记表不会覆盖。"
+        )
+        self.create_id_folder_btn.clicked.connect(
+            lambda _checked=False: self.initializeProjectDirectory()
+        )
 
     def Critical(self,text):
         QMessageBox.critical(self, "错误", text)
@@ -1641,20 +1751,24 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
         if today_dir is None:
             return
 
-        output_dir = today_dir / "result"
-        output_dir.mkdir(parents=True, exist_ok=True)
-
         table_file_name = str(
             self.load_config().get("task_table_file_name") or "tasks.ods"
-        )
+        ).strip()
+        if (table_file_name in {"", ".", ".."}
+                or pathlib.Path(table_file_name).name != table_file_name):
+            self.Critical("任务表格文件名无效；只能填写文件名，不能填写目录或完整路径。")
+            return
         doc_path = today_dir / table_file_name
-        if not doc_path.exists():
-            self.appendLog("没找到登记表，无法继续！！")
+        if not doc_path.is_file():
+            message = _missing_task_table_message(today_dir, table_file_name)
+            self.appendLog(message, level=logging.WARNING)
+            QMessageBox.warning(self, "没有找到任务登记表", message)
             return
 
 
 
         try:
+            (today_dir / "result").mkdir(parents=True, exist_ok=True)
             schema = load_task_table_schema()
             self.task_list, table_report = ReadTaskOds2(
                 doc_path,
@@ -1663,9 +1777,9 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
             )
         except Exception as error:
             message = (
-                "任务表格读取失败：{}\n\n"
+                "任务表格读取失败：{}\n登记表路径：{}\n\n"
                 "请打开“程序设置 → 任务表格”检查工作表、表头行和字段别名。"
-            ).format(error)
+            ).format(error, doc_path.resolve())
             self.appendLog(message)
             self.Critical(message)
             return

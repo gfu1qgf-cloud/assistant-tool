@@ -9,11 +9,63 @@ from odf.opendocument import OpenDocumentSpreadsheet, load
 from odf.table import Table, TableCell, TableRow
 from odf.text import P
 
-from model.ProjectInitializer import initialize_project_directory
+from model.ProjectInitializer import initialize_project_directory, task_table_template_candidates
 from model.TaskTableAugment import add_daily_stat_headers_to_new_copy
 
 
 class ProjectInitializerTests(unittest.TestCase):
+    def test_template_without_trailing_blank_cells_can_still_be_copied(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            template = root / "template.ods"
+            doc = OpenDocumentSpreadsheet()
+            sheet = Table(name="工作表1")
+            row = TableRow()
+            for title in ("编号", "类型"):
+                cell = TableCell()
+                cell.addElement(P(text=title))
+                row.addElement(cell)
+            sheet.addElement(row)
+            doc.spreadsheet.addElement(sheet)
+            doc.save(str(template))
+            before = template.read_bytes()
+            result = initialize_project_directory(root / "1005", "登记表.ods", [template], add_daily_stat_headers=True)
+            self.assertTrue(result["copied"])
+            copied = load(str(result["table_path"]))
+            headers = copied.spreadsheet.getElementsByType(TableRow)[0].getElementsByType(TableCell)
+            self.assertEqual([teletype.extractText(cell) for cell in headers], ["编号", "类型", "每日统计分页", "每日统计类别"])
+            self.assertEqual(template.read_bytes(), before)
+
+    def test_template_candidates_prefer_user_file_and_include_frozen_bundle(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "app"
+            bundle = root / "_internal"
+            paths = task_table_template_candidates(root, "templates/custom.ods", bundle)
+            self.assertEqual(paths, [root / "templates/custom.ods", root / "任务登记表格.ods", bundle / "任务登记表格.ods"])
+            self.assertEqual(len(task_table_template_candidates(root, "", root)), 1)
+
+    def test_frozen_template_copies_when_no_template_beside_executable(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            bundle = root / "_internal"
+            bundle.mkdir()
+            template = bundle / "任务登记表格.ods"
+            template.write_bytes(b"bundled-template")
+            project = root / "tasks" / "1005"
+            result = initialize_project_directory(project, "登记表.ods", task_table_template_candidates(root, "", bundle))
+            self.assertEqual(result["template_path"], template)
+            self.assertEqual((project / "登记表.ods").read_bytes(), b"bundled-template")
+
+    def test_invalid_name_and_directory_in_table_location_are_rejected(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            for name in (".", "..", "../outside.ods"):
+                with self.subTest(name=name), self.assertRaises(ValueError):
+                    initialize_project_directory(root / "1005", name, [])
+            (root / "1005" / "登记表.ods").mkdir(parents=True)
+            with self.assertRaisesRegex(ValueError, "文件夹占用"):
+                initialize_project_directory(root / "1005", "登记表.ods", [])
+
     def test_bundled_template_has_native_daily_stat_dropdowns(self):
         template = Path(__file__).resolve().parents[1] / "任务登记表格.ods"
         with ZipFile(template) as archive:

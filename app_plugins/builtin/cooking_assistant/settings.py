@@ -1,7 +1,7 @@
 from qt_compat import QtWidgets
 
 CONFIG_KEY = "cooking_assistant"
-DEFAULT_MODEL = "gemini-3.8-flash"
+DEFAULT_MODEL = "gemini-3.5-flash-lite"
 CONDIMENTS = ("盐", "食用油", "酱油", "黑胡椒", "醋", "糖", "蒜", "姜", "辣椒", "黄油")
 
 
@@ -25,7 +25,8 @@ class CookingSettingsPage:
         form = QtWidgets.QFormLayout()
         self.model = QtWidgets.QComboBox()
         self.model.setEditable(True)
-        self.model.addItems([DEFAULT_MODEL, "gemini-2.5-flash"])
+        self.model.addItems([DEFAULT_MODEL, "gemini-3.1-flash-lite", "gemini-3.8-flash", "gemini-2.5-flash"])
+        self.model.setToolTip("默认使用轻量 Flash-Lite；仍可手动填写其他可用模型。403 权限错误不能靠降级模型保证解决。")
         self.people, self.meals, self.warn_days = (QtWidgets.QSpinBox() for _ in range(3))
         self.people.setRange(1, 20)
         self.meals.setRange(1, 6)

@@ -14,6 +14,12 @@ datas = []
 binaries = []
 hiddenimports = []
 
+app_icon = project_root / "app_icon.ico"
+if not app_icon.is_file():
+    raise SystemExit("Missing application icon: app_icon.ico")
+for icon_name in ("app_icon.ico", "app_icon.png"):
+    datas.append((str(project_root / icon_name), "."))
+
 task_table_template = project_root / "任务登记表格.ods"
 if task_table_template.is_file():
     datas.append((str(task_table_template), "."))
@@ -39,6 +45,16 @@ for runtime_name in (*required_mpv_files, "README.md"):
     runtime_file = mpv_runtime / runtime_name
     if runtime_file.is_file():
         datas.append((str(runtime_file), "runtime/mpv"))
+
+# Bundle the standard, pinned FFmpeg processes and their original notices.
+ffmpeg_runtime = project_root / "runtime" / "ffmpeg"
+required_ffmpeg_files = ("ffmpeg.exe", "ffprobe.exe", "ffplay.exe", "LICENSE", "README.txt", "BUILD_INFO.txt")
+missing_ffmpeg_files = [name for name in required_ffmpeg_files if not (ffmpeg_runtime / name).is_file()]
+if missing_ffmpeg_files:
+    raise SystemExit("Missing pinned FFmpeg runtime: " + ", ".join(missing_ffmpeg_files)
+                     + ". Run: python packaging/fetch_ffmpeg.py")
+for runtime_name in required_ffmpeg_files:
+    datas.append((str(ffmpeg_runtime / runtime_name), "runtime/ffmpeg"))
 
 # Generate and collect the Windows UI Automation wrapper used by the external
 # Flow parameter guard. This avoids trying to create comtypes.gen files beside
@@ -104,6 +120,7 @@ exe = EXE(
     [],
     exclude_binaries=True,
     name="AssistantTool",
+    icon=str(app_icon),
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
