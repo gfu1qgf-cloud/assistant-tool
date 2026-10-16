@@ -1,3 +1,4 @@
+from model.QtThreadLifecycle import connect_thread_finished, thread_is_active
 import logging
 
 from qt_compat import QtCore, QtWidgets
@@ -205,7 +206,7 @@ class MusicDuckerPlugin:
         return config
 
     def is_running(self):
-        return self.thread is not None and self.thread.isRunning()
+        return self.thread is not None and thread_is_active(self.thread)
 
     def _menu_toggled(self, _rows, checked):
         self.set_enabled(bool(checked))
@@ -230,7 +231,7 @@ class MusicDuckerPlugin:
         )
         thread.message.connect(self._on_message)
         thread.error.connect(self._on_error)
-        thread.finished.connect(self._on_finished)
+        connect_thread_finished(thread, self, 'thread', self._on_finished)
         self.thread = thread
         thread.start()
         self._sync_controls()
@@ -331,8 +332,11 @@ class MusicDuckerPlugin:
 
     def stop(self):
         thread = self.thread
-        if thread is not None and thread.isRunning():
+        if thread_is_active(thread):
             thread.stop()
-            thread.wait(5000)
+            if not thread.wait(5000):
+                self.context.log('音乐压制仍在恢复音量，保留运行线程。', logging.WARNING)
+                return False
         self.thread = None
         self._sync_controls()
+        return True

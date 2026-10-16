@@ -20,7 +20,8 @@ class SmartVideoLayoutTests(unittest.TestCase):
             self.app.processEvents()
             self.assertGreaterEqual(review.task_script_text.height(), 110)
             self.assertGreater(review.comparison_panel.height(), 190)
-            self.assertLess(review.subtitle_settings_panel.height(), 160)
+            self.assertEqual(review.inspector_tabs.tabText(2), "字幕设置")
+            self.assertFalse(review.subtitle_settings_panel.isVisible())
         finally:
             review.close_player()
             review.close()

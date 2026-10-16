@@ -1,3 +1,5 @@
+
+from model.AppDataStorage import data_io, data_file, data_directory
 import hashlib
 import json
 import os
@@ -7,6 +9,8 @@ import urllib.request
 from datetime import datetime
 from pathlib import Path
 from model.SensitiveData import register_sensitive_values
+from model.ConfigTransactions import config_file_lock
+from uuid import uuid4
 
 
 API_KEY_STATUSES_CONFIG_KEY = 'elevenlabs_api_key_statuses'
@@ -178,9 +182,14 @@ def select_api_keys_for_attempt(api_keys, api_key_statuses, start_index=0,
 
 def record_api_key_status(config_path, api_key, **updates):
     """将 Key 状态原子写入配置文件；状态索引不包含原始 Key。"""
+    with config_file_lock(config_path):
+        return _record_api_key_status_locked(config_path, api_key, **updates)
+
+
+def _record_api_key_status_locked(config_path, api_key, **updates):
     config_path = Path(config_path)
     if config_path.exists():
-        with config_path.open('r', encoding='utf-8') as config_file:
+        with data_io.open(config_path, 'r', encoding='utf-8') as config_file:
             config = json.load(config_file)
     else:
         config = {}
@@ -203,10 +212,16 @@ def record_api_key_status(config_path, api_key, **updates):
     api_key_statuses[key_id] = key_status
     config[API_KEY_STATUSES_CONFIG_KEY] = api_key_statuses
 
-    temp_path = config_path.with_name(f"{config_path.name}.tmp")
-    with temp_path.open('w', encoding='utf-8') as config_file:
-        json.dump(config, config_file, indent=4, ensure_ascii=False)
-    os.replace(temp_path, config_path)
+    temp_path = config_path.with_name(f"{config_path.name}.api-status-{uuid4().hex}.tmp")
+    try:
+        with data_io.open(temp_path, 'w', encoding='utf-8') as config_file:
+            config_file.write(json.dumps(config, indent=4, ensure_ascii=False))
+        data_io.replace(temp_path, config_path)
+    finally:
+        try:
+            data_file(temp_path).unlink()
+        except FileNotFoundError:
+            pass
 
 
 def get_subscription_snapshot(api_key, timeout=10):

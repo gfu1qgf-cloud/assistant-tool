@@ -1,4 +1,7 @@
-"""Local FFmpeg renderer. Rendering is sequential, cancellable and resumable."""
+"""One composition pipeline; preparation and final encoding can be scheduled separately."""
+from model.AppDataStorage import data_directory, data_file, data_io
+from contextlib import contextmanager, ExitStack
+import copy
 import hashlib
 from functools import lru_cache
 import json
@@ -17,9 +20,10 @@ from .layout import render_overlay
 from .layers import ImageCache
 from .store import file_identity
 from app_paths import APP_ROOT
-from .adaptation import adaptation_plan, base_filter, prepare_cycle, source_fps
+from .adaptation import adaptation_plan, base_filter, prepare_cycle, source_fps, target_duration
 from .mixing import audio_graph
 from .effects import blur_filter
+from .audio_sources import resolve_voice
 
 VIDEO_SUFFIXES = frozenset({".mp4", ".mov", ".mkv", ".avi", ".webm", ".m4v", ".mts"})
 AUDIO_SUFFIXES = frozenset({".mp3", ".wav", ".flac", ".aac", ".m4a", ".ogg", ".opus", ".wma"})
@@ -50,18 +54,32 @@ def resolve_tools(configured=""):
     return str(ffmpeg), str(ffprobe)
 
 
-def _run(args, cancel=None, progress=None, duration=0, timeout=3600):
+def _run(args, cancel=None, progress=None, duration=0, timeout=3600, *, cwd=None):
+    from model.MediaStorage import require_media_output
+    from model.AppDataStorage import application_storage
+    output = Path(args[-1]) if args and str(args[-1]).lower().endswith(('.mp4','.mkv','.mov','.webm','.flac','.wav','.mp3','.m4a','.ogg')) else None
+    if output is not None and cwd is not None and not output.is_absolute():
+        output = Path(cwd) / output
+    if output is not None: require_media_output(output)
     if cancel and cancel.is_set():
         raise Cancelled("已取消。")
-    with tempfile.TemporaryDirectory(prefix="text-video-log-") as directory:
+    with data_io.TemporaryDirectory(prefix="text-video-log-") as directory:
         path = Path(directory) / "ffmpeg.log"
         # Independent handles: reading progress must not move FFmpeg's write offset.
-        with path.open("wb") as writer, path.open("rb") as log:
-            process = subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=writer, stderr=writer,
+        with data_file(path).open("wb") as writer, data_file(path).open("rb") as log:
+            if cwd is not None:
+                args = list(args)
+                for index, value in enumerate(args[:-1]):
+                    if value == '-i': args[index+1] = str(Path(args[index+1]).resolve())
+            process = subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=writer, stderr=writer, cwd=cwd,
                                        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
             started = time.monotonic()
             try:
                 while process.poll() is None:
+                    if path.stat().st_size > 4 * 1024 * 1024:
+                        raise RuntimeError('媒体日志超过4 MB，已停止处理。')
+                    if application_storage().protected: application_storage().check(path, write=True)
+                    if output is not None: require_media_output(output)
                     if cancel and cancel.is_set():
                         raise Cancelled("已取消；本次未消耗音乐轮换进度。")
                     if time.monotonic() - started > timeout:
@@ -159,11 +177,20 @@ def clean_music(path, settings, cache, ffmpeg, ffprobe, cancel=None):
                             settings["skip_silence"], settings["silence_db"], settings["silence_seconds"]])
     key = hashlib.sha256(signature.encode("utf-8")).hexdigest()
     cache = Path(cache)
-    cache.mkdir(parents=True, exist_ok=True)
+    data_directory(cache).ensure(parents=True, exist_ok=True)
     cleaned, metadata = cache / (key + ".flac"), cache / (key + ".json")
+    from model.MediaCacheLeases import media_cache_build
+    try:
+        with media_cache_build(cleaned, cancel):
+            return _clean_music_cached(path, settings, cache, ffmpeg, ffprobe, cancel, cleaned, metadata, key)
+    except InterruptedError as error:
+        raise Cancelled(str(error)) from error
+
+
+def _clean_music_cached(path, settings, cache, ffmpeg, ffprobe, cancel, cleaned, metadata, key):
     if cleaned.is_file() and metadata.is_file():
         try:
-            cached_duration = float(json.loads(metadata.read_text("utf-8"))["duration"])
+            cached_duration = float(json.loads(data_file(metadata).read_text("utf-8"))["duration"])
             if math.isfinite(cached_duration) and 0.5 <= cached_duration <= 24 * 3600 and cleaned.stat().st_size > 0:
                 os.utime(cleaned, None)
                 return cleaned, cached_duration, key
@@ -180,7 +207,7 @@ def clean_music(path, settings, cache, ffmpeg, ffprobe, cancel=None):
     audible = sum(end - start for start, end in ranges)
     if audible < 0.5:
         raise ValueError("音乐没有足够的非静音内容：" + path.name)
-    with tempfile.TemporaryDirectory(dir=cache, prefix="prepare-") as folder:
+    with data_io.TemporaryDirectory(dir=cache, prefix="prepare-") as folder:
         folder = Path(folder)
         graph = []
         if len(ranges) > 1:
@@ -190,39 +217,33 @@ def clean_music(path, settings, cache, ffmpeg, ffprobe, cancel=None):
             graph.append(f"{source}atrim=start={start:.6f}:end={end:.6f},asetpts=PTS-STARTPTS[p{i}]")
         graph.append("".join(f"[p{i}]" for i in range(len(ranges))) + f"concat=n={len(ranges)}:v=0:a=1[out]")
         script = folder / "audio.filter"
-        script.write_text(";\n".join(graph), "utf-8")
+        data_file(script).write_text(";\n".join(graph), "utf-8")
         temporary = folder / "clean.flac"
         _run([ffmpeg, "-y", "-nostdin", "-hide_banner", "-loglevel", "error", "-i", str(path),
               filter_file_option(ffmpeg), str(script), "-map", "[out]", "-ar", "48000", "-ac", "2",
               "-c:a", "flac", str(temporary)], cancel, timeout=900)
         actual = probe(temporary, ffprobe)["duration"]
-        os.replace(temporary, cleaned)
-        metadata.write_text(json.dumps({"duration": actual}), "utf-8")
-    # Limit only our generated music cache, never touch source music files.
-    cached = sorted(cache.glob("*.flac"), key=lambda p: p.stat().st_mtime)
-    total = sum(p.stat().st_size for p in cached)
-    for old in cached:
-        if total <= 1024 ** 3:
-            break
-        if old != cleaned:
-            total -= old.stat().st_size
-            old.unlink()
-            old.with_suffix(".json").unlink(missing_ok=True)
+        data_io.replace(temporary, cleaned)
+        data_file(metadata).write_text(json.dumps({"duration": actual}), "utf-8")
+    # The export's lease trims generated cache after all readers release it.
     return cleaned, actual, key
 
 
 def choose_music(state, duration, cache, ffmpeg, ffprobe, cancel, report):
-    items = state["music"]
+    if not state["settings"].get("music_enabled", True):
+        return None
+    from .custom_pools import music_source
+    items, next_id, pool = music_source(state)
     if not items:
         return None
-    start = next((i for i, item in enumerate(items) if item["id"] == state["next_music_id"]), 0)
+    start = next((i for i, item in enumerate(items) if item["id"] == next_id), 0)
     for offset in range(len(items)):
         item = items[(start + offset) % len(items)]
         try:
             report("检查音乐：" + Path(item["path"]).name)
             path, total, key = clean_music(item["path"], state["settings"], cache, ffmpeg, ffprobe, cancel)
             cursor = float(item.get("cursor") or 0) % total if item.get("audio_key") == key else 0
-            return {"id": item["id"], "path": str(path), "start": cursor,
+            return {"id": item["id"], "path": str(path), "start": cursor, "pool_id": pool["id"] if pool else "",
                     "cursor": (cursor + duration) % total, "audio_key": key,
                     "name": Path(item["path"]).name, "duration": total}
         except Cancelled:
@@ -246,72 +267,146 @@ def safe_output(folder, name, inputs):
     return result
 
 
-def render_static_text(job, state, directory, cancel=None, progress=None, report=None, preview=False):
+@contextmanager
+def prepare_static_text(job, state, directory, cancel=None, progress=None, report=None, preview=False, *, node_effects=None, preview_limit=None):
+    started = time.monotonic()
+    if preview_limit is not None and (not preview or isinstance(preview_limit, bool) or
+            not isinstance(preview_limit, (int, float)) or not math.isfinite(preview_limit) or
+            not 0 < preview_limit <= 86400):
+        raise ValueError('预览时长限制只用于播放预览，须为0–86400秒之间的正数；不会截短正式导出。')
     if cancel and cancel.is_set():
         raise Cancelled("已取消。")
-    settings = state["settings"]
+    settings = dict(state["settings"])
+    from model.MediaEncoding import normalize_export_settings, resolve_video_encoder, video_encoding_args, filter_thread_args, encoder_label, video_pixel_format, quality_label
+    normalize_export_settings(settings)
+    workers = 1 if preview else settings['export_workers']
+    if node_effects is not None and not preview:
+        from .export_pipeline import pipeline_workers
+        workers = pipeline_workers(settings, node_effects)
+    from .node_effects import active_effects
+    effects = active_effects(settings)
+    if effects and node_effects is None:
+        raise ValueError('当前配置有节点效果，但未准备工作流快照；请从文案视频窗口提交。')
+    if node_effects is not None: node_effects.start_job(job, preview=preview)
+    from .text_colors import job_color_scope
+    settings["_color_scope"] = job_color_scope(job)
+    from .components import resolve_sources
+    settings["layers"], sequence_plan = resolve_sources(settings["layers"], job.get("title", ""), job.get("body", ""), job=job)
     report = report or (lambda _text: None)
     ffmpeg, ffprobe = resolve_tools(settings["ffmpeg_path"])
     report("编码器：" + ffmpeg)
+    try:
+        encoder = resolve_video_encoder(ffmpeg, settings, cancel, report)
+    except InterruptedError as error:
+        raise Cancelled(str(error)) from error
+    report('视频编码：'+encoder_label(encoder)+'；'
+        + ('播放预览采用快速编码；成品质量：' if preview else '导出质量：')
+        + quality_label(settings['export_quality']))
     if not job.get("path") or not Path(job["path"]).is_file():
         raise ValueError("缺少背景视频，请使用‘批量分配背景’。")
     media = probe(job["path"], ffprobe)
     if not media["video"]:
         raise ValueError("文件没有视频轨道。")
+    from model.MediaColor import sdr_input_filter, sdr_output_filter, sdr_output_args
+    settings['_source_color_filter'] = sdr_input_filter(media['video'])
+    if settings['_source_color_filter']:
+        report('检测到HDR／宽色域背景：先转换为SDR Rec.709，再合成图片和字幕，避免成片偏色。')
     width, height = output_size(settings, media)
-    if preview:
-        scale = min(1,540/width,960/height)
-        width, height = max(2,int(width*scale)//2*2), max(2,int(height*scale)//2*2)
+    from .background_framing import prepare_background_settings, framing_filter, preview_size
+    encoded_width, encoded_height = preview_size(width, height) if preview else (width, height)
+    settings = prepare_background_settings(job["path"], media, settings, ffmpeg, directory, cancel)
+    if settings.get("_background_crop"):
+        report("铺满画面：自动去除素材自带的稳定黑边（不修改原文件）。")
+    # Layout, effects and composition ALWAYS use the export canvas. Shrinking
+    # before QFont's integer pixel sizing changes word wrapping and auto size.
     if not hasattr(_LAYER_CACHE, "images"):
         _LAYER_CACHE.images = ImageCache()
     overlay, layout = render_overlay(job["title"], job["body"], width, height, settings, _LAYER_CACHE.images)
-    duration = media["duration"]
-    voice_path, adaptation = "", None
-    if settings.get("use_voice"):
-        voice_path = str(job.get("voice_path") or "")
-        if not voice_path:
-            from .matching import folder_entry
-            match = folder_entry(job.get("task_dir") or Path(job["path"]).parent)
-            if match["match_error"]:
-                raise ValueError(match["match_error"])
-            voice_path = match["voice_path"]
+    duration = target_duration(media["duration"], settings)
+    voice_path, adaptation = resolve_voice(job, state, discover=True), None
+    from .captions import active_captions, task_word_timings, static_planes, write_caption_ass, filter_path
+    captions = active_captions(settings["layers"])
+    if captions and not voice_path:
+        raise ValueError("动态字幕需要人声。请启用人声并选择任务音频或人声池；不会使用背景音乐充当朗读。")
+    if voice_path:
         if not Path(voice_path).is_file():
             raise FileNotFoundError("任务人声不存在：" + voice_path)
         voice_info = probe(voice_path, ffprobe, audio_only=True)
         if not voice_info["audio"]:
             raise ValueError("任务人声文件没有音轨。")
-        duration = voice_info["duration"]
-        fps = source_fps(media)
-        adaptation = adaptation_plan(media["duration"], duration, settings, fps)
-        report(f"人声 {duration:.2f}秒；背景 {media['duration']:.2f}秒；速度 {adaptation['speed']:.2f}×；"
-               f"{'循环叠化' if adaptation['fade'] else '循环直切' if adaptation['repeating'] else '单次播放'}")
+        duration = target_duration(media["duration"], settings, voice_info["duration"])
         if settings["keep_audio"]:
             report("已添加任务人声，自动忽略背景视频原声，避免叠音。")
+    if voice_path or settings["unvoiced_duration_mode"] == "fixed":
+        fps = source_fps(media)
+        adaptation = adaptation_plan(media["duration"], duration, settings, fps)
+        report(f"{'人声' if voice_path else '固定成品'} {duration:.2f}秒；背景 {media['duration']:.2f}秒；速度 {adaptation['speed']:.2f}×；"
+               f"{'循环叠化' if adaptation['fade'] else '循环直切' if adaptation['repeating'] else '单次播放'}")
     if job.get("requires_title") and not job.get("task_dir"):
         raise ValueError("表格任务缺少绑定的任务目录，请重新导入；未写入其他目录。")
     folder = job.get("task_dir") or settings["output_dir"] or str(Path(job["path"]).parent)
     if not folder:
         raise ValueError("请选择输出文件夹。")
     inputs = [item.get(key) for item in state["jobs"] for key in ("path", "voice_path") if item.get(key)]
-    output = safe_output(folder, job["name"], inputs)
+    inputs += [item["path"] for pool in state.get("resource_pools", []) for item in pool["items"]]
+    from .components import walk_components
+    from .chroma_key import active_mask
+    for layer in walk_components(state["settings"]["layers"]):
+        inputs += [layer[key] for key in ("path", "source_file", "caption_file") if layer.get(key)]
+        if layer.get("kind") == "image" and active_mask(layer):
+            inputs.append(active_mask(layer))
+        inputs += [item["path"] for item in layer.get("sequence_items", []) if item.get("path")]
+    if voice_path:
+        inputs.append(voice_path)
+    from .task_naming import output_stem
+    name = job["name"] if preview else output_stem(job, settings.get("task_naming_rules", {}))
+    output = safe_output(folder, name, inputs)
     report("成品目录："+str(output.parent))
     if output.exists() and not settings["overwrite"]:
         raise FileExistsError("成品已存在，未覆盖；请改名或启用覆盖：" + output.name)
-    output.parent.mkdir(parents=True, exist_ok=True)
-    music = choose_music(state, duration, Path(directory) / "music-cache", ffmpeg, ffprobe, cancel, report)
-    with tempfile.TemporaryDirectory(prefix=".text-video-", dir=output.parent) as temporary:
+    data_directory(output.parent).ensure(parents=True, exist_ok=True)
+    from model.MediaStorage import media_cache_root
+    media_directory = media_cache_root(directory, anchors=(output.parent,Path(job['path']).parent), namespace='batch-text-video')
+    music = choose_music(state, duration, media_directory / "music-cache", ffmpeg, ffprobe, cancel, report)
+    with data_io.TemporaryDirectory(prefix=".text-video-", dir=output.parent) as temporary, ExitStack() as leases:
         temporary = Path(temporary)
-        png, target = temporary / "text.png", temporary / "video.mp4"
-        if not overlay.save(str(png), "PNG"):
-            raise RuntimeError("文字图层保存失败。")
-        args = [ffmpeg, "-y", "-nostdin", "-hide_banner", "-loglevel", "error", "-progress", "pipe:1"]
-        if adaptation and adaptation["repeating"] and not adaptation["fade"]:
+        from model.MediaCacheLeases import media_cache_lease, trim_generated_cache
+        if music:
+            leases.callback(trim_generated_cache, Path(music['path']).parent, '.flac', 1024**3)
+            leases.enter_context(media_cache_lease(music['path']))
+        target = temporary / "video.mp4"
+        from .visual_media import needs_plane, add_plane
+        from .scrolling_text import is_scrolling, prepare_scroll_plane, add_scroll_plane
+        planes = static_planes(job["title"], job["body"], width, height, settings, _LAYER_CACHE.images) if captions or any(
+            (needs_plane(layer) or is_scrolling(layer) or layer['kind'] == 'node_effect') and layer["enabled"] and layer["opacity"] for layer in settings["layers"]) else [("image", overlay)]
+        prepared = []
+        for index, (kind, value) in enumerate(planes):
+            if cancel and cancel.is_set():
+                raise Cancelled("已取消。")
+            if kind in {"visual", 'node_effect'}:
+                prepared.append((kind, value))
+                continue
+            if kind == "scroll":
+                prepared.append((kind, prepare_scroll_plane(value, width, height, duration, temporary)))
+                continue
+            path = temporary / f"layer-{index}.{'ass' if kind == 'caption' else 'png'}"
+            if kind == "caption":
+                words = task_word_timings(job,voice_path,value,job["title"],job["body"],duration,directory,cancel,report)
+                write_caption_ass(path, words, value, width, height, duration)
+            elif not value.save(str(path), "PNG"):
+                raise RuntimeError("文字图层保存失败。")
+            prepared.append((kind, path))
+        args = [ffmpeg, "-y", "-nostdin", "-hide_banner", "-loglevel", "error", "-progress", "pipe:1", *filter_thread_args(workers)]
+        if adaptation and adaptation["repeating"] and (not adaptation["fade"] or
+                media["audio"] and settings["keep_audio"] and not voice_path):
             args += ["-stream_loop", str(adaptation["loops"])]
         args += ["-i", job["path"]]
         next_index = 1
         if adaptation and adaptation["fade"]:
-            cycle, cycle_duration = prepare_cycle(job["path"], directory, ffmpeg, ffprobe, width, height,
+            cycle, cycle_duration = prepare_cycle(job["path"], media_directory, ffmpeg, ffprobe, width, height,
                 settings, adaptation, fps, cancel, report)
+            leases.callback(trim_generated_cache, cycle.parent, '.mp4', 512*1024**2)
+            leases.enter_context(media_cache_lease(cycle))
             prefix = adaptation["clip_duration"] - adaptation["fade"]
             cycle_loops = max(0, math.ceil((duration-prefix)/cycle_duration)-1)
             args += ["-stream_loop", str(cycle_loops), "-i", str(cycle)]
@@ -323,19 +418,39 @@ def render_static_text(job, state, directory, cancel=None, progress=None, report
             simple_plan = {**adaptation, "clip_duration": duration}
             filters = [f"[0:v]{base_filter(width,height,settings,simple_plan,fps)}[background]"]
         else:
-            if settings["fit"] == "cover":
-                fit = f"scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height}"
-            else:
-                fit = f"scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black"
-            filters = [f"[0:v]setpts=PTS-STARTPTS,{fit},setsar=1[background]"]
-        overlay_index = next_index
-        args += ["-loop", "1", "-i", str(png)]
-        next_index += 1
+            fit = framing_filter(width, height, settings)
+            color = settings['_source_color_filter']
+            filters = [f"[0:v]setpts=PTS-STARTPTS,{color + ',' if color else ''}{fit},setsar=1[background]"]
         blur = blur_filter(settings, width)
         if blur:
             filters.append(f"[background]{blur}[blurred_background]")
         background = "blurred_background" if blur else "background"
-        filters.append(f"[{background}][{overlay_index}:v]overlay=0:0:shortest=1,format=yuv420p[v]")
+        # Graphics are SDR RGB. Keep their full chroma until the final explicit
+        # Rec.709 conversion; intermediate default 4:2:0 overlays may choose a
+        # different YUV matrix and then get relabelled later.
+        filters.append(f"[{background}]format=rgba[composition_background]")
+        background = 'composition_background'
+        for index, (kind, path) in enumerate(prepared):
+            label = f"layer{index}"
+            if kind == "caption":
+                filters.append(f"[{background}]ass=filename={filter_path(path)}[{label}]")
+            elif kind == 'node_effect':
+                info = {'duration': duration, 'audio': False, 'video': {**media['video'],
+                    'width': width, 'height': height, 'display_width': width, 'display_height': height,
+                    'color_space': 'bt709', 'color_transfer': 'bt709', 'color_primaries': 'bt709', 'color_range': 'tv'}}
+                next_index = node_effects.append(job, path, args, filters, background, next_index, label,
+                    temporary, info, voice_path, ffmpeg)
+            elif kind == "visual":
+                next_index += add_plane(args, filters, path, next_index, background, label, width, height, duration, source_fps(media))
+            elif kind == "scroll":
+                next_index += add_scroll_plane(args, filters, path, next_index, background, label, duration, source_fps(media))
+            else:
+                args += ["-loop", "1", "-i", str(path)]
+                filters.append(f"[{background}][{next_index}:v]overlay=0:0:shortest=1:format=auto[{label}]")
+                next_index += 1
+            background = label
+        downscale = f"scale={encoded_width}:{encoded_height}:flags=lanczos," if (encoded_width, encoded_height) != (width, height) else ""
+        filters.append(f"[{background}]{downscale}{sdr_output_filter()}[v]")
         voice_index = None
         if voice_path:
             voice_index = next_index
@@ -346,31 +461,45 @@ def render_static_text(job, state, directory, cancel=None, progress=None, report
             music_index = next_index
             loops = max(0, math.ceil((music["start"] + duration) / music["duration"]) - 1)
             args += ["-stream_loop", str(loops), "-i", music["path"]]
-        audio_filters, has_audio = audio_graph(settings, duration, voice_index, music_index, music, media["audio"])
+        audio_filters, has_audio = audio_graph(settings, duration, voice_index, music_index, music, media["audio"],
+            original_speed=adaptation["speed"] if adaptation and not voice_path else None)
         filters += audio_filters
         script = temporary / "render.filter"
-        script.write_text(";\n".join(filters), "utf-8")
+        data_file(script).write_text(";\n".join(filters), "utf-8")
         args += [filter_file_option(ffmpeg), str(script), "-map", "[v]"]
         if has_audio:
             args += ["-map", "[a]", "-c:a", "aac", "-b:a", "192k"]
         else:
             args += ["-an"]
-        args += ["-t", f"{duration:.6f}", "-c:v", "libx264", "-preset", "veryfast", "-crf", "25" if preview else "20",
-                 "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(target)]
+        # Effects, scrolling, word alignment and resource choice keep the full
+        # job clock. Limit only the encoded output, not the meaning of the job.
+        encoded_duration = min(duration, preview_limit) if preview_limit is not None else duration
+        if preview_limit is not None:
+            report(f'快速预览：只编码开头{encoded_duration:.2f}秒；正式成品仍为{duration:.2f}秒。')
+        args += ["-t", f"{encoded_duration:.6f}", *video_encoding_args(encoder, preview=preview, workers=workers, quality=settings['export_quality']),
+                 "-pix_fmt", video_pixel_format(encoder), *sdr_output_args(), "-movflags", "+faststart", str(target)]
         report(f"生成中；标题字号{layout['title_size']:.0f} / 正文字号{layout['body_size']:.0f}" +
                (f"；音乐：{music['name']}，从{music['start']:.1f}秒继续" if music else "；无背景音乐"))
-        _run(args, cancel, progress, duration, timeout=max(600, duration * 30))
-        check = probe(target, ffprobe)
-        if abs(check["duration"] - duration) > max(0.12, duration * 0.001):
-            raise RuntimeError(f"成品时长{check['duration']:.3f}秒与目标{duration:.3f}秒不一致，未发布该成品。")
-        if has_audio and not check["audio"]:
-            raise RuntimeError("成品音轨缺失，未发布该成品。")
-        if output.exists() and not settings["overwrite"]:
-            raise FileExistsError("生成期间已有同名文件出现，未覆盖。")
-        if cancel and cancel.is_set():
-            raise Cancelled("已取消。")
-        os.replace(target, output)
-    return output, music
+        if effects:
+            node_effects.protect_output(output)
+        if node_effects is not None:
+            sequence_plan.extend(copy.deepcopy(node_effects.sequence_plan))
+        from .prepared_export import PreparedExport
+        yield PreparedExport(args, target, output, ffprobe, encoded_duration, has_audio, music,
+            sequence_plan, cancel, progress, report, settings['overwrite'], encoder,
+            settings['encoder_fallback'], preview, workers, effects=node_effects if effects else None,
+            cwd=temporary if effects else None, timings={'prepare_seconds': time.monotonic()-started},
+            quality=settings['export_quality'], render_scope='' if preview else file_identity(Path(directory)/'state.json'))
+
+
+def render_static_text(job, state, directory, cancel=None, progress=None, report=None, preview=False, *, node_effects=None, preview_limit=None):
+    with prepare_static_text(job, state, directory, cancel, progress, report, preview,
+            node_effects=node_effects, preview_limit=preview_limit) as prepared:
+        prepared.encode()
+        return prepared.publish(), prepared.music
+
+
+render_static_text.prepare_export = prepare_static_text
 
 
 RENDERERS = {"static_text": render_static_text}

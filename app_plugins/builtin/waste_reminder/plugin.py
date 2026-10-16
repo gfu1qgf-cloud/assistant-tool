@@ -1,31 +1,52 @@
+from model.QtThreadLifecycle import connect_thread_finished, thread_is_active
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 import json
 import logging
 import os
 from pathlib import Path
+from model.AppDataStorage import data_file, data_directory
 import shutil
 import tempfile
+import time
+import weakref
 
 from qt_compat import QtCore, QtWidgets
-from app_paths import APP_ROOT
+from app_paths import DATA_ROOT as APP_ROOT
+from model.OfflineMode import is_offline
 from app_plugins.api import MAIN_MENU, PluginCommand, PluginSettingsPage, PluginMainWidget
+from app_plugins.builtin.cooking_assistant.plugin import CookingAssistantPlugin
 from .calendar import AnnualCalendar, CalendarError, ReminderEvent, due_event, target_day, clock
 from .settings import CONFIG_KEY, WasteSettingsPage, normalize_settings
 from .state import ReminderState
+from . import weather
 
 BUNDLED_DATA = Path(__file__).parent / "data"
 
 
+class _DetailsLifecycle(QtCore.QObject):
+    """Release detail windows while alive, without a destroyed-signal cycle."""
+    def __init__(self, plugin, parent):
+        super().__init__(parent)
+        self.plugin = weakref.ref(plugin)
+
+    @QtCore.pyqtSlot(int)
+    def finished(self, _result):
+        plugin, dialog = self.plugin(), self.sender()
+        if plugin is not None:
+            plugin.details_dialogs[:] = [item for item in plugin.details_dialogs if item is not dialog]
+
+
 class WasteReminderPlugin:
     plugin_id = "waste_reminder"
-    display_name = "垃圾分类每日提醒"
-    version = "1.1"
+    display_name = "生活助手"
+    version = "1.3"
     required_api_version = 1
 
     def __init__(self, data_root=None):
         self.context = None
         self.root = Path(data_root) if data_root else Path(APP_ROOT)
+        self.cooking = CookingAssistantPlugin(self.root)
         self.settings = normalize_settings()
         self.state = None
         self.dialog = None
@@ -39,14 +60,23 @@ class WasteReminderPlugin:
         self.notices = {"items": [], "checked_at": None}
         self.main_panel = None
         self.details_dialogs = []
+        self._details_lifecycle = None
+        self.weather_worker = None
+        self.weather_data = None
+        self.weather_cities = []
+        self.weather_status = "天气联网默认关闭；在天气分页明确同意后开启，无需Key。"
+        self.weather_next_attempt = 0
 
     def register(self, context):
         self.context = context
         self.settings = normalize_settings(context.load_config().get(CONFIG_KEY))
-        context.register_command(PluginCommand("open", "垃圾分类每日提醒…", lambda _rows: self.open_dialog(),
-            frozenset({MAIN_MENU}), tooltip="今晚扔什么、官方日历、分类小贴士与自动更新", order=19))
-        context.register_settings_page(PluginSettingsPage("settings", "垃圾分类提醒", WasteSettingsPage, order=219))
-        context.register_main_widget(PluginMainWidget("tonight", self.create_main_panel, order=60, title="今晚垃圾投放"))
+        self.cooking.bind_context(context)
+        context.register_command(PluginCommand("open", "生活助手…", lambda _rows: self.open_dialog(),
+            frozenset({MAIN_MENU}), tooltip="垃圾日历、天气、做饭建议和食材库存", order=19))
+        from .life_settings import LifeSettingsPage
+        context.register_settings_page(PluginSettingsPage("settings", "生活助手",
+            lambda parent=None: LifeSettingsPage(context, parent), order=219))
+        context.register_main_widget(PluginMainWidget("tonight", self.create_main_panel, order=60, title="生活助手 · 今晚投放 / 天气"))
 
     def create_main_panel(self, parent=None):
         from .ui import TonightPanel
@@ -62,7 +92,9 @@ class WasteReminderPlugin:
         dialog = CategoryDetailsDialog(self, calendar, key, self.context.parent_widget)
         dialog.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose)
         self.details_dialogs.append(dialog)
-        dialog.destroyed.connect(lambda: self.details_dialogs.remove(dialog) if dialog in self.details_dialogs else None)
+        if self._details_lifecycle is None:
+            self._details_lifecycle = _DetailsLifecycle(self, self.context.parent_widget)
+        dialog.finished.connect(self._details_lifecycle.finished)
         dialog.show()
         dialog.raise_()
         return dialog
@@ -103,19 +135,19 @@ class WasteReminderPlugin:
         return replace(event, deadline=self._aware(QtCore.QDateTime(day, at, self.zone())))
 
     def _prepare(self):
-        self.folder.mkdir(parents=True, exist_ok=True)
+        data_directory(self.folder).ensure()
         if self.settings["commune"].casefold() == "valle lomellina (pv)":
             for path in BUNDLED_DATA.rglob("*"):
                 if path.is_file():
                     relative = path.relative_to(BUNDLED_DATA)
                     target = self.folder/relative
                     if not target.exists():
-                        target.parent.mkdir(parents=True, exist_ok=True)
-                        shutil.copy2(path, target)
+                        data_file(target).copy_from(path)
         self.state = ReminderState(self.folder/"state.json")
         notices_path = self.folder/"notices.json"
         if notices_path.is_file():
-            self.notices = json.loads(notices_path.read_text(encoding="utf-8"))
+            self.notices = data_file(notices_path).read_json()
+        self.weather_data = weather.load_cache(self.folder/"weather-open-meteo.json")
 
     def calendar_for(self, year):
         path = self.calendar_path(year)
@@ -149,6 +181,7 @@ class WasteReminderPlugin:
             self.timer.setInterval(20000)
             self.timer.timeout.connect(self.tick)
         self.timer.start()
+        self.cooking.start()
         self.refresh_main_panel()
         QtCore.QTimer.singleShot(5000, self.tick)
 
@@ -158,12 +191,14 @@ class WasteReminderPlugin:
         try:
             now = self.now()
             self.refresh_main_panel()
-            if self.settings.get("translate_news", True) and not self.is_updating() and self.state:
+            if self.settings["weather"]["enabled"] and self.settings["weather"]["auto_refresh"]:
+                self.refresh_weather()
+            if not is_offline() and self.settings.get("translate_news", True) and not self.is_updating() and self.state:
                 from .translation import needs_translation
                 if any(needs_translation(x) for x in self.notices.get("items", [])[:20]):
                     if self.state.notice("translate-attempt:"+now.date().isoformat()):
                         self.check_official(translation_only=True)
-            if self.settings["auto_update"] and not self.is_updating() and self.state:
+            if not is_offline() and self.settings["auto_update"] and not self.is_updating() and self.state:
                 if self.state.notice("auto-check:"+now.date().isoformat()):
                     self.check_official()
             if not self.settings["enabled"]:
@@ -290,9 +325,12 @@ class WasteReminderPlugin:
             self._error(error)
 
     def is_updating(self):
-        return self.worker is not None and self.worker.isRunning()
+        return self.worker is not None and thread_is_active(self.worker)
 
     def check_official(self, manual=False, translation_only=False):
+        if is_offline():
+            self.context.log('离线模式：官网更新和联网翻译暂停，本地日历与提醒仍可使用。')
+            return
         if self.is_updating():
             return
         if not translation_only and self.settings["commune"].casefold() != "valle lomellina (pv)":
@@ -305,7 +343,7 @@ class WasteReminderPlugin:
         self.worker.progress.connect(self._progress)
         self.worker.failed.connect(self._update_failed)
         self.worker.result.connect(lambda payload: self._updated(payload, manual))
-        self.worker.finished.connect(self._worker_finished)
+        connect_thread_finished(self.worker, self, 'worker', self._worker_finished)
         self.worker.start()
         self._progress("正在后台翻译已保存的公告；不重复下载日历。" if translation_only else "正在后台检查官方日历；本地提醒正常运行。")
 
@@ -330,21 +368,12 @@ class WasteReminderPlugin:
                 stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
                 if previous:
                     backup = self.folder/"calendar_backups"/f"schedule_{calendar.year}_{stamp}.json"
-                    backup.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(path, backup)
+                    data_file(backup).copy_from(path)
                     changed = [day for day in calendar.dates if previous.dates.get(day) != calendar.dates[day]]
                     self.context.log(f"{calendar.year} 年官方日历变更日期：{', '.join(changed)}；旧版本已备份。")
                 # Future years do not silently inherit unverified old sorting rules.
                 document.setdefault("guidance", {"rules": []})
-                self.folder.mkdir(parents=True, exist_ok=True)
-                handle, tmp = tempfile.mkstemp(prefix="calendar-", suffix=".tmp", dir=self.folder)
-                try:
-                    with os.fdopen(handle, "w", encoding="utf-8") as stream:
-                        json.dump(document, stream, ensure_ascii=False, indent=2)
-                    os.replace(tmp, path)
-                finally:
-                    if os.path.exists(tmp):
-                        os.unlink(tmp)
+                data_file(path).write_json(document, indent=2)
                 self._calendars.pop(calendar.year, None)
                 changed_years.append(calendar.year)
             self.status = ("已完成已保存公告的中文翻译检查。" if payload.get("translation_only") else
@@ -378,14 +407,7 @@ class WasteReminderPlugin:
             self._error(error)
 
     def _write_notices(self):
-        handle, tmp = tempfile.mkstemp(prefix="notices-", suffix=".tmp", dir=self.folder)
-        try:
-            with os.fdopen(handle, "w", encoding="utf-8") as stream:
-                json.dump(self.notices, stream, ensure_ascii=False, indent=2)
-            os.replace(tmp, self.folder/"notices.json")
-        finally:
-            if os.path.exists(tmp):
-                os.unlink(tmp)
+        data_file(self.folder/"notices.json").write_json(self.notices, indent=2)
 
     def _worker_finished(self):
         worker = self.worker
@@ -397,8 +419,9 @@ class WasteReminderPlugin:
         self.refresh_main_panel()
 
     def apply_settings(self, config):
-        if self.is_updating():
-            self.context.log("官网检查正在进行，完成前保留当前垃圾提醒设置。")
+        self.cooking.apply_settings(config)
+        if self.is_updating() or self.is_weather_updating():
+            self.context.log("官网/天气查询正在进行，完成前保留当前助手设置。")
             return False
         self.settings = normalize_settings(config.get(CONFIG_KEY))
         self._calendars.clear()
@@ -417,7 +440,119 @@ class WasteReminderPlugin:
         config[CONFIG_KEY] = normalize_settings(self.settings)
         return config
 
+    def is_weather_updating(self):
+        # Retain the worker until native cleanup and queued results finish.
+        return self.weather_worker is not None
+
+    def refresh_weather_views(self):
+        if self.dialog is not None:
+            self.dialog.weather.refresh()
+        self.refresh_main_panel()
+
+    def change_weather_options(self, **updates):
+        original = self.settings["weather"]
+        value = weather.options({**original, **updates}, self.settings["commune"])
+        self.settings["weather"] = value
+        try:
+            if not self.context.save_config():
+                raise OSError("天气设置未保存，请重试。")
+        except Exception:
+            self.settings["weather"] = original
+            raise
+        if set(updates) <= {"chart_hours"}:
+            # Changing the view is local: no extra request or refresh backoff reset.
+            self.refresh_weather_views()
+            return
+        if not value["enabled"] and self.weather_worker:
+            self.weather_worker.requestInterruption()
+        if value != original:
+            self.weather_next_attempt = 0
+        self.weather_status = "天气联网已关闭，已有缓存仍可查看。" if not value["enabled"] else (
+            "天气已启用；点击刷新查询当前城市。" if value["location"] else "请先搜索并选择城市，不要填写详细住址。")
+        self.refresh_weather_views()
+
+    def _start_weather(self, mode, payload):
+        if self.is_weather_updating() or is_offline() or not self.settings["weather"]["enabled"]:
+            return False
+        self.weather_status = "正在搜索城市…" if mode == "search" else "正在查询城市天气…"
+        self.weather_worker = weather.WeatherWorker(mode, payload, self.context.parent_widget)
+        self.weather_worker.result.connect(self._weather_updated, QtCore.Qt.ConnectionType.QueuedConnection)
+        self.weather_worker.failed.connect(self._weather_failed, QtCore.Qt.ConnectionType.QueuedConnection)
+        connect_thread_finished(self.weather_worker, self, "weather_worker", self._weather_finished, pass_thread=True)
+        self.weather_worker.start()
+        self.refresh_weather_views()
+        return True
+
+    def search_weather_city(self, query):
+        return self._start_weather("search", query)
+
+    def refresh_weather(self, manual=False):
+        options = self.settings["weather"]
+        if is_offline():
+            self.weather_status = "离线模式：不查询天气，仅查看上次缓存。"
+            if manual:
+                self.refresh_weather_views()
+            return False
+        if not options["enabled"] or not options["location"] or self.is_weather_updating():
+            return False
+        same = self.weather_data and weather.location_key(self.weather_data["location"]) == weather.location_key(options["location"])
+        now = time.time()
+        if not manual and (now < self.weather_next_attempt or (same and now - self.weather_data["checked_at"] < options["refresh_minutes"] * 60)):
+            return False
+        self.weather_next_attempt = now + options["refresh_minutes"] * 60
+        return self._start_weather("forecast", options["location"])
+
+    def _weather_updated(self, payload):
+        try:
+            if not self.settings["weather"]["enabled"] or not self.weather_worker or self.weather_worker.isInterruptionRequested():
+                return
+            if payload["mode"] == "search":
+                self.weather_cities = payload["data"]
+                self.weather_status = f"找到 {len(self.weather_cities)} 个城市，选择后点击“使用该城市”。"
+                if self.dialog:
+                    self.dialog.weather.show_cities(self.weather_cities)
+            else:
+                data = payload["data"]
+                if weather.location_key(data["location"]) != weather.location_key(self.settings["weather"]["location"]):
+                    return
+                self.weather_data = data
+                weather.save_cache(self.folder/"weather-open-meteo.json", data)
+                self.weather_status = "天气已更新。预报仅供参考，不改变收运日期。"
+            self.refresh_weather_views()
+        except Exception as error:
+            self._weather_failed("天气已获取，但保存或显示失败：" + str(error))
+
+    def _weather_failed(self, text):
+        self.weather_status = text + "（保留上次成功缓存；不会当作最新预报）"
+        self.weather_next_attempt = time.time() + 15 * 60
+        self.context.log("天气查询：" + text, level=logging.WARNING)
+        self.refresh_weather_views()
+
+    def _weather_finished(self, worker):
+        if worker is self.weather_worker:
+            self.weather_worker = None
+            if worker.isInterruptionRequested():
+                self.weather_status = "天气查询已取消，已有缓存保留。"
+            self.refresh_weather_views()
+
+    def weather_summary(self):
+        if not self.settings["weather"]["enabled"]:
+            return "天气未启用；在下方助手的“天气”分页开启，不上传素材。"
+        selected, data = self.settings["weather"]["location"], self.weather_data
+        if not data or not selected or weather.location_key(data["location"]) != weather.location_key(selected):
+            return self.weather_status
+        current = data["current"]
+        age = time.time() - data["checked_at"]
+        cached = "（缓存已过期）" if age >= self.settings["weather"]["refresh_minutes"] * 60 or is_offline() else ""
+        return f"天气 · {selected['name']}：{weather.LABELS.get(current['weather_code'], '未知')} {weather.number(current['temperature_2m'], '℃')} {cached}\n" + weather.tonight_summary(data, self.now())
+
     def can_close(self):
+        allowed, message = self.cooking.can_close()
+        if not allowed:
+            return allowed, message
+        if self.is_weather_updating():
+            self.weather_worker.requestInterruption()
+            return False, "城市天气查询正在安全停止，稍后再退出。"
         if self.is_updating():
             self.worker.requestInterruption()
             return False, "垃圾日历后台检查正在停止，稍后再退出。"
@@ -426,6 +561,11 @@ class WasteReminderPlugin:
         return True, ""
 
     def stop(self):
+        if self.cooking.can_close()[0] is False:
+            return False
+        if self.is_weather_updating():
+            self.weather_worker.requestInterruption()
+            return False
         if self.timer:
             self.timer.stop()
         if self.worker:
@@ -435,5 +575,6 @@ class WasteReminderPlugin:
             self.reminder = None
         if self.dialog:
             self.dialog.hide()
+        self.cooking.stop()
         for dialog in list(self.details_dialogs):
             dialog.close()

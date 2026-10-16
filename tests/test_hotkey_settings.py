@@ -32,6 +32,7 @@ class HotkeySettingsTests(unittest.TestCase):
         plugin = SimpleNamespace(
             global_hotkey="Ctrl+Alt+I", _register_hotkey=mock.Mock(return_value=False),
             set_clipboard_monitor=mock.Mock(), _configure_material_sync_timer=mock.Mock(),
+            material_tools=mock.Mock(),
         )
         self.assertTrue(InventoryPlugin.apply_settings(plugin, {
             "inventory_manager_global_hotkey": "Ctrl+Alt+I",

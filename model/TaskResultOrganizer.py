@@ -1,3 +1,5 @@
+
+from model.AppDataStorage import data_io, data_file, data_directory
 import json
 import os
 import re
@@ -5,14 +7,14 @@ import shutil
 import subprocess
 import threading
 import traceback
-from contextlib import redirect_stderr, redirect_stdout
+from functools import wraps
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 from qt_compat import QtCore
 
-from app_paths import APP_ROOT
+from app_paths import APP_ROOT, DATA_ROOT
 from model.GoogleDriveHelper import (
     load_drive_service,
     print_person_folder_links,
@@ -24,6 +26,7 @@ from model.GoogleSheetsHelper import write_review_video_links
 from model.ReviewSubmissionHistory import read_review_history
 from model.OdsHelper import normalize_subcategory_path
 from model.TaskResultExporter import export_one_date
+from model.TaskResultFileGuard import FileStillWritingError, check_file_ready, is_copy_temporary
 from model.TaskSubmissionHelper import (
     task_sheet_failures_for_records,
     write_task_submission_links,
@@ -36,6 +39,7 @@ from model.VideoUploadHistory import (
 )
 from model.VideoCompressor import compress_video
 from model import VideoElementDetector as video_element_detector
+from model.ThreadOutput import capture_thread_output
 from model.VideoElementDetector import (
     detect_video_element,
     is_positive_detection,
@@ -45,8 +49,17 @@ from model.VideoElementDetector import (
 
 VIDEO_SUFFIXES = {".mp4", ".mov", ".m4v", ".avi", ".mkv", ".webm"}
 LEGACY_TASK_RESULT_CONFIG = APP_ROOT / "model" / "task_result_organizer" / "defaults.json"
-DEFAULT_PENDING_FILE_STATE = APP_ROOT / "TaskResultPendingFiles.json"
+DEFAULT_PENDING_FILE_STATE = DATA_ROOT / "TaskResultPendingFiles.json"
 PENDING_FILE_STATE_VERSION = 1
+_PENDING_STATE_LOCK = threading.RLock()
+
+
+def _pending_state_locked(function):
+    @wraps(function)
+    def locked(*args, **kwargs):
+        with _PENDING_STATE_LOCK:
+            return function(*args, **kwargs)
+    return locked
 DEFAULT_ORAL_SOURCE_DIR_NAME = "口播"
 
 TASK_RESULT_DEFAULTS = {
@@ -124,14 +137,14 @@ def migrate_legacy_task_result_config(config_path: Optional[Path] = None) -> Dic
 
     config = {}
     if target.exists():
-        config = json.loads(target.read_text(encoding="utf-8-sig"))
+        config = json.loads(data_file(target).read_text(encoding="utf-8-sig"))
         if not isinstance(config, dict):
             raise ValueError(f"主配置必须是 JSON 对象：{target}")
 
     if not LEGACY_TASK_RESULT_CONFIG.exists():
         return config
 
-    legacy = json.loads(LEGACY_TASK_RESULT_CONFIG.read_text(encoding="utf-8-sig"))
+    legacy = json.loads(data_file(LEGACY_TASK_RESULT_CONFIG).read_text(encoding="utf-8-sig"))
     if not isinstance(legacy, dict):
         raise ValueError(f"旧整理配置必须是 JSON 对象：{LEGACY_TASK_RESULT_CONFIG}")
 
@@ -149,11 +162,11 @@ def migrate_legacy_task_result_config(config_path: Optional[Path] = None) -> Dic
 
     if changed:
         temporary = target.with_name(f"{target.name}.task-result-migration.tmp")
-        temporary.write_text(
+        data_file(temporary).write_text_direct(
             json.dumps(config, ensure_ascii=False, indent=4),
             encoding="utf-8",
         )
-        os.replace(temporary, target)
+        data_io.replace(temporary, target)
     return config
 
 
@@ -393,7 +406,7 @@ def _pending_scope_key(base_dir: Path, task_dates: Iterable[date]) -> str:
 
 def _read_pending_file_state(state_path: Path) -> Dict:
     try:
-        state = json.loads(state_path.read_text(encoding="utf-8"))
+        state = json.loads(data_file(state_path).read_text(encoding="utf-8"))
     except FileNotFoundError:
         state = {}
     except (OSError, ValueError, TypeError) as error:
@@ -407,15 +420,16 @@ def _read_pending_file_state(state_path: Path) -> Dict:
 
 
 def _write_pending_file_state(state_path: Path, state: Dict) -> None:
-    state_path.parent.mkdir(parents=True, exist_ok=True)
+    data_directory(state_path.parent).ensure(parents=True, exist_ok=True)
     temp_path = state_path.with_name(state_path.name + ".tmp")
-    temp_path.write_text(
+    data_file(temp_path).write_text_direct(
         json.dumps(state, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
-    os.replace(temp_path, state_path)
+    data_io.replace(temp_path, state_path)
 
 
+@_pending_state_locked
 def load_pending_changed_file_batches(
     config: Dict,
     base_dir: Path,
@@ -438,6 +452,7 @@ def load_pending_changed_file_batches(
     return merge_changed_file_batches(batches)
 
 
+@_pending_state_locked
 def save_pending_changed_file_batches(
     config: Dict,
     base_dir: Path,
@@ -475,6 +490,7 @@ def save_pending_changed_file_batches(
     return len(updated_files_from_batches(valid_batches))
 
 
+@_pending_state_locked
 def clear_pending_changed_file_batches(
     config: Dict,
     base_dir: Path,
@@ -487,7 +503,7 @@ def clear_pending_changed_file_batches(
         _write_pending_file_state(state_path, state)
     else:
         try:
-            state_path.unlink()
+            data_file(state_path).unlink()
         except FileNotFoundError:
             pass
 
@@ -587,7 +603,7 @@ def build_routed_batches(
             if is_detectable_video and review_override is False:
                 normal_files.append(file_path)
                 review_plan.append({"file_path": str(file_path), "decision": "normal_upload",
-                                    "summary": "本地任务设置为无需审核", "result": {}})
+                                    "summary": "本地任务设置为无需审核", "review_required": False, "result": {}})
                 print(f"本地任务设置为无需审核，已跳过检测：{file_path.name}")
                 continue
 
@@ -625,10 +641,13 @@ def build_routed_batches(
                     print(f"检测结果：{result_summary}")
                     if result.get("skip_upload"):
                         review_plan.append({"file_path": str(file_path), "decision": "skip_upload",
-                                            "summary": summarize_detection(result), "result": result})
+                                            "summary": summarize_detection(result), "review_required": review_override, "result": result})
                         print(f"人工审核标记为视频有问题，本轮不上传：{file_path.name}")
                         continue
-                    if is_positive_detection(result, min_confidence):
+                    # A task-table requirement is an upload route, not an AI
+                    # detection hint. Only the user's final list choice may
+                    # override it; a negative/cached detector result may not.
+                    if review_override is True or is_positive_detection(result, min_confidence):
                         review_files.append(file_path)
                         decision = "review"
                         print(f"进入人工检查队列：{file_path.name}")
@@ -636,17 +655,20 @@ def build_routed_batches(
                         normal_files.append(file_path)
                         decision = "normal_upload"
                     review_plan.append({"file_path": str(file_path), "decision": decision,
-                                        "summary": result_summary, "result": result})
+                                        "summary": ("本地表格：需要审核；" if review_override is True else "") + str(result_summary or ""),
+                                        "review_required": review_override, "result": result})
                 except BaseException as error:
                     print(f"视频检测失败：{file_path.name} -> {type(error).__name__}: {error}")
-                    if failure_goes_to_review:
+                    needs_review = review_override is True or failure_goes_to_review
+                    if needs_review:
                         review_files.append(file_path)
                         print(f"检测失败，按保守策略进入人工检查队列：{file_path.name}")
                     else:
                         normal_files.append(file_path)
                     review_plan.append({"file_path": str(file_path),
-                                        "decision": "review" if failure_goes_to_review else "normal_upload",
-                                        "summary": f"检测失败：{type(error).__name__}: {error}", "result": {}})
+                                        "decision": "review" if needs_review else "normal_upload",
+                                        "summary": ("本地表格：需要审核；" if review_override is True else "") + f"检测失败：{type(error).__name__}: {error}",
+                                        "review_required": review_override, "result": {}})
             else:
                 normal_files.append(file_path)
                 if is_detectable_video:
@@ -727,17 +749,23 @@ def compress_routed_batches(
     upload_task_by_file: Optional[Dict[str, Any]] = None,
     review_decisions=None,
     upload_review_decisions=None,
+    postprocessor=None,
 ) -> List[Tuple[Path, List[Path], Path]]:
     compressed_batches = []
     for root_dir, file_list, remote_prefix in routed_batches:
+        upload_root = Path(root_dir).with_name(Path(root_dir).name + '-processed') if postprocessor else root_dir
         upload_files = []
         for file_path in file_list:
             source_path = Path(file_path)
-            upload_path = (
+            upload_path = postprocessor(source_path, Path(root_dir), remote_prefix) if postprocessor and is_video_file(source_path) else (
                 compress_video(source_path, config)
                 if is_video_file(source_path)
                 else source_path
             )
+            if postprocessor and not is_video_file(source_path):
+                from model.TaskResultFileGuard import copy_if_ready_and_updated
+                upload_path = Path(upload_root) / source_path.relative_to(root_dir)
+                copy_if_ready_and_updated(source_path, upload_path)
             upload_files.append(upload_path)
             task = task_for_file(task_by_file, source_path)
             if task is not None and upload_task_by_file is not None:
@@ -746,7 +774,10 @@ def compress_routed_batches(
             if decision and upload_review_decisions is not None:
                 upload_review_decisions[file_identity(upload_path)] = decision
         if upload_files:
-            compressed_batches.append((root_dir, upload_files, remote_prefix))
+            if postprocessor and all(Path(out).resolve() == Path(source).resolve()
+                                     for source, out in zip(file_list, upload_files)):
+                upload_root = Path(root_dir)
+            compressed_batches.append((upload_root, upload_files, remote_prefix))
     return compressed_batches
 
 
@@ -880,6 +911,9 @@ def run_task_result_organizer(
     detection_mode_resolver: Optional[Callable[[List[Path]], str]] = None,
     review_plan_resolver=None,
     gemini_keys=None,
+    prepare_only=False,
+    upload_work_dir=None,
+    claimed_versions=None,
 ) -> Dict:
     config = load_effective_config(config)
     video_element_detector.set_runtime_config(config)
@@ -898,6 +932,23 @@ def run_task_result_organizer(
     result_dirs = []
     changed_file_batches = []
     task_by_file = {}
+    deferred_files = {}
+    deferred_outputs = set()
+    waiting_batches = []
+    reported_deferred_count = 0
+
+    def defer_file(source, output, reason):
+        deferred_files[file_identity(source)] = {
+            "source": str(source), "output": str(output), "reason": reason,
+        }
+        deferred_outputs.add(file_identity(output))
+
+    def finish_pending():
+        # Do not mark an old queued output done while its replacement renders.
+        if waiting_batches:
+            save_pending_changed_file_batches(config, base_dir, task_dates, waiting_batches)
+        else:
+            clear_pending_changed_file_batches(config, base_dir, task_dates)
 
     def remember_exported_task(file_path, task):
         task_by_file[file_identity(file_path)] = task
@@ -910,6 +961,7 @@ def run_task_result_organizer(
                 wsp_export=wsp_export,
                 config=config,
                 exported_file_callback=remember_exported_task,
+                deferred_file_callback=defer_file,
             )
             if result:
                 result_dirs.append(result.output_dir)
@@ -923,9 +975,44 @@ def run_task_result_organizer(
         "changed_file_count": sum(len(files) for _, files in changed_file_batches),
         "uploaded_file_count": 0,
         "message": "整理完成",
+        "deferred_files": [],
+        "deferred_file_count": 0,
     }
+
+    ready_exports = {file_identity(path) for path in updated_files_from_batches(changed_file_batches)}
+
+    def ready_for_upload(path):
+        identity = file_identity(path)
+        if is_copy_temporary(path):
+            return False
+        if identity in deferred_outputs:
+            return False
+        if identity not in ready_exports:
+            try:
+                check_file_ready(path)
+            except FileStillWritingError as error:
+                defer_file(path, path, str(error))
+                print(f"[整理暂缓] {path}：{error}；待上传记录保留，下次重试。")
+                return False
+        return True
+
+    def update_deferred_summary():
+        nonlocal reported_deferred_count
+        summary["deferred_files"] = list(deferred_files.values())
+        summary["deferred_file_count"] = len(deferred_files)
+        if len(deferred_files) > reported_deferred_count:
+            print(f"[整理暂缓] 本轮 {len(deferred_files)} 个文件仍在写入或尚未稳定；不上传、不计为失败，下次整理重试。")
+            reported_deferred_count = len(deferred_files)
+
+    update_deferred_summary()
     if not run_upload:
         summary["message"] = "整理完成，设置中已关闭上传。"
+        if config_str(config, 'task_delivery_postprocess_workflow') and prepare_only and changed_file_batches:
+            from model.TaskDeliveryBackground import snapshot_upload_plan
+            ready_batches = [(root, [p for p in paths if ready_for_upload(p)], Path('.'))
+                             for root, paths in changed_file_batches]
+            summary['postprocess_plan'] = snapshot_upload_plan(ready_batches, task_by_file, {}, config,
+                summary, base_dir, task_dates, upload_work_dir, only_changed)
         return summary
 
     if only_changed:
@@ -935,16 +1022,40 @@ def run_task_result_organizer(
             task_dates,
         )
         pending_count = len(updated_files_from_batches(pending_batches))
+        safe_pending = []
+        for root, files in pending_batches:
+            ready, waiting = [], []
+            for path in files:
+                (ready if ready_for_upload(path) else waiting).append(path)
+            if ready:
+                safe_pending.append((root, ready))
+            if waiting:
+                waiting_batches.append((root, waiting))
         changed_file_batches = merge_changed_file_batches(
-            pending_batches,
+            safe_pending,
             changed_file_batches,
         )
+        if prepare_only and claimed_versions:
+            from model.TaskDeliveryBackground import version_of
+            changed_file_batches = [(root, [path for path in files
+                if version_of(path) not in claimed_versions.get(file_identity(path), [])])
+                for root, files in changed_file_batches]
+            changed_file_batches = [(root, files) for root, files in changed_file_batches if files]
+        update_deferred_summary()
         summary["changed_file_count"] = len(
             updated_files_from_batches(changed_file_batches)
         )
         if not changed_file_batches:
             summary["message"] = "没有本次新增或更新的文件，已跳过 Google Drive 上传。"
+            if summary["deferred_file_count"]:
+                summary["message"] = "本轮没有已就绪的新成品；仍在写入或尚未稳定的文件已暂缓，下次整理重试。"
             recovery_records = pending_review_recovery_records(config)
+            if prepare_only and recovery_records:
+                from model.TaskDeliveryBackground import snapshot_upload_plan
+                summary["upload_plan"] = snapshot_upload_plan(
+                    [], {}, {}, config, summary, base_dir, task_dates, upload_work_dir, True)
+                summary["message"] = "审核表补填已准备好进入后台队列。"
+                return summary
             if recovery_records:
                 try:
                     recovered = write_review_video_links(config, recovery_records)
@@ -957,11 +1068,15 @@ def run_task_result_organizer(
             return summary
         if pending_count:
             print(f"已恢复上次保留的待处理文件：{pending_count} 个")
-        saved_count = save_pending_changed_file_batches(
+        save_pending = save_pending_changed_file_batches
+        if prepare_only:
+            from model.TaskDeliveryBackground import merge_pending_batches
+            save_pending = merge_pending_batches
+        saved_count = save_pending(
             config,
             base_dir,
             task_dates,
-            changed_file_batches,
+            merge_changed_file_batches(changed_file_batches, waiting_batches),
         )
         print(f"已保存本轮待处理文件列表：{saved_count} 个")
 
@@ -996,50 +1111,161 @@ def run_task_result_organizer(
             print(summary["message"])
             return summary
         if not routed_batches:
-            clear_pending_changed_file_batches(config, base_dir, task_dates)
+            if not prepare_only:
+                finish_pending()
+            else:
+                from model.TaskDeliveryBackground import discard_review_skips
+                discard_review_skips(config, base_dir, task_dates, changed_file_batches)
             summary["message"] = "没有需要上传的文件。"
             return summary
+
+    if not only_changed:
+        # Full-directory mode must not upload a stale output (or its compressed
+        # sibling) while its source is rendering. It also ignores abandoned
+        # private copy temporaries after an interrupted process.
+        deferred_names = {
+            (file_identity(Path(item["output"]).parent), normalize_video_identity(Path(item["output"]).name))
+            for item in deferred_files.values()
+        }
+        safe_count = 0
+        for root in result_dirs:
+            if not root.is_dir():
+                continue
+            for path in root.rglob("*"):
+                if not path.is_file():
+                    continue
+                if (is_compressed_video(path)
+                        and (file_identity(path.parent), normalize_video_identity(path.name)) in deferred_names):
+                    deferred_outputs.add(file_identity(path))
+                if ready_for_upload(path):
+                    safe_count += 1
+        update_deferred_summary()
+        if not safe_count:
+            summary["message"] = "没有已就绪的文件，已跳过 Google Drive 上传。"
+            return summary
+
+    batch_date, batch_slot = get_upload_batch(config)
+    if prepare_only:
+        from model.TaskDeliveryBackground import snapshot_upload_plan
+        if not only_changed:
+            routed_batches = [(root, [path for path in root.rglob("*")
+                               if path.is_file() and file_identity(path) not in deferred_outputs
+                               and not is_copy_temporary(path)], Path("."))
+                              for root in result_dirs if root.is_dir()]
+        plan = snapshot_upload_plan(
+            routed_batches, task_by_file, review_decisions, config, summary,
+            base_dir, task_dates, upload_work_dir, only_changed)
+        if only_changed:
+            from model.TaskDeliveryBackground import discard_review_skips
+            included = {file_identity(path) for _root, files, _prefix in routed_batches for path in files}
+            discard_review_skips(config, base_dir, task_dates,
+                                 [(root, [path for path in files if file_identity(path) not in included])
+                                  for root, files in changed_file_batches])
+        summary["upload_plan"] = plan
+        summary["message"] = "本地整理与审核已完成，上传已准备好进入后台队列。"
+        return summary
+
+    plan = {"config": config, "summary": summary, "only_changed": only_changed,
+            "batches": routed_batches or [(root, [], Path(".")) for root in result_dirs],
+            "batch_date": batch_date.isoformat(), "batch_slot": batch_slot,
+            "files": {}, "deferred_outputs": deferred_outputs, "legacy_task_by_file": task_by_file,
+            "legacy_review_decisions": review_decisions}
+    result = execute_task_result_upload(plan)
+    if only_changed:
+        finish_pending()
+    return result
+
+
+def execute_task_result_upload(plan, context=None, *, postprocessor=None):
+    """Execute only a confirmed batch; replacement IDs are read at execution time."""
+    from types import SimpleNamespace
+    from model.TaskDeliveryBackground import complete_pending_versions
+    from model.GoogleDriveHelper import observed_upload_records
+    from model.BackgroundTasks import BackgroundTaskCanceled
+
+    config = load_effective_config(plan["config"])
+    summary = dict(plan["summary"])
+    only_changed = plan["only_changed"]
+    review_folder_name = config_str(config, "review_folder_name", "review") or "review"
+    result_dirs = [Path(row[0]) for row in plan["batches"]]
+    routed_batches = [(Path(root), [Path(value) for value in files], Path(prefix))
+                      for root, files, prefix in plan["batches"]]
+    task_by_file = {key: SimpleNamespace(**value["task"])
+                    for key, value in plan.get("files", {}).items() if value.get("task") is not None}
+    review_decisions = {key: value["decision"] for key, value in plan.get("files", {}).items()
+                        if value.get("decision")}
+    task_by_file.update(plan.get("legacy_task_by_file", {}))
+    review_decisions.update(plan.get("legacy_review_decisions", {}))
+    deferred_outputs = set(plan.get("deferred_outputs", ()))
+    batch_date = date.fromisoformat(plan["batch_date"])
+    batch_slot = plan["batch_slot"]
+    source_aliases = {}
+
+    def finish_pending():
+        if plan.get("files"):
+            complete_pending_versions(plan, uploaded_records)
 
     configured_parent = config_str(config, "drive_parent_folder_id")
     if not configured_parent:
         raise ValueError("Google Drive 父目录不能为空，请在程序设置中填写")
     parent_folder_id = read_drive_parent_folder_id(configured_parent)
     service = load_drive_service()
-    batch_date, batch_slot = get_upload_batch(config)
     summary["upload_batch"] = f"{batch_date:%m%d}/{batch_slot}"
     summary["upload_date"] = batch_date.isoformat()
     summary["upload_slot"] = batch_slot
 
-    if only_changed:
+    if only_changed or postprocessor is not None:
         upload_task_by_file = {}
         upload_review_decisions = {}
-        routed_batches = compress_routed_batches(
-            routed_batches,
-            config,
-            task_by_file=task_by_file,
-            upload_task_by_file=upload_task_by_file,
-            review_decisions=review_decisions,
-            upload_review_decisions=upload_review_decisions,
-        )
         preferred_file_ids = {}
-        if config_bool(config, "video_upload_replace_old_enabled", True):
-            file_ids_by_identity = preferred_drive_file_ids_by_identity(config)
-            for _root_dir, changed_files, _remote_prefix in routed_batches:
-                for changed_file in changed_files:
-                    file_id = file_ids_by_identity.get(
-                        normalize_video_identity(Path(changed_file).name),
-                        "",
-                    )
+        file_ids_by_identity = (preferred_drive_file_ids_by_identity(config)
+            if config_bool(config, "video_upload_replace_old_enabled", True) else {})
+
+        def prepared_batches():
+            # Lazy consumption is deliberate: the uploader finishes this file
+            # before requesting/rendering the next. No cross-thread mutable
+            # node context, and partial upload successes remain observable.
+            for root, originals, prefix in routed_batches:
+                for original in originals:
+                    if context is not None:
+                        context.check_canceled()
+                    prepared = compress_routed_batches(
+                        [(root, [original], prefix)], config,
+                        task_by_file=task_by_file, upload_task_by_file=upload_task_by_file,
+                        review_decisions=review_decisions,
+                        upload_review_decisions=upload_review_decisions,
+                        postprocessor=postprocessor)
+                    upload_root, uploads, remote = prepared[0]
+                    changed_file = uploads[0]
+                    source = plan.get('files', {}).get(file_identity(original), {})
+                    source_aliases[file_identity(changed_file)] = source
+                    file_id = file_ids_by_identity.get(normalize_video_identity(
+                        Path(source.get('original') or original).name), '')
                     if file_id:
                         preferred_file_ids[Path(changed_file).name] = file_id
-        uploaded_records = upload_routed_changed_files_to_drive_batch(
-            service,
-            routed_batches,
-            parent_folder_id,
-            batch_date=batch_date,
-            batch_slot=batch_slot,
-            preferred_file_ids=preferred_file_ids,
-        )
+                    yield upload_root, uploads, remote
+
+        try:
+            uploaded_records = upload_routed_changed_files_to_drive_batch(
+                service,
+                prepared_batches(),
+                parent_folder_id,
+                batch_date=batch_date,
+                batch_slot=batch_slot,
+                preferred_file_ids=preferred_file_ids,
+            )
+        except BackgroundTaskCanceled:
+            uploaded_records = observed_upload_records()
+            summary["cancelled_upload"] = True
+        except Exception as error:
+            # A folder/metadata request can fail after earlier files committed.
+            # Persist those successes before leaving the remaining files pending.
+            uploaded_records = observed_upload_records()
+            if not uploaded_records:
+                raise
+            summary["upload_error"] = f"{type(error).__name__}: {error}"
+            print(f"上传中断，正在保存此前成功的记录：{summary['upload_error']}")
+
         attach_local_task_metadata(uploaded_records, upload_task_by_file, config)
         for record in uploaded_records:
             decision = upload_review_decisions.get(file_identity(record.get("local_file") or ""))
@@ -1055,7 +1281,29 @@ def run_task_result_organizer(
             for record in uploaded_records if record.get("shortcut_error")
         ]
 
+        successful_sources = set()
+        for record in uploaded_records:
+            identity = file_identity(record.get("local_file") or "")
+            source = source_aliases.get(identity, {})
+            if source:
+                successful_sources.add(file_identity(source["original"]))
+                # The compressed copy is private to this job and will be removed.
+                # History must point at the real local result, not a nonexistent
+                # compressed sibling; the remote name stays in record['name'].
+                record["local_file"] = source["original"]
+                record["root_dir"] = source["root"]
+                record["upload_source_file"] = source["original"]
+                if postprocessor is not None:
+                    record['logical_source_name'] = Path(source['original']).name
+        summary["upload_failed_files"] = [
+            {"file_name": Path(item["original"]).name, "local_file": item["original"]}
+            for item in plan.get("files", {}).values()
+            if file_identity(item["original"]) not in successful_sources
+        ]
+
         task_sheet_report = {}
+        if context is not None and not context.is_canceled():
+            context.report("网盘已同步，正在填写任务提交表", 92)
         try:
             task_sheet_count = write_task_submission_links(
                 config,
@@ -1085,6 +1333,8 @@ def run_task_result_organizer(
             record["review_routed"] = is_review_upload_record(
                 record, review_folder_name
             )
+        if context is not None and not context.is_canceled():
+            context.report("保存上传历史和审核记录", 96)
         try:
             upload_history_result = record_video_uploads(
                 config,
@@ -1136,21 +1386,36 @@ def run_task_result_organizer(
             uploaded_records,
             review_folder_name,
         )
-        clear_pending_changed_file_batches(config, base_dir, task_dates)
+        finish_pending()
     else:
         print("整目录上传模式不会做视频检测分流。")
-        upload_local_dirs_to_drive_batch(
-            service,
-            result_dirs,
-            parent_folder_id,
-            batch_date=batch_date,
-            batch_slot=batch_slot,
-        )
+        if plan.get("files"):
+            try:
+                uploaded_records = upload_routed_changed_files_to_drive_batch(
+                    service, routed_batches, parent_folder_id, batch_date=batch_date, batch_slot=batch_slot)
+            except BackgroundTaskCanceled:
+                uploaded_records = observed_upload_records()
+                summary["cancelled_upload"] = True
+            except Exception as error:
+                uploaded_records = observed_upload_records()
+                if not uploaded_records:
+                    raise
+                summary["upload_error"] = f"{type(error).__name__}: {error}"
+            successes = {file_identity(row.get("local_file") or "") for row in uploaded_records}
+            summary["uploaded_file_count"] = len(uploaded_records)
+            summary["upload_failed_files"] = [
+                {"file_name": Path(item["original"]).name, "local_file": item["original"]}
+                for identity, item in plan["files"].items() if identity not in successes]
+        else:
+            upload_local_dirs_to_drive_batch(
+                service, result_dirs, parent_folder_id, batch_date=batch_date,
+                batch_slot=batch_slot, excluded_files=deferred_outputs)
 
     summary["message"] = f"Google Drive 上传完成：{batch_date:%m%d}/{batch_slot}"
     if summary.get("shortcut_failed_files"):
         summary["message"] += "；部分跨天修改视频的当日快捷方式创建失败，请查看日志"
     return summary
+
 
 
 class _SignalWriter:
@@ -1189,12 +1454,18 @@ class TaskResultOrganizerThread(QtCore.QThread):
         parent=None,
         interactive_detection_choice=False,
         gemini_keys=None,
+        prepare_only=False,
+        upload_work_dir=None,
+        claimed_versions=None,
     ):
         super().__init__(parent)
         self.task_dates = list(task_dates)
         self.base_dir = Path(base_dir)
         self.config = dict(config or {})
         self.gemini_keys = gemini_keys
+        self.prepare_only = bool(prepare_only)
+        self.upload_work_dir = upload_work_dir
+        self.claimed_versions = claimed_versions
         self.interactive_detection_choice = bool(interactive_detection_choice)
         self._detection_choice = "cancel"
         self._detection_choice_event = threading.Event()
@@ -1240,13 +1511,16 @@ class TaskResultOrganizerThread(QtCore.QThread):
                 if self.interactive_detection_choice
                 else None
             )
-            with redirect_stdout(writer), redirect_stderr(writer):
+            with capture_thread_output(writer):
                 result = run_task_result_organizer(
                     self.task_dates,
                     self.base_dir,
                     self.config,
                     detection_mode_resolver=resolver,
                     review_plan_resolver=(self._request_review_plan if self.interactive_detection_choice else None),
+                    prepare_only=self.prepare_only,
+                    upload_work_dir=self.upload_work_dir,
+                    claimed_versions=self.claimed_versions,
                     **({"gemini_keys": self.gemini_keys} if self.gemini_keys is not None else {}),
                 )
             writer.flush()

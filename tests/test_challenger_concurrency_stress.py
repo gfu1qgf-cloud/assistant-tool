@@ -632,12 +632,12 @@ class TestVideoAssignmentInteractiveCancellation(unittest.TestCase):
                 for callback in list(self.callbacks):
                     callback(*args)
 
-        class FakeVideoAssignmentThread:
+        class FakeVideoAssignmentThread(QtCore.QThread):
             def __init__(self, *args, **kwargs):
+                super().__init__()
                 self.log = FakeSignal()
                 self.completed = FakeSignal()
                 self.failed = FakeSignal()
-                self.finished = FakeSignal()
                 self.running = False
                 self.interrupted = False
 
@@ -646,6 +646,9 @@ class TestVideoAssignmentInteractiveCancellation(unittest.TestCase):
 
             def isRunning(self):
                 return self.running
+
+            def wait(self, timeout=0):
+                return not self.running
 
             def requestInterruption(self):
                 self.interrupted = True
@@ -716,6 +719,7 @@ class TestVideoAssignmentInteractiveCancellation(unittest.TestCase):
 
             # Completion restores the button and clears the worker reference.
             t1.finish()
+            self.app.processEvents()
             self.assertTrue(win.assign_video_btn.isEnabled())
             self.assertEqual(win.assign_video_btn.text(), "分拣视频")
             self.assertIsNone(win.assign_video_thread)
@@ -749,6 +753,7 @@ class TestVideoAssignmentInteractiveCancellation(unittest.TestCase):
         # which tests the platform plugin instead of our closeEvent decision.
         win = MagicMock()
         win.plugin_host.can_close_all.return_value = (True, "")
+        win.background_tasks.is_busy.return_value = False
         win.oral_duration_check_thread = None
         win.task_submission_audit_thread = None
         win.task_reference_download_thread = None

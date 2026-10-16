@@ -71,7 +71,7 @@ class ContentDedupTests(unittest.TestCase):
         from app_plugins.builtin.task_delivery_daily_quantity import DailyQuantityThread
         with patch("app_plugins.builtin.task_delivery_daily_quantity.reconcile_daily_quantity",return_value={}) as call:
             DailyQuantityThread({},"root").run()
-        call.assert_called_once_with({},"root",verify_content=True)
+        call.assert_called_once_with({},"root",verify_content=True,manual_refresh=False)
 
     def test_different_ids_names_dates_and_categories_only_count_first_delivery(self):
         first = ("统计", "2026-09-25", "03", "甲", "本人")

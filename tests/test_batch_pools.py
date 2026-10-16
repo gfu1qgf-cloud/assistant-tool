@@ -326,7 +326,9 @@ class PoolTests(unittest.TestCase):
             state["settings"]["darkness"] = 9
             store.save(state,state["revision"])
             dialog = BatchTextVideoDialog(store=store)
-            self.assertEqual([a.text() for a in dialog.menu_bar.actions()],["编辑","资源","批量","视图","配置"])
+            self.assertEqual([a.text() for a in dialog.menu_bar.actions()],["文件","编辑","资源","批量","视图"])
+            opened = next(a.menu() for a in dialog.file_menu.actions() if a.text() == "打开配置")
+            self.assertEqual([a.text() for a in opened.actions()], ["默认配置", "祷告词"])
             self.assertEqual([dialog.resources.tabText(i) for i in range(4)],["视频","文案","图片","音乐"])
             dialog.switch_profile(original)
             self.assertEqual(dialog.controls["darkness"].value(),31)
@@ -423,13 +425,16 @@ class PoolTests(unittest.TestCase):
             state["copy_pool"] = self.copies(2)
             apply_pairs(state,pairing_plan(state["copy_pool"],self.videos(root,2)))
             layer = new_text_component()
-            layer.update(source="pool",pool_field="body")
+            # Explicit independent rotation retains the old commit-on-success
+            # contract. Default task-bound copy must NOT advance this cursor.
+            layer.update(source="pool",pool_field="body",copy_binding="rotate")
             state["settings"]["layers"] += bind_pool_layers([layer],state)
             state = store.save(state,0)
             output = Path(root)/"output.mp4"
             output.write_bytes(b"fixture")
             worker = BatchWorker(store,state,[job["id"] for job in state["jobs"]])
             renderer = Mock(side_effect=[ValueError("fixture failure"),(output,None)])
+            renderer.prepare_export = None
             with patch.dict("app_plugins.builtin.batch_text_video.ui.RENDERERS",{"static_text":renderer}):
                 worker.run()
             saved = store.load()

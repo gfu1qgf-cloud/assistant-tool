@@ -12,7 +12,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-from app_paths import APP_ROOT
+from app_paths import DATA_ROOT as APP_ROOT
+from model.AppDataStorage import data_file, data_directory
 from .settings import normalize_settings
 
 CACHE_ROOT = APP_ROOT / "SmartImageAssignment"
@@ -67,14 +68,14 @@ def cache_key(model, task, image_digest):
 class MatchCache:
     def __init__(self, root=None):
         self.root = Path(root or CACHE_ROOT)
-        self.root.mkdir(parents=True, exist_ok=True)
+        data_directory(self.root).ensure()
         self.path = self.root / "matches.sqlite3"
         with self.connect() as connection:
             connection.execute("CREATE TABLE IF NOT EXISTS matches (key TEXT PRIMARY KEY, data TEXT NOT NULL, updated REAL NOT NULL)")
 
     @contextmanager
     def connect(self):
-        connection = sqlite3.connect(str(self.path), timeout=20)
+        connection = data_file(self.path).connect(timeout=20)
         try:
             with connection:
                 yield connection
@@ -256,12 +257,12 @@ def recommended_choices(tasks, matches, minimum):
 def analyze(groups, tasks, settings, search_settings, manager, preview_dir, *,
             progress=None, canceled=None, encoder=None, index=None, cache=None):
     import numpy as np
-    from ..smart_image_search.encoder import ChineseImageEncoder
-    from ..smart_image_search.index import ImageSearchIndex
-    from ..smart_image_search.settings import normalize_settings as search_config
+    from model.image_retrieval.encoder import ChineseImageEncoder
+    from model.image_retrieval.index import ImageSearchIndex
+    from model.image_retrieval.settings import normalize_model_settings
     progress, canceled = progress or (lambda _message: None), canceled or (lambda: False)
     settings = normalize_settings(settings)
-    encoder = encoder or ChineseImageEncoder(search_config(search_settings)["model"], device="cpu")
+    encoder = encoder or ChineseImageEncoder(normalize_model_settings(search_settings)["model"], device="cpu")
     if not encoder.model_is_cached():
         raise RuntimeError("请先打开“智能搜图”并下载当前检索模型，再使用智能分配；本功能不会自动下载或降低模型。")
     cache = cache or MatchCache()
@@ -302,7 +303,7 @@ def analyze(groups, tasks, settings, search_settings, manager, preview_dir, *,
         candidates.setdefault(task["id"], [])
     errors, matches, prepared, cached_count = [], {}, {}, 0
     preview_dir = Path(preview_dir)
-    preview_dir.mkdir(parents=True, exist_ok=True)
+    data_directory(preview_dir).ensure()
     # Small batches keep response lengths and cancellation latency bounded.
     for offset in range(0, len(valid_tasks), 2):
         check_cancel(canceled)
@@ -322,7 +323,7 @@ def analyze(groups, tasks, settings, search_settings, manager, preview_dir, *,
                         image.update(size=after.st_size, mtime_ns=after.st_mtime_ns)
                         digest = hashlib.sha256(jpeg).hexdigest()
                         preview = preview_dir / f"{digest}.jpg"
-                        preview.write_bytes(jpeg)
+                        data_file(preview).write_bytes(jpeg)
                         prepared[image_id] = {**image, "jpeg": jpeg, "digest": digest, "preview": str(preview)}
                     except (OSError, ValueError):
                         prepared[image_id] = None

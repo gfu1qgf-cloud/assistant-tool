@@ -125,7 +125,8 @@ class QuickExportTests(unittest.TestCase):
             dialog.quick_export_current()
             preparing.cancel.set.assert_called()
             self.assertTrue(dialog.is_batch_busy())
-            self.assertFalse(dialog.splitter.isEnabled())
+            self.assertFalse(dialog.left_column.isEnabled())
+            self.assertTrue(dialog.right_tabs.isEnabled())
             self.assertEqual(dialog.store.path.read_bytes(), before)
             # A programmatic late edit must not replace what was visible on click.
             dialog.title.setPlainText("Late edit")

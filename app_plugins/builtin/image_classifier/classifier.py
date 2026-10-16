@@ -1,4 +1,5 @@
 from __future__ import annotations
+from model.AppDataStorage import data_directory, data_io
 
 import copy
 import os
@@ -949,7 +950,7 @@ def apply_classification_results(
     progress = progress or (lambda _current, _total, _message: None)
     cancelled = cancelled or (lambda: False)
     output = Path(output_dir)
-    output.mkdir(parents=True, exist_ok=True)
+    data_directory(output).ensure(parents=True, exist_ok=True)
     completed = []
     failed = []
     candidates = [
@@ -970,12 +971,12 @@ def apply_classification_results(
             if not source.is_file():
                 raise FileNotFoundError("源素材已不存在")
             target_dir = output.joinpath(*category_parts)
-            target_dir.mkdir(parents=True, exist_ok=True)
+            data_directory(target_dir).ensure(parents=True, exist_ok=True)
             target = unique_destination(target_dir / source.name)
             if operation == "move":
-                shutil.move(str(source), str(target))
+                data_io.move(str(source), str(target))
             else:
-                shutil.copy2(source, target)
+                data_io.copy2(source, target)
             completed.append({**result, "target": str(target)})
         except Exception as error:
             failed.append({**result, "error": str(error)})

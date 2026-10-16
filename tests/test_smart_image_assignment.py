@@ -18,8 +18,8 @@ from qt_compat import QtCore, QtWidgets
 from app_plugins.builtin.smart_image_assignment import engine
 from app_plugins.builtin.smart_image_assignment.settings import DEFAULT_MODEL, SmartAssignmentSettingsPage, normalize_settings
 from app_plugins.builtin.smart_image_assignment.ui import GroupPicker, SmartAssignmentDialog
-from app_plugins.builtin.smart_image_search.encoder import ChineseImageEncoder
-from app_plugins.builtin.smart_image_search.index import ImageSearchIndex
+from model.image_retrieval.encoder import ChineseImageEncoder
+from model.image_retrieval.index import ImageSearchIndex
 from model.GeminiKeyManager import GeminiKeyManager
 from model.InventoryManager import InventoryStore
 

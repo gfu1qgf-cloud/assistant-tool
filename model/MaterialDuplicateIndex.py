@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from model.AppDataStorage import data_io, data_file, data_directory
+
 import hashlib
 import os
 import re
@@ -14,7 +16,7 @@ _MD5_RE = re.compile(r"[0-9a-fA-F]{32}\Z")
 
 def _digest(path, algorithm):
     checksum = hashlib.new(algorithm)
-    with Path(path).open("rb") as stream:
+    with data_io.open(Path(path),"rb") as stream:
         for chunk in iter(lambda: stream.read(4 * 1024 * 1024), b""):
             checksum.update(chunk)
     return checksum.hexdigest()

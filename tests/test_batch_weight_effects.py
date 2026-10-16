@@ -101,7 +101,7 @@ class WeightAndEffectsTests(unittest.TestCase):
 
     def test_effect_controls_have_clear_pages_and_restore_colors_and_values(self):
         properties = TextBoxProperties()
-        self.assertEqual([properties.style_tabs.tabText(i) for i in range(4)],
+        self.assertEqual([section.toggle.text() for section in properties.style_sections.sections.values()],
                          ["字体", "描边", "阴影", "底色"])
         layer = {**self.layer(), "outline_width": 6.5, "outline_color": "#ff00ff",
                  "outline_opacity": 50, "shadow_enabled": True, "shadow_color": "#00ffff",
@@ -111,12 +111,12 @@ class WeightAndEffectsTests(unittest.TestCase):
             self.assertEqual(properties.controls[key].value(), layer[key])
         for key in ("color", "outline_color", "shadow_color", "background_color"):
             self.assertFalse(properties.controls[key].icon().isNull())
-        properties.style_tabs.setCurrentIndex(1)
+        properties.style_sections.reveal('outline')
         properties.show()
         self.app.processEvents()
         self.assertTrue(properties.controls["outline_width"].isVisible())
         self.assertTrue(properties.controls["outline_color"].isVisible())
-        properties.style_tabs.setCurrentIndex(2)
+        properties.style_sections.reveal('shadow')
         self.assertTrue(properties.controls["shadow_enabled"].isVisible())
         self.assertTrue(properties.controls["shadow_color"].isEnabled())
         properties.controls["shadow_enabled"].setChecked(False)

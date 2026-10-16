@@ -174,7 +174,7 @@ class BreathCutSourceDialog(QtWidgets.QDialog):
 
 
 class BreathCutReviewDialog(QtWidgets.QDialog):
-    def __init__(self, bundle, parent=None):
+    def __init__(self, bundle, parent=None, save_breath_defaults=None):
         super().__init__(parent)
         self.bundle = copy.deepcopy(bundle)
         self.reviewed_bundle = None
@@ -184,7 +184,9 @@ class BreathCutReviewDialog(QtWidgets.QDialog):
         self.summary_label = QtWidgets.QLabel(self)
         self.summary_label.setWordWrap(True)
         layout.addWidget(self.summary_label)
-        self.timeline_review = SmartVideoTimelineReview(self.bundle, self)
+        self.timeline_review = SmartVideoTimelineReview(
+            self.bundle, self, save_breath_defaults=save_breath_defaults
+        )
         self.timeline_review.orderChanged.connect(self._update_summary)
         layout.addWidget(self.timeline_review, 1)
         buttons = QtWidgets.QDialogButtonBox(
@@ -237,8 +239,8 @@ class BreathCutReviewDialog(QtWidgets.QDialog):
         super().closeEvent(event)
 
     @classmethod
-    def get_reviewed_bundle(cls, bundle, parent=None):
-        dialog = cls(bundle, parent)
+    def get_reviewed_bundle(cls, bundle, parent=None, save_breath_defaults=None):
+        dialog = cls(bundle, parent, save_breath_defaults=save_breath_defaults)
         if dialog.exec() == QtWidgets.QDialog.Accepted:
             return dialog.reviewed_bundle
         return None

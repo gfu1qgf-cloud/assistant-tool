@@ -1,5 +1,9 @@
 {
+  "offline_mode": false,
   "ui_theme": "light",
+  "plugin_enabled": {
+    "waste_reminder": false
+  },
   "task_path": "",
   "video_sorting_station_path": "",
   "video_image_root_path": "",

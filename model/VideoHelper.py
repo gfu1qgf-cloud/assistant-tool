@@ -1,3 +1,5 @@
+
+from model.AppDataStorage import data_io, data_file, data_directory
 from datetime import date
 from pathlib import Path
 
@@ -7,7 +9,7 @@ import os
 import shutil
 import numpy as np
 
-from app_paths import APP_ROOT
+from app_paths import DATA_ROOT as APP_ROOT
 
 
 def load_runtime_options():
@@ -15,7 +17,7 @@ def load_runtime_options():
     config = {}
     if config_path.exists():
         try:
-            config = json.loads(config_path.read_text(encoding="utf-8-sig"))
+            config = json.loads(data_file(config_path).read_text(encoding="utf-8-sig"))
         except (OSError, ValueError):
             config = {}
 
@@ -232,7 +234,7 @@ def main():
                         print(f"         目标图片: {best_match['name']}")
                         print(f"         特征重合度: {best_score:.2%}")  # 显示百分比
 
-                        shutil.move(file_path, target_path)
+                        data_io.move(file_path, target_path)
                         moved += 1
                     except Exception as e:
                         print(f"\n[错误] {e}")

@@ -1,9 +1,12 @@
+
+from model.AppDataStorage import data_io, data_file, data_directory
 import re
 
 import stable_whisper
 from langdetect import detect, LangDetectException
 
 from model.TextHelper import smart_split_sentences
+from model.WhisperInference import whisper_inference
 
 
 def check_text_language(text, required_language="sk"):
@@ -36,7 +39,7 @@ def get_text_language(text):
 
 def fix_srt_punctuation(srt_path):
     """修复字幕开头的标点符号，移到上一块结尾"""
-    with open(srt_path, 'r', encoding='utf-8') as f:
+    with data_io.open(srt_path, 'r', encoding='utf-8') as f:
         content = f.read()
 
     lines = content.split('\n')
@@ -57,7 +60,7 @@ def fix_srt_punctuation(srt_path):
         result.append(line)
         i += 1
 
-    with open(srt_path, 'w', encoding='utf-8') as f:
+    with data_io.open(srt_path, 'w', encoding='utf-8') as f:
         f.write('\n'.join(result))
 
 
@@ -67,27 +70,68 @@ def generate_srt_whisper_only(audio_path, text, output_srt_path, language="sk",
                                max_words_per_block=0,
                                max_chars_per_block=None,
                                block_gap_ms=None,
-                               model=None):
-
-
-
+                               model=None, cancelled=None, progress=None, model_loader=None):
     text = smart_split_sentences(text)
-    if model is None:
-        model = stable_whisper.load_faster_whisper(
-            "base", device="cpu", compute_type="int8"
-        )
-        result = model.align(audio_path, text=text, language=language)
-    else:
-        # Reuse the already-loaded faster-whisper instance. Loading a second
-        # CTranslate2 model can terminate Python with 0xC0000005 on Windows.
-        # Calling stable-whisper's align function directly provides the exact
-        # same forced-alignment algorithm without replacing model.transcribe.
-        from stable_whisper.alignment import align as stable_align
+    with whisper_inference(progress=progress, cancelled=cancelled):
+        if model is None and model_loader is not None:
+            model = model_loader()
+            if model is None:
+                raise RuntimeError("字幕模型加载器未返回模型。")
+            if cancelled and cancelled():
+                raise InterruptedError("已取消字幕模型处理。")
+        if model is None:
+            model = stable_whisper.load_faster_whisper(
+                "base", device="cpu", compute_type="int8"
+            )
+            result = model.align(audio_path, text=text, language=language)
+        else:
+            # Reuse the loaded faster-whisper instance and original alignment
+            # algorithm. Only model use is serialized, not SRT formatting/I/O.
+            from stable_whisper.alignment import align as stable_align
+            result = stable_align(model, audio_path, text=text, language=language)
 
-        result = stable_align(
-            model, audio_path, text=text, language=language
-        )
+    _format_subtitle_result(result, output_srt_path, chars_per_line, max_lines,
+                            include_line_breaks, max_words_per_block,
+                            max_chars_per_block, block_gap_ms)
 
+
+def generate_srt_from_word_timings(words, output_srt_path, chars_per_line=25, max_lines=2,
+                                   include_line_breaks=False, max_words_per_block=0,
+                                   max_chars_per_block=None, block_gap_ms=None):
+    """Format trusted word timings with the existing rules, without loading ASR.
+
+    Publish with exclusive creation: an existing task_audio.srt is never replaced,
+    including if another job creates it while formatting is in progress.
+    """
+    from pathlib import Path
+    output = Path(output_srt_path)
+    if output.exists(): return False
+    entries = [dict(word=(' ' if i else '') + w['text'], start=w['start'], end=w['end'])
+               for i, w in enumerate(words)]
+    result = stable_whisper.WhisperResult({'segments': [dict(start=entries[0]['start'],
+        end=entries[-1]['end'], text=''.join(w['word'] for w in entries), words=entries)]})
+    with data_io.TemporaryDirectory(prefix='.ele-subtitle-', dir=str(output.parent)) as temporary:
+        rendered = Path(temporary) / 'formatted.srt'
+        _format_subtitle_result(result, str(rendered), chars_per_line, max_lines,
+                                include_line_breaks, max_words_per_block,
+                                max_chars_per_block, block_gap_ms)
+        content = data_file(rendered).read_text(encoding='utf8')
+        created = False
+        try:
+            with data_file(output).open('x', encoding='utf8') as stream:
+                created = True
+                stream.write(content)
+        except FileExistsError:
+            return False
+        except BaseException:
+            if created: data_io.unlink(output)
+            raise
+    return True
+
+
+def _format_subtitle_result(result, output_srt_path, chars_per_line, max_lines,
+                            include_line_breaks, max_words_per_block,
+                            max_chars_per_block, block_gap_ms):
     # max_words_per_block 为 0 时保持原来的按字符分块逻辑。
     # 启用单词数控制时先合并，再按单词时间戳均匀分块，避免原始段落边界
     # 产生大量只有一两个词的小块。
@@ -112,7 +156,7 @@ def generate_srt_whisper_only(audio_path, text, output_srt_path, language="sk",
     fix_srt_punctuation(output_srt_path)
 
     # 按选项决定字幕块内部是否换行；默认保持单行
-    with open(output_srt_path, 'r', encoding='utf-8') as f:
+    with data_io.open(output_srt_path, 'r', encoding='utf-8') as f:
         srt_text = f.read()
 
     fixed = fix_srt_line_length(
@@ -125,7 +169,7 @@ def generate_srt_whisper_only(audio_path, text, output_srt_path, language="sk",
         block_gap_ms=block_gap_ms,
     )
 
-    with open(output_srt_path, 'w', encoding='utf-8') as f:
+    with data_io.open(output_srt_path, 'w', encoding='utf-8') as f:
         f.write(fixed)
 
 
@@ -359,7 +403,7 @@ def _ms_to_tc(ms: float) -> str:
 
 def fix_srt_punctuation(srt_path):
     """修复字幕开头的标点符号，移到上一块结尾"""
-    with open(srt_path, 'r', encoding='utf-8') as f:
+    with data_io.open(srt_path, 'r', encoding='utf-8') as f:
         content = f.read()
 
     lines = content.split('\n')
@@ -380,7 +424,7 @@ def fix_srt_punctuation(srt_path):
         result.append(line)
         i += 1
 
-    with open(srt_path, 'w', encoding='utf-8') as f:
+    with data_io.open(srt_path, 'w', encoding='utf-8') as f:
         f.write('\n'.join(result))
 
 

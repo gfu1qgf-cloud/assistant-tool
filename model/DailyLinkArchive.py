@@ -1,12 +1,14 @@
 """Durable link-only archive, independent of the seven-day config summary."""
 
+from model.AppDataStorage import data_io, data_file, data_directory
+
 import json
 import os
 import re
 import shutil
 from pathlib import Path
 
-from app_paths import APP_ROOT
+from app_paths import DATA_ROOT as APP_ROOT
 from model.DailyLinkHistory import (
     DAILY_LINK_HISTORY_CONFIG_KEY,
     normalize_daily_link_history,
@@ -47,7 +49,7 @@ def merge_link_histories(*histories):
 
 def _read_history(path):
     try:
-        with Path(path).open("r", encoding="utf-8") as handle:
+        with data_io.open(Path(path),"r", encoding="utf-8") as handle:
             data = json.load(handle)
         return data if isinstance(data, dict) else {}
     except (OSError, ValueError, TypeError):
@@ -64,7 +66,7 @@ def _log_histories(log_dir):
     for path in files:
         pending = {}
         try:
-            handle = path.open("r", encoding="utf-8", errors="replace")
+            handle = data_io.open(path,"r", encoding="utf-8", errors="replace")
         except OSError:
             continue
         with handle:
@@ -123,16 +125,16 @@ def save_daily_link_archive(history, root=APP_ROOT):
         return normalized
     temporary = path.with_name(path.name + ".tmp")
     if path.is_file() and _read_history(path):
-        shutil.copy2(path, path.with_name(path.name + ".bak"))
+        data_io.copy2(path, path.with_name(path.name + ".bak"))
     try:
-        with temporary.open("w", encoding="utf-8") as handle:
-            json.dump(normalized, handle, ensure_ascii=False, indent=2)
+        with data_io.open(temporary,"w", encoding="utf-8") as handle:
+            handle.write(json.dumps(normalized, ensure_ascii=False, indent=2))
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temporary, path)
+        data_io.replace(temporary, path)
     finally:
         if temporary.exists():
-            temporary.unlink()
+            data_file(temporary).unlink()
     return normalized
 
 

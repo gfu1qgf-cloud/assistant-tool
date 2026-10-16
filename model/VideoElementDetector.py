@@ -1,3 +1,5 @@
+
+from model.AppDataStorage import data_io, data_file, data_directory
 import base64
 import getpass
 import json
@@ -796,7 +798,7 @@ def load_detection_report(video_path: Path) -> Dict[str, Any]:
         return {"videoDict": {}}
 
     try:
-        report = json.loads(report_path.read_text(encoding="utf-8"))
+        report = json.loads(data_file(report_path).read_text(encoding="utf-8"))
     except Exception:
         return {"videoDict": {}}
 
@@ -857,7 +859,7 @@ def save_detection_report(video_path: Path, result: Dict[str, Any]) -> None:
     }
 
     report_path = detection_report_path(video_path)
-    report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    data_file(report_path).write_text_direct(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"保存视频检测报告：{report_path}")
 
 

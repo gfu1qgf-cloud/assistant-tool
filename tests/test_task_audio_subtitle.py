@@ -265,6 +265,54 @@ class TaskAudioSubtitlePluginTests(unittest.TestCase):
             self.assertEqual(result["failed"], 0)
             self.assertEqual(result["failures"], [])
 
+    def test_empty_voice_and_text_are_normal_skips_not_failures(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            plugin = TaskAudioSubtitlePlugin()
+            jobs = []
+            for index, (voice, text) in enumerate((("", "hello"), ("demo", ""))):
+                jobs.append({"label": str(index), "target_dir": str(Path(temporary) / str(index)),
+                             "task": SimpleNamespace(task_audio_type=voice, task_audio_text=text)})
+            messages = []
+            with patch.object(plugin, "_create_audio") as create, patch.object(plugin, "_create_subtitle") as subtitle:
+                result = plugin._execute_jobs("audio", jobs, {"with_subtitles": True}, lambda *args: messages.append(args))
+            create.assert_not_called()
+            subtitle.assert_not_called()
+            self.assertEqual(result["failed"], 0)
+            self.assertEqual(result["skipped_no_voice"], 1)
+            self.assertEqual(result["skipped_no_text"], 1)
+            self.assertEqual(result["failures"], [])
+            self.assertTrue(all(len(args) == 1 for args in messages))
+
+    def test_existing_audio_without_voice_still_generates_requested_subtitle(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            plugin = TaskAudioSubtitlePlugin()
+            audio = Path(temporary) / "task_audio.mp3"
+            audio.write_bytes(b"existing")
+            job = {"target_dir": temporary, "task": SimpleNamespace(task_audio_type="", task_audio_text="hello")}
+            with patch.object(plugin, "_create_audio") as create, \
+                 patch.object(plugin, "_create_subtitle", return_value=("generated", audio.with_suffix(".srt"))) as subtitle:
+                result = plugin._execute_jobs("audio", [job], {"with_subtitles": True}, lambda *_args: None)
+            create.assert_not_called()
+            subtitle.assert_called_once()
+            self.assertEqual(result["audio_existing"], 1)
+            self.assertEqual(result["subtitle_generated"], 1)
+            self.assertEqual(result["failed"], 0)
+
+    def test_real_errors_remain_failures_and_missing_audio_is_informational(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            plugin = TaskAudioSubtitlePlugin()
+            job = {"label": "demo", "target_dir": temporary,
+                   "task": SimpleNamespace(task_audio_type="unknown", task_audio_text="hello")}
+            with patch.object(plugin, "_create_audio", side_effect=RuntimeError("API failed")):
+                result = plugin._execute_jobs("audio", [job], {}, lambda *_args: None)
+            self.assertEqual(result["failed"], 1)
+            self.assertIn("API failed", result["failures"][0])
+            messages = []
+            result = plugin._execute_jobs("subtitle", [job], {}, lambda *args: messages.append(args))
+            self.assertEqual(result["missing_audio"], 1)
+            self.assertEqual(result["failed"], 0)
+            self.assertTrue(all(len(args) == 1 for args in messages))
+
 
 if __name__ == "__main__":
     unittest.main()

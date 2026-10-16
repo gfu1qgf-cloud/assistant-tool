@@ -7,6 +7,7 @@ from qt_compat import QtCore, QtGui, QtWidgets
 from model.ClipboardHelper import set_internal_clipboard_text
 from model.DailyQuantityStats import (
     effective_batch_slot,
+    inspect_daily_quantity,
     preview_external_day,
     reconcile_daily_quantity,
     scan_daily_drive_date,
@@ -38,15 +39,32 @@ class DailyQuantityThread(QtCore.QThread):
     completed = QtCore.pyqtSignal(object)
     failed = QtCore.pyqtSignal(str)
 
-    def __init__(self, config, root, parent=None):
+    def __init__(self, config, root, parent=None, *, manual=False):
         super().__init__(parent)
         self.config = dict(config)
         self.root = str(root)
+        self.manual = bool(manual)
 
     def run(self):
         try:
-            self.completed.emit(reconcile_daily_quantity(self.config, self.root, verify_content=True))
+            self.completed.emit(reconcile_daily_quantity(self.config, self.root, verify_content=True,
+                                                         manual_refresh=self.manual))
         except Exception as exc:
+            self.failed.emit(f"{type(exc).__name__}: {exc}")
+
+
+class DailyQuantityInspectionThread(QtCore.QThread):
+    completed = QtCore.pyqtSignal(object)
+    failed = QtCore.pyqtSignal(str)
+
+    def __init__(self, config, root, parent=None):
+        super().__init__(parent)
+        self.config, self.root = dict(config), str(root)
+
+    def run(self):
+        try:
+            self.completed.emit(inspect_daily_quantity(self.config, self.root))
+        except (Exception, SystemExit) as exc:
             self.failed.emit(f"{type(exc).__name__}: {exc}")
 
 
@@ -98,6 +116,9 @@ class DailyQuantityDialog(QtWidgets.QDialog):
     scan_date_requested = QtCore.pyqtSignal(str)
     view_date_requested = QtCore.pyqtSignal(str)
     review_check_requested = QtCore.pyqtSignal()
+    inspect_requested = QtCore.pyqtSignal()
+    view_pending_requested = QtCore.pyqtSignal(str, bool)
+    ignore_requested = QtCore.pyqtSignal(object, bool)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -114,6 +135,8 @@ class DailyQuantityDialog(QtWidgets.QDialog):
         self._populating_records = False
         self._sync_progress = {}
         self._progress_refresh_failed = False
+        self._inspection = {}
+        self._pending_view = None
 
         toolbar = QtWidgets.QHBoxLayout()
         toolbar.addWidget(QtWidgets.QLabel("交付日期"))
@@ -147,19 +170,19 @@ class DailyQuantityDialog(QtWidgets.QDialog):
         progress_card.setFrameShape(QtWidgets.QFrame.Shape.StyledPanel)
         progress_layout = QtWidgets.QVBoxLayout(progress_card)
         progress_row = QtWidgets.QHBoxLayout()
-        self.sync_progress_heading = QtWidgets.QLabel("统计记录至：尚无成功同步记录", progress_card)
+        self.sync_progress_heading = QtWidgets.QLabel("手动刷新至：尚无手动刷新记录", progress_card)
         progress_font = self.sync_progress_heading.font()
         progress_font.setBold(True)
         progress_font.setPointSize(max(11, progress_font.pointSize() + 2))
         self.sync_progress_heading.setFont(progress_font)
         self.sync_progress_heading.setWordWrap(True)
         progress_row.addWidget(self.sync_progress_heading, 1)
-        self.latest_date_button = QtWidgets.QPushButton("跳到最近统计日期", progress_card)
+        self.latest_date_button = QtWidgets.QPushButton("跳到最近手动刷新日期", progress_card)
         self.latest_date_button.setEnabled(False)
         self.latest_date_button.clicked.connect(self._jump_to_latest_date)
         progress_row.addWidget(self.latest_date_button)
         progress_layout.addLayout(progress_row)
-        self.sync_progress_note = QtWidgets.QLabel("以本地成功同步记录为准；扫描清单不代表已填写谷歌数量表。", progress_card)
+        self.sync_progress_note = QtWidgets.QLabel("仅记录点击“保存并刷新数量”的结果；自动同步不会推进手动刷新日期。", progress_card)
         self.sync_progress_note.setWordWrap(True)
         progress_layout.addWidget(self.sync_progress_note)
         layout.addWidget(progress_card)
@@ -222,6 +245,48 @@ class DailyQuantityDialog(QtWidgets.QDialog):
         self.review_queue_toggle.setToolTip("查看尚未通过审核、暂不计数的视频。")
         self.review_queue_toggle.clicked.connect(self._show_review_tab)
         overview_layout.addWidget(self.review_queue_toggle, 0, QtCore.Qt.AlignLeft)
+
+        pending_page = QtWidgets.QWidget()
+        pending_layout = QtWidgets.QVBoxLayout(pending_page)
+        self.pending_tab_index = self.tabs.addTab(pending_page, "待分类")
+        pending_bar = QtWidgets.QHBoxLayout()
+        self.inspection_status = QtWidgets.QLabel("打开后自动检查所有已记录日期，不用逐日翻找。")
+        self.inspection_status.setWordWrap(True)
+        pending_bar.addWidget(self.inspection_status, 1)
+        self.inspect_button = QtWidgets.QPushButton("重新检索")
+        self.inspect_button.clicked.connect(self.inspect_requested.emit)
+        pending_bar.addWidget(self.inspect_button)
+        pending_layout.addLayout(pending_bar)
+        pending_note = QtWidgets.QLabel(
+            "检索已有上传历史、网盘扫描记录和本地任务分类，不联网、不改云端数字。"
+            "未读取过的流程外网盘视频，仍需先扫描其日期目录。"
+        )
+        pending_note.setWordWrap(True)
+        pending_layout.addWidget(pending_note)
+        self.pending_dates = QtWidgets.QTableWidget(0, 3)
+        self.pending_dates.setHorizontalHeaderLabels(["交付日期", "待分类", "已忽略"])
+        self.pending_dates.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.pending_dates.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
+        self.pending_dates.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.SingleSelection)
+        self.pending_dates.setAlternatingRowColors(True)
+        self.pending_dates.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.ResizeMode.Stretch)
+        self.pending_dates.setToolTip("双击日期查看待分类视频；切换到已忽略可以恢复。")
+        self.pending_dates.cellDoubleClicked.connect(self._open_pending_date)
+        pending_layout.addWidget(self.pending_dates, 1)
+        pending_actions = QtWidgets.QHBoxLayout()
+        self.show_ignored = QtWidgets.QCheckBox("查看已忽略")
+        self.all_pending_button = QtWidgets.QPushButton("查看全部待分类")
+        self.all_pending_button.clicked.connect(
+            lambda: self.view_pending_requested.emit("", self.show_ignored.isChecked()))
+        self.pending_date_button = QtWidgets.QPushButton("查看选中日期")
+        self.pending_date_button.clicked.connect(self._open_pending_date)
+        self.show_ignored.toggled.connect(lambda value: self.all_pending_button.setText(
+            "查看全部已忽略" if value else "查看全部待分类"))
+        pending_actions.addWidget(self.show_ignored)
+        pending_actions.addWidget(self.all_pending_button)
+        pending_actions.addWidget(self.pending_date_button)
+        pending_actions.addStretch(1)
+        pending_layout.addLayout(pending_actions)
 
         videos = QtWidgets.QWidget()
         source_layout = QtWidgets.QVBoxLayout(videos)
@@ -348,8 +413,12 @@ class DailyQuantityDialog(QtWidgets.QDialog):
         self.save_external_button.clicked.connect(self.refresh_requested.emit)
         self.copy_list_button = QtWidgets.QPushButton("复制当前清单")
         self.copy_list_button.clicked.connect(self._copy_current_list)
+        self.ignore_button = QtWidgets.QPushButton("确定忽略所选")
+        self.ignore_button.setToolTip("永久保存忽略决定；不再提醒，也不计数。可在已忽略清单中恢复。")
+        self.ignore_button.clicked.connect(lambda: self._request_ignore(self._selected_external_rows(), True))
         action_row = QtWidgets.QHBoxLayout()
         action_row.addWidget(self.copy_list_button)
+        action_row.addWidget(self.ignore_button)
         action_row.addWidget(self.save_external_button, 1)
         source_layout.addLayout(action_row)
         settings_layout.addWidget(self.details, 1)
@@ -364,6 +433,77 @@ class DailyQuantityDialog(QtWidgets.QDialog):
 
     def show_video_list(self):
         self.tabs.setCurrentIndex(self.video_tab_index)
+
+    def set_inspection_busy(self, busy):
+        for widget in (self.inspect_button, self.pending_dates, self.pending_date_button,
+                       self.all_pending_button, self.external_table, self.ignore_button,
+                       self.refresh_button, self.save_external_button, self.scan_button,
+                       self.scan_date_button, self.view_date_button, self.apply_bulk_button):
+            widget.setEnabled(not busy)
+        if busy:
+            self.inspection_status.setText("正在后台检查所有已记录日期…")
+
+    def show_inspection(self, result):
+        self._inspection = result
+        self.pending_dates.setRowCount(0)
+        for entry in result.get("dates", []):
+            row = self.pending_dates.rowCount()
+            self.pending_dates.insertRow(row)
+            for col, key in enumerate(("date", "pending", "ignored")):
+                item = QtWidgets.QTableWidgetItem(str(entry.get(key, "")))
+                if col:
+                    item.setData(QtCore.Qt.UserRole, int(entry.get(key, 0)))
+                self.pending_dates.setItem(row, col, item)
+        total, ignored = len(result.get("pending", [])), len(result.get("ignored", []))
+        days = sum(bool(entry["pending"]) for entry in result.get("dates", []))
+        self.tabs.setTabText(self.pending_tab_index, f"待分类 · {total}")
+        self.inspection_status.setText(
+            f"已检查 {result.get('checked', 0)} 个视频；{days} 天有待分类视频，共 {total} 个；已忽略 {ignored} 个。"
+        )
+        self.ignore_button.setText("恢复所选忽略" if self._pending_view and self._pending_view[1]
+                                   else "确定忽略所选")
+
+    def _open_pending_date(self, row=None, _column=None):
+        if isinstance(row, bool) or row is None:
+            row = self.pending_dates.currentRow()
+        item = self.pending_dates.item(row, 0) if row >= 0 else None
+        if item:
+            self.view_pending_requested.emit(item.text(), self.show_ignored.isChecked())
+
+    def show_pending_records(self, day, ignored=False):
+        records = self._inspection.get("ignored" if ignored else "pending", [])
+        selected_date = QtCore.QDate.fromString(day, "yyyy-MM-dd")
+        if selected_date.isValid():
+            self.folder_day.setDate(selected_date)
+        self.show_external_records(records, day=day or None)
+        self._pending_view = (day, ignored)
+        self.ignore_button.setText("恢复所选忽略" if ignored else "确定忽略所选")
+        self.ignore_button.clicked.disconnect()
+        self.ignore_button.clicked.connect(
+            lambda: self._request_ignore(self._selected_external_rows(), ignored=not ignored))
+        self.show_video_list()
+        self.folder_status.setText(
+            f"{day or '所有日期'}：{'已忽略' if ignored else '待分类'} {len(self._visible_records)} 个。"
+            "可多选后批量分类或忽略；分类保存后请刷新数量。"
+        )
+        if not day:
+            self.status.setText("当前清单跨多个日期；不代表当日数量。分类和忽略保存到本地后，点击刷新数量同步云端。")
+
+    def _request_ignore(self, rows, ignored):
+        ids = [str(self.external_table.item(row, 0).data(QtCore.Qt.UserRole)) for row in rows]
+        if not ids:
+            self.folder_status.setText("请先选中要处理的视频；支持多选。")
+            return
+        action = "忽略" if ignored else "恢复"
+        if QtWidgets.QMessageBox.question(
+            self, f"确定{action}",
+            f"确定{action}所选 {len(ids)} 个视频？\n" +
+            ("忽略后不再提醒、不计数；以后可在已忽略清单中恢复。" if ignored else
+             "恢复后会重新检查分类和审核状态，不会自动写入云端数字。"),
+            QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No,
+            QtWidgets.QMessageBox.StandardButton.No,
+        ) == QtWidgets.QMessageBox.StandardButton.Yes:
+            self.ignore_requested.emit(ids, ignored)
 
     def set_sheet_url(self, url):
         url = str(url or "").strip()
@@ -449,6 +589,10 @@ class DailyQuantityDialog(QtWidgets.QDialog):
             self.folder_link.setCurrentIndex(0)
 
     def show_external_records(self, records, day=None):
+        self._pending_view = None
+        self.ignore_button.setText("确定忽略所选")
+        self.ignore_button.clicked.disconnect()
+        self.ignore_button.clicked.connect(lambda: self._request_ignore(self._selected_external_rows(), True))
         self._populating_records = True
         self.external_table.setRowCount(0)
         if day:
@@ -468,13 +612,17 @@ class DailyQuantityDialog(QtWidgets.QDialog):
                                   else QtCore.Qt.Unchecked)
             include.setToolTip("勾选表示允许计数；审核视频仍须通过审核才会实际计入。")
             include.setData(QtCore.Qt.UserRole, str(record.get("id") or ""))
+            if record.get("quantity_ignored"):
+                include.setCheckState(QtCore.Qt.Unchecked)
+                include.setFlags(include.flags() & ~QtCore.Qt.ItemIsUserCheckable)
+                include.setToolTip("已明确忽略，不参与计数。请使用右键恢复，不能直接勾选。")
             self.external_table.setItem(row, 0, include)
             for col, key in ((1, "folder_name"), (2, "file_name"), (3, "batch_date")):
                 display = record.get("relative_path") if col == 2 else record.get(key)
                 item = QtWidgets.QTableWidgetItem(str(display or record.get(key) or ""))
                 if col in (1, 2):
                     item.setFlags(item.flags() & ~QtCore.Qt.ItemIsEditable)
-                if record.get("daily_scan_date") and col == 3:
+                if (record.get("daily_scan_date") or record.get("upload_history")) and col == 3:
                     item.setFlags(item.flags() & ~QtCore.Qt.ItemIsEditable)
                 if col == 2:
                     item.setToolTip(str(record.get("drive_link") or ""))
@@ -492,10 +640,11 @@ class DailyQuantityDialog(QtWidgets.QDialog):
                 "detected_batch_slot",
                 "" if record.get("manual_batch_slot") else str(record.get("batch_slot") or ""),
             )
-            locked = bool(record.get("daily_scan_date") and detected_slot in {"01", "02", "03"})
+            locked = bool((record.get("daily_scan_date") or record.get("upload_history"))
+                          and detected_slot in {"01", "02", "03"})
             slot_combo.setEnabled(not locked)
             slot_combo.setToolTip(
-                "由网盘 01/02/03 目录确定，不能在此修改" if locked
+                "由首次上传历史或网盘 01/02/03 目录确定，不能在此修改" if locked
                 else "没有时段默认计入 03（24点）；可手动修改，疑似旧任务修订版除外"
             )
             self.external_table.setCellWidget(row, 4, slot_combo)
@@ -553,6 +702,10 @@ class DailyQuantityDialog(QtWidgets.QDialog):
                 state += " · 疑似重复"
             if record.get("possible_revision"):
                 state += " · 疑似旧任务修订版"
+            if record.get("classification_issue"):
+                state += " · " + record["classification_issue"]
+            if record.get("quantity_ignored"):
+                state += " · 已明确忽略，不计数"
             status_item = QtWidgets.QTableWidgetItem(state)
             status_item.setFlags(status_item.flags() & ~QtCore.Qt.ItemIsEditable)
             status_item.setData(QtCore.Qt.UserRole, state.partition(" · ")[2])
@@ -613,7 +766,11 @@ class DailyQuantityDialog(QtWidgets.QDialog):
             return
         state = "已分类" if self._combo_value(row, 5) and self._combo_value(row, 6) else "待分类"
         suffixes = [part for part in str(item.data(QtCore.Qt.UserRole) or "").split(" · ")
-                    if part and part not in {"时段待确认", "默认时段 03"}]
+                    if part and part not in {"时段待确认", "默认时段 03", "统计分页/类别未填",
+                                             "类别不在当前分类列表中，请核对"}]
+        sheet, category = self._combo_value(row, 5), self._combo_value(row, 6)
+        if sheet and category and category not in self._category_options.get(sheet, []):
+            suffixes.append("类别不在当前分类列表中，请核对")
         if not self._combo_value(row, 4):
             suffixes.append("默认时段 03")
         item.setText(state + (" · " + " · ".join(suffixes) if suffixes else ""))
@@ -684,6 +841,8 @@ class DailyQuantityDialog(QtWidgets.QDialog):
         self._inventory_preview = preview_external_day(records, self._preview_day)
         self._show_preview = True
         self._show_daily_summary()
+        if self._pending_view is not None and not self._pending_view[0]:
+            self.status.setText("正在编辑跨日期清单；分类保存后请刷新数量。忽略和恢复会立即保存到本地。")
 
     def _apply_bulk_category(self):
         sheet = str(self.bulk_sheet.currentData() or "").strip()
@@ -802,6 +961,11 @@ class DailyQuantityDialog(QtWidgets.QDialog):
                     rows, selected_mode
                 )
             )
+        menu.addSeparator()
+        for label, ignored in (("确定忽略所选（保存，不再提醒）", True), ("恢复所选忽略", False)):
+            action = menu.addAction(label)
+            action.setEnabled(bool(rows))
+            action.triggered.connect(lambda _checked=False, target=ignored: self._request_ignore(rows, target))
         return menu
 
     def _set_external_slot(self, rows, slot):
@@ -847,6 +1011,9 @@ class DailyQuantityDialog(QtWidgets.QDialog):
             slot = effective_batch_slot(raw_slot)
             if item is None:
                 continue
+            if self._visible_records[row].get("quantity_ignored"):
+                skipped += 1
+                continue
             current = item.checkState() == QtCore.Qt.Checked
             target = mode == "check" or mode == "invert" and not current
             if target and slot not in {"01", "02", "03"}:
@@ -860,7 +1027,7 @@ class DailyQuantityDialog(QtWidgets.QDialog):
                 changed += 1
         message = f"已修改 {changed} 条视频的计数状态。"
         if skipped:
-            message += f"另有 {skipped} 条时段值无效（应为01/02/03），未勾选。"
+            message += f"另有 {skipped} 条已忽略或时段无效，未勾选；已忽略项请先恢复。"
         self.folder_status.setText(message + " 点击“保存分类并刷新数量”后生效。")
 
     def _copy_current_list(self):
@@ -1021,16 +1188,19 @@ class DailyQuantityDialog(QtWidgets.QDialog):
 
     def _render_sync_progress(self):
         p = self._sync_progress
-        latest = str(p.get("latest_date") or "")
+        manual = p.get("manual_refresh") or {}
+        latest = str(manual.get("latest_date") or "")
         recorded = QtCore.QDate.fromString(latest, "yyyy-MM-dd")
         valid = recorded.isValid() and recorded <= self.folder_day.maximumDate()
-        text = f"统计记录至：{latest}" if valid else "统计记录至：尚无成功同步记录"
-        raw = str(p.get("updated_at") or "")
+        text = f"手动刷新至：{latest}" if valid else "手动刷新至：尚无手动刷新记录"
+        raw = str(manual.get("updated_at") or "")
+        if raw and not valid:
+            text = "手动刷新至：本次未取得可确认的统计日期"
         if raw:
             try:
-                text += "  ｜  上次刷新：" + datetime.fromisoformat(raw).astimezone().strftime("%Y-%m-%d %H:%M")
+                text += "  ｜  手动刷新时间：" + datetime.fromisoformat(raw).astimezone().strftime("%Y-%m-%d %H:%M")
             except ValueError:
-                text += "  ｜  上次刷新时间未知"
+                text += "  ｜  手动刷新时间未知"
         self.sync_progress_heading.setText(text)
         self.latest_date_button.setEnabled(valid)
         dates = list(p.get("dates") or [])
@@ -1049,15 +1219,17 @@ class DailyQuantityDialog(QtWidgets.QDialog):
         queue = getattr(self, "review_queue", None)
         if queue is not None and queue.rowCount():
             detail += f" 另有 {queue.rowCount()} 条待审核未计数。"
-        range_note = f"记录范围 {p.get('first_date', '')} 至 {latest}（{len(dates)} 个日期）；" if dates else ""
-        self.sync_progress_note.setText(range_note + selected_note + "。\n" + detail)
+        range_note = f"自动/手动同步记录范围 {p.get('first_date', '')} 至 {p.get('latest_date', '')}（{len(dates)} 个日期）；" if dates else ""
+        newer = bool(p.get("updated_at") and p.get("updated_at") != manual.get("updated_at"))
+        manual_note = "自动同步已有更新，仍需手动刷新核对；不会推进上方日期。" if newer else "自动同步不算手动核对；上方日期仅来自手动刷新。"
+        self.sync_progress_note.setText(manual_note + "\n" + range_note + selected_note + "。\n" + detail)
         self.sync_progress_heading.setToolTip(
-            "成功同步记录中的最晚交付日期，不代表之前每一天都完整；不把扫描日期当成同步日期。\n"
+            "最近一次手动刷新涉及的最晚成功同步交付日期及操作时间；不代表之前每一天都完整。旧记录无法确定是否手动操作，不冒充手动记录。\n"
             + "\n".join(f"{item.get('date')}：{item.get('cells', 0)} 条同步记录" for item in reversed(dates[-31:]))
         )
 
     def _jump_to_latest_date(self):
-        day = str(self._sync_progress.get("latest_date") or "")
+        day = str((self._sync_progress.get("manual_refresh") or {}).get("latest_date") or "")
         value = QtCore.QDate.fromString(day, "yyyy-MM-dd")
         if value.isValid() and value <= self.folder_day.maximumDate():
             self.folder_day.setDate(value)

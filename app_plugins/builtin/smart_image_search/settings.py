@@ -3,7 +3,8 @@ from pathlib import Path
 
 from qt_compat import QtWidgets
 
-from .encoder import MODEL_IDS, MODEL_SPECS
+from model.image_retrieval.encoder import MODEL_SPECS
+from model.image_retrieval.settings import normalize_model_settings
 
 
 CONFIG_KEY = "smart_image_search"
@@ -11,9 +12,7 @@ CONFIG_KEY = "smart_image_search"
 
 def normalize_settings(value=None):
     value = value if isinstance(value, dict) else {}
-    model = str(value.get("model") or "base")
-    if model not in MODEL_IDS:
-        model = "base"
+    model = normalize_model_settings(value)["model"]
     try:
         limit = int(value.get("result_limit", 100))
     except (TypeError, ValueError, OverflowError):
@@ -42,10 +41,11 @@ class SmartImageSearchSettingsPage:
         self.widget = QtWidgets.QWidget(parent)
         layout = QtWidgets.QVBoxLayout(self.widget)
         note = QtWidgets.QLabel(
-            "智能搜图在后台为库存图片建立本地索引，首次使用才下载中文模型。"
+            "智能搜图只为下方配置的图片库建立本地索引，不自动包含程序库存或人物素材。"
+            "首次使用才下载中文模型。"
             "Base 保留原索引；Large 和 336 各自建立独立索引，切回旧模型无需重建。"
             "336 适合精细对照，但建库和参考图分析会更慢；CPU 环境也能运行。"
-            "搜索覆盖整个索引，结果分页展示；每批数量不会限制总结果。"
+            "搜索仅覆盖当前选择的图片库，结果分页展示；每批数量不会限制总结果。"
         )
         note.setWordWrap(True)
         layout.addWidget(note)
@@ -64,7 +64,7 @@ class SmartImageSearchSettingsPage:
         form.addRow("每批展示", self.result_limit)
         form.addRow("组合搜索文字侧重", self.text_weight)
         layout.addLayout(form)
-        layout.addWidget(QtWidgets.QLabel("额外图片库文件夹（递归搜索子目录）"))
+        layout.addWidget(QtWidgets.QLabel("图片库文件夹（递归搜索子目录，不自动加入程序库存）"))
         self.roots = QtWidgets.QListWidget()
         self.roots.setMaximumHeight(150)
         layout.addWidget(self.roots)

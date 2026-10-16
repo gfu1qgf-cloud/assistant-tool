@@ -112,7 +112,7 @@ class ComponentTests(unittest.TestCase):
             store = Store(folder)
             state = fresh_state()
             state["settings"]["layers"] = normalize_layers([texts()])
-            state["jobs"] = [{"id":str(i),"path":"bg.mp4","status":"待生成"} for i in range(4)]
+            state["jobs"] = [{"id":str(i),"name":str(i),"path":"bg.mp4","status":"待生成"} for i in range(4)]
             state = store.save(state,0)
             received = []
             def render(job,state,*_args):
@@ -135,7 +135,7 @@ class ComponentTests(unittest.TestCase):
             store = Store(folder)
             state = fresh_state()
             state["settings"]["layers"] = normalize_layers([texts(("A","B","C"))])
-            state["jobs"] = [{"id":str(i),"path":"bg.mp4","status":"待生成"} for i in range(50)]
+            state["jobs"] = [{"id":str(i),"name":str(i),"path":"bg.mp4","status":"待生成"} for i in range(50)]
             state = store.save(state,0)
             received = []
             def render(job,state,*_args):
@@ -176,7 +176,15 @@ class ComponentTests(unittest.TestCase):
         panel.content_editor.text.setPlainText("Fixed text")
         self.assertEqual(panel.current()["text"],"Fixed text")
         combo = panel.content_editor.source
-        combo.setCurrentIndex(combo.findData("sequence"))
+        self.assertEqual(combo.findData("sequence"), -1)
+        combo.setCurrentIndex(combo.findData("pool"))
+        self.assertEqual(panel.current()["source"], "pool")
+        # Existing sequence configs remain editable without a separate add-menu.
+        layers = panel.values()
+        layers[-1].update(source="sequence", sequence_items=[{"id":"old", "text":"Fixed text"}])
+        panel.set_layers(layers)
+        panel.select_layer_id(layers[-1]["id"])
+        self.assertGreaterEqual(panel.content_editor.source.findData("sequence"), 0)
         self.assertEqual(panel.current()["sequence_items"][0]["text"],"Fixed text")
         panel.content_editor.reset_cursor()
         panel.remove_image()

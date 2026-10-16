@@ -7,7 +7,8 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from app_paths import APP_ROOT
+from app_paths import DATA_ROOT as APP_ROOT
+from model.AppDataStorage import data_file
 
 
 DEFAULT_CASE_PATH = APP_ROOT / "VideoPromptAssistant" / "cases.json"
@@ -20,24 +21,13 @@ class PromptCaseStore:
     def load(self):
         if not self.path.exists():
             return []
-        data = json.loads(self.path.read_text(encoding="utf-8"))
+        data = data_file(self.path).read_json()
         if not isinstance(data, dict) or not isinstance(data.get("cases"), list):
             raise ValueError("成功案例文件格式不正确")
         return [item for item in data["cases"] if isinstance(item, dict)]
 
     def save(self, cases):
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        payload = json.dumps({"version": 1, "cases": cases}, ensure_ascii=False, indent=2)
-        fd, temporary = tempfile.mkstemp(prefix=".cases-", suffix=".tmp", dir=self.path.parent)
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as stream:
-                stream.write(payload)
-                stream.flush()
-                os.fsync(stream.fileno())
-            os.replace(temporary, self.path)
-        finally:
-            if os.path.exists(temporary):
-                os.unlink(temporary)
+        data_file(self.path).write_json({"version": 1, "cases": cases}, indent=2)
 
     def upsert(self, title, prompt, failed_prompt="", note="", case_id=None):
         title, prompt = title.strip(), prompt.strip()

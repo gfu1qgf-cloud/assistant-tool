@@ -112,10 +112,10 @@ class DragUnitsTests(unittest.TestCase):
             self.assertLessEqual(extreme["width"],100)
             self.assertLessEqual(extreme["height"],100)
 
-    def test_move_stays_inside_canvas(self):
+    def test_move_center_stays_in_position_editor_range(self):
         original = {"x":50,"y":50,"width":60,"height":40}
-        self.assertEqual(dragged_geometry(original,999,999),{"x":70,"y":80,"width":60,"height":40})
-        self.assertEqual(dragged_geometry(original,-999,-999),{"x":30,"y":20,"width":60,"height":40})
+        self.assertEqual(dragged_geometry(original,999,999),{"x":100,"y":100,"width":60,"height":40})
+        self.assertEqual(dragged_geometry(original,-999,-999),{"x":0,"y":0,"width":60,"height":40})
 
     def test_fractional_edges_do_not_underflow_minimum_size(self):
         from app_plugins.builtin.batch_text_video.layers import normalize_layers
@@ -232,7 +232,7 @@ class DragUnitsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             dialog = BatchTextVideoDialog(store=Store(folder))
             dialog.tabs.setCurrentIndex(dialog.layer_tab_index)
-            dialog.layer_panel.property_tabs.setCurrentIndex(1)
+            dialog.layer_panel.reveal_property('position')
             dialog.layer_panel.units.setCurrentIndex(1)
             font = QtGui.QFont(dialog.font())
             font.setPointSize(13)

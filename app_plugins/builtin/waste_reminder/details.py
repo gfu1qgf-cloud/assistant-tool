@@ -1,3 +1,4 @@
+from model.AppDataStorage import data_file
 import html
 import json
 from pathlib import Path
@@ -5,7 +6,7 @@ from qt_compat import QtCore, QtGui, QtWidgets
 
 
 def category_data():
-    return json.loads((Path(__file__).parent/"data/category_details.json").read_text(encoding="utf-8"))
+    return json.loads(data_file(Path(__file__).parent/"data/category_details.json").read_text(encoding="utf-8"))
 
 
 class CategoryDetailsDialog(QtWidgets.QDialog):

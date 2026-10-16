@@ -57,7 +57,7 @@ class TextStyleTests(unittest.TestCase):
         original,_ = render_text_box(layer,540,640)
         options = ({"font_weight":700},{"italic":True},{"underline":True},{"strikeout":True},
             {"capitalization":"uppercase"},{"capitalization":"lowercase"},{"letter_spacing":5},
-            {"word_spacing":20},{"paragraph_spacing":35},{"outline_width":0},
+            {"word_spacing":40},{"paragraph_spacing":35},{"outline_width":0},
             {"outline_color":"#ff0000","outline_width":8},
             {"shadow_enabled":True,"shadow_color":"#00ff00","shadow_x":20,"shadow_y":20},
             {"background_enabled":True,"background_color":"#ff0000","background_opacity":80},
@@ -134,15 +134,15 @@ class TextStyleTests(unittest.TestCase):
             dialog = BatchTextVideoDialog(store=Store(folder))
             dialog.tabs.setCurrentIndex(dialog.layer_tab_index)
             panel = dialog.layer_panel
-            panel.property_tabs.setCurrentIndex(0)
+            panel.reveal_property('font')
             font = QtGui.QFont(dialog.font())
             font.setPointSize(13)
             dialog.setFont(font)
             dialog.resize(1250,850)
             dialog.splitter.setSizes([320,450,400])
             dialog.show()
-            for page in range(panel.text_properties.style_tabs.count()):
-                panel.text_properties.style_tabs.setCurrentIndex(page)
+            for section in panel.text_properties.style_sections.sections.values():
+                section.set_expanded(True)
                 self.app.processEvents()
                 self.assertEqual(dialog.layer_scroll.horizontalScrollBar().maximum(),0)
             dialog.close()

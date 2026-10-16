@@ -1,3 +1,4 @@
+from model.AppDataStorage import data_io, data_file, data_directory
 import json
 import hashlib
 import math
@@ -11,7 +12,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, Optional
 
-from app_paths import APP_ROOT
+from app_paths import APP_ROOT, DATA_ROOT
 from model.MaterialDuplicateIndex import MaterialDuplicateIndex
 from model.MaterialSourceDownloader import (
     DownloadError,
@@ -20,11 +21,15 @@ from model.MaterialSourceDownloader import (
     resolve_google_drive_folder_name,
 )
 
-DEFAULT_INVENTORY_STATE_FILE = APP_ROOT / "InventoryState.json"
+DEFAULT_INVENTORY_STATE_FILE = DATA_ROOT / "InventoryState.json"
 DEFAULT_MATERIAL_LIBRARY_ROOT = APP_ROOT / "MaterialLibrary"
 
 _STORE_LOCKS: Dict[str, threading.RLock] = {}
 _STORE_LOCKS_GUARD = threading.Lock()
+
+
+class MaterialNameConflictError(ValueError):
+    """An existing library entry already uses the requested material name."""
 
 
 def get_inventory_store_lock(path=None) -> threading.RLock:
@@ -143,7 +148,7 @@ def inventory_summary(items, now=None):
 
 class InventoryStore:
     def __init__(self, path=None, material_root=None):
-        self.path = Path(path or DEFAULT_INVENTORY_STATE_FILE)
+        self.path = data_file(path or DEFAULT_INVENTORY_STATE_FILE).path
         if material_root is None:
             material_root = (
                 DEFAULT_MATERIAL_LIBRARY_ROOT
@@ -167,10 +172,11 @@ class InventoryStore:
 
     def load(self):
         with self.lock:
-            if not self.path.exists():
+            managed = data_file(self.path)
+            if not managed.exists():
                 return self._default_state()
             try:
-                data = json.loads(self.path.read_text(encoding="utf-8-sig"))
+                data = json.loads(managed.read_text(encoding="utf-8-sig"))
             except (OSError, json.JSONDecodeError) as error:
                 raise ValueError("库存记录无法读取：{}".format(error)) from error
             if not isinstance(data, dict) or not isinstance(data.get("items", []), list):
@@ -241,6 +247,8 @@ class InventoryStore:
                     })
             people = []
             raw_people = data.get("people", [])
+            from .PrivateDataPaths import remap_path_fields
+            remap_path_fields(raw_people,{'avatar_path'})
             if isinstance(raw_people, list):
                 for raw in raw_people:
                     if not isinstance(raw, dict):
@@ -305,16 +313,16 @@ class InventoryStore:
 
     def _write(self, state):
         with self.lock:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
+            data_directory(self.path.parent).ensure(parents=True, exist_ok=True)
             temp_path = self.path.with_name(f"{self.path.name}.{uuid.uuid4().hex}.tmp")
             try:
-                temp_path.write_text(
+                data_file(temp_path).write_text_direct(
                     json.dumps(state, ensure_ascii=False, indent=2),
                     encoding="utf-8",
                 )
                 for attempt in range(10):
                     try:
-                        os.replace(str(temp_path), str(self.path))
+                        data_io.replace(str(temp_path), str(self.path))
                         break
                     except PermissionError:
                         if attempt == 9:
@@ -323,7 +331,7 @@ class InventoryStore:
             finally:
                 if temp_path.exists():
                     try:
-                        temp_path.unlink()
+                        data_file(temp_path).unlink()
                     except OSError:
                         pass
 
@@ -332,6 +340,17 @@ class InventoryStore:
 
     def list_materials(self):
         return self.load()["materials"]
+
+    def validate_material_name(self, name, *, state=None):
+        """Read-only preflight, also reused inside the final write transaction."""
+        name = str(name or "").strip()
+        if not name:
+            raise ValueError("素材名称不能为空")
+        state = self.load() if state is None else state
+        if any(item["name"].casefold() == name.casefold()
+               for item in state["materials"]):
+            raise MaterialNameConflictError(f"已经有同名素材：{name}")
+        return name
 
     def touch_material(self, material_id):
         """Record a successful monitored download as a material update."""
@@ -422,6 +441,7 @@ class InventoryStore:
                 "source_kind": "material",
                 "source_id": str(material.get("id") or ""),
                 "source_type_label": "素材管理",
+                "updated_at": material.get("updated_at") or material.get("created_at") or "",
                 "name": str(material.get("name") or ""),
                 "path": root_text,
                 "image_count": len(images),
@@ -442,6 +462,7 @@ class InventoryStore:
                 "source_kind": "person",
                 "source_id": str(person.get("id") or ""),
                 "source_type_label": "人物素材",
+                "updated_at": person.get("updated_at") or person.get("created_at") or "",
                 "name": str(person.get("name") or ""),
                 "path": root_text,
                 "image_count": len(images),
@@ -517,12 +538,12 @@ class InventoryStore:
             try:
                 for assignment in normalized:
                     target_dir = assignment["target_dir"]
-                    target_dir.mkdir(parents=True, exist_ok=True)
+                    data_directory(target_dir).ensure(parents=True, exist_ok=True)
                     target = self._unique_copy_target(
                         target_dir,
                         assignment["source"].name,
                     )
-                    shutil.move(str(assignment["source"]), str(target))
+                    data_io.move(str(assignment["source"]), str(target))
                     moved.append({
                         "source": assignment["source"],
                         "target": target,
@@ -554,8 +575,8 @@ class InventoryStore:
                     source = item["source"]
                     try:
                         if target.exists():
-                            source.parent.mkdir(parents=True, exist_ok=True)
-                            shutil.move(str(target), str(source))
+                            data_directory(source.parent).ensure(parents=True, exist_ok=True)
+                            data_io.move(str(target), str(source))
                     except OSError:
                         pass
                 raise
@@ -563,7 +584,7 @@ class InventoryStore:
             for material in removed_materials:
                 path = Path(str(material.get("path") or ""))
                 if path.is_dir() and not material_directory_has_files(path):
-                    shutil.rmtree(path, ignore_errors=True)
+                    data_io.rmtree(path, ignore_errors=True)
             return {
                 "moved": [
                     {
@@ -805,18 +826,18 @@ class InventoryStore:
     def _clear_download_checkpoint(path):
         if path is None:
             return
-        shutil.rmtree(path, ignore_errors=True)
+        data_io.rmtree(path, ignore_errors=True)
         try:
-            path.parent.rmdir()
+            data_directory(path.parent).remove()
         except OSError:
             pass
 
     @staticmethod
     def _link_or_copy(source, target):
         try:
-            os.link(source, target)
+            data_io.link(source, target)
         except OSError:
-            shutil.copy2(source, target)
+            data_io.copy2(source, target)
         return target
 
     def _copy_material_sources(
@@ -832,19 +853,19 @@ class InventoryStore:
                 source = Path(source_info["value"])
                 target = self._unique_copy_target(staging_dir, source.name)
                 if source.is_dir():
-                    shutil.copytree(str(source), str(target))
+                    data_io.copytree(str(source), str(target))
                 else:
-                    shutil.copy2(str(source), str(target))
+                    data_io.copy2(str(source), str(target))
                 if duplicate_index is not None:
                     duplicate_index.register_tree(target)
                 continue
 
             if download_checkpoint is not None:
                 download_dir = download_checkpoint / f"source-{index}"
-                download_dir.mkdir(parents=True, exist_ok=True)
+                data_directory(download_dir).ensure(parents=True, exist_ok=True)
             else:
                 download_dir = staging_dir / f".drive-source-{index}"
-                download_dir.mkdir()
+                data_directory(download_dir).ensure()
             if duplicate_index is None:
                 roots = [self.material_root, staging_dir]
                 if download_checkpoint is not None:
@@ -880,29 +901,29 @@ class InventoryStore:
                     if downloaded.is_symlink() or downloaded.parent != download_dir:
                         raise ValueError("网盘下载目录异常，已停止入库")
                     if download_checkpoint is None:
-                        shutil.rmtree(downloaded)
+                        data_io.rmtree(downloaded)
                     continue
                 target = self._unique_copy_target(staging_dir, downloaded.name)
                 if download_checkpoint is None:
-                    shutil.move(str(downloaded), str(target))
+                    data_io.move(str(downloaded), str(target))
                 elif downloaded.is_dir():
-                    shutil.copytree(str(downloaded), str(target), copy_function=self._link_or_copy,
+                    data_io.copytree(str(downloaded), str(target), copy_function=self._link_or_copy,
                                     ignore=shutil.ignore_patterns("*.part", "*.resume.json",
                                                                   "*.complete.json"))
                 else:
                     self._link_or_copy(str(downloaded), str(target))
                 duplicate_index.register_tree(target)
             if download_checkpoint is None:
-                download_dir.rmdir()
+                data_directory(download_dir).remove()
 
     @staticmethod
     def _remove_material_path(path):
         path = Path(path)
         if path.is_dir():
-            shutil.rmtree(path, ignore_errors=True)
+            data_io.rmtree(path, ignore_errors=True)
             return
         try:
-            path.unlink()
+            data_file(path).unlink()
         except OSError:
             pass
 
@@ -938,23 +959,17 @@ class InventoryStore:
             except DownloadError as error:
                 raise ValueError(str(error)) from error
 
-        if name:
-            pre_state = self.load()
-            if any(
-                item["name"].casefold() == name.casefold()
-                for item in pre_state["materials"]
-            ):
-                raise ValueError(f"已经有同名素材：{name}")
+        name = self.validate_material_name(name)
 
         material_id = uuid.uuid4().hex
-        self.material_root.mkdir(parents=True, exist_ok=True)
+        data_directory(self.material_root).ensure(parents=True, exist_ok=True)
         checkpoint = self._download_checkpoint("material_add", name, sources)
         staging_dir = self.material_root / f".{material_id}.tmp"
         final_dir = self.material_root / (
             f"{self._safe_material_directory_name(name)}-{material_id[:8]}"
         )
         try:
-            staging_dir.mkdir()
+            data_directory(staging_dir).ensure()
             self._copy_material_sources(
                 sources,
                 staging_dir,
@@ -966,13 +981,9 @@ class InventoryStore:
 
             with self.lock:
                 state = self.load()
-                if any(
-                    item["name"].casefold() == name.casefold()
-                    for item in state["materials"]
-                ):
-                    raise ValueError(f"已经有同名素材：{name}")
+                self.validate_material_name(name, state=state)
 
-                os.replace(str(staging_dir), str(final_dir))
+                data_io.replace(str(staging_dir), str(final_dir))
                 created_at = datetime.now().astimezone().isoformat(timespec="seconds")
                 material = {
                     "id": material_id,
@@ -990,12 +1001,12 @@ class InventoryStore:
                 try:
                     self._write(state)
                 except OSError:
-                    shutil.rmtree(final_dir, ignore_errors=True)
+                    data_io.rmtree(final_dir, ignore_errors=True)
                     raise
                 self._clear_download_checkpoint(checkpoint)
                 return material
         except Exception:
-            shutil.rmtree(staging_dir, ignore_errors=True)
+            data_io.rmtree(staging_dir, ignore_errors=True)
             raise
 
     def append_material(self, material_id, source_paths, progress_callback=None):
@@ -1014,14 +1025,14 @@ class InventoryStore:
             raise ValueError("素材保存位置不是文件夹，无法追加内容")
 
         sources = self._normalize_material_sources(source_paths)
-        self.material_root.mkdir(parents=True, exist_ok=True)
+        data_directory(self.material_root).ensure(parents=True, exist_ok=True)
         checkpoint = self._download_checkpoint("material_append", material_id, sources)
         staging_dir = self.material_root / (
             f".{material_id}.append-{uuid.uuid4().hex[:8]}.tmp"
         )
         moved_targets = []
         try:
-            staging_dir.mkdir()
+            data_directory(staging_dir).ensure()
             self._copy_material_sources(
                 sources,
                 staging_dir,
@@ -1048,9 +1059,9 @@ class InventoryStore:
 
                 for staged_item in list(staging_dir.iterdir()):
                     target = self._unique_copy_target(final_dir, staged_item.name)
-                    shutil.move(str(staged_item), str(target))
+                    data_io.move(str(staged_item), str(target))
                     moved_targets.append(target)
-                staging_dir.rmdir()
+                data_directory(staging_dir).remove()
 
                 material["sources"] = list(material.get("sources", [])) + sources
                 material["source_count"] = len(material["sources"])
@@ -1068,7 +1079,7 @@ class InventoryStore:
         except Exception:
             for target in reversed(moved_targets):
                 self._remove_material_path(target)
-            shutil.rmtree(staging_dir, ignore_errors=True)
+            data_io.rmtree(staging_dir, ignore_errors=True)
             raise
 
     def add_person(
@@ -1098,20 +1109,20 @@ class InventoryStore:
         person_metadata = dict(metadata) if isinstance(metadata, dict) else {}
 
         person_id = uuid.uuid4().hex
-        self.people_root.mkdir(parents=True, exist_ok=True)
+        data_directory(self.people_root).ensure(parents=True, exist_ok=True)
         checkpoint = self._download_checkpoint("person_add", name, sources)
         staging_dir = self.people_root / f".{person_id}.tmp"
         final_dir = self.people_root / (
             f"{self._safe_material_directory_name(name)}-{person_id[:8]}"
         )
         try:
-            staging_dir.mkdir()
+            data_directory(staging_dir).ensure()
             staging_material_dir = staging_dir / "素材"
-            staging_material_dir.mkdir()
+            data_directory(staging_material_dir).ensure()
             avatar_name = ""
             if avatar_source is not None:
                 avatar_name = f"人物图片{avatar_source.suffix.lower()}"
-                shutil.copy2(str(avatar_source), str(staging_dir / avatar_name))
+                data_io.copy2(str(avatar_source), str(staging_dir / avatar_name))
             if sources:
                 self._copy_material_sources(
                     sources,
@@ -1127,7 +1138,7 @@ class InventoryStore:
                 if any(item["name"].casefold() == name.casefold() for item in state["people"]):
                     raise ValueError(f"已经有同名人物：{name}")
 
-                os.replace(str(staging_dir), str(final_dir))
+                data_io.replace(str(staging_dir), str(final_dir))
                 now_text = datetime.now().astimezone().isoformat(timespec="seconds")
                 person = {
                     "id": person_id,
@@ -1151,12 +1162,12 @@ class InventoryStore:
                 try:
                     self._write(state)
                 except OSError:
-                    shutil.rmtree(final_dir, ignore_errors=True)
+                    data_io.rmtree(final_dir, ignore_errors=True)
                     raise
                 self._clear_download_checkpoint(checkpoint)
                 return person
         except Exception:
-            shutil.rmtree(staging_dir, ignore_errors=True)
+            data_io.rmtree(staging_dir, ignore_errors=True)
             raise
 
     def append_person_material(self, person_id, source_paths, progress_callback=None):
@@ -1172,14 +1183,14 @@ class InventoryStore:
             raise ValueError("人物素材保存位置已经不存在，请先点击“查库”")
 
         sources = self._normalize_material_sources(source_paths)
-        self.people_root.mkdir(parents=True, exist_ok=True)
+        data_directory(self.people_root).ensure(parents=True, exist_ok=True)
         checkpoint = self._download_checkpoint("person_append", person_id, sources)
         staging_dir = self.people_root / (
             f".{person_id}.append-{uuid.uuid4().hex[:8]}.tmp"
         )
         moved_targets = []
         try:
-            staging_dir.mkdir()
+            data_directory(staging_dir).ensure()
             self._copy_material_sources(
                 sources,
                 staging_dir,
@@ -1202,13 +1213,13 @@ class InventoryStore:
                     raise ValueError("人物素材保存位置已经不存在，请先点击“查库”")
 
                 material_dir = Path(person["material_path"])
-                material_dir.mkdir(parents=True, exist_ok=True)
+                data_directory(material_dir).ensure(parents=True, exist_ok=True)
 
                 for staged_item in list(staging_dir.iterdir()):
                     target = self._unique_copy_target(material_dir, staged_item.name)
-                    shutil.move(str(staged_item), str(target))
+                    data_io.move(str(staged_item), str(target))
                     moved_targets.append(target)
-                staging_dir.rmdir()
+                data_directory(staging_dir).remove()
 
                 person["sources"] = list(person.get("sources", [])) + sources
                 person["source_count"] = len(person["sources"])
@@ -1223,7 +1234,7 @@ class InventoryStore:
         except Exception:
             for target in reversed(moved_targets):
                 self._remove_material_path(target)
-            shutil.rmtree(staging_dir, ignore_errors=True)
+            data_io.rmtree(staging_dir, ignore_errors=True)
             raise
 
     def import_materials_to_person(
@@ -1292,7 +1303,7 @@ class InventoryStore:
             seen_paths.add(normalized_path)
             source_paths.append(source_path)
 
-        self.people_root.mkdir(parents=True, exist_ok=True)
+        data_directory(self.people_root).ensure(parents=True, exist_ok=True)
         import_token = uuid.uuid4().hex[:8]
         staging_dir = self.people_root / (
             f".{person_id}.material-import-{import_token}.tmp"
@@ -1304,7 +1315,7 @@ class InventoryStore:
         held_paths = []
 
         try:
-            staging_dir.mkdir()
+            data_directory(staging_dir).ensure()
             total = len(selected_materials)
             for index, (material, source_path) in enumerate(
                 zip(selected_materials, source_paths),
@@ -1317,10 +1328,10 @@ class InventoryStore:
                 group_name = self._safe_material_directory_name(material["name"])
                 staged_group = self._unique_copy_target(staging_dir, group_name)
                 if source_path.is_dir():
-                    shutil.copytree(str(source_path), str(staged_group))
+                    data_io.copytree(str(source_path), str(staged_group))
                 else:
-                    staged_group.mkdir()
-                    shutil.copy2(
+                    data_directory(staged_group).ensure()
+                    data_io.copy2(
                         str(source_path),
                         str(staged_group / source_path.name),
                     )
@@ -1342,13 +1353,13 @@ class InventoryStore:
                     raise KeyError("部分素材记录已经不存在，请刷新素材库后重试")
 
                 material_dir = Path(person["material_path"])
-                material_dir.mkdir(parents=True, exist_ok=True)
+                data_directory(material_dir).ensure(parents=True, exist_ok=True)
 
                 for staged_item in list(staging_dir.iterdir()):
                     target = self._unique_copy_target(material_dir, staged_item.name)
-                    shutil.move(str(staged_item), str(target))
+                    data_io.move(str(staged_item), str(target))
                     moved_targets.append(target)
-                staging_dir.rmdir()
+                data_directory(staging_dir).remove()
 
                 imported_sources = [
                     {
@@ -1368,13 +1379,13 @@ class InventoryStore:
                 )
 
                 if remove_originals:
-                    holding_dir.mkdir()
+                    data_directory(holding_dir).ensure()
                     for material, source_path in zip(selected_materials, source_paths):
                         held_path = self._unique_copy_target(
                             holding_dir,
                             source_path.name,
                         )
-                        shutil.move(str(source_path), str(held_path))
+                        data_io.move(str(source_path), str(held_path))
                         held_paths.append((source_path, held_path))
                     state["materials"] = [
                         item
@@ -1388,15 +1399,15 @@ class InventoryStore:
         except Exception:
             for original_path, held_path in reversed(held_paths):
                 if held_path.exists():
-                    original_path.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.move(str(held_path), str(original_path))
+                    data_directory(original_path.parent).ensure(parents=True, exist_ok=True)
+                    data_io.move(str(held_path), str(original_path))
             for target in reversed(moved_targets):
                 self._remove_material_path(target)
-            shutil.rmtree(staging_dir, ignore_errors=True)
-            shutil.rmtree(holding_dir, ignore_errors=True)
+            data_io.rmtree(staging_dir, ignore_errors=True)
+            data_io.rmtree(holding_dir, ignore_errors=True)
             raise
 
-        shutil.rmtree(holding_dir, ignore_errors=True)
+        data_io.rmtree(holding_dir, ignore_errors=True)
         if progress_callback:
             progress_callback(
                 f"已向人物“{person['name']}”导入 {len(selected_materials)} 项素材"
@@ -1445,6 +1456,16 @@ class InventoryStore:
             avatar_backup = None
             avatar_installed = False
 
+            # Large task/material media stays external. New private avatar
+            # copies and their rollback files belong in the encrypted namespace.
+            from model.AppDataStorage import application_storage
+            storage = application_storage()
+            avatar_dir = person_dir
+            if storage.protected:
+                storage.check(write=True)
+                identity = hashlib.sha256(str(person_id).encode()).hexdigest()[:20]
+                avatar_dir = storage.for_plugin('inventory').directory('avatars').directory(identity).ensure()
+
             try:
                 if avatar_source is not None:
                     same_avatar = (
@@ -1455,20 +1476,20 @@ class InventoryStore:
                     if same_avatar:
                         new_avatar_target = old_avatar
                     else:
-                        new_avatar_target = person_dir / (
+                        new_avatar_target = avatar_dir / (
                             f"人物图片{avatar_source.suffix.lower()}"
                         )
-                        avatar_temp = person_dir / (
+                        avatar_temp = avatar_dir / (
                             f".avatar-{uuid.uuid4().hex[:8]}.tmp{avatar_source.suffix.lower()}"
                         )
-                        shutil.copy2(str(avatar_source), str(avatar_temp))
+                        data_io.copy2(str(avatar_source), str(avatar_temp))
                         if new_avatar_target.exists():
-                            avatar_backup = person_dir / (
+                            avatar_backup = avatar_dir / (
                                 f".avatar-backup-{uuid.uuid4().hex[:8]}"
                                 f"{new_avatar_target.suffix}"
                             )
-                            os.replace(str(new_avatar_target), str(avatar_backup))
-                        os.replace(str(avatar_temp), str(new_avatar_target))
+                            data_io.replace(str(new_avatar_target), str(avatar_backup))
+                        data_io.replace(str(avatar_temp), str(new_avatar_target))
                         avatar_installed = True
 
                 person["name"] = name
@@ -1494,7 +1515,7 @@ class InventoryStore:
                 if avatar_installed and new_avatar_target is not None:
                     self._remove_material_path(new_avatar_target)
                 if avatar_backup is not None and avatar_backup.exists():
-                    os.replace(str(avatar_backup), str(new_avatar_target))
+                    data_io.replace(str(avatar_backup), str(new_avatar_target))
                 raise
 
             if avatar_backup is not None:
@@ -1590,7 +1611,7 @@ def material_directory_has_files(path):
     return any(child.is_file() for child in path.rglob("*"))
 
 
-def material_directory_stats(path):
+def material_directory_stats(path, cancelled=None):
     path = Path(path)
     if not path.exists():
         return {"status": "保存位置不存在", "file_count": 0, "size_bytes": 0}
@@ -1604,6 +1625,8 @@ def material_directory_stats(path):
     size_bytes = 0
     try:
         for child in path.rglob("*"):
+            if cancelled and cancelled():
+                raise InterruptedError("素材目录信息刷新已取消。")
             if child.is_file():
                 file_count += 1
                 try:

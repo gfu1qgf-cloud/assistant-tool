@@ -197,7 +197,26 @@ class _FlowUiaController:
     def __init__(self, settings):
         self.settings = normalize_flow_guard_settings(settings)
         self._checked_pages = set()
-        self._load_uia()
+        self._owner_thread = threading.get_ident()
+        try:
+            self._load_uia()
+        except Exception:
+            # Construction can fail after creating the automation object or
+            # some conditions. Release those too, while this apartment is live.
+            self.close()
+            raise
+
+    def close(self):
+        """Drop owning references in the creating thread, before CoUninitialize."""
+        if threading.get_ident() != self._owner_thread:
+            raise RuntimeError("Flow 控件对象只能在创建它的线程中释放。")
+        # comtypes owns Release in __del__; calling Release ourselves would
+        # double-release these pointers. Conditions must go before automation.
+        for name in ("hyperlink_condition", "button_condition", "radio_condition",
+                     "true_condition", "automation"):
+            setattr(self, name, None)
+        self.UIA = None
+        self._checked_pages.clear()
 
     def _load_uia(self):
         try:
@@ -692,6 +711,8 @@ class _FlowUiaController:
         return panel_found, changes
 
     def scan(self):
+        if threading.get_ident() != self._owner_thread:
+            raise RuntimeError("Flow 控件扫描不能跨线程执行。")
         results = []
         for hwnd, title in _enum_flow_windows():
             page_key = (hwnd, title)
@@ -733,6 +754,17 @@ class FlowParameterGuardThread(QtCore.QThread):
         self._wake_event = threading.Event()
         self._last_error_signature = ""
         self._last_error_time = 0.0
+        self._comtypes = None
+        self._com_import_error = ""
+        try:
+            # comtypes auto-initializes COM on its first importing thread and
+            # registers process shutdown there. Import on the creator/GUI thread,
+            # not the short-lived worker; no UIA object is created here.
+            import comtypes
+
+            self._comtypes = comtypes
+        except Exception as error:
+            self._com_import_error = str(error)
 
     def stop(self):
         self.requestInterruption()
@@ -754,15 +786,31 @@ class FlowParameterGuardThread(QtCore.QThread):
             self.error.emit(signature)
 
     def run(self):
+        comtypes = self._comtypes
+        if comtypes is None:
+            self.error.emit(f"Windows 控件接口初始化失败：{self._com_import_error}")
+            return
         try:
-            import comtypes
-
-            comtypes.CoInitialize()
+            # Microsoft recommends a windowless MTA thread for UI Automation.
+            comtypes.CoInitializeEx(comtypes.COINIT_MULTITHREADED)
         except Exception as error:
             self.error.emit(f"Windows 控件接口初始化失败：{error}")
             return
         try:
-            controller = _FlowUiaController(self.settings)
+            self._run_controller()
+        except Exception as error:
+            self.error.emit(f"Flow 参数守卫启动失败：{error}")
+        finally:
+            # _run_controller's entire frame has unwound: both the persistent
+            # controller and temporary scan references are gone before COM ends.
+            try:
+                comtypes.CoUninitialize()
+            except Exception as error:
+                self.error.emit(f"Windows 控件接口关闭失败：{error}")
+
+    def _run_controller(self):
+        controller = _FlowUiaController(self.settings)
+        try:
             self.status.emit(
                 "运行中：{}".format(format_flow_guard_targets(self.settings))
             )
@@ -781,10 +829,5 @@ class FlowParameterGuardThread(QtCore.QThread):
                 except Exception as error:
                     self._emit_error_once(f"扫描 Chrome 失败：{error}")
                 self._wait()
-        except Exception as error:
-            self.error.emit(f"Flow 参数守卫启动失败：{error}")
         finally:
-            try:
-                comtypes.CoUninitialize()
-            except Exception:
-                pass
+            controller.close()

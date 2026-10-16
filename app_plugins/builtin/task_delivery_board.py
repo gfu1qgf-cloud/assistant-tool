@@ -205,9 +205,14 @@ class _DeliveryDetailsDialog(QtWidgets.QDialog):
             preview.setText("无预览")
 
 
-class DeliveryBoardDialog(QtWidgets.QDialog):
-    def __init__(self, store, sync_sources=None, parent=None):
+class DeliveryBoardWidget(QtWidgets.QWidget):
+    """The same board/actions can be mounted inline or in a separate window."""
+
+    changed = QtCore.pyqtSignal()
+
+    def __init__(self, store, sync_sources=None, parent=None, *, compact=False):
         super().__init__(parent)
+        self.compact = compact
         self.store = store
         self.sync_sources = sync_sources
         self.rows = {}
@@ -215,10 +220,8 @@ class DeliveryBoardDialog(QtWidgets.QDialog):
         self._media_workers = set()
         self._rendering = False
         self.setObjectName("delivery_todo_board")
-        self.setWindowTitle("交付待办")
-        self.resize(1160, 780)
         self.setStyleSheet("""
-            QDialog#delivery_todo_board { background:#f6f8fc; color:#1d2b3a; }
+            QWidget#delivery_todo_board { background:#f6f8fc; color:#1d2b3a; }
             QLabel { color:#26384b; }
             QFrame#todo_summary { background:#ffffff; border:1px solid #dde5ef;
                 border-radius:12px; }
@@ -245,6 +248,13 @@ class DeliveryBoardDialog(QtWidgets.QDialog):
         """)
         layout = QtWidgets.QVBoxLayout(self)
         layout.setSpacing(12)
+        if compact:
+            layout.setContentsMargins(0, 0, 0, 0)
+            layout.setSpacing(5)
+            self.setFixedHeight(360)
+            self.setMinimumWidth(0)
+            self.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored,
+                               QtWidgets.QSizePolicy.Policy.Fixed)
 
         summary = QtWidgets.QFrame(self)
         summary.setObjectName("todo_summary")
@@ -268,6 +278,7 @@ class DeliveryBoardDialog(QtWidgets.QDialog):
         self.days.valueChanged.connect(self._retention_changed)
         summary_layout.addWidget(self.days)
         layout.addWidget(summary)
+        summary.setVisible(not compact)
 
         toolbar = QtWidgets.QHBoxLayout()
         self.search = QtWidgets.QLineEdit()
@@ -281,11 +292,26 @@ class DeliveryBoardDialog(QtWidgets.QDialog):
         refresh_button.clicked.connect(self.refresh_sources)
         toolbar.addWidget(refresh_button)
         layout.addLayout(toolbar)
+        if compact:
+            add_button.hide()
+            refresh_button.hide()
+            more = QtWidgets.QToolButton(self)
+            more.setText("…")
+            more.setToolTip("添加待办 / 刷新记录")
+            more.setPopupMode(QtWidgets.QToolButton.ToolButtonPopupMode.InstantPopup)
+            menu = QtWidgets.QMenu(more)
+            menu.addAction("添加待办…", self.add_manual)
+            menu.addAction("刷新记录", self.refresh_sources)
+            more.setMenu(menu)
+            toolbar.addWidget(more)
 
         self.tabs = QtWidgets.QTabWidget()
         self.board = QtWidgets.QWidget()
         grid = QtWidgets.QGridLayout(self.board)
         grid.setSpacing(12)
+        if compact:
+            grid.setContentsMargins(0, 0, 0, 0)
+            grid.setSpacing(6)
         self.lists = []
         self.counts = []
         subtitles = ("重要 · 紧急", "重要 · 不紧急", "不重要 · 紧急", "不重要 · 不紧急")
@@ -298,6 +324,11 @@ class DeliveryBoardDialog(QtWidgets.QDialog):
             panel_layout.setContentsMargins(11, 10, 11, 10)
             header = QtWidgets.QHBoxLayout()
             label = QtWidgets.QLabel(f"{quadrant + 1:02d}  {name}")
+            if compact:
+                label.setText(name)
+                label.setToolTip(subtitles[quadrant] + "；可拖动卡片调整象限")
+                panel_layout.setContentsMargins(7, 6, 7, 6)
+                panel_layout.setSpacing(3)
             label.setStyleSheet(f"color:{PANEL_ACCENTS[quadrant]}; font-weight:700; font-size:14px")
             header.addWidget(label)
             count = QtWidgets.QLabel("0 项")
@@ -308,6 +339,7 @@ class DeliveryBoardDialog(QtWidgets.QDialog):
             description = QtWidgets.QLabel(subtitles[quadrant] + " · 可拖动卡片调整")
             description.setStyleSheet("color:#617184; font-size:11px")
             panel_layout.addWidget(description)
+            description.setVisible(not compact)
             tasks = _QuadrantList(quadrant)
             tasks.itemChanged.connect(self._card_changed)
             tasks.itemDoubleClicked.connect(lambda _item: self.open_selected())
@@ -321,15 +353,21 @@ class DeliveryBoardDialog(QtWidgets.QDialog):
                 lambda widget=tasks: self._quadrant_selected(widget)
             )
             tasks.setWordWrap(True)
+            tasks.setMinimumSize(0, 60)
+            tasks.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored,
+                                QtWidgets.QSizePolicy.Policy.Expanding)
             panel_layout.addWidget(tasks, 1)
             self.lists.append(tasks)
             self.counts.append(count)
             grid.addWidget(panel, quadrant // 2, quadrant % 2)
+            grid.setColumnStretch(quadrant % 2, 1)
+            grid.setRowStretch(quadrant // 2, 1)
         self.tabs.addTab(self.board, "进行中")
         self.completed_tree = self._make_history_tree()
         self.archive_tree = self._make_history_tree()
         self.tabs.addTab(self.completed_tree, "刚完成")
         self.tabs.addTab(self.archive_tree, "归档")
+        self.tabs.tabBar().setVisible(not compact)
         layout.addWidget(self.tabs, 1)
 
         footer = QtWidgets.QHBoxLayout()
@@ -345,7 +383,10 @@ class DeliveryBoardDialog(QtWidgets.QDialog):
         restore_button = QtWidgets.QPushButton("恢复待办")
         restore_button.clicked.connect(self.restore_selected)
         footer.addWidget(restore_button)
-        layout.addLayout(footer)
+        footer_widget = QtWidgets.QWidget(self)
+        footer_widget.setLayout(footer)
+        layout.addWidget(footer_widget)
+        footer_widget.setVisible(not compact)
         self.archive_timer = QtCore.QTimer(self)
         self.archive_timer.setInterval(60 * 60 * 1000)
         self.archive_timer.timeout.connect(self._archive_tick)
@@ -369,15 +410,24 @@ class DeliveryBoardDialog(QtWidgets.QDialog):
 
     def _retention_changed(self, days):
         self.store.set_retention_days(days)
-        self.render()
+        self._notify_change()
 
     def _archive_tick(self):
-        if self.store.archive_completed() and self.isVisible():
-            self.render()
+        if self.store.archive_completed():
+            self._notify_change()
+
+    def _notify_change(self):
+        self.render()
+        self.changed.emit()
 
     def render(self, *_args):
         self.store.archive_completed()
         query = self.search.text().strip().casefold()
+        selected = {
+            str(item.data(QtCore.Qt.ItemDataRole.UserRole))
+            for widget in self.lists for item in widget.selectedItems()
+        }
+        scroll_positions = [widget.verticalScrollBar().value() for widget in self.lists]
         self._rendering = True
         try:
             for widget in self.lists:
@@ -403,17 +453,31 @@ class DeliveryBoardDialog(QtWidgets.QDialog):
                 subtitle = " · ".join(filter(None, (
                     row["admin"], _source_time(row["source_time"]),
                 )))[:42]
-                item.setText("\n".join(filter(None, (title, subtitle, detail))))
+                if self.compact and row.get("group_key"):
+                    # The main-panel card is narrow: put the administrator
+                    # first, and retain the date/type/count on a second line.
+                    title = ("旧版本 · " if row["stale"] else "") + (row["admin"] or "未指定管理员")
+                    day = str(row["title"]).split(" · ", 1)[0]
+                    if len(day) == 10 and day[4:5] == "-":
+                        day = day[5:]
+                    kind = {"send": "待发送", "rework": "需修改", "sheet": "待填表"}.get(row["kind"], "待处理")
+                    subtitle = f"{day} · {kind} {len(self._items(row))} 个"
+                item.setText("\n".join(filter(None,
+                    (title, subtitle) if self.compact else (title, subtitle, detail))))
                 warning = "这条待办属于较早提交版本；网盘链接可能已指向新内容，请核对后再发送。" if row["stale"] else ""
                 item.setToolTip("\n".join(filter(None, (warning, row["title"], row["detail"], row["link"]))))
                 item.setData(QtCore.Qt.ItemDataRole.UserRole, row["id"])
                 item.setFlags(item.flags() | QtCore.Qt.ItemFlag.ItemIsUserCheckable |
                               QtCore.Qt.ItemFlag.ItemIsDragEnabled)
                 item.setCheckState(QtCore.Qt.CheckState.Unchecked)
-                item.setSizeHint(QtCore.QSize(0, 79 if detail else 63))
+                item.setSizeHint(QtCore.QSize(0, 57 if self.compact else (79 if detail else 63)))
                 self.lists[quadrant].addItem(item)
+                if str(row["id"]) in selected:
+                    self.lists[quadrant].setCurrentItem(item)
+                    item.setSelected(True)
             for quadrant, widget in enumerate(self.lists):
                 self.counts[quadrant].setText(f"{widget.count()} 项")
+                widget.verticalScrollBar().setValue(scroll_positions[quadrant])
             self._fill_history(self.completed_tree, "completed", query)
             self._fill_history(self.archive_tree, "archived", query)
             open_count = len(open_rows)
@@ -456,7 +520,7 @@ class DeliveryBoardDialog(QtWidgets.QDialog):
 
     def move_task(self, task_id, quadrant):
         self.store.set_quadrant(task_id, quadrant)
-        self.render()
+        self._notify_change()
 
     def _card_menu(self, widget, position):
         item = widget.itemAt(position)
@@ -477,7 +541,7 @@ class DeliveryBoardDialog(QtWidgets.QDialog):
 
     def _complete_id(self, task_id):
         if self.store.complete(task_id):
-            self.render()
+            self._notify_change()
 
     def _selected(self):
         widget = self.tabs.currentWidget()
@@ -646,7 +710,7 @@ class DeliveryBoardDialog(QtWidgets.QDialog):
             return
         row = self._selected()
         if row and self.store.restore(row["id"]):
-            self.render()
+            self._notify_change()
 
     def add_manual(self):
         dialog = QtWidgets.QDialog(self)
@@ -674,4 +738,30 @@ class DeliveryBoardDialog(QtWidgets.QDialog):
                 self.store.add_manual(title.text(), detail.text(), quadrant.currentIndex())
             except ValueError as exc:
                 QtWidgets.QMessageBox.warning(self, "添加待办", str(exc))
-            self.render()
+            self._notify_change()
+
+
+class DeliveryBoardDialog(QtWidgets.QDialog):
+    """Keep the original full window, with content shared with the main panel."""
+
+    def __init__(self, store, sync_sources=None, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("交付待办")
+        self.resize(1160, 780)
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        self.board_widget = DeliveryBoardWidget(store, sync_sources, self)
+        layout.addWidget(self.board_widget)
+
+    def render(self, *args):
+        # QWidget already has a native render(painter) overload, so this name
+        # must be forwarded explicitly rather than relying on __getattr__.
+        return self.board_widget.render(*args)
+
+    def __getattr__(self, name):
+        # Retain existing callers' dialog.render()/lists/etc. without copying
+        # actions or reparenting a QDialog into another widget.
+        board = self.__dict__.get("board_widget")
+        if board is not None:
+            return getattr(board, name)
+        raise AttributeError(name)

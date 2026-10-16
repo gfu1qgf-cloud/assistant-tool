@@ -1,5 +1,7 @@
 """Add optional daily-statistics headers to a newly copied ODS task table."""
 
+from model.AppDataStorage import data_io, data_file, data_directory
+
 import os
 import uuid
 from pathlib import Path
@@ -100,7 +102,7 @@ def add_daily_stat_headers_to_new_copy(path, schema=None):
         }
         if not set(DAILY_STAT_HEADERS).issubset(verified_headers):
             raise ValueError("保存后未能验证统计表头")
-        os.replace(temporary, target)
+        data_io.replace(temporary, target)
     finally:
-        temporary.unlink(missing_ok=True)
+        data_file(temporary).unlink(missing_ok=True)
     return True

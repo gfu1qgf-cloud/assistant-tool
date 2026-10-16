@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from model.QtThreadLifecycle import connect_thread_finished, thread_is_active
 import os
 from pathlib import Path
 
@@ -118,6 +119,11 @@ class ImageClassifierDialog(QtWidgets.QDialog):
         self.worker = None
         self.apply_worker = None
         self.results = []
+        from model.MediaThumbnail import LatestMediaThumbnail
+        self._thumbnail = LatestMediaThumbnail(self)
+        self._thumbnail.ready.connect(self._preview_ready)
+        self._preview_source = None
+        self._preview_image = QtGui.QImage()
 
         root = QtWidgets.QVBoxLayout(self)
         source_group = QtWidgets.QGroupBox("待分类图片/视频", self)
@@ -268,8 +274,8 @@ class ImageClassifierDialog(QtWidgets.QDialog):
 
     def _busy(self):
         return bool(
-            (self.worker is not None and self.worker.isRunning())
-            or (self.apply_worker is not None and self.apply_worker.isRunning())
+            (self.worker is not None and thread_is_active(self.worker))
+            or (self.apply_worker is not None and thread_is_active(self.apply_worker))
         )
 
     def _has_unapplied_results(self):
@@ -359,7 +365,7 @@ class ImageClassifierDialog(QtWidgets.QDialog):
         self.worker.progressChanged.connect(self._progress_changed)
         self.worker.completed.connect(self._analysis_completed)
         self.worker.failed.connect(self._work_failed)
-        self.worker.finished.connect(self._worker_finished)
+        connect_thread_finished(self.worker, self, 'worker', self._worker_finished)
         self.worker.start()
 
     def _progress_changed(self, current, total, message):
@@ -517,78 +523,47 @@ class ImageClassifierDialog(QtWidgets.QDialog):
         self.settingsChanged.emit(dict(self.settings))
         self.status_label.setText("分类设置已保存；下次分析会使用新的类别与参考素材。")
 
-    @staticmethod
-    def _video_preview_pixmap(path):
-        try:
-            import cv2
-
-            capture = cv2.VideoCapture(path)
-            if not capture.isOpened():
-                return QtGui.QPixmap()
-            total = max(1, int(capture.get(cv2.CAP_PROP_FRAME_COUNT) or 1))
-            positions = [
-                *range(0, min(total, 120), max(1, min(10, total // 20 or 1))),
-                int(total * 0.35),
-                int(total * 0.6),
-            ]
-            fallback = None
-            for position in positions:
-                capture.set(cv2.CAP_PROP_POS_FRAMES, max(0, min(total - 1, position)))
-                ok, frame = capture.read()
-                if not ok or frame is None:
-                    continue
-                fallback = frame
-                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-                if float(gray.mean()) >= 12.0 and float(gray.std()) >= 3.0:
-                    break
-            capture.release()
-            if fallback is None:
-                return QtGui.QPixmap()
-            rgb = cv2.cvtColor(fallback, cv2.COLOR_BGR2RGB)
-            height, width, channels = rgb.shape
-            image = QtGui.QImage(
-                rgb.data,
-                width,
-                height,
-                channels * width,
-                QtGui.QImage.Format_RGB888,
-            ).copy()
-            return QtGui.QPixmap.fromImage(image)
-        except Exception:
-            return QtGui.QPixmap()
-
     def _update_preview(self):
         result = self._first_selected_result()
         if result is None:
+            self._thumbnail.cancel()
+            self._preview_source = None
+            self._preview_image = QtGui.QImage()
             self.preview_label.setPixmap(QtGui.QPixmap())
             self.preview_label.setText("选择一条结果查看素材")
             self.preview_detail.clear()
             return
         source = result.get("source", "")
-        if Path(source).suffix.lower() in VIDEO_SUFFIXES:
-            pixmap = self._video_preview_pixmap(source)
+        if source != self._preview_source:
+            self._preview_source = source
+            self._preview_image = QtGui.QImage()
+            self.preview_label.clear()
+            self.preview_label.setText("正在读取素材预览…")
+            self._thumbnail.request(source)
         else:
-            pixmap = QtGui.QPixmap(source)
-        if pixmap.isNull():
-            self.preview_label.setPixmap(QtGui.QPixmap())
-            self.preview_label.setText("素材预览失败")
-        else:
-            self.preview_label.setText("")
-            self.preview_label.setPixmap(pixmap.scaled(
-                self.preview_label.size(),
-                QtCore.Qt.KeepAspectRatio,
-                QtCore.Qt.SmoothTransformation,
-            ))
+            self._fit_preview()
         self.preview_detail.setText(
             f"建议：{result.get('suggested_category') or '—'}\n"
             f"最终：{result.get('assigned_category') or '—'}\n"
             f"说明：{result.get('reason') or '—'}"
         )
 
+    def _preview_ready(self, _generation, image, error):
+        if error:
+            self.preview_label.setText("素材预览失败：" + error)
+            return
+        self._preview_image = image
+        self._fit_preview()
+
+    def _fit_preview(self):
+        if not self._preview_image.isNull():
+            self.preview_label.setPixmap(QtGui.QPixmap.fromImage(self._preview_image).scaled(
+                self.preview_label.size(), QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation))
+
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        if self.result_table.selectedItems():
-            self._update_preview()
+        if hasattr(self, '_preview_image'):
+            self._fit_preview()
 
     def _open_selected_source(self):
         result = self._first_selected_result()
@@ -626,7 +601,7 @@ class ImageClassifierDialog(QtWidgets.QDialog):
         self.apply_worker.progressChanged.connect(self._progress_changed)
         self.apply_worker.completed.connect(self._apply_completed)
         self.apply_worker.failed.connect(self._work_failed)
-        self.apply_worker.finished.connect(self._apply_worker_finished)
+        connect_thread_finished(self.apply_worker, self, 'apply_worker', self._apply_worker_finished)
         self.apply_worker.start()
 
     def _apply_completed(self, report):
@@ -679,12 +654,16 @@ class ImageClassifierDialog(QtWidgets.QDialog):
         self.output_button.setEnabled(not busy)
 
     def stop_current_work(self):
+        self._thumbnail.cancel()
+        self._preview_source = None
         worker = self.worker if self.worker is not None else self.apply_worker
         if worker is not None and worker.isRunning():
             worker.requestInterruption()
             self.status_label.setText("正在安全停止；当前批次结束后停止…")
 
     def closeEvent(self, event):
+        self._thumbnail.cancel()
+        self._preview_source = None
         if self._busy():
             QtWidgets.QMessageBox.information(
                 self,

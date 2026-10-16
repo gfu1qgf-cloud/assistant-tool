@@ -2,7 +2,9 @@
 
 from datetime import date
 from pathlib import Path
+import os
 import tempfile
+import time
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
@@ -18,6 +20,9 @@ class OrganizerOfflineBehaviorTests(unittest.TestCase):
             output.mkdir(parents=True)
             video = output / "test.mp4"
             video.write_bytes(b"local-export")
+            # A previous completed export; deliberately older than write-settle.
+            older = time.time() - 10
+            os.utime(video, (older, older))
             pending = root / "pending.json"
             config = {"run_export": True, "run_upload": True, "upload_only_changed_files": True,
                       "task_result_pending_file": str(pending), "video_detection_mode": "ask"}

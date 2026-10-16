@@ -1,12 +1,14 @@
 import copy
 import difflib
 import html
+import logging
 import re
 import shutil
 import time
 from pathlib import Path
 
 from qt_compat import QtCore, QtGui, QtWidgets
+from model.FileLocations import open_file_location
 
 from .engine import (
     apply_clip_review,
@@ -111,7 +113,7 @@ def _read_only_item(text, data=None):
 class SmartVideoSourceDialog(QtWidgets.QDialog):
     """Let the user confirm which task clips belong to this edit run."""
 
-    def __init__(self, jobs, parent=None):
+    def __init__(self, jobs, parent=None, *, notice=""):
         super().__init__(parent)
         self.jobs = copy.deepcopy(list(jobs))
         self.selected_jobs = []
@@ -127,6 +129,8 @@ class SmartVideoSourceDialog(QtWidgets.QDialog):
             self,
         )
         note.setWordWrap(True)
+        if notice:
+            note.setText(note.text() + "\n\n" + str(notice))
         layout.addWidget(note)
 
         self.tree = QtWidgets.QTreeWidget(self)
@@ -264,8 +268,8 @@ class SmartVideoSourceDialog(QtWidgets.QDialog):
         super().accept()
 
     @classmethod
-    def get_jobs(cls, jobs, parent=None):
-        dialog = cls(jobs, parent)
+    def get_jobs(cls, jobs, parent=None, *, notice=""):
+        dialog = cls(jobs, parent, notice=notice)
         if dialog.exec() == QtWidgets.QDialog.Accepted:
             return dialog.selected_jobs
         return None
@@ -397,15 +401,28 @@ class SmartVideoReviewDialog(QtWidgets.QDialog):
         bundle,
         parent=None,
         save_subtitle_defaults=None,
+        save_breath_defaults=None,
+        reanalyze_task=None,
     ):
         super().__init__(parent)
         self.bundle = copy.deepcopy(bundle)
         self.reviewed_bundle = None
         self._loading_detail = False
+        self._export_blockers = []
+        self._reanalyze_task_callback = reanalyze_task
+        self._task_refresh_handle = None
+        self._task_refresh_running = False
+        self._task_refresh_generation = 0
+        self._task_refresh_applied = False
+        self._closing = False
         self.setWindowTitle("智能剪辑：视频与文案核对")
         self.resize(1480, 860)
 
         layout = QtWidgets.QVBoxLayout(self)
+        # Keep controls reachable at 1280x820 with actual system fonts loaded;
+        # an empty offscreen font database previously hid this height overflow.
+        layout.setContentsMargins(8, 6, 8, 6)
+        layout.setSpacing(4)
         summary = self.bundle.get("summary", {})
         label = QtWidgets.QLabel(
             "共 {clip_count} 个片段：通过 {green_count}，需核对 {orange_count}，"
@@ -423,16 +440,65 @@ class SmartVideoReviewDialog(QtWidgets.QDialog):
             self,
         )
         label.setWordWrap(True)
+        self.summary_label = label
         layout.addWidget(label)
+        self.task_refresh_status = QtWidgets.QLabel("可点击任务旁的刷新，重新选择当前任务的视频片段。", self)
+        self.task_refresh_status.setTextFormat(QtCore.Qt.TextFormat.PlainText)
+        self.task_refresh_status.setWordWrap(True)
+        self.task_refresh_status.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored, QtWidgets.QSizePolicy.Policy.Preferred)
+        self.task_refresh_status.setStyleSheet("color:#536b86")
+        self.task_refresh_status.setVisible(callable(reanalyze_task))
+        layout.addWidget(self.task_refresh_status)
 
         self.blocker_banner = QtWidgets.QLabel(self)
         self.blocker_banner.setWordWrap(True)
         self.blocker_banner.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
         self.blocker_banner.setStyleSheet(
             "QLabel { background:#B3261E; color:white; border-radius:4px; "
-            "padding:10px; font-weight:600; }"
+            "padding:6px; font-weight:600; }"
         )
         layout.addWidget(self.blocker_banner)
+
+        self.blocker_panel = QtWidgets.QWidget(self)
+        blocker_layout = QtWidgets.QVBoxLayout(self.blocker_panel)
+        blocker_layout.setContentsMargins(0, 0, 0, 0)
+        blocker_toolbar = QtWidgets.QHBoxLayout()
+        blocker_toolbar.addWidget(QtWidgets.QLabel("阻碍导出：", self))
+        self.blocker_filter_combo = QtWidgets.QComboBox(self)
+        self.blocker_filter_combo.addItem("全部阻碍", "all")
+        self.blocker_filter_combo.addItem("疑似多余片段", "extra_clip")
+        self.blocker_filter_combo.addItem("未处理缺段", "missing")
+        blocker_toolbar.addWidget(self.blocker_filter_combo)
+        self.blocker_count_label = QtWidgets.QLabel(self)
+        blocker_toolbar.addWidget(self.blocker_count_label)
+        blocker_toolbar.addStretch(1)
+        self.locate_blocker_button = QtWidgets.QPushButton("定位", self)
+        self.exclude_blocker_button = QtWidgets.QPushButton("排除此片段", self)
+        self.approve_blocker_button = QtWidgets.QPushButton("确认保留", self)
+        self.exclude_blocker_button.setToolTip("只从本次成片排除所选多余片段，不删除原文件。")
+        self.approve_blocker_button.setToolTip("请先试听；确认此片段确实需要保留后，解除它的导出阻碍。")
+        for button in (self.locate_blocker_button, self.exclude_blocker_button, self.approve_blocker_button):
+            blocker_toolbar.addWidget(button)
+        blocker_layout.addLayout(blocker_toolbar)
+        self.blocker_tree = QtWidgets.QTreeWidget(self)
+        self.blocker_tree.setColumnCount(3)
+        self.blocker_tree.setHeaderLabels(["问题", "任务", "具体片段 / 缺失原文（点击定位）"])
+        self.blocker_tree.setRootIsDecorated(False)
+        self.blocker_tree.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
+        self.blocker_tree.setTextElideMode(QtCore.Qt.ElideRight)
+        self.blocker_tree.setColumnWidth(0, 115)
+        self.blocker_tree.setColumnWidth(1, 240)
+        self.blocker_tree.header().setStretchLastSection(True)
+        self.blocker_tree.setToolTip("仅显示当前真正阻碍导出的项目；悬停查看完整文件名和原因。")
+        blocker_layout.addWidget(self.blocker_tree)
+        layout.addWidget(self.blocker_panel)
+        self.blocker_filter_combo.currentIndexChanged.connect(self._populate_blocker_list)
+        self.blocker_tree.currentItemChanged.connect(self._update_blocker_actions)
+        self.blocker_tree.itemClicked.connect(lambda *_: self._locate_selected_blocker())
+        self.blocker_tree.itemActivated.connect(lambda *_: self._locate_selected_blocker())
+        self.locate_blocker_button.clicked.connect(self._locate_selected_blocker)
+        self.exclude_blocker_button.clicked.connect(self._exclude_selected_blocker)
+        self.approve_blocker_button.clicked.connect(self._approve_selected_blocker)
 
         self.main_splitter = QtWidgets.QSplitter(QtCore.Qt.Vertical, self)
         table_page = QtWidgets.QWidget(self.main_splitter)
@@ -466,81 +532,13 @@ class SmartVideoReviewDialog(QtWidgets.QDialog):
         self.table.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
         self.table.setAlternatingRowColors(True)
         self.table.cellDoubleClicked.connect(self._cell_double_clicked)
+        self.table.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self._clip_context_menu)
         self.table.currentCellChanged.connect(self._load_clip_detail)
         self.table.currentCellChanged.connect(
             lambda _row, _column, _old_row, _old_column: self._update_problem_position()
         )
-        rows = [
-            (task_index, clip_index, task, clip)
-            for task_index, task in enumerate(self.bundle.get("tasks", []))
-            for clip_index, clip in enumerate(task.get("clips", []))
-        ]
-        self.table.setRowCount(len(rows))
-        for row, (task_index, clip_index, task, clip) in enumerate(rows):
-            include_item = QtWidgets.QTableWidgetItem()
-            include_item.setFlags(
-                (include_item.flags() | QtCore.Qt.ItemIsUserCheckable)
-                & ~QtCore.Qt.ItemIsEditable
-            )
-            include_item.setCheckState(
-                QtCore.Qt.Checked if clip.get("included", True) else QtCore.Qt.Unchecked
-            )
-            include_item.setData(QtCore.Qt.UserRole, (task_index, clip_index))
-            self.table.setItem(row, self.COL_INCLUDE, include_item)
-            self.table.setItem(
-                row,
-                self.COL_ORDER,
-                QtWidgets.QTableWidgetItem(str(clip.get("export_order", clip_index + 1))),
-            )
-            self.table.setItem(row, self.COL_TASK, _read_only_item(task.get("label", "")))
-            self.table.setItem(
-                row,
-                self.COL_FILE,
-                _read_only_item(clip.get("file_name", ""), clip.get("source", "")),
-            )
-            status = str(clip.get("status") or "pink")
-            reviewed = bool(clip.get("review_acknowledged"))
-            status_item = _read_only_item(
-                "人工已核对" if reviewed else STATUS_TEXT.get(status, status)
-            )
-            status_item.setBackground(QtGui.QColor(
-                STATUS_COLORS["green"]
-                if reviewed
-                else STATUS_COLORS.get(status, "#FFFFFF")
-            ))
-            status_item.setToolTip(str(clip.get("issue_reason") or ""))
-            self.table.setItem(row, self.COL_STATUS, status_item)
-            self.table.setItem(
-                row,
-                self.COL_SCORE,
-                _read_only_item(f"{float(clip.get('similarity') or 0.0) * 100:.1f}%"),
-            )
-            self.table.setItem(row, self.COL_START, QtWidgets.QTableWidgetItem(
-                f"{float(clip.get('trim_start') or 0.0):.3f}"
-            ))
-            self.table.setItem(row, self.COL_END, QtWidgets.QTableWidgetItem(
-                f"{float(clip.get('trim_end') or 0.0):.3f}"
-            ))
-            self.table.setItem(
-                row,
-                self.COL_REMOVED,
-                _read_only_item(f"{float(clip.get('removed_seconds') or 0.0):.2f}"),
-            )
-            problem_count = sum(
-                issue.get("severity") != "info"
-                for issue in clip.get("issues", [])
-            )
-            self.table.setItem(
-                row,
-                self.COL_ISSUES,
-                _read_only_item(str(problem_count) if problem_count else "—"),
-            )
-            self.table.setItem(
-                row, self.COL_EXPECTED, QtWidgets.QTableWidgetItem(clip.get("expected_text", ""))
-            )
-            recognized = _read_only_item(clip.get("recognized_text", ""))
-            recognized.setToolTip(str(clip.get("recognized_text") or ""))
-            self.table.setItem(row, self.COL_RECOGNIZED, recognized)
+        self._populate_clip_table()
         self._problem_rows = self._collect_problem_rows()
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(QtWidgets.QHeaderView.ResizeToContents)
@@ -694,6 +692,7 @@ class SmartVideoReviewDialog(QtWidgets.QDialog):
             self.bundle,
             self.review_mode_tabs,
             save_subtitle_defaults=save_subtitle_defaults,
+            save_breath_defaults=save_breath_defaults,
         )
         self.timeline_tab_index = self.review_mode_tabs.addTab(
             self.timeline_review, "时间线核对"
@@ -713,6 +712,9 @@ class SmartVideoReviewDialog(QtWidgets.QDialog):
         self.timeline_review.openAdvancedRequested.connect(
             self._open_advanced_review
         )
+        self.timeline_review.reanalysisRequested.connect(self._request_task_reanalysis)
+        self.timeline_review.reanalysisCancelRequested.connect(self._cancel_task_reanalysis)
+        self.timeline_review.set_task_refresh_available(callable(reanalyze_task))
         self.review_mode_tabs.currentChanged.connect(self._review_mode_changed)
         layout.addWidget(self.review_mode_tabs, 1)
 
@@ -725,7 +727,22 @@ class SmartVideoReviewDialog(QtWidgets.QDialog):
         hint.setStyleSheet("color:#666;")
         layout.addWidget(hint)
 
+        export_row = QtWidgets.QHBoxLayout()
+        export_row.addWidget(QtWidgets.QLabel("导出方式：", self))
+        self.export_mode_combo = QtWidgets.QComboBox(self)
+        self.export_mode_combo.addItem("合并视频 + SRT", "joined")
+        self.export_mode_combo.addItem("导出分段视频（不拼接）", "segments")
+        self.export_mode_combo.setToolTip(
+            "分段模式按核对后的顺序，每个保留的原视频输出一个编号 MP4；应用气口和手动裁切。"
+            "不合并不同片段、不生成 SRT、不改原视频。"
+        )
+        self.export_mode_combo.setCurrentIndex(1 if self.bundle.get("settings", {}).get("export_mode") == "segments" else 0)
+        export_row.addWidget(self.export_mode_combo)
+        export_row.addStretch(1)
+
+        layout.addLayout(export_row)
         button_layout = QtWidgets.QHBoxLayout()
+        button_layout.addStretch(1)
         open_button = QtWidgets.QPushButton("打开所选视频", self)
         self.rename_videos_button = QtWidgets.QPushButton("按顺序命名原视频…", self)
         self.rename_videos_button.setToolTip(
@@ -734,6 +751,7 @@ class SmartVideoReviewDialog(QtWidgets.QDialog):
         report_button = QtWidgets.QPushButton("打开可读问题报告", self)
         copy_report_button = QtWidgets.QPushButton("复制全部问题", self)
         save_button = QtWidgets.QPushButton("保存核对结果", self)
+        self.save_review_button = save_button
         cancel_button = QtWidgets.QPushButton("取消", self)
         self.export_button = QtWidgets.QPushButton("确认并生成视频与 SRT", self)
         self.export_button.setDefault(True)
@@ -744,15 +762,17 @@ class SmartVideoReviewDialog(QtWidgets.QDialog):
         save_button.clicked.connect(self.save_review)
         cancel_button.clicked.connect(self.reject)
         self.export_button.clicked.connect(self.accept)
-        button_layout.addWidget(open_button)
-        button_layout.addWidget(self.rename_videos_button)
-        button_layout.addWidget(report_button)
-        button_layout.addWidget(copy_report_button)
+        self.export_mode_combo.currentIndexChanged.connect(lambda _index: self._refresh_export_blockers())
         button_layout.addWidget(save_button)
-        button_layout.addStretch(1)
         button_layout.addWidget(cancel_button)
         button_layout.addWidget(self.export_button)
         layout.addLayout(button_layout)
+        from .review_layout import arrange_review_footer
+        arrange_review_footer(self, layout, (open_button, report_button, copy_report_button, save_button, cancel_button), hint)
+        label.setToolTip(label.text())
+        label.setText("共 {clip_count} 个片段 · 通过 {green_count} · 需核对 {orange_count} · 严重异常 {pink_count}".format(
+            clip_count=summary.get("clip_count", 0), green_count=summary.get("green_count", 0),
+            orange_count=summary.get("orange_count", 0), pink_count=summary.get("pink_count", 0)))
         self.table.itemChanged.connect(self._review_item_changed)
         self.problem_only_checkbox.toggled.connect(self._apply_problem_filter)
         self.previous_problem_button.clicked.connect(lambda: self.jump_problem(-1))
@@ -776,6 +796,275 @@ class SmartVideoReviewDialog(QtWidgets.QDialog):
         elif self.table.rowCount():
             self.table.setCurrentCell(0, self.COL_FILE)
         self.review_mode_tabs.setCurrentIndex(self.timeline_tab_index)
+        if self._export_blockers:
+            self._locate_selected_blocker()
+
+    @QtCore.pyqtSlot(int)
+    def _request_task_reanalysis(self, task_index):
+        if self._task_refresh_running or self._closing or not callable(self._reanalyze_task_callback):
+            return
+        try:
+            self._task_refresh_generation += 1
+            handle = self._reanalyze_task_callback(self, task_index)
+            if handle is None:
+                return
+            from model.BackgroundTasks import BackgroundTaskHandle
+            if not isinstance(handle, BackgroundTaskHandle):
+                raise TypeError("任务刷新必须由主程序后台任务管理，不能返回窗口自建线程。")
+            self._task_refresh_handle, self._task_refresh_applied = handle, False
+            handle.progressChanged.connect(self._task_reanalysis_progress)
+            handle.failed.connect(self._task_reanalysis_failed)
+            handle.finished.connect(self._task_reanalysis_finished)
+            self._set_task_refresh_running(True)
+            self.task_refresh_status.setText("当前任务已加入后台分析；可取消刷新，关闭本窗口也不会丢失任务。")
+        except Exception as error:
+            QtWidgets.QMessageBox.warning(self, "不能刷新当前任务", str(error))
+
+    def _set_task_refresh_running(self, running):
+        self._task_refresh_running = bool(running)
+        self.timeline_review.set_task_refresh_state(running)
+        self.main_splitter.setEnabled(not running)
+        self.blocker_panel.setEnabled(not running)
+        self.rename_videos_button.setEnabled(not running)
+        self.save_review_button.setEnabled(not running)
+        self.timeline_review.body_splitter.setEnabled(not running)
+        self.timeline_review.timeline_scroll.setEnabled(not running)
+        self.timeline_review.clip_actions_menu.setEnabled(not running)
+        self.timeline_review.view_actions_menu.setEnabled(not running)
+        self._refresh_export_blockers()
+
+    @QtCore.pyqtSlot()
+    def _cancel_task_reanalysis(self):
+        try:
+            if self._task_refresh_handle is not None and self._task_refresh_handle.isRunning():
+                self.timeline_review.set_task_refresh_state(True, canceling=True)
+                self.task_refresh_status.setText("已请求取消刷新，原核对结果保留；等待当前安全步骤结束。")
+                self._task_refresh_handle.requestInterruption()
+        except Exception as error:
+            QtWidgets.QMessageBox.warning(self, "取消刷新未完成", str(error))
+
+    @QtCore.pyqtSlot(str, object)
+    def _task_reanalysis_progress(self, message, _percent):
+        if not self._closing and self._task_refresh_running:
+            self.task_refresh_status.setText(str(message)[:180])
+            self.task_refresh_status.setToolTip(str(message))
+
+    @QtCore.pyqtSlot(str)
+    def _task_reanalysis_failed(self, message):
+        if self._closing:
+            return
+        try:
+            handle = self._task_refresh_handle
+            if handle is not None and handle.manager.get(handle.task_id)["status"] == "canceled":
+                self.task_refresh_status.setText("已取消刷新，原核对结果保留。")
+                return
+            self.task_refresh_status.setText("刷新失败，原核对结果保留：" + str(message))
+            QtWidgets.QMessageBox.warning(self, "当前任务刷新失败", "没有替换原核对结果。\n\n" + str(message))
+        except Exception:
+            logging.getLogger(__name__).exception("显示智能剪辑刷新失败提示时出错")
+
+    @QtCore.pyqtSlot()
+    def _task_reanalysis_finished(self):
+        if self._closing or self._task_refresh_handle is None:
+            return
+        try:
+            status = self._task_refresh_handle.manager.get(self._task_refresh_handle.task_id)["status"]
+            self._task_refresh_handle = None
+            self._set_task_refresh_running(False)
+            if status == "canceled":
+                self.task_refresh_status.setText("已取消刷新，原核对结果保留。")
+            elif status == "succeeded":
+                self.task_refresh_status.setText("当前任务已刷新；其他任务的核对修改未变。" if self._task_refresh_applied else
+                    "分析已完成，但结果未能应用；原结果保留，新结果可从后台任务打开。")
+        except Exception as error:
+            self.task_refresh_status.setText("刷新状态恢复失败，请关闭后从后台结果重新打开：" + str(error))
+
+    def apply_task_reanalysis(self, task_index, result, generation):
+        if QtCore.QThread.currentThread() != self.thread():
+            raise RuntimeError("核对界面刷新必须通过主线程结果信号处理。")
+        if self._closing or not self.isVisible() or generation != self._task_refresh_generation:
+            return False
+        from .review_reanalysis import merge_task_result
+        updated = merge_task_result(self.bundle, task_index, result)
+        # Replacing a file at the SAME path must reload its decoder and aspect,
+        # not just seek the old paused/preloaded stream.
+        self.timeline_review.player.reset_source()
+        for clip in updated['tasks'][task_index]['clips']:
+            self.timeline_review._media_aspect_cache.pop(str(clip.get('source') or ''), None)
+        previous_signals, self._loading_detail = self.table.blockSignals(True), True
+        try:
+            self.bundle = updated
+            self._populate_clip_table()
+            self._problem_rows = self._collect_problem_rows()
+        finally:
+            self.table.blockSignals(previous_signals)
+            self._loading_detail = False
+        summary = updated["summary"]
+        self.summary_label.setText("共 {clip_count} 个片段 · 通过 {green_count} · 需核对 {orange_count} · 严重异常 {pink_count}".format(**summary))
+        self._refresh_export_blockers()
+        self.timeline_review.refresh(updated, preserve_time=False)
+        self.timeline_review._select_task_index(task_index)
+        if updated["tasks"][task_index].get("clips"):
+            self._select_table_clip(task_index, 0)
+        self._task_refresh_applied = True
+        return True
+
+    def _populate_clip_table(self):
+        rows = [
+            (task_index, clip_index, task, clip)
+            for task_index, task in enumerate(self.bundle.get("tasks", []))
+            for clip_index, clip in enumerate(task.get("clips", []))
+        ]
+        self.table.setRowCount(len(rows))
+        for row, (task_index, clip_index, task, clip) in enumerate(rows):
+            include_item = QtWidgets.QTableWidgetItem()
+            include_item.setFlags(
+                (include_item.flags() | QtCore.Qt.ItemIsUserCheckable)
+                & ~QtCore.Qt.ItemIsEditable
+            )
+            include_item.setCheckState(
+                QtCore.Qt.Checked if clip.get("included", True) else QtCore.Qt.Unchecked
+            )
+            include_item.setData(QtCore.Qt.UserRole, (task_index, clip_index))
+            self.table.setItem(row, self.COL_INCLUDE, include_item)
+            self.table.setItem(
+                row,
+                self.COL_ORDER,
+                QtWidgets.QTableWidgetItem(str(clip.get("export_order", clip_index + 1))),
+            )
+            self.table.setItem(row, self.COL_TASK, _read_only_item(task.get("label", "")))
+            self.table.setItem(
+                row,
+                self.COL_FILE,
+                _read_only_item(clip.get("file_name", ""), clip.get("source", "")),
+            )
+            status = str(clip.get("status") or "pink")
+            reviewed = bool(clip.get("review_acknowledged"))
+            status_item = _read_only_item(
+                "人工已核对" if reviewed else STATUS_TEXT.get(status, status)
+            )
+            status_item.setBackground(QtGui.QColor(
+                STATUS_COLORS["green"]
+                if reviewed
+                else STATUS_COLORS.get(status, "#FFFFFF")
+            ))
+            status_item.setToolTip(str(clip.get("issue_reason") or ""))
+            self.table.setItem(row, self.COL_STATUS, status_item)
+            self.table.setItem(
+                row,
+                self.COL_SCORE,
+                _read_only_item(f"{float(clip.get('similarity') or 0.0) * 100:.1f}%"),
+            )
+            self.table.setItem(row, self.COL_START, QtWidgets.QTableWidgetItem(
+                f"{float(clip.get('trim_start') or 0.0):.3f}"
+            ))
+            self.table.setItem(row, self.COL_END, QtWidgets.QTableWidgetItem(
+                f"{float(clip.get('trim_end') or 0.0):.3f}"
+            ))
+            self.table.setItem(
+                row,
+                self.COL_REMOVED,
+                _read_only_item(f"{float(clip.get('removed_seconds') or 0.0):.2f}"),
+            )
+            problem_count = sum(
+                issue.get("severity") != "info"
+                for issue in clip.get("issues", [])
+            )
+            self.table.setItem(
+                row,
+                self.COL_ISSUES,
+                _read_only_item(str(problem_count) if problem_count else "—"),
+            )
+            self.table.setItem(
+                row, self.COL_EXPECTED, QtWidgets.QTableWidgetItem(clip.get("expected_text", ""))
+            )
+            recognized = _read_only_item(clip.get("recognized_text", ""))
+            recognized.setToolTip(str(clip.get("recognized_text") or ""))
+            self.table.setItem(row, self.COL_RECOGNIZED, recognized)
+
+    @staticmethod
+    def _blocker_key(block):
+        return (
+            block.get("task_index"), block.get("kind"), block.get("clip_index"),
+            block.get("script_word_start"), block.get("script_word_end"),
+            block.get("text"),
+        )
+
+    def _selected_export_blocker(self):
+        item = self.blocker_tree.currentItem()
+        block = item.data(0, QtCore.Qt.UserRole) if item else None
+        return block if isinstance(block, dict) else None
+
+    def _populate_blocker_list(self, _index=None):
+        selected = self._selected_export_blocker()
+        selected_key = self._blocker_key(selected) if selected else None
+        mode = str(self.blocker_filter_combo.currentData() or "all")
+        visible = [
+            block for block in self._export_blockers
+            if mode == "all"
+            or (mode == "extra_clip" and block.get("kind") == "extra_clip")
+            or (mode == "missing" and block.get("kind") != "extra_clip")
+        ]
+        self.blocker_tree.blockSignals(True)
+        try:
+            self.blocker_tree.clear()
+            selected_item = None
+            for block in visible:
+                extra = block.get("kind") == "extra_clip"
+                content = str(block.get("file_name") if extra else block.get("text") or "")
+                item = QtWidgets.QTreeWidgetItem([
+                    "疑似多余片段" if extra else "未处理缺段",
+                    str(block.get("task_label") or "任务"), content,
+                ])
+                item.setData(0, QtCore.Qt.UserRole, copy.deepcopy(block))
+                tooltip = "\n".join([
+                    str(block.get("task_label") or "任务"), content,
+                    str(block.get("issue_reason") or ""),
+                ])
+                for column in range(3):
+                    item.setToolTip(column, tooltip)
+                self.blocker_tree.addTopLevelItem(item)
+                if self._blocker_key(block) == selected_key:
+                    selected_item = item
+            if visible:
+                self.blocker_tree.setCurrentItem(selected_item or self.blocker_tree.topLevelItem(0))
+            else:
+                item = QtWidgets.QTreeWidgetItem(["—", "", "当前筛选下没有导出阻碍"])
+                item.setFlags(item.flags() & ~QtCore.Qt.ItemIsSelectable)
+                self.blocker_tree.addTopLevelItem(item)
+        finally:
+            self.blocker_tree.blockSignals(False)
+        self.blocker_tree.setFixedHeight(30 + 25 * max(1, min(2, len(visible))))
+        self.blocker_count_label.setText(f"显示 {len(visible)} / 共 {len(self._export_blockers)} 项")
+        self.blocker_panel.setVisible(bool(self._export_blockers))
+        self._update_blocker_actions()
+
+    def _update_blocker_actions(self, *_args):
+        block = self._selected_export_blocker()
+        extra = bool(block and block.get("kind") == "extra_clip")
+        self.locate_blocker_button.setEnabled(bool(block))
+        self.exclude_blocker_button.setEnabled(extra)
+        self.approve_blocker_button.setEnabled(extra)
+
+    def _locate_selected_blocker(self):
+        block = self._selected_export_blocker()
+        if block is None:
+            return
+        self.review_mode_tabs.setCurrentIndex(self.timeline_tab_index)
+        self.timeline_review.select_export_blocker(block)
+
+    def _exclude_selected_blocker(self):
+        block = self._selected_export_blocker()
+        if block is None or block.get("kind") != "extra_clip":
+            return
+        self._locate_selected_blocker()
+        self.timeline_review._set_clip_included(int(block["clip_index"]), False)
+
+    def _approve_selected_blocker(self):
+        block = self._selected_export_blocker()
+        if block is None or block.get("kind") != "extra_clip":
+            return
+        self._acknowledge_clip_from_timeline(int(block["task_index"]), int(block["clip_index"]))
 
     def _row_for_clip(self, task_index, clip_index):
         for row in range(self.table.rowCount()):
@@ -1186,6 +1475,8 @@ class SmartVideoReviewDialog(QtWidgets.QDialog):
         extra_findings = smart_video_extra_clip_findings(self.bundle)
         findings = missing_findings + extra_findings
         blockers = smart_video_export_blockers(self.bundle)
+        self._export_blockers = blockers
+        self._populate_blocker_list()
         blocker_keys = {
             (
                 block.get("task_label"),
@@ -1258,7 +1549,7 @@ class SmartVideoReviewDialog(QtWidgets.QDialog):
         blocked = bool(blockers)
         unresolved_missing = sum(item.get("kind") != "extra_clip" for item in blockers)
         unresolved_extra = len(blockers) - unresolved_missing
-        self.export_button.setEnabled(not blocked)
+        self.export_button.setEnabled(not blocked and not self._task_refresh_running)
         self.export_button.setToolTip(
             "请先处理缺段和疑似多余片段。" if blocked else ""
         )
@@ -1270,9 +1561,9 @@ class SmartVideoReviewDialog(QtWidgets.QDialog):
                 "padding:10px; font-weight:600; }"
             )
             self.blocker_banner.setText(
-                f"⛔ 未处理：缺段 {unresolved_missing} 个，疑似多余片段 {unresolved_extra} 个；当前不能导出。\n"
-                "多余片段请在时间线右键排除，或试听后标记本片段已核对。"
+                f"⛔ 不能导出：缺段 {unresolved_missing} 个，多余片段 {unresolved_extra} 个。点击下方问题定位并处理。"
             )
+            self.blocker_banner.setToolTip("多余片段可直接排除，或试听后确认保留；缺段可在时间线中人工核对或跳过任务。")
             if select_tab:
                 self.detail_tabs.setCurrentIndex(self.coverage_tab_index)
         elif findings:
@@ -1294,10 +1585,12 @@ class SmartVideoReviewDialog(QtWidgets.QDialog):
                 f"确认保留疑似多余片段 {sum(item.get('review_decision') == 'approved' for item in extra_findings)} 个。"
             )
             self.export_button.setText(
-                "导出其余任务" if skipped_tasks else "确认并生成视频与 SRT"
+                "导出其余任务" if skipped_tasks else
+                "确认并导出分段视频" if self.export_mode_combo.currentData() == "segments" else "确认并生成视频与 SRT"
             )
         else:
-            self.export_button.setText("确认并生成视频与 SRT")
+            self.export_button.setText("确认并导出分段视频" if self.export_mode_combo.currentData() == "segments"
+                                       else "确认并生成视频与 SRT")
         self._refresh_problem_rows()
         return blockers
 
@@ -1650,6 +1943,24 @@ class SmartVideoReviewDialog(QtWidgets.QDialog):
             return
         self.open_video_for_row(row)
 
+    def open_video_location_for_row(self, row):
+        clip = self._clip_for_row(row)
+        return open_file_location(clip.get("source") if clip else None, self)
+
+    def open_selected_video_location(self, _checked=False):
+        return self.open_video_location_for_row(self.table.currentRow())
+
+    def _clip_context_menu(self, position):
+        item = self.table.itemAt(position)
+        if item is None:
+            return
+        row = item.row()
+        self.table.setCurrentCell(row, self.COL_FILE)
+        menu = QtWidgets.QMenu(self.table)
+        menu.addAction("打开视频", lambda: self.open_video_for_row(row))
+        menu.addAction("打开文件位置", lambda: self.open_video_location_for_row(row))
+        menu.exec(self.table.viewport().mapToGlobal(position))
+
     def rename_source_videos(self):
         try:
             self.collect()
@@ -1707,6 +2018,7 @@ class SmartVideoReviewDialog(QtWidgets.QDialog):
 
     def collect(self):
         self.timeline_review.apply_pending_subtitle_settings()
+        self.bundle.setdefault("settings", {})["export_mode"] = self.export_mode_combo.currentData()
         for row in range(self.table.rowCount()):
             clip = self._clip_for_row(row)
             include_item = self.table.item(row, self.COL_INCLUDE)
@@ -1733,6 +2045,8 @@ class SmartVideoReviewDialog(QtWidgets.QDialog):
         return self.bundle
 
     def save_review(self):
+        if self._task_refresh_running:
+            return
         try:
             self.collect()
             save_analysis_reports(self.bundle)
@@ -1744,6 +2058,9 @@ class SmartVideoReviewDialog(QtWidgets.QDialog):
         )
 
     def accept(self):
+        if self._task_refresh_running:
+            QtWidgets.QMessageBox.information(self, "当前任务正在刷新", "请等待分析完成或取消刷新后，再确认导出。")
+            return
         try:
             bundle = self.collect()
             if not any(
@@ -1772,10 +2089,12 @@ class SmartVideoReviewDialog(QtWidgets.QDialog):
         super().accept()
 
     def reject(self):
+        self._closing = True
         self.timeline_review.close_player()
         super().reject()
 
     def closeEvent(self, event):
+        self._closing = True
         self.timeline_review.close_player()
         super().closeEvent(event)
 
@@ -1785,13 +2104,21 @@ class SmartVideoReviewDialog(QtWidgets.QDialog):
         bundle,
         parent=None,
         save_subtitle_defaults=None,
+        save_breath_defaults=None,
+        reanalyze_task=None,
+        on_closed_bundle=None,
     ):
         dialog = cls(
             bundle,
             parent,
             save_subtitle_defaults=save_subtitle_defaults,
+            save_breath_defaults=save_breath_defaults,
+            reanalyze_task=reanalyze_task,
         )
-        if dialog.exec() == QtWidgets.QDialog.Accepted:
+        accepted = dialog.exec() == QtWidgets.QDialog.Accepted
+        if callable(on_closed_bundle):
+            on_closed_bundle(copy.deepcopy(dialog.bundle))
+        if accepted:
             return dialog.reviewed_bundle
         return None
 
@@ -1821,7 +2148,8 @@ class SmartVideoExportResultDialog(QtWidgets.QDialog):
         tree.setTextElideMode(QtCore.Qt.ElideMiddle)
         tree.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
         for item in completed:
-            status = "已跳过" if item.get("status") == "skipped" else "已生成"
+            status = ("已跳过" if item.get("status") == "skipped" else
+                      f"已生成 {item.get('segment_count', 0)} 段" if item.get("export_mode") == "segments" else "已生成")
             video = str(item.get("video") or item.get("message") or "")
             srt = str(item.get("srt") or "")
             row = QtWidgets.QTreeWidgetItem([

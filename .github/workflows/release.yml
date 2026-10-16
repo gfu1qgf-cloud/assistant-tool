@@ -63,6 +63,7 @@ jobs:
         shell: pwsh
         run: |
           Copy-Item README.md dist\AssistantTool\README.md
+          Copy-Item 启动离线模式.cmd dist\AssistantTool\启动离线模式.cmd
           Copy-Item CHANGELOG.md dist\AssistantTool\CHANGELOG.md
           Copy-Item config.example.json dist\AssistantTool\config.example.json
           Copy-Item app_icon.png dist\AssistantTool\app_icon.png

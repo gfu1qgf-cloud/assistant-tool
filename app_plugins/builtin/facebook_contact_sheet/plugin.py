@@ -7,7 +7,7 @@ from .task_cache import cache_directory, cached_sheets, extract_facebook_referen
 class FacebookContactSheetPlugin:
     plugin_id = "facebook_contact_sheet"
     display_name = "Facebook 视频分镜速览"
-    version = "1.1"
+    version = "1.3"
     required_api_version = 1
 
     def __init__(self):
@@ -17,6 +17,14 @@ class FacebookContactSheetPlugin:
 
     def register(self, context):
         self.context = context
+        context.register_command(PluginCommand(
+            command_id="open_task_reference",
+            title="打开 FB 参考链接…",
+            callback=self.open_task_reference,
+            locations=frozenset({TASK_CONTEXT_MENU}),
+            tooltip="在浏览器打开所选任务的原始 Facebook 参考链接",
+            order=33,
+        ))
         context.register_command(PluginCommand(
             command_id="open",
             title="Facebook 视频分镜速览…",
@@ -45,6 +53,29 @@ class FacebookContactSheetPlugin:
     def start(self):
         return None
 
+    def open_task_reference(self, rows):
+        from qt_compat import QtCore, QtGui, QtWidgets
+        from model.OfflineMode import require_online
+        references = list(dict.fromkeys(url
+            for target in self.context.task_targets(rows)
+            for url in extract_facebook_references(getattr(target['task'], 'task_reference_link', ''))))
+        if not references:
+            QtWidgets.QMessageBox.information(self.context.parent_widget, '没有 Facebook 参考',
+                '所选任务没有可识别的 Facebook 参考链接。请先在任务表格的参考链接列填写。')
+            return None
+        url = references[0]
+        if len(references) > 1:
+            url, accepted = QtWidgets.QInputDialog.getItem(self.context.parent_widget,
+                '打开 FB 参考', '选择要在浏览器打开的参考链接：', references, 0, False)
+            if not accepted:
+                return None
+        require_online('打开 Facebook 参考链接')
+        if not QtGui.QDesktopServices.openUrl(QtCore.QUrl(url)):
+            QtWidgets.QMessageBox.warning(self.context.parent_widget, '无法打开浏览器',
+                '系统未能打开默认浏览器，请检查浏览器设置。\n' + url)
+            return None
+        return url
+
     def open_dialog(self):
         dialog = self._show_dialog()
         if not dialog.is_busy():
@@ -54,7 +85,8 @@ class FacebookContactSheetPlugin:
     def _show_dialog(self):
         if self.dialog is None:
             from .ui import ContactSheetDialog
-            self.dialog = ContactSheetDialog(logger=self.context.log, parent=self.context.parent_widget)
+            self.dialog = ContactSheetDialog(logger=self.context.log, parent=self.context.parent_widget,
+                                             task_manager=getattr(self.context, "background_tasks", None))
         self.dialog.show()
         self.dialog.showNormal()
         self.dialog.raise_()
@@ -118,6 +150,7 @@ class FacebookContactSheetPlugin:
                     dialog, "正在处理", "参考大图正在生成；完成或取消后再查看其他参考。",
                 )
                 return None
+            dialog.task_label = str(target['label'])
             if dialog.start_task_reference(url, cache_directory(target["target_dir"], url)):
                 self.context.log(f"任务 {target['label']}：未找到参考大图，正在后台自动生成；完成后自动打开。")
                 return dialog
@@ -141,6 +174,7 @@ class FacebookContactSheetPlugin:
             from .batch_ui import BatchContactSheetDialog
             self.batch_dialog = BatchContactSheetDialog(
                 logger=self.context.log, parent=self.context.parent_widget,
+                task_manager=getattr(self.context, "background_tasks", None),
             )
         dialog = self.batch_dialog
         if not dialog.set_jobs(jobs):

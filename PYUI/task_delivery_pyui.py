@@ -1,3 +1,4 @@
+from model.QtThreadLifecycle import connect_thread_finished, thread_is_active
 from pathlib import Path
 import logging
 import traceback
@@ -122,7 +123,7 @@ class TaskReviewListDialog(QtWidgets.QDialog):
             self.table.selectRow(index.row())
         menu = QtWidgets.QMenu(self)
         detail = menu.addAction("查看审核细节")
-        detail.setEnabled(not (self._detail_worker and self._detail_worker.isRunning()))
+        detail.setEnabled(not (self._detail_worker and thread_is_active(self._detail_worker)))
         open_video = menu.addAction("打开原视频")
         menu.addSeparator()
         actions = {menu.addAction(f"选中项：{title}"): decision for title, decision in self.DECISIONS}
@@ -137,7 +138,7 @@ class TaskReviewListDialog(QtWidgets.QDialog):
                 combo.setCurrentIndex(combo.findData(actions[selected]))
 
     def _open_detail(self, row=None):
-        if self._detail_worker and self._detail_worker.isRunning():
+        if self._detail_worker and thread_is_active(self._detail_worker):
             return
         if row is None or isinstance(row, bool):
             row = self.table.currentRow()
@@ -147,7 +148,7 @@ class TaskReviewListDialog(QtWidgets.QDialog):
         self._detail_worker = _ManualDetailWorker(self.entries[row]["file_path"], self)
         self._detail_worker.completed.connect(self._on_detail_completed)
         self._detail_worker.failed.connect(self._on_detail_failed)
-        self._detail_worker.finished.connect(self._on_detail_finished)
+        connect_thread_finished(self._detail_worker, self, '_detail_worker', self._on_detail_finished)
         for button in (self.confirm_button, self.cancel_button, self.detail_button):
             button.setEnabled(False)
         self._detail_worker.start()
@@ -155,9 +156,11 @@ class TaskReviewListDialog(QtWidgets.QDialog):
     def _on_detail_completed(self, result):
         row = self._detail_row
         self._detail_results[row] = result
-        decision = "skip_upload" if result.get("skip_upload") else "review" if result.get("found") else "normal_upload"
+        decision = "skip_upload" if result.get("skip_upload") else "review" if (
+            self.entries[row].get("review_required") is True or result.get("found")) else "normal_upload"
         self.combos[row].setCurrentIndex(self.combos[row].findData(decision))
-        self.table.item(row, 2).setText(str(result.get("summary") or "人工审核完成"))
+        requirement = "本地表格：需要审核；" if self.entries[row].get("review_required") is True else ""
+        self.table.item(row, 2).setText(requirement + str(result.get("summary") or "人工审核完成"))
         self.table.item(row, 2).setToolTip(self.table.item(row, 2).text())
 
     def _on_detail_finished(self):
@@ -168,17 +171,17 @@ class TaskReviewListDialog(QtWidgets.QDialog):
         QMessageBox.warning(self, "审核细节失败", error)
 
     def reject(self):
-        if self._detail_worker and self._detail_worker.isRunning():
+        if self._detail_worker and thread_is_active(self._detail_worker):
             return
         super().reject()
 
     def accept(self):
-        if self._detail_worker and self._detail_worker.isRunning():
+        if self._detail_worker and thread_is_active(self._detail_worker):
             return
         super().accept()
 
     def closeEvent(self, event):
-        if self._detail_worker and self._detail_worker.isRunning():
+        if self._detail_worker and thread_is_active(self._detail_worker):
             event.ignore()
             return
         super().closeEvent(event)

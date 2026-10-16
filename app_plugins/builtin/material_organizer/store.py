@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import json
+from contextlib import contextmanager
 import os
 import sqlite3
 import threading
 import time
 from pathlib import Path
 
-from app_paths import APP_ROOT
+from app_paths import DATA_ROOT as APP_ROOT
+from model.AppDataStorage import data_file, data_directory
 
 
 DEFAULT_MATERIAL_ORGANIZER_ROOT = APP_ROOT / "MaterialOrganizer"
@@ -46,19 +48,24 @@ class MaterialCatalogStore:
     def __init__(self, database_path=None, thumbnail_root=None):
         self.database_path = Path(database_path or DEFAULT_MATERIAL_ORGANIZER_DB)
         self.thumbnail_root = Path(thumbnail_root or DEFAULT_THUMBNAIL_ROOT)
-        self.database_path.parent.mkdir(parents=True, exist_ok=True)
-        self.thumbnail_root.mkdir(parents=True, exist_ok=True)
+        data_directory(self.database_path.parent).ensure()
+        data_directory(self.thumbnail_root).ensure()
         self._lock = threading.RLock()
         self._initialize()
 
+    @contextmanager
     def _connect(self):
-        connection = sqlite3.connect(
-            str(self.database_path), timeout=20.0, check_same_thread=False
-        )
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA foreign_keys = ON")
-        connection.execute("PRAGMA busy_timeout = 20000")
-        return connection
+        connection = data_file(self.database_path).connect(timeout=20.0, check_same_thread=False)
+        try:
+            connection.row_factory = sqlite3.Row
+            connection.execute("PRAGMA foreign_keys = ON")
+            connection.execute("PRAGMA busy_timeout = 20000")
+            # sqlite3's own context manager commits/rolls back but does not
+            # close the handle. Always close, including exceptions/early return.
+            with connection:
+                yield connection
+        finally:
+            connection.close()
 
     def _initialize(self):
         with self._lock, self._connect() as connection:

@@ -1,3 +1,5 @@
+from model.AppDataStorage import data_io
+from model.QtThreadLifecycle import connect_thread_finished, thread_is_active
 import logging
 from pathlib import Path
 import tempfile
@@ -36,7 +38,7 @@ class GroupPicker(MaterialGroupAssignmentDialog):
         self.worker = WorkThread(lambda _progress, _canceled: store.list_image_groups(), self)
         self.worker.completed.connect(self.on_groups)
         self.worker.failed.connect(self.on_load_failed)
-        self.worker.finished.connect(self.on_load_finished)
+        connect_thread_finished(self.worker, self, 'worker', self.on_load_finished)
         self.worker.start()
 
     @QtCore.pyqtSlot(object)
@@ -137,7 +139,7 @@ class SmartAssignmentDialog(QtWidgets.QDialog):
         self.worker = None
         self.analysis_result = self.move_result = None
         self._close_when_finished = False
-        self._temporary = tempfile.TemporaryDirectory(prefix="smart-image-assignment-")
+        self._temporary = data_io.TemporaryDirectory(prefix="smart-image-assignment-")
         self.setWindowTitle("分配图片智能版 · 看图核对后再移动")
         self.setWindowFlag(QtCore.Qt.WindowMinimizeButtonHint, True)
         self.setWindowFlag(QtCore.Qt.WindowMaximizeButtonHint, True)
@@ -215,7 +217,7 @@ class SmartAssignmentDialog(QtWidgets.QDialog):
         self.worker.completed.connect(completion)
         self.worker.failed.connect(self.on_failed)
         self.worker.canceled.connect(self.on_canceled)
-        self.worker.finished.connect(self.on_finished)
+        connect_thread_finished(self.worker, self, 'worker', self.on_finished)
         self.start_button.setEnabled(False)
         self.move_button.setEnabled(False)
         self.cancel_button.setEnabled(not moving)

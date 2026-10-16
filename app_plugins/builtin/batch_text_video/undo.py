@@ -72,7 +72,8 @@ class UndoController:
         self.edit_history = EditHistory()
         self._undo_applying = False
         menu = QtWidgets.QMenu("编辑", self.menu_bar)
-        self.menu_bar.insertMenu(self.menu_bar.actions()[0], menu)
+        actions = self.menu_bar.actions()
+        self.menu_bar.insertMenu(actions[1] if actions[0].text() == "文件" else actions[0], menu)
         self.undo_action = menu.addAction("撤销", self.undo_edit)
         self.undo_action.setShortcut("Ctrl+Z")
         self.redo_action = menu.addAction("重做", self.redo_edit)
@@ -93,7 +94,8 @@ class UndoController:
 
     def _editor_guard(self):
         # Ignore editable names/text and revisions; include resources and real rotations.
-        values = [self.state["active_profile"], self.state["backgrounds"], self.state["next_music_id"], self.state["music"]]
+        values = [self.state["active_profile"], self.state["backgrounds"], self.state["next_music_id"], self.state["music"],
+                  self.state["resource_pools"]]
         for key in ("jobs", "copy_pool", "image_pool"):
             values.append([(item.get("id"), item.get("path"), item.get("task_dir"), item.get("voice_path"))
                            for item in self.state[key]])

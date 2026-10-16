@@ -71,11 +71,13 @@ def collect_upload_files(sources):
     return plan
 
 
-def upload_quick_files(sources, name, parent_folder, progress=None):
+def upload_quick_files(sources, name, parent_folder, progress=None, *,
+                      prepared_plan=None, batch=None, cancelled=None):
+    from model.GoogleDriveHelper import _report_upload
     name = validate_folder_name(name)
     parent_id = read_drive_parent_folder_id(str(parent_folder or "").strip())
-    plan = collect_upload_files(sources)
-    batch_date, batch_slot = get_upload_batch({})  # Never use a manual batch override.
+    plan = prepared_plan if prepared_plan is not None else collect_upload_files(sources)
+    batch_date, batch_slot = batch or get_upload_batch({})  # Never use a manual batch override.
     service = load_drive_service()
     date_id = get_or_create_remote_folder(
         service, parent_id, drive_date_folder_name(batch_date)
@@ -86,8 +88,12 @@ def upload_quick_files(sources, name, parent_folder, progress=None):
     failures = []
     folder_ids = {".": target_id}
     for index, (local, relative) in enumerate(plan, 1):
+        if cancelled and cancelled():
+            failures.extend(f"{rest}：本次已取消，未上传" for _path, rest in plan[index-1:])
+            break
         if progress:
             progress(index - 1, len(plan), str(relative))
+        _report_upload(str(relative))
         relative_dir = relative.parent
         directory_key = str(relative_dir)
         if directory_key not in folder_ids:
@@ -103,9 +109,14 @@ def upload_quick_files(sources, name, parent_folder, progress=None):
             else:
                 uploaded += 1
         except Exception as error:
+            from model.BackgroundTasks import BackgroundTaskCanceled
+            if isinstance(error, BackgroundTaskCanceled):
+                failures.extend(f"{rest}：本次已取消，请核对后重试" for _path, rest in plan[index-1:])
+                break
             failures.append(f"{relative}：{type(error).__name__}: {error}")
         if progress:
             progress(index, len(plan), str(relative))
+        _report_upload(str(relative), fraction=1.0, finished=True)
     return {
         "batch": f"{batch_date:%m%d}/{batch_slot}",
         "folder_name": name,
@@ -285,7 +296,7 @@ class QuickUploadDialog(QtWidgets.QDialog):
         self.progress_bar.setValue(done)
         self.status_label.setText(f"已处理 {done}/{total}：{label}")
 
-    def show_result(self, result):
+    def show_result(self, result, show_warning=True):
         self.set_busy(False)
         self.link_edit.setText(result["folder_link"])
         self.copy_button.setEnabled(True)
@@ -294,7 +305,7 @@ class QuickUploadDialog(QtWidgets.QDialog):
             f"{result['batch']}/{result['folder_name']}："
             f"上传 {result['uploaded']}，未变化 {result['skipped']}，失败 {failed}。"
         )
-        if failed:
+        if failed and show_warning:
             QtWidgets.QMessageBox.warning(
                 self, "部分文件上传失败", "\n".join(result["failures"][:20])
             )

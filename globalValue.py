@@ -1,3 +1,5 @@
+
+from model.AppDataStorage import data_io, data_file, data_directory
 import json
 import os
 import threading
@@ -5,7 +7,8 @@ from pathlib import Path
 
 from faster_whisper import WhisperModel
 
-from app_paths import APP_ROOT
+from app_paths import DATA_ROOT as APP_ROOT
+from model.OfflineMode import is_offline
 
 
 class WhisperModelRestartRequired(RuntimeError):
@@ -24,7 +27,7 @@ class GlobalValue:
         if not config_path.exists():
             return ""
         try:
-            config = json.loads(config_path.read_text(encoding="utf-8-sig"))
+            config = json.loads(data_file(config_path).read_text(encoding="utf-8-sig"))
         except (OSError, ValueError):
             return ""
         return str(config.get("video_sorting_station_path") or "").strip()
@@ -37,7 +40,7 @@ class GlobalValue:
     def _configured_whisper_model_name(self):
         config_path = APP_ROOT / "config.json"
         try:
-            config = json.loads(config_path.read_text(encoding="utf-8-sig"))
+            config = json.loads(data_file(config_path).read_text(encoding="utf-8-sig"))
         except (FileNotFoundError, OSError, ValueError, TypeError):
             return "base"
         smart_settings = config.get("smart_video_editor")
@@ -63,7 +66,7 @@ class GlobalValue:
             root = hub / repository
             candidates = []
             try:
-                revision = (root / "refs" / "main").read_text(
+                revision = data_file(root / "refs" / "main").read_text(
                     encoding="utf-8"
                 ).strip()
                 if revision:
@@ -106,6 +109,7 @@ class GlobalValue:
                     source,
                     device="cpu",
                     compute_type="int8",
+                    **({"local_files_only": True} if is_offline() else {}),
                 )
             except Exception as error:
                 self.__whisper_model_error = (

@@ -73,13 +73,14 @@ class CodexAccountSwitcherPlugin:
         self.dialog = None
 
     def can_close(self):
-        # Quota work is cancelled during stop; auth switching is synchronous and
-        # completes before its initiating UI handler returns.
+        if self.dialog is not None and not self.dialog.shutdown():
+            return False, '账号额度查询正在安全停止，请稍后再退出。'
         return True, ""
 
     def stop(self):
         if self.dialog is not None:
-            self.dialog.shutdown()
+            if not self.dialog.shutdown():
+                return False
             self.dialog.close()
             self.dialog.deleteLater()
             self.dialog = None

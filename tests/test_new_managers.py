@@ -1,6 +1,7 @@
 import json
 import io
 import logging
+import os
 import tempfile
 import time
 import unittest
@@ -2344,6 +2345,9 @@ class TaskResultDetectionChoiceTests(unittest.TestCase):
             output_dir.mkdir(parents=True)
             video = output_dir / "pending.mp4"
             video.write_bytes(b"video")
+            # This fixture represents a completed export, not a fresh render.
+            older = time.time() - 10
+            os.utime(video, (older, older))
             state_path = base_dir / "pending-state.json"
             config = {
                 "run_export": True,
@@ -2437,6 +2441,8 @@ class TaskResultDetectionChoiceTests(unittest.TestCase):
             task_dir.mkdir(parents=True)
             source = task_dir / "final.mp4"
             source.write_bytes(b"video")
+            older = time.time() - 10
+            os.utime(source, (older, older))
             output_dir = root_dir / "result"
             output_wsp = root_dir / "result-wsp"
             task = SimpleNamespace(
@@ -2546,7 +2552,7 @@ class TaskResultDetectionChoiceTests(unittest.TestCase):
 
         self.assertEqual(detector.call_args.kwargs["detection_mode"], "manual")
         self.assertNotIn("force_refresh", detector.call_args.kwargs)
-        self.assertEqual(routed, [(root, [video], Path("Alice"))])
+        self.assertEqual(routed, [(root, [video], Path("manual-review"))])
 
     def test_forced_manual_review_reuses_cached_result(self):
         expected = {"found": True, "mode": "manual"}

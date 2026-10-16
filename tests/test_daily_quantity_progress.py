@@ -141,16 +141,18 @@ class QuantityProgressUiTests(unittest.TestCase):
         cls.app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
 
     def progress(self):
-        return {"latest_date": "2026-09-26", "first_date": "2026-09-25",
+        p = {"latest_date": "2026-09-26", "first_date": "2026-09-25",
                 "updated_at": "2026-09-27T10:20:30+02:00", "warning_count": 3,
                 "dates": [{"date": "2026-09-25", "cells": 1}, {"date": "2026-09-26", "cells": 2}]}
+        p['manual_refresh'] = dict(p)
+        return p
 
     def test_progress_stays_visible_when_selected_day_or_tab_changes(self):
         d = DailyQuantityDialog()
         try:
             d.show_sync_progress(self.progress())
             d.folder_day.setDate(QtCore.QDate(2026, 9, 25))
-            self.assertIn("统计记录至：2026-09-26", d.sync_progress_heading.text())
+            self.assertIn("手动刷新至：2026-09-26", d.sync_progress_heading.text())
             self.assertIn("当前所选 2026-09-25", d.sync_progress_note.text())
             self.assertIn("3 条待处理", d.sync_progress_note.text())
             self.assertIn("不能视为全部完成", d.sync_progress_note.text())
@@ -186,7 +188,7 @@ class QuantityProgressUiTests(unittest.TestCase):
             self.assertIn("2026-09-26", d.sync_progress_heading.text())
             self.assertIn("此前成功同步", d.sync_progress_note.text())
             d.show_sync_progress({})
-            self.assertIn("尚无成功同步记录", d.sync_progress_heading.text())
+            self.assertIn("尚无手动刷新记录", d.sync_progress_heading.text())
             self.assertFalse(d.latest_date_button.isEnabled())
         finally:
             d.close()
@@ -223,7 +225,7 @@ class QuantityProgressUiTests(unittest.TestCase):
                 d.close()
                 config["daily_quantity_sheet_url"] = "other-id"
                 self.assertIs(plugin.open_daily_quantity(), d)
-                self.assertIn("尚无成功同步记录", d.sync_progress_heading.text())
+                self.assertIn("尚无手动刷新记录", d.sync_progress_heading.text())
                 self.assertFalse(d.latest_date_button.isEnabled())
                 self.assertEqual(read.call_args.args[0]["daily_quantity_sheet_url"], "other-id")
                 self.assertEqual(read.call_count, 2)

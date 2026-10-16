@@ -114,6 +114,9 @@ class GeminiKeyManager(QtCore.QObject):
         return record.get("models", {}).get(str(model or ""), {}).get("blocked_until", 0) <= self._clock()
 
     def request_keys(self, model=None):
+        from model.OfflineMode import is_offline
+        if is_offline():
+            return []
         with self._lock:
             return [k for k in self._keys if self._available(k, model)]
 
@@ -184,6 +187,9 @@ class GeminiKeyManager(QtCore.QObject):
         return str(message)
 
     def unavailable_message(self, model=None):
+        from model.OfflineMode import is_offline
+        if is_offline():
+            return "离线安全模式已暂停 Gemini 云端生成；密钥仍保留，关闭离线模式并重启后可使用。"
         with self._lock:
             count = len(self._keys)
         return ("未配置 Gemini Key" if not count else "Gemini Key 当前均不可用或处于冷却中") + "；请查看程序设置 → AI 密钥。"

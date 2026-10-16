@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from model.AppDataStorage import data_io, data_file, data_directory
+
 import json
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -159,7 +161,7 @@ def _self_check_repair_events(config: Mapping) -> Dict[str, Dict]:
     path = Path(configured_path).expanduser() if configured_path else DEFAULT_AUDIT_LOG_FILE
     latest = {}
     try:
-        handle = path.open("r", encoding="utf-8")
+        handle = data_io.open(path, "r", encoding="utf-8")
     except (FileNotFoundError, OSError):
         return latest
     with handle:

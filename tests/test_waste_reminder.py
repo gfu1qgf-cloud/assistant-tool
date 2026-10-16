@@ -263,6 +263,26 @@ class QtTests(unittest.TestCase):
         self.context.register_command.assert_called_once()
         self.context.register_settings_page.assert_called_once()
         self.context.register_main_widget.assert_called_once()
+        self.assertEqual(self.plugin.display_name, "生活助手")
+        self.assertEqual(self.context.register_command.call_args.args[0].title, "生活助手…")
+        self.assertEqual(self.plugin.cooking.store.path, self.plugin.root / "CookingAssistant" / "food.sqlite3")
+
+    def test_life_assistant_combines_cooking_tab_and_settings_without_moving_data(self):
+        from app_plugins.builtin.waste_reminder.life_settings import LifeSettingsPage
+        page = LifeSettingsPage(self.context, self.parent)
+        config = {"waste_reminder": {"enabled": False},
+                  "cooking_assistant": {"model": "custom-model", "meals": 3},
+                  "unrelated": "keep"}
+        page.load_config(config)
+        saved = page.update_config(dict(config))
+        self.assertFalse(saved["waste_reminder"]["enabled"])
+        self.assertEqual(saved["cooking_assistant"]["model"], "custom-model")
+        self.assertEqual(saved["cooking_assistant"]["meals"], 3)
+        self.assertEqual(saved["unrelated"], "keep")
+        panel = self.plugin.open_dialog()
+        self.assertIs(panel.cooking, self.plugin.cooking.dialog)
+        self.assertEqual(panel.tabs.tabText(panel.tabs.indexOf(panel.cooking)), "做饭与食材库存")
+        page.widget.deleteLater()
 
     def test_original_user_calendar_never_overwritten(self):
         path = self.plugin.calendar_path(2026)
@@ -313,6 +333,17 @@ class QtTests(unittest.TestCase):
             self.assertEqual(dialog.week.rowCount(), 7)
             self.assertIn("Plastica", dialog.query.text())
             self.assertEqual(dialog.sources.count(), 5)
+            dialog.show()
+            self.app.processEvents()
+            self.assertTrue(dialog.garbage_actions.isVisible())
+            for page in (dialog.weather, dialog.cooking):
+                dialog.tabs.setCurrentWidget(page)
+                self.app.processEvents()
+                self.assertFalse(dialog.garbage_actions.isVisible())
+                self.assertFalse(dialog.status.isVisible())
+            dialog.tabs.setCurrentIndex(0)
+            self.assertTrue(dialog.garbage_actions.isVisible())
+            self.assertTrue(dialog.status.isVisible())
         page = WasteSettingsPage()
         page.load_config({})
         result = page.update_config({})["waste_reminder"]

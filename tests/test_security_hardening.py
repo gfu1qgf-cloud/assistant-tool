@@ -109,7 +109,7 @@ class SecurityHardeningTests(unittest.TestCase):
     def test_actions_use_immutable_refs_and_no_checkout_credentials(self):
         import re
         for path in (ROOT/'.github'/'workflows').glob('*.yml'):
-            text = path.read_text()
+            text = path.read_text(encoding='utf-8-sig')
             for ref in re.findall(r'uses:\s*([^\s]+)', text):
                 if ref.startswith('./'):
                     # A local reusable workflow is pinned to the caller commit.
@@ -121,8 +121,8 @@ class SecurityHardeningTests(unittest.TestCase):
             self.assertIn('persist-credentials: false', text)
 
     def test_codeql_is_reusable_and_runs_after_release_publication(self):
-        codeql = (ROOT / '.github/workflows/codeql.yml').read_text()
-        release = (ROOT / '.github/workflows/release.yml').read_text()
+        codeql = (ROOT / '.github/workflows/codeql.yml').read_text(encoding='utf-8-sig')
+        release = (ROOT / '.github/workflows/release.yml').read_text(encoding='utf-8-sig')
         self.assertIn('  workflow_call:', codeql)
         self.assertIn('  workflow_dispatch:', codeql)
         self.assertIn('needs: build-and-release', release)

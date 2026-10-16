@@ -1,5 +1,7 @@
 """Safe creation of a task project directory from a workbook template."""
 
+from model.AppDataStorage import data_directory, data_file, data_io
+
 import os
 import shutil
 import uuid
@@ -33,8 +35,8 @@ def initialize_project_directory(
     if table_name in {"", ".", ".."} or Path(table_name).name != table_name:
         raise ValueError("任务表格文件名无效。")
 
-    project_dir.mkdir(parents=True, exist_ok=True)
-    (project_dir / "result").mkdir(parents=True, exist_ok=True)
+    data_directory(project_dir).ensure(parents=True, exist_ok=True)
+    data_directory(project_dir / "result").ensure(parents=True, exist_ok=True)
     destination = project_dir / table_name
     if destination.exists():
         if not destination.is_file():
@@ -63,13 +65,13 @@ def initialize_project_directory(
         f"{destination.name}.{uuid.uuid4().hex}.copying"
     )
     try:
-        shutil.copy2(str(template), str(temporary))
+        data_io.copy2(str(template), str(temporary))
         if add_daily_stat_headers:
             add_daily_stat_headers_to_new_copy(temporary, schema=task_schema)
-        os.replace(str(temporary), str(destination))
+        data_io.replace(str(temporary), str(destination))
     finally:
         try:
-            temporary.unlink()
+            data_file(temporary).unlink()
         except OSError:
             pass
     return {

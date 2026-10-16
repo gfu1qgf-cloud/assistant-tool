@@ -1,5 +1,12 @@
 from dataclasses import dataclass
+from model.node_workflow.workflow_types import WorkflowTypeDefinition
 from typing import Callable, FrozenSet
+
+# Optional node interface. Build a plan or execute a headless compute step;
+# prepare() snapshots scoped inputs on the GUI thread before job submission.
+from model.node_workflow.contracts import (NodeDefinition, NodeParameter, NodePort,
+                                         ResourcePool, VideoFilterFragment, ColorValue)
+from model.node_workflow.function_library import node_function
 
 
 MAIN_MENU = "main_menu"

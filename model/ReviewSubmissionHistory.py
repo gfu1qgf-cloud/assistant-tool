@@ -1,3 +1,5 @@
+
+from model.AppDataStorage import data_io, data_file, data_directory
 import json
 import os
 import re
@@ -6,7 +8,7 @@ import time
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit, urlunsplit
 
-from app_paths import APP_ROOT
+from app_paths import DATA_ROOT as APP_ROOT
 
 
 DEFAULT_REVIEW_HISTORY_FILE = APP_ROOT / "ReviewSubmissionHistory.json"
@@ -55,7 +57,7 @@ def _load_unlocked(path):
     if not history_path.exists():
         return _empty_history()
     try:
-        raw = json.loads(history_path.read_text(encoding="utf-8-sig"))
+        raw = json.loads(data_file(history_path).read_text(encoding="utf-8-sig"))
     except (OSError, json.JSONDecodeError):
         return _empty_history()
     if not isinstance(raw, dict) or not isinstance(raw.get("items"), dict):
@@ -71,13 +73,13 @@ def read_review_history(path=None):
 
 def _write_unlocked(history, path):
     history_path = Path(path or DEFAULT_REVIEW_HISTORY_FILE)
-    history_path.parent.mkdir(parents=True, exist_ok=True)
+    data_directory(history_path.parent).ensure(parents=True, exist_ok=True)
     temp_path = history_path.with_name(history_path.name + ".tmp")
-    temp_path.write_text(
+    data_file(temp_path).write_text_direct(
         json.dumps(history, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
-    os.replace(str(temp_path), str(history_path))
+    data_io.replace(str(temp_path), str(history_path))
 
 
 def record_review_submissions(records, path=None, now=None):

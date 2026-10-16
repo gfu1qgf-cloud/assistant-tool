@@ -1,6 +1,7 @@
 """Windows ChatGPT desktop lifecycle helpers used by the account plugin."""
 
 from __future__ import annotations
+from model.AppDataStorage import data_directory
 
 import os
 import subprocess
@@ -105,7 +106,7 @@ def launch_chatgpt_windows() -> None:
 
 
 def open_path(path: Path) -> None:
-    path.mkdir(parents=True, exist_ok=True)
+    data_directory(path).ensure(parents=True, exist_ok=True)
     try:
         if os.name == "nt":
             os.startfile(str(path))  # type: ignore[attr-defined]

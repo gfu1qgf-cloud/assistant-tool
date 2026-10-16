@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import tempfile
 import threading
+from model.AppDataStorage import data_file
 
 
 class ReminderState:
@@ -14,7 +15,7 @@ class ReminderState:
         self._lock = threading.RLock()
         self.data = {"events": {}, "notices": {}}
         if self.path.exists():
-            value = json.loads(self.path.read_text(encoding="utf-8-sig"))
+            value = data_file(self.path).read_json(encoding="utf-8-sig")
             if not isinstance(value, dict) or not isinstance(value.get("events"), dict) or not isinstance(value.get("notices", {}), dict):
                 raise ValueError("提醒记录格式无效；保留原文件，不自动覆盖。")
             self.data = value
@@ -24,18 +25,8 @@ class ReminderState:
             return deepcopy(self.data)
 
     def _commit(self, value):
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        handle, temporary = tempfile.mkstemp(prefix="state-", suffix=".tmp", dir=self.path.parent)
-        try:
-            with os.fdopen(handle, "w", encoding="utf-8") as stream:
-                json.dump(value, stream, ensure_ascii=False, indent=2)
-                stream.flush()
-                os.fsync(stream.fileno())
-            os.replace(temporary, self.path)
-            self.data = value
-        finally:
-            if os.path.exists(temporary):
-                os.unlink(temporary)
+        data_file(self.path).write_json(value, indent=2)
+        self.data = value
 
     def record(self, event, now, confirmed=False, minutes=15):
         with self._lock:

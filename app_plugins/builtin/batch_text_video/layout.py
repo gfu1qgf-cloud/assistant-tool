@@ -12,10 +12,21 @@ def ensure_fonts():
             path = directory / name
             if path.is_file():
                 QtGui.QFontDatabase.addApplicationFont(str(path))
+    from .fonts import ensure_bundled_fonts
+    ensure_bundled_fonts()
 
 
 class TextDoesNotFit(ValueError):
     pass
+
+
+def _render_component(layer, width, height, settings):
+    from .text_components import render_text_box
+    from .scrolling_text import is_scrolling, render_scroll_preview
+    timing = settings.get('_editor_timing')
+    if timing is not None and is_scrolling(layer):
+        return render_scroll_preview(layer, width, height, duration=timing['duration'], time=timing['time'])
+    return render_text_box(layer, width, height)
 
 
 def render_preview_overlay(title, body, width, height, settings, image_cache=None):
@@ -26,14 +37,18 @@ def render_preview_overlay(title, body, width, height, settings, image_cache=Non
         from .layers import normalize_layers, compose_layers
         from .components import resolve_sources
         from .text_components import render_text_box
-        layers, _ = resolve_sources(normalize_layers(settings.get("layers")), title, body)
+        from .watermarks import expand_watermarks
+        from .captions import design_layers
+        layers, _ = resolve_sources(expand_watermarks(design_layers(normalize_layers(settings.get("layers")), title, body)), title, body)
+        from .text_colors import resolve_colors
+        layers = resolve_colors(layers, settings.get("_color_scope", "design"))
         active = [layer for layer in layers if layer["kind"] != "image" and layer["enabled"] and layer["opacity"]]
         if not active or any("font_min" not in layer for layer in active) or sum(len(layer["text"]) for layer in active) > 40000:
             raise
         images, sizes, warnings = {}, {}, []
         for layer in active:
             try:
-                images[layer["id"]], size = render_text_box(layer, width, height)
+                images[layer["id"]], size = _render_component(layer, width, height, settings)
                 if size:
                     sizes[layer["id"]] = size
             except TextDoesNotFit as layer_error:
@@ -65,11 +80,10 @@ def render_preview_overlay(title, body, width, height, settings, image_cache=Non
 
 
 def _text_layout(text, family, size, width, alignment, spacing,font_options=None,scale=1):
-    font = QtGui.QFont(family)
-    font.setPixelSize(max(1, round(size)))
     options = font_options or {}
-    font.setWeight(QtGui.QFont.Weight(int(options.get("font_weight",400))))
-    font.setItalic(options.get("italic",False))
+    from .fonts import weight_font
+    font = weight_font(family, int(options.get("font_weight",400)), options.get("italic",False))
+    font.setPixelSize(max(1, round(size)))
     font.setUnderline(options.get("underline",False))
     font.setStrikeOut(options.get("strikeout",False))
     font.setCapitalization({"normal":QtGui.QFont.Capitalization.MixedCase,
@@ -110,15 +124,23 @@ def _text_layout(text, family, size, width, alignment, spacing,font_options=None
     return layouts, height
 
 
-def render_overlay(title, body, width, height, settings, image_cache=None):
+def render_overlay(title, body, width, height, settings, image_cache=None, *, allow_empty=False):
     from .layers import normalize_layers, compose_layers
     from .components import resolve_sources
-    layers, _ = resolve_sources(normalize_layers(settings.get("layers")), title, body)
+    from .watermarks import expand_watermarks
+    from .captions import design_layers
+    layers, _ = resolve_sources(expand_watermarks(design_layers(normalize_layers(settings.get("layers")), title, body)), title, body)
+    from .text_colors import resolve_colors
+    layers = resolve_colors(layers, settings.get("_color_scope", "design"))
     enabled = {layer["kind"] for layer in layers if layer["enabled"] and layer["opacity"] > 0}
     title = next((layer["text"] for layer in layers if layer["kind"] == "title" and "font_min" not in layer), "") if "title" in enabled else ""
     body = next((layer["text"] for layer in layers if layer["kind"] == "body" and "font_min" not in layer), "") if "body" in enabled else ""
     custom = [layer for layer in layers if layer["kind"] != "image" and "font_min" in layer and layer["enabled"] and layer["opacity"]]
     if not title.strip() and not body.strip() and not any(layer["text"].strip() for layer in custom) and "image" not in enabled:
+        if allow_empty or "node_effect" in enabled:
+            return compose_layers({}, [], width, height, settings["darkness"], image_cache,
+                settings.get("background_tint_color", "#000000"), settings.get("background_tint_strength", 0)), {
+                    "title_size": 0, "body_size": 0, "component_sizes": {}}
         raise TextDoesNotFit("没有启用的文字或图片图层，请填写文案或添加图片。")
     if len(title) + len(body) + sum(len(layer["text"]) for layer in custom) > 40000:
         raise TextDoesNotFit("文案过长，请拆分后生成。")
@@ -127,7 +149,7 @@ def render_overlay(title, body, width, height, settings, image_cache=None):
         from .text_components import render_text_box
         text_images,component_sizes = {},{}
         for layer in custom:
-            text_images[layer["id"]],size = render_text_box(layer,width,height)
+            text_images[layer["id"]],size = _render_component(layer,width,height,settings)
             if size:
                 component_sizes[layer["id"]] = size
         return compose_layers(text_images,layers,width,height,settings["darkness"],image_cache,
@@ -196,7 +218,7 @@ def render_overlay(title, body, width, height, settings, image_cache=None):
     component_sizes = {}
     from .text_components import render_text_box
     for layer in custom:
-        text_images[layer["id"]], component_sizes[layer["id"]] = render_text_box(layer,width,height)
+        text_images[layer["id"]], component_sizes[layer["id"]] = _render_component(layer,width,height,settings)
     image = compose_layers(text_images, layers, width, height, settings["darkness"], image_cache,
         settings.get("background_tint_color","#000000"),settings.get("background_tint_strength",0))
     return image, {"title_size": sizes["title"] / scale, "body_size": sizes["body"] / scale,

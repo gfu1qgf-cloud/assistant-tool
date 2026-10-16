@@ -1,21 +1,24 @@
 """Task-result delivery entry points and host-controlled quick actions."""
 
-from qt_compat import QtWidgets
+from model.QtThreadLifecycle import connect_thread_finished, thread_is_active
+import logging
+
+from qt_compat import QtCore, QtWidgets
 
 from app_plugins.api import MAIN_MENU, PluginCommand, PluginMainWidget
 from app_plugins.builtin.task_delivery_controller import TaskDeliveryController
-from app_plugins.builtin.task_delivery_board import DeliveryBoardDialog
+from app_plugins.builtin.task_delivery_board import DeliveryBoardDialog, DeliveryBoardWidget
 from model.DeliveryTodoStore import DeliveryTodoStore, collect_delivery_todos
 from model.ReviewSubmissionHistory import review_history_snapshot
 from model.VideoUploadHistory import load_video_upload_history
 from app_plugins.builtin.task_delivery_quick_upload import (
     QuickUploadDialog,
-    QuickUploadThread,
 )
 from app_plugins.builtin.task_delivery_daily_quantity import (
     DailyQuantityDateThread,
     DailyQuantityDialog,
     DailyQuantityFolderThread,
+    DailyQuantityInspectionThread,
     DailyQuantityThread,
 )
 from model.DailyQuantityStats import (
@@ -23,11 +26,17 @@ from model.DailyQuantityStats import (
     external_video_records,
     external_video_sources,
     pending_review_quantity_records,
+    set_daily_quantity_ignored,
     update_external_video_records,
 )
 from model.TaskResultOrganizer import load_effective_config
+from model.TaskResultOrganizer import get_upload_batch
+from model.TaskDeliveryBackground import UPLOAD_RESOURCE, run_quick_upload
 from model.DailyQuantityCategories import CategoryStore
 from app_plugins.builtin.task_delivery_category_editor import CategoryEditorDialog
+
+
+BOARD_EXPANDED_CONFIG_KEY = "task_delivery_board_expanded"
 
 
 class TaskDeliveryQuickActions(QtWidgets.QWidget):
@@ -44,6 +53,12 @@ class TaskDeliveryQuickActions(QtWidgets.QWidget):
         self.organize_button = QtWidgets.QPushButton("整理任务结果", self)
         self.organize_button.setObjectName("tidy_task_result_btn")
         layout.addWidget(self.organize_button)
+        from .task_delivery_workflow_ui import PostprocessChoice
+        postprocess = QtWidgets.QHBoxLayout()
+        postprocess.addWidget(QtWidgets.QLabel('后续处理', self))
+        self.postprocess_choice = PostprocessChoice(plugin.context, self)
+        postprocess.addWidget(self.postprocess_choice, 1)
+        layout.addLayout(postprocess)
 
         secondary = QtWidgets.QHBoxLayout()
         secondary.setContentsMargins(0, 0, 0, 0)
@@ -56,6 +71,24 @@ class TaskDeliveryQuickActions(QtWidgets.QWidget):
         secondary.addWidget(self.review_status_button)
         layout.addLayout(secondary)
 
+        self.board_widget = None
+        disclosure = QtWidgets.QHBoxLayout()
+        self.todo_toggle = QtWidgets.QToolButton(self)
+        self.todo_toggle.setCheckable(True)
+        self.todo_toggle.setToolButtonStyle(QtCore.Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.todo_toggle.setArrowType(QtCore.Qt.ArrowType.RightArrow)
+        self.todo_toggle.setText("交付待办 · 0 项")
+        self.todo_toggle.setToolTip("展开 / 收起四象限；勾选完成，右键查看视频明细与网盘链接")
+        self.todo_toggle.toggled.connect(self._toggle_board)
+        disclosure.addWidget(self.todo_toggle)
+        disclosure.addStretch(1)
+        self.full_board_button = QtWidgets.QToolButton(self)
+        self.full_board_button.setText("↗")
+        self.full_board_button.setToolTip("打开完整四象限窗口（含刚完成、归档）")
+        self.full_board_button.clicked.connect(lambda: plugin.open_delivery_inbox())
+        disclosure.addWidget(self.full_board_button)
+        layout.addLayout(disclosure)
+
         self.organize_button.clicked.connect(
             lambda _checked=False: plugin.organize_results()
         )
@@ -65,6 +98,47 @@ class TaskDeliveryQuickActions(QtWidgets.QWidget):
         self.review_status_button.clicked.connect(
             lambda _checked=False: plugin.open_review_status()
         )
+
+    def update_todo_count(self, count):
+        self.todo_toggle.setText(f"交付待办 · {count} 项")
+
+    def restore_expanded(self, expanded):
+        blocker = QtCore.QSignalBlocker(self.todo_toggle)
+        self.todo_toggle.setChecked(bool(expanded))
+        del blocker
+        if expanded:
+            self._toggle_board(True, persist=False)
+
+    def _toggle_board(self, expanded, *, persist=True):
+        try:
+            if expanded:
+                self.plugin.sync_delivery_todos()
+                if self.board_widget is None:
+                    self.board_widget = DeliveryBoardWidget(
+                        self.plugin.todo_store, self.plugin.sync_delivery_todos,
+                        self, compact=True,
+                    )
+                    self.board_widget.changed.connect(
+                        lambda: self.plugin.refresh_delivery_views(self.board_widget)
+                    )
+                    self.layout().addWidget(self.board_widget)
+                self.board_widget.render()
+            if self.board_widget is not None:
+                self.board_widget.setVisible(expanded)
+            self.todo_toggle.setArrowType(
+                QtCore.Qt.ArrowType.DownArrow if expanded else QtCore.Qt.ArrowType.RightArrow
+            )
+            if persist:
+                config = self.plugin.context.load_config()
+                if not self.plugin.context.patch_config(
+                    {BOARD_EXPANDED_CONFIG_KEY: bool(expanded)}, expected=config,
+                ):
+                    self.plugin.context.log("四象限展开状态未保存；本次操作仍然有效。", logging.WARNING)
+        except Exception as error:
+            self.plugin.context.log(f"四象限展开失败：{error}", logging.ERROR)
+            if expanded and self.board_widget is None:
+                self.restore_expanded(False)
+            QtWidgets.QMessageBox.warning(self, "交付待办", str(error))
 
 
 class TaskDeliveryPlugin:
@@ -83,11 +157,15 @@ class TaskDeliveryPlugin:
         self.daily_quantity_thread = None
         self.daily_quantity_folder_thread = None
         self.daily_quantity_date_thread = None
+        self.daily_quantity_inspection_thread = None
+        self.daily_quantity_dialog_scope = None
         self.todo_store = None
         self.delivery_board_dialog = None
 
     def register(self, context):
         self.context = context
+        from .task_delivery_workflow import register
+        register(context)
         self.controller = TaskDeliveryController(self, context)
         for command_id, title, callback, order, tooltip in (
             (
@@ -155,6 +233,9 @@ class TaskDeliveryPlugin:
 
     def create_quick_actions(self, parent=None):
         self.quick_actions = TaskDeliveryQuickActions(self, parent)
+        self.quick_actions.restore_expanded(
+            self.context.load_config().get(BOARD_EXPANDED_CONFIG_KEY) is True
+        )
         return self.quick_actions
 
     def organize_results(self):
@@ -173,6 +254,8 @@ class TaskDeliveryPlugin:
                 self.delivery_board_dialog = DeliveryBoardDialog(
                     self.todo_store, self.sync_delivery_todos, self.context.parent_widget,
                 )
+                board = self.delivery_board_dialog.board_widget
+                board.changed.connect(lambda: self.refresh_delivery_views(board))
             self.delivery_board_dialog.render()
             self.delivery_board_dialog.show()
             self.delivery_board_dialog.raise_()
@@ -195,12 +278,25 @@ class TaskDeliveryPlugin:
             review_folder_name=str(config.get("review_folder_name") or "review"),
         )
         added = self.todo_store.add_sources(sources)
-        changed = self.todo_store.mark_old_review_versions(reviews)
-        archived = self.todo_store.archive_completed()
-        dialog = self.delivery_board_dialog
-        if (added or changed or archived) and dialog is not None and dialog.isVisible():
-            dialog.render()
+        self.todo_store.mark_old_review_versions(reviews)
+        self.todo_store.archive_completed()
+        # Existing admin/day cards can gain videos or new review notes without
+        # inserting a card. Refresh on source sync, not only on insert counts.
+        self.refresh_delivery_views()
         return added
+
+    def refresh_delivery_views(self, source=None):
+        """Refresh visible views and the collapsed badge from one shared store."""
+        if self.todo_store is None:
+            return
+        if self.quick_actions is not None:
+            self.quick_actions.update_todo_count(len(self.todo_store.list_tasks("open")))
+            board = self.quick_actions.board_widget
+            if board is not None and board is not source and board.isVisible():
+                board.render()
+        dialog = self.delivery_board_dialog
+        if dialog is not None and dialog.board_widget is not source and dialog.isVisible():
+            dialog.render()
 
     def open_gemini_keys(self):
         # Compatibility entry point; the plugin no longer owns credentials.
@@ -218,9 +314,22 @@ class TaskDeliveryPlugin:
         return self.quick_upload_dialog
 
     def open_daily_quantity(self):
+        config = self.context.load_config()
+        root = self.context.parent_widget.task_path_edit.text().strip()
+        previous = self.daily_quantity_dialog_scope
+        changed_scope = previous and (previous[0].get("daily_quantity_sheet_url"), previous[1]) != (
+            config.get("daily_quantity_sheet_url"), root)
+        if changed_scope and self.daily_quantity_dialog is not None:
+            if not self._save_daily_quantity_external_edits(*previous):
+                self.daily_quantity_dialog.show()
+                return self.daily_quantity_dialog
+            self.daily_quantity_dialog.show_external_records([])
+            self.daily_quantity_dialog.show_inspection({})
+            self.daily_quantity_dialog.show_external_sources([])
+        self.daily_quantity_dialog_scope = (dict(config), root)
         if self.daily_quantity_dialog is None:
             dialog = DailyQuantityDialog(self.context.parent_widget)
-            dialog.refresh_requested.connect(self.refresh_daily_quantity)
+            dialog.refresh_requested.connect(lambda: self.refresh_daily_quantity(manual=True))
             dialog.scan_requested.connect(self.scan_daily_quantity_folder)
             dialog.scan_date_requested.connect(self.scan_daily_quantity_date)
             dialog.view_date_requested.connect(self.view_daily_quantity_date)
@@ -229,6 +338,9 @@ class TaskDeliveryPlugin:
             )
             dialog.edit_sheet_requested.connect(self.edit_daily_quantity_sheet)
             dialog.edit_categories_requested.connect(self.edit_daily_quantity_categories)
+            dialog.inspect_requested.connect(self.inspect_daily_quantity)
+            dialog.view_pending_requested.connect(self.view_daily_quantity_pending)
+            dialog.ignore_requested.connect(self.ignore_daily_quantity_records)
             self.daily_quantity_dialog = dialog
             try:
                 dialog.show_external_records(external_video_records(
@@ -250,7 +362,99 @@ class TaskDeliveryPlugin:
         self.daily_quantity_dialog.raise_()
         self.daily_quantity_dialog.activateWindow()
         self.load_daily_quantity_categories()
+        self.daily_quantity_dialog._pending_view = None
+        self.daily_quantity_dialog.tabs.setCurrentIndex(self.daily_quantity_dialog.pending_tab_index)
+        self.inspect_daily_quantity()
         return self.daily_quantity_dialog
+
+    def inspect_daily_quantity(self):
+        dialog = self.daily_quantity_dialog
+        if dialog is None or any(thread_is_active(thread) for thread in (
+            self.daily_quantity_thread, self.daily_quantity_folder_thread,
+            self.daily_quantity_date_thread, self.daily_quantity_inspection_thread,
+        )):
+            return False
+        config = self.context.load_config()
+        root = self.context.parent_widget.task_path_edit.text().strip()
+        from pathlib import Path
+        if not Path(root).is_dir() or not str(config.get("daily_quantity_sheet_url") or "").strip():
+            dialog.inspection_status.setText("请先选择任务根目录并设置每日数量表格链接，再重新检索。")
+            return False
+        if not self._save_daily_quantity_external_edits(config, root):
+            return False
+        thread = DailyQuantityInspectionThread(config, root, self.context.parent_widget)
+        self.daily_quantity_inspection_thread = thread
+        thread.completed.connect(self._daily_quantity_inspection_completed)
+        thread.failed.connect(self._daily_quantity_inspection_failed)
+        connect_thread_finished(thread, self, 'daily_quantity_inspection_thread', self._daily_quantity_inspection_finished)
+        dialog.set_inspection_busy(True)
+        thread.start()
+        return True
+
+    def _daily_quantity_inspection_completed(self, result):
+        dialog = self.daily_quantity_dialog
+        if dialog is None:
+            return
+        thread = self.daily_quantity_inspection_thread
+        if thread is not None and (thread.root != self.context.parent_widget.task_path_edit.text().strip()
+                or thread.config.get("daily_quantity_sheet_url") != self.context.load_config().get("daily_quantity_sheet_url")):
+            dialog.inspection_status.setText("任务目录或统计表已改变，请重新检索；未使用旧范围的结果。")
+            return
+        view = dialog._pending_view
+        dialog.show_inspection(result)
+        if view is not None:
+            dialog.show_pending_records(*view)
+        else:
+            dialog.show_external_records(result["records"], day=dialog.folder_day.date().toString("yyyy-MM-dd"))
+        self.context.log(
+            f"每日数量检索：已检查 {result['checked']} 个视频，"
+            f"待分类 {len(result['pending'])} 个，已忽略 {len(result['ignored'])} 个；未修改云端数字。"
+        )
+
+    def _daily_quantity_inspection_failed(self, error):
+        self.context.log(f"每日数量检索失败：{error}")
+        if self.daily_quantity_dialog is not None:
+            self.daily_quantity_dialog.inspection_status.setText(f"检索失败：{error}；原有记录未清空。")
+
+    def _daily_quantity_inspection_finished(self):
+        thread = self.daily_quantity_inspection_thread
+        self.daily_quantity_inspection_thread = None
+        if self.daily_quantity_dialog is not None:
+            self.daily_quantity_dialog.set_inspection_busy(False)
+        if thread is not None:
+            thread.deleteLater()
+
+    def view_daily_quantity_pending(self, day, ignored=False):
+        dialog = self.daily_quantity_dialog
+        if dialog is None or self.daily_quantity_inspection_thread is not None:
+            return False
+        config = self.context.load_config()
+        root = self.context.parent_widget.task_path_edit.text().strip()
+        had_edits = bool(dialog.changed_external_edits())
+        if not self._save_daily_quantity_external_edits(config, root):
+            return False
+        dialog._pending_view = (day, ignored)
+        if had_edits:
+            return self.inspect_daily_quantity()
+        dialog.show_pending_records(day, ignored)
+        return True
+
+    def ignore_daily_quantity_records(self, ids, ignored=True):
+        dialog = self.daily_quantity_dialog
+        if dialog is None or self.daily_quantity_inspection_thread is not None:
+            return False
+        config = self.context.load_config()
+        root = self.context.parent_widget.task_path_edit.text().strip()
+        if not self._save_daily_quantity_external_edits(config, root):
+            return False
+        try:
+            count = set_daily_quantity_ignored(config, root, ids, ignored)
+        except (OSError, ValueError) as exc:
+            dialog.show_error(str(exc))
+            return False
+        dialog.folder_status.setText(f"已{'忽略' if ignored else '恢复'} {count} 个视频并保存。刷新数量后同步云端。")
+        self.refresh_daily_quantity_review_queue()
+        return self.inspect_daily_quantity()
 
     def _load_daily_quantity_progress(self):
         if self.daily_quantity_dialog is None:
@@ -308,12 +512,14 @@ class TaskDeliveryPlugin:
             return True
         return False
 
-    def refresh_daily_quantity(self):
-        if self.daily_quantity_thread is not None and self.daily_quantity_thread.isRunning():
+    def refresh_daily_quantity(self, *, manual=False):
+        if self.daily_quantity_inspection_thread is not None:
             return False
-        if self.daily_quantity_folder_thread is not None and self.daily_quantity_folder_thread.isRunning():
+        if self.daily_quantity_thread is not None and thread_is_active(self.daily_quantity_thread):
             return False
-        if self.daily_quantity_date_thread is not None and self.daily_quantity_date_thread.isRunning():
+        if self.daily_quantity_folder_thread is not None and thread_is_active(self.daily_quantity_folder_thread):
+            return False
+        if self.daily_quantity_date_thread is not None and thread_is_active(self.daily_quantity_date_thread):
             return False
         root = self.context.parent_widget.task_path_edit.text().strip()
         config = self.context.load_config()
@@ -330,11 +536,11 @@ class TaskDeliveryPlugin:
             return False
         if not self._save_daily_quantity_external_edits(config, root):
             return False
-        thread = DailyQuantityThread(config, root, self.context.parent_widget)
+        thread = DailyQuantityThread(config, root, self.context.parent_widget, manual=manual)
         self.daily_quantity_thread = thread
         thread.completed.connect(self._daily_quantity_completed)
         thread.failed.connect(self._daily_quantity_failed)
-        thread.finished.connect(self._daily_quantity_finished)
+        connect_thread_finished(thread, self, 'daily_quantity_thread', self._daily_quantity_finished)
         if self.daily_quantity_dialog is not None:
             self.daily_quantity_dialog.set_busy(True)
         thread.start()
@@ -358,11 +564,13 @@ class TaskDeliveryPlugin:
         return True
 
     def scan_daily_quantity_folder(self, link, day, slot):
-        if self.daily_quantity_folder_thread is not None and self.daily_quantity_folder_thread.isRunning():
+        if self.daily_quantity_inspection_thread is not None:
             return False
-        if self.daily_quantity_thread is not None and self.daily_quantity_thread.isRunning():
+        if self.daily_quantity_folder_thread is not None and thread_is_active(self.daily_quantity_folder_thread):
             return False
-        if self.daily_quantity_date_thread is not None and self.daily_quantity_date_thread.isRunning():
+        if self.daily_quantity_thread is not None and thread_is_active(self.daily_quantity_thread):
+            return False
+        if self.daily_quantity_date_thread is not None and thread_is_active(self.daily_quantity_date_thread):
             return False
         root = self.context.parent_widget.task_path_edit.text().strip()
         config = self.context.load_config()
@@ -378,7 +586,7 @@ class TaskDeliveryPlugin:
         self.daily_quantity_folder_thread = thread
         thread.completed.connect(self._daily_quantity_folder_completed)
         thread.failed.connect(self._daily_quantity_folder_failed)
-        thread.finished.connect(self._daily_quantity_folder_finished)
+        connect_thread_finished(thread, self, 'daily_quantity_folder_thread', self._daily_quantity_folder_finished)
         self.daily_quantity_dialog.set_folder_busy(True)
         thread.start()
         return True
@@ -412,8 +620,11 @@ class TaskDeliveryPlugin:
         self.daily_quantity_folder_thread = None
         if thread is not None:
             thread.deleteLater()
+        self.inspect_daily_quantity()
 
     def view_daily_quantity_date(self, day):
+        if self.daily_quantity_inspection_thread is not None:
+            return False
         dialog = self.daily_quantity_dialog
         if dialog is None:
             return False
@@ -434,10 +645,11 @@ class TaskDeliveryPlugin:
         return True
 
     def scan_daily_quantity_date(self, day):
-        if any(thread is not None and thread.isRunning() for thread in (
+        if any(thread_is_active(thread) for thread in (
             self.daily_quantity_thread,
             self.daily_quantity_folder_thread,
             self.daily_quantity_date_thread,
+            self.daily_quantity_inspection_thread,
         )):
             return False
         dialog = self.daily_quantity_dialog
@@ -453,7 +665,7 @@ class TaskDeliveryPlugin:
         self.daily_quantity_date_thread = thread
         thread.completed.connect(self._daily_quantity_date_completed)
         thread.failed.connect(self._daily_quantity_date_failed)
-        thread.finished.connect(self._daily_quantity_date_finished)
+        connect_thread_finished(thread, self, 'daily_quantity_date_thread', self._daily_quantity_date_finished)
         dialog.set_folder_busy(True)
         thread.start()
         return True
@@ -487,6 +699,7 @@ class TaskDeliveryPlugin:
         self.daily_quantity_date_thread = None
         if thread is not None:
             thread.deleteLater()
+        self.inspect_daily_quantity()
 
     def _daily_quantity_completed(self, result):
         if self.daily_quantity_dialog is not None:
@@ -539,6 +752,7 @@ class TaskDeliveryPlugin:
         self.daily_quantity_thread = None
         if thread is not None:
             thread.deleteLater()
+        self.inspect_daily_quantity()
 
     def start_quick_upload(self, name, sources):
         if self.quick_upload_thread is not None and self.quick_upload_thread.isRunning():
@@ -552,23 +766,39 @@ class TaskDeliveryPlugin:
                 "请先在程序设置 → 整理任务结果中填写 Drive 父目录。",
             )
             return False
-        thread = QuickUploadThread(
-            sources, name, parent_folder, self.context.parent_widget
-        )
+        try:
+            batch_date, batch_slot = get_upload_batch({})
+            thread = self.context.submit_background_task(
+                title=f"简易上传 · {name}", runner=run_quick_upload,
+                payload={"sources": sources, "name": name, "parent_folder": parent_folder,
+                         "batch_date": batch_date.isoformat(), "batch_slot": batch_slot},
+                kind="network", resources=(UPLOAD_RESOURCE,), retryable=False)
+        except Exception as error:
+            logging.getLogger(__name__).exception("无法提交简易上传后台任务")
+            self.context.log(f"简易上传未启动：{type(error).__name__}: {error}", logging.ERROR)
+            self.context.notify("简易上传未启动", str(error), critical=True)
+            return False
         self.quick_upload_thread = thread
-        thread.progress.connect(self._on_quick_upload_progress)
+        thread.progressChanged.connect(self._on_background_quick_upload_progress)
         thread.completed.connect(self._on_quick_upload_completed)
         thread.failed.connect(self._on_quick_upload_failed)
         thread.finished.connect(self._on_quick_upload_finished)
         dialog = self.quick_upload_dialog
         dialog.link_edit.clear()
         dialog.copy_button.setEnabled(False)
-        dialog.status_label.setText("正在连接 Google Drive…")
+        dialog.status_label.setText("已加入后台队列，正在等待前一批上传…")
         dialog.progress_bar.setRange(0, 0)
         dialog.set_busy(True)
         self.context.log(f"简易上传开始：{name}（{len(sources)} 个来源）")
-        thread.start()
         return True
+
+    def _on_background_quick_upload_progress(self, message, percent):
+        if self.quick_upload_dialog is not None:
+            bar = self.quick_upload_dialog.progress_bar
+            bar.setRange(0, 100 if percent is not None else 0)
+            if percent is not None:
+                bar.setValue(percent)
+            self.quick_upload_dialog.status_label.setText(message)
 
     def _on_quick_upload_progress(self, done, total, label):
         if self.quick_upload_dialog is not None:
@@ -576,7 +806,9 @@ class TaskDeliveryPlugin:
 
     def _on_quick_upload_completed(self, result):
         if self.quick_upload_dialog is not None:
-            self.quick_upload_dialog.show_result(result)
+            self.quick_upload_dialog.show_result(result, show_warning=False)
+            self.quick_upload_dialog.progress_bar.setRange(0, 100)
+            self.quick_upload_dialog.progress_bar.setValue(100)
         self.context.log(
             f"简易上传完成：{result['batch']}/{result['folder_name']}；"
             f"上传 {result['uploaded']}，未变化 {result['skipped']}，"
@@ -597,13 +829,10 @@ class TaskDeliveryPlugin:
             self.quick_upload_dialog.set_busy(False)
             self.quick_upload_dialog.progress_bar.setRange(0, 1)
             self.quick_upload_dialog.status_label.setText(f"上传失败：{error}")
-            QtWidgets.QMessageBox.critical(self.quick_upload_dialog, "简易上传失败", error)
 
     def _on_quick_upload_finished(self):
-        thread = self.quick_upload_thread
         self.quick_upload_thread = None
-        if thread is not None:
-            thread.deleteLater()
+        # Host-owned task handle outlives this plugin window.
 
     @property
     def global_hotkey(self):
@@ -619,15 +848,17 @@ class TaskDeliveryPlugin:
         return self.controller.update_config(config)
 
     def can_close(self):
-        if self.daily_quantity_date_thread is not None and self.daily_quantity_date_thread.isRunning():
+        if self.daily_quantity_inspection_thread is not None and thread_is_active(self.daily_quantity_inspection_thread):
+            return False, "每日数量正在检索已有记录，请稍等。"
+        if self.daily_quantity_date_thread is not None and thread_is_active(self.daily_quantity_date_thread):
             return False, "每日数量日期目录正在扫描，请稍等。"
-        if self.daily_quantity_folder_thread is not None and self.daily_quantity_folder_thread.isRunning():
+        if self.daily_quantity_folder_thread is not None and thread_is_active(self.daily_quantity_folder_thread):
             return False, "每日数量文件夹正在扫描，请稍等。"
-        if self.daily_quantity_thread is not None and self.daily_quantity_thread.isRunning():
+        if self.daily_quantity_thread is not None and thread_is_active(self.daily_quantity_thread):
             return False, "每日数量统计正在更新，请稍等。"
         if self.quick_upload_thread is not None and self.quick_upload_thread.isRunning():
             return False, "简易上传仍在进行，请等待上传完成。"
         return self.controller.can_close()
 
     def stop(self):
-        self.controller.stop()
+        return self.controller.stop()

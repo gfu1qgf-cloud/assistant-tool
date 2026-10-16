@@ -1,3 +1,4 @@
+from model.AppDataStorage import data_io, data_file, data_directory
 import copy
 import json
 import os
@@ -18,7 +19,7 @@ class ChromeRunnerDialog(QtWidgets.QDialog,Ui_ChromeRunnerDialog):
     profile_groups_config_key = 'chrome_profile_groups'
     default_websites = []
 
-    def __init__(self, parent=None, config_path='config.json'):
+    def __init__(self, parent=None, config_path='config.json', language_storage=None, bookmark_context=None):
         super(ChromeRunnerDialog, self).__init__(parent)
         self.setupUi(self)
 
@@ -47,6 +48,27 @@ class ChromeRunnerDialog(QtWidgets.QDialog,Ui_ChromeRunnerDialog):
 
         self.load_profiles()
         self.refresh_btn.clicked.connect(self.load_profiles)
+        self._build_language_environment_tab(language_storage)
+        if bookmark_context is not None:
+            from PYUI.browser_bookmarks_pyui import BrowserBookmarksPanel
+            self.bookmarks_panel = BrowserBookmarksPanel(bookmark_context, self.environment_tabs)
+            self.environment_tabs.addTab(self.bookmarks_panel, '统一书签库')
+
+    def _build_language_environment_tab(self, storage):
+        from PYUI.chrome_language_environment_pyui import ChromeLanguageEnvironmentPanel
+        ordinary = QtWidgets.QWidget(self)
+        # Preserve every existing control, signal and layout; only wrap the
+        # old launcher in a tab so language profiles cannot enter its iterator.
+        # QWidget.setLayout transfers ownership AND reparents nested widgets.
+        # Moving raw layout items alone leaves old widgets on the dialog.
+        ordinary.setLayout(self.gridLayout)
+        self.environment_tabs = QtWidgets.QTabWidget(self)
+        self.environment_tabs.addTab(ordinary, '任务浏览器')
+        self.language_environment_panel = ChromeLanguageEnvironmentPanel(
+            lambda: self.chrome_path, self.environment_tabs, storage=storage)
+        self.environment_tabs.addTab(self.language_environment_panel, '外语独立环境')
+        self.language_tab_layout = QtWidgets.QVBoxLayout(self)
+        self.language_tab_layout.addWidget(self.environment_tabs)
 
     def _build_profile_group_controls(self):
         group_picker_layout = QtWidgets.QHBoxLayout()
@@ -141,7 +163,7 @@ class ChromeRunnerDialog(QtWidgets.QDialog,Ui_ChromeRunnerDialog):
 
         if os.path.exists(local_state_path):
             try:
-                with open(local_state_path, 'r', encoding='utf-8') as f:
+                with data_io.open(local_state_path, 'r', encoding='utf-8') as f:
                     local_state = json.load(f)
 
                 profile_info = local_state.get('profile', {}).get('info_cache', {})
@@ -206,7 +228,7 @@ class ChromeRunnerDialog(QtWidgets.QDialog,Ui_ChromeRunnerDialog):
         if not os.path.exists(self.config_path):
             return {}
         try:
-            with open(self.config_path, 'r', encoding='utf-8') as config_file:
+            with data_io.open(self.config_path, 'r', encoding='utf-8') as config_file:
                 config = json.load(config_file)
                 return config if isinstance(config, dict) else {}
         except (OSError, ValueError, TypeError):
@@ -216,15 +238,15 @@ class ChromeRunnerDialog(QtWidgets.QDialog,Ui_ChromeRunnerDialog):
         """原子写入配置，避免中途退出产生半个 JSON 文件。"""
         temp_path = f'{self.config_path}.chrome-runner.tmp'
         try:
-            with open(temp_path, 'w', encoding='utf-8') as config_file:
-                json.dump(config, config_file, indent=4, ensure_ascii=False)
-            os.replace(temp_path, self.config_path)
+            with data_io.open(temp_path, 'w', encoding='utf-8') as config_file:
+                config_file.write(json.dumps(config, indent=4, ensure_ascii=False))
+            data_io.replace(temp_path, self.config_path)
             return True
         except OSError as error:
             print(f'保存 Chrome 配置失败: {error}')
             try:
                 if os.path.exists(temp_path):
-                    os.remove(temp_path)
+                    data_io.remove(temp_path)
             except OSError:
                 pass
             return False

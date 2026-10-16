@@ -1,8 +1,16 @@
+from model.AppDataStorage import data_directory
+from model.QtThreadLifecycle import connect_thread_finished, thread_is_active
 import copy
 import logging
 import random
+import hashlib
+import json
+import re
 import traceback
 from pathlib import Path
+from types import SimpleNamespace
+from model.BackgroundTasks import BackgroundTaskResultError, directory_resource
+from model.ConfigTransactions import read_api_statuses
 
 from qt_compat import QtCore, QtWidgets
 
@@ -18,10 +26,15 @@ from model.ApiKeyHelper import (
     normalize_api_keys,
     select_api_keys_for_attempt,
 )
-from model.AudioHelper import CreateAudio, CreateAudio3, CreateTTSAudio
+from model.AudioHelper import CreateAudio, CreateAudio3, CreateAudioLatest, CreateTTSAudio
 from model.AudioSettings import audio_profile_voice_count, normalize_audio_settings
-from model.SubtitleHelper import generate_srt_whisper_only
 from PYUI.main_setting_pyui import AudioProfileDialog
+
+
+def generate_srt_whisper_only(*args, **kwargs):
+    # Merely checking/skipping existing audio must not import the native model.
+    from model.SubtitleHelper import generate_srt_whisper_only as generate
+    return generate(*args, **kwargs)
 
 
 TASK_AUDIO_SUBTITLE_CONFIG_KEY = "task_audio_subtitle"
@@ -503,22 +516,20 @@ class TaskAudioSubtitleQuickActions(QtWidgets.QWidget):
         subtitle_row.addStretch(1)
         layout.addLayout(subtitle_row)
 
-        options_row = QtWidgets.QHBoxLayout()
-        options_row.addWidget(QtWidgets.QLabel("每块最多单词", self))
+        options_form = QtWidgets.QFormLayout()
+        options_form.setContentsMargins(0, 0, 0, 0)
         self.max_words_spinbox = QtWidgets.QSpinBox(self)
         self.max_words_spinbox.setObjectName("subtitle_max_words_spinbox")
         self.max_words_spinbox.setRange(0, 50)
         self.max_words_spinbox.setSpecialValueText("不限")
-        options_row.addWidget(self.max_words_spinbox)
-        options_row.addWidget(QtWidgets.QLabel("字幕块间隔", self))
+        options_form.addRow("每块最多单词", self.max_words_spinbox)
         self.gap_ms_spinbox = QtWidgets.QSpinBox(self)
         self.gap_ms_spinbox.setObjectName("subtitle_gap_ms_spinbox")
         self.gap_ms_spinbox.setRange(-1, 5000)
         self.gap_ms_spinbox.setSpecialValueText("保留")
         self.gap_ms_spinbox.setSuffix(" ms")
-        options_row.addWidget(self.gap_ms_spinbox)
-        options_row.addStretch(1)
-        layout.addLayout(options_row)
+        options_form.addRow("字幕块间隔", self.gap_ms_spinbox)
+        layout.addLayout(options_form)
 
         self.audio_button.clicked.connect(self._generate_audio)
         self.subtitle_button.clicked.connect(
@@ -536,7 +547,7 @@ class TaskAudioSubtitleQuickActions(QtWidgets.QWidget):
 class TaskAudioSubtitlePlugin:
     plugin_id = "task_audio_subtitle"
     display_name = "任务音频与字幕"
-    version = "1.0"
+    version = "1.1"
     required_api_version = 1
 
     def __init__(self):
@@ -545,6 +556,7 @@ class TaskAudioSubtitlePlugin:
         self.audio_settings = {}
         self._audio_settings_source_present = False
         self.worker = None
+        self._background_handles = {}
         self._key_index = 0
         self._bound = False
         self.quick_actions = None
@@ -568,7 +580,7 @@ class TaskAudioSubtitlePlugin:
                 locations=frozenset({TASK_CONTEXT_MENU}),
                 tooltip="只处理当前选中的任务",
                 order=order,
-                enabled=lambda rows, plugin=self: bool(rows) and not plugin.is_running(),
+                enabled=lambda rows, plugin=self: bool(rows) and (plugin.worker is None),
                 submenu=TASK_MEDIA_SUBMENU,
                 visible=lambda _rows, key=visibility_key, plugin=self: bool(
                     plugin.settings.get(key, True)
@@ -678,17 +690,20 @@ class TaskAudioSubtitlePlugin:
         return config
 
     def is_running(self):
-        return self.worker is not None
+        return self.worker is not None or bool(self._background_handles)
 
     def can_close(self):
-        if self.is_running():
+        if self.worker is not None:
             return False, "任务音频或字幕仍在生成，请等待完成后再退出。"
         return True, ""
 
     def stop(self):
-        if self.is_running():
+        if self.worker is not None:
             self.worker.requestInterruption()
-            self.worker.wait(5000)
+            if not self.worker.wait(5000):
+                self.context.log('音频/字幕生成仍在安全停止，保留线程。', logging.WARNING)
+                return False
+        return True
 
     def current_subtitle_settings(self):
         self._capture_main_controls()
@@ -811,7 +826,7 @@ class TaskAudioSubtitlePlugin:
         self._start_operation("subtitle", rows, options)
 
     def _start_operation(self, operation, rows, options):
-        if self.is_running():
+        if self.worker is not None:
             QtWidgets.QMessageBox.information(
                 self.parent, "音频与字幕", "已有生成任务正在运行，请等待完成。"
             )
@@ -822,13 +837,47 @@ class TaskAudioSubtitlePlugin:
         if operation == "audio" and not self._confirm_audio_language(jobs, options):
             self.context.log("[任务音频] 用户取消：检测到非斯洛伐克语或未识别语言。")
             return
+        if callable(getattr(self.context, "submit_background_task", None)):
+            config = self.context.load_config()
+            serialized = [{**job, "target_dir": str(job["target_dir"]), "task": {
+                key: str(getattr(job["task"], key, "") or "") for key in
+                ("task_name", "task_audio_text", "task_audio_type", "task_audio_voice_id")}}
+                for job in jobs]
+            payload = {"operation": operation, "jobs": serialized, "options": dict(options),
+                "audio_settings": copy.deepcopy(self.audio_settings),
+                "config": {},
+                "config_path": str(Path(getattr(self.parent, "config_name", "config.json")).resolve()),
+                "model_name": self.context.loaded_whisper_model_name() or
+                    (config.get("smart_video_editor") or {}).get("whisper_model_size", "base"),
+                "key_index": self._key_index}
+            prepare = getattr(self.context, 'prepare_elevenlabs', None)
+            if callable(prepare): payload['elevenlabs_binding'] = prepare()
+            resources = [directory_resource(job["target_dir"]) for job in jobs]
+            if operation == "audio" and any(job["task"]["task_audio_voice_id"] or
+                    self.audio_settings.get(job["task"]["task_audio_type"], {}).get("model", "").startswith("elevenlabs")
+                    for job in serialized):
+                resources.append("elevenlabs:audio-generation")
+            signature = hashlib.sha256(json.dumps([operation, serialized, options], sort_keys=True,
+                                                   ensure_ascii=False).encode()).hexdigest()
+            title = ("生成音频与字幕" if options.get("with_subtitles") else "生成任务音频") if operation == "audio" else "生成任务字幕"
+            handle = self.context.submit_background_task(title=f"{title} · {len(jobs)} 个任务", runner=run_task_audio_job,
+                payload=payload, kind="network" if operation == "audio" else "media", resources=resources,
+                dedup_key=signature)
+            if handle.task_id in self._background_handles:
+                return
+            self._background_handles[handle.task_id] = handle
+            handle.completed.connect(lambda result, current=handle: self._background_completed(current, result))
+            handle.finished.connect(lambda current=handle: self._background_finished(current))
+            self.context.log(f"[{title}] 已提交后台，可继续处理其他任务；相同目录自动排队。")
+            self._sync_busy_controls()
+            return
         worker = TaskAudioSubtitleWorker(
             self, operation, jobs, options, parent=self.parent
         )
         worker.progress.connect(self._on_progress)
         worker.completed.connect(self._on_completed)
         worker.failed.connect(self._on_failed)
-        worker.finished.connect(self._on_finished)
+        connect_thread_finished(worker, self, 'worker', self._on_finished)
         self.worker = worker
         self._sync_busy_controls()
         title = "任务音频" if operation == "audio" else "任务字幕"
@@ -836,7 +885,7 @@ class TaskAudioSubtitlePlugin:
         worker.start()
 
     def _sync_busy_controls(self):
-        busy = self.is_running()
+        busy = self.worker is not None
         controls = self.quick_actions
         for button, normal_text in (
             (getattr(controls, "audio_button", None), "生成音频"),
@@ -845,6 +894,22 @@ class TaskAudioSubtitlePlugin:
             if button is not None:
                 button.setEnabled(not busy)
                 button.setText("正在处理…" if busy else normal_text)
+
+    def _background_completed(self, handle, result):
+        self._key_index = result.get("key_index", self._key_index)
+        summary = result.get("summary", "处理完成。")
+        self.context.notify("音频与字幕", summary, critical=bool(result.get("failed")))
+        def details():
+            box = QtWidgets.QMessageBox(self.parent)
+            box.setWindowTitle("音频与字幕结果")
+            box.setText(summary)
+            box.setDetailedText("\n".join(result.get("failures", []) + result.get("paths", [])))
+            box.exec()
+        handle.set_result_handler(details, pending=bool(result.get("failed")))
+
+    def _background_finished(self, handle):
+        self._background_handles.pop(handle.task_id, None)
+        self._sync_busy_controls()
 
     def _on_progress(self, message, level):
         self.context.log(message, level=level)
@@ -914,6 +979,19 @@ class TaskAudioSubtitlePlugin:
         return []
 
     def _create_audio(self, task, result_file, progress):
+        session = getattr(self.context, 'elevenlabs_binding', None)
+        session_args = {'api_session':session} if session else {}
+        voice_id = str(getattr(task, "task_audio_voice_id", "") or "").strip()
+        if voice_id:
+            created = CreateAudioLatest(
+                getattr(task, "task_audio_text", ""), str(result_file), voice_id=voice_id,
+                api_keys=[] if session else self._select_api_keys(progress),
+                api_key_status_config=getattr(self.parent, "config_name", "config.json"),
+                progress_callback=progress, **session_args,
+            )
+            if created is False:
+                progress("任务语音ID生成失败；请核对ID、Key对该声音和最新模型的使用权限。未随机换声或降级模型。", logging.ERROR)
+            return created is not False and result_file.exists()
         audio_type = str(getattr(task, "task_audio_type", "") or "").strip()
         profile = self.audio_settings.get(audio_type)
         if profile is None:
@@ -950,9 +1028,9 @@ class TaskAudioSubtitlePlugin:
                 str(result_file),
                 voice_id=voice_id,
                 speed=speed,
-                api_keys=self._select_api_keys(progress),
+                api_keys=[] if session else self._select_api_keys(progress),
                 api_key_status_config=getattr(self.parent, "config_name", "config.json"),
-                progress_callback=progress,
+                progress_callback=progress, **session_args,
             )
             return created is not False and result_file.exists()
         if model == "elevenlabs3":
@@ -964,9 +1042,9 @@ class TaskAudioSubtitlePlugin:
                 str(result_file),
                 voice_id=random.choice(voice_ids),
                 stability=float(profile.get("stability", 0.35)),
-                api_keys=self._select_api_keys(progress),
+                api_keys=[] if session else self._select_api_keys(progress),
                 api_key_status_config=getattr(self.parent, "config_name", "config.json"),
-                progress_callback=progress,
+                progress_callback=progress, **session_args,
             )
             return created is not False and result_file.exists()
         raise ValueError(f"不支持的音频模型：{model or '空'}")
@@ -979,9 +1057,21 @@ class TaskAudioSubtitlePlugin:
         gap_ms = _bounded_int(
             options.get("subtitle_block_gap_ms", -1), -1, -1, 5000
         )
+        text = str(getattr(task, "task_audio_text", "") or "")
+        from model.ElevenLabsTimings import load_timings
+        words = load_timings(audio_file, text)
+        if words is not None:
+            from model.SubtitleHelper import generate_srt_from_word_timings
+            created = generate_srt_from_word_timings(words, subtitle_file,
+                include_line_breaks=bool(options.get("subtitle_include_line_breaks", False)),
+                max_words_per_block=_bounded_int(options.get("subtitle_max_words_per_block", 0), 0, 0, 50),
+                block_gap_ms=None if gap_ms < 0 else gap_ms)
+            progress = getattr(self, "_subtitle_progress", None)
+            if progress: progress("任务字幕：复用 ELE 生成时的时间戳，无需本地对齐；已有普通 SRT 保留。")
+            return "generated" if created else "existing", subtitle_file
         generate_srt_whisper_only(
             str(audio_file),
-            str(getattr(task, "task_audio_text", "") or ""),
+            text,
             str(subtitle_file),
             language=str(language or "sk"),
             include_line_breaks=bool(
@@ -992,20 +1082,26 @@ class TaskAudioSubtitlePlugin:
             ),
             block_gap_ms=None if gap_ms < 0 else gap_ms,
             model=self.context.whisper_model(),
+            cancelled=getattr(self, "_interrupted", None),
+            progress=getattr(self, "_subtitle_progress", None),
         )
         return "generated", subtitle_file
 
-    def _execute_jobs(self, operation, jobs, options, progress, interrupted=lambda: False):
+    def _execute_jobs(self, operation, jobs, options, progress, interrupted=lambda: False, item_progress=None):
         stats = {
             "audio_generated": 0,
             "audio_existing": 0,
             "subtitle_generated": 0,
             "subtitle_existing": 0,
             "missing_audio": 0,
+            "skipped_no_voice": 0,
+            "skipped_no_text": 0,
             "failed": 0,
             "cancelled": 0,
         }
         failures = []
+        paths = []
+        self._interrupted = interrupted
         total = len(jobs)
         for index, job in enumerate(jobs, 1):
             if interrupted():
@@ -1015,48 +1111,123 @@ class TaskAudioSubtitlePlugin:
             label = str(job.get("label") or index)
             target_dir = Path(job["target_dir"])
             try:
-                target_dir.mkdir(parents=True, exist_ok=True)
-                progress(f"[{index}/{total}] {label}")
                 if operation == "audio":
                     use_task_name = bool(options.get("use_task_name", False))
                     audio_file = self._audio_output_path(job, use_task_name)
                     if audio_file.exists():
                         stats["audio_existing"] += 1
-                        progress(f"已有音频，跳过生成：{audio_file.name}")
-                    elif self._create_audio(task, audio_file, progress):
-                        stats["audio_generated"] += 1
-                        progress(f"音频已生成：{audio_file.name}")
                     else:
-                        raise RuntimeError("音频接口没有返回有效文件")
+                        if (not str(getattr(task, "task_audio_type", "") or "").strip()
+                                and not str(getattr(task, "task_audio_voice_id", "") or "").strip()):
+                            stats["skipped_no_voice"] += 1
+                            continue
+                        if not str(getattr(task, "task_audio_text", "") or "").strip():
+                            stats["skipped_no_text"] += 1
+                            continue
+                        data_directory(target_dir).ensure(parents=True, exist_ok=True)
+                        progress(f"[{index}/{total}] {label}")
+                        if self._create_audio(task, audio_file, progress):
+                            stats["audio_generated"] += 1
+                            paths.append(str(audio_file))
+                            progress(f"音频已生成：{audio_file.name}")
+                        else:
+                            raise RuntimeError("音频接口没有返回有效文件")
                     if options.get("with_subtitles"):
                         state, subtitle_file = self._create_subtitle(
                             audio_file, task, job.get("language"), options
                         )
                         stats[f"subtitle_{state}"] += 1
-                        progress(f"字幕{'已生成' if state == 'generated' else '已存在'}：{subtitle_file.name}")
+                        if state == "generated":
+                            paths.append(str(subtitle_file))
+                            progress(f"字幕已生成：{subtitle_file.name}")
                 else:
                     audio_file = find_task_audio_file(
                         target_dir, getattr(task, "task_name", "")
                     )
                     if audio_file is None:
                         stats["missing_audio"] += 1
-                        progress(f"{label}：没有找到 task_audio 或任务名音频，已跳过", logging.ERROR)
                         continue
                     state, subtitle_file = self._create_subtitle(
                         audio_file, task, job.get("language"), options
                     )
                     stats[f"subtitle_{state}"] += 1
-                    progress(f"字幕{'已生成' if state == 'generated' else '已存在'}：{subtitle_file.name}")
+                    if state == "generated":
+                        paths.append(str(subtitle_file))
+                        progress(f"字幕已生成：{subtitle_file.name}")
             except Exception as error:
+                if interrupted():
+                    stats["cancelled"] = total - index + 1
+                    break
                 stats["failed"] += 1
                 failures.append(f"{label}：{type(error).__name__}: {error}")
                 progress(failures[-1], logging.ERROR)
+            finally:
+                if item_progress is not None:
+                    item_progress(index, total)
         summary = (
             "音频与字幕处理完成："
             f"音频新生成 {stats['audio_generated']}、已有 {stats['audio_existing']}；"
             f"字幕新生成 {stats['subtitle_generated']}、已有 {stats['subtitle_existing']}；"
-            f"缺少音频 {stats['missing_audio']}、失败 {stats['failed']}"
+            f"正常跳过：未填语音 {stats['skipped_no_voice']}、未填文案 {stats['skipped_no_text']}、"
+            f"缺少音频 {stats['missing_audio']}；真正失败 {stats['failed']}"
         )
         if stats["cancelled"]:
             summary += f"、取消 {stats['cancelled']}"
-        return {"summary": summary, "failures": failures, **stats}
+        return {"summary": summary, "failures": failures, "paths": paths, **stats}
+
+
+class _AudioJobService:
+    """Reuse the tested execution methods with a plain, worker-only context.
+
+    No PluginContext, QWidget, TaskData or mutable GUI configuration crosses
+    the queue boundary. The legacy QThread adapter is kept for standalone use.
+    """
+    _audio_output_path = staticmethod(TaskAudioSubtitlePlugin._audio_output_path)
+    _select_api_keys = TaskAudioSubtitlePlugin._select_api_keys
+    _create_audio = TaskAudioSubtitlePlugin._create_audio
+    _create_subtitle = TaskAudioSubtitlePlugin._create_subtitle
+    _execute_jobs = TaskAudioSubtitlePlugin._execute_jobs
+
+    def __init__(self, payload, context):
+        def whisper_model():
+            from globalValue import globalValue
+            return globalValue.get_whisper_model(payload["model_name"])
+        def config_snapshot():
+            config = copy.deepcopy(payload["config"])
+            config[API_KEY_STATUSES_CONFIG_KEY] = {**(config.get(API_KEY_STATUSES_CONFIG_KEY) or {}),
+                **read_api_statuses(payload["config_path"])}
+            return config
+        self.context = SimpleNamespace(load_config=config_snapshot,
+            whisper_model=whisper_model, elevenlabs_binding=payload.get('elevenlabs_binding'))
+        self.parent = SimpleNamespace(config_name=payload["config_path"])
+        self.audio_settings = payload["audio_settings"]
+        self._key_index = payload.get("key_index", 0)
+        self._subtitle_progress = lambda message: context.report(str(message))
+
+
+def run_task_audio_job(payload, context):
+    service = _AudioJobService(payload, context)
+    jobs = [{**job, "task": SimpleNamespace(**job["task"])} for job in payload["jobs"]]
+    position = 0
+    def progress(message, level=logging.INFO):
+        nonlocal position
+        match = re.match(r"\[(\d+)/(\d+)\]", str(message))
+        if match:
+            position = int(match.group(1)) - 1
+        context.log(message)
+        context.report(str(message), int(position * 100 / max(1, len(jobs))))
+    last_percent = -1
+    def item_progress(index, total):
+        nonlocal last_percent, position
+        position = index
+        percent = int(index*100/max(1,total))
+        if percent != last_percent:
+            last_percent = percent
+            context.report('处理音频与字幕', percent)
+    result = service._execute_jobs(payload["operation"], jobs, payload["options"],
+                                  progress, interrupted=context.is_canceled, item_progress=item_progress)
+    result["key_index"] = service._key_index
+    context.log(result["summary"])
+    if result["failed"] and not context.is_canceled():
+        raise BackgroundTaskResultError(result["summary"], result)
+    return result

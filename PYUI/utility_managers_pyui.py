@@ -1,8 +1,12 @@
+from model.QtThreadLifecycle import connect_thread_finished, thread_is_active
+import copy
 import math
 import os
 from html import escape, unescape
 from datetime import datetime
 from pathlib import Path
+from model.BackgroundTasks import BackgroundTaskHandle
+from model.InventoryBackground import inventory_resources, run_material_job, run_material_check_job, run_material_stats_job
 
 from qt_compat import QtCore, QtGui, QtWidgets
 from PYUI.release_notes_pyui import ReleaseNotesDialog
@@ -21,6 +25,7 @@ from model.AboutInfo import (
     maintenance_lessons_text,
 )
 from model.InventoryManager import (
+    MaterialNameConflictError,
     STATUS_CRITICAL,
     STATUS_INITIAL,
     STATUS_LABELS,
@@ -492,7 +497,7 @@ class PersonProfileDialog(QtWidgets.QDialog):
 
 
 class ImportMaterialsToPersonDialog(QtWidgets.QDialog):
-    def __init__(self, person, materials, parent=None):
+    def __init__(self, person, materials, parent=None, stats_cache=None):
         super().__init__(parent)
         self.person = dict(person or {})
         self.materials = list(materials or [])
@@ -537,7 +542,8 @@ class ImportMaterialsToPersonDialog(QtWidgets.QDialog):
             QtWidgets.QHeaderView.Stretch,
         )
         for row, material in enumerate(self.materials):
-            stats = material_directory_stats(material.get("path", ""))
+            stats = (material_directory_stats(material.get("path", "")) if stats_cache is None else
+                     stats_cache.get(str(material.get("path", "")), {"file_count": None, "size_bytes": None}))
             check_item = QtWidgets.QTableWidgetItem("导入")
             check_item.setFlags(
                 QtCore.Qt.ItemIsEnabled
@@ -549,8 +555,8 @@ class ImportMaterialsToPersonDialog(QtWidgets.QDialog):
             self.table.setItem(row, 0, check_item)
             values = (
                 material.get("name", ""),
-                stats.get("file_count", 0),
-                _format_file_size(stats.get("size_bytes", 0)),
+                "读取中" if stats.get("file_count") is None else stats["file_count"],
+                "—" if stats.get("size_bytes") is None else _format_file_size(stats["size_bytes"]),
                 material.get("path", ""),
             )
             for column, value in enumerate(values, start=1):
@@ -750,22 +756,22 @@ class MaterialGroupAssignmentDialog(QtWidgets.QDialog):
         order_toolbar.addWidget(self.open_group_btn)
         layout.addLayout(order_toolbar)
 
-        self.group_table = QtWidgets.QTableWidget(0, 5, self)
+        self.group_table = QtWidgets.QTableWidget(0, 6, self)
         self.group_table.setHorizontalHeaderLabels(
-            ["选择", "来源", "素材条目", "可用图片", "保存位置"]
+            ["选择", "来源", "素材条目", "可用图片", "更新日期", "保存位置"]
         )
         self.group_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
         self.group_table.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
         self.group_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
         self.group_table.verticalHeader().setVisible(False)
         self.group_table.horizontalHeader().setMaximumSectionSize(420)
-        for column in range(4):
+        for column in range(5):
             self.group_table.horizontalHeader().setSectionResizeMode(
                 column,
                 QtWidgets.QHeaderView.ResizeToContents,
             )
         self.group_table.horizontalHeader().setSectionResizeMode(
-            4,
+            5,
             QtWidgets.QHeaderView.Stretch,
         )
         layout.addWidget(self.group_table, 1)
@@ -802,6 +808,9 @@ class MaterialGroupAssignmentDialog(QtWidgets.QDialog):
             lambda _row, _column: self.open_current_group()
         )
         self.group_table.itemChanged.connect(self.update_distribution_label)
+        self.group_table.horizontalHeader().setSortIndicator(4, QtCore.Qt.SortOrder.DescendingOrder)
+        self.group_table.horizontalHeader().setSortIndicatorShown(True)
+        self.group_table.horizontalHeader().sectionClicked.connect(self.sort_groups)
         self.populate()
 
     @staticmethod
@@ -820,6 +829,8 @@ class MaterialGroupAssignmentDialog(QtWidgets.QDialog):
         return keys
 
     def populate(self, checked_keys=None, selected_row=None):
+        if selected_row is None:
+            self._sort_groups()
         checked_keys = (
             self.checked_group_keys()
             if checked_keys is None and self.group_table.rowCount()
@@ -844,17 +855,23 @@ class MaterialGroupAssignmentDialog(QtWidgets.QDialog):
             )
             name_item = QtWidgets.QTableWidgetItem(str(group.get("name") or ""))
             name_item.setData(QtCore.Qt.UserRole, group)
-            count_item = QtWidgets.QTableWidgetItem(
+            count_item = _SortableTableItem(
                 str(len(group.get("images") or []))
             )
+            count_item.setData(_SORT_VALUE_ROLE, len(group.get("images") or []))
             count_item.setTextAlignment(QtCore.Qt.AlignCenter)
+            updated = str(group.get("updated_at") or "")
+            date_item = _SortableTableItem(updated.replace("T", " ")[:16] or "未记录")
+            date_item.setData(_SORT_VALUE_ROLE, _date_sort_value(updated))
+            date_item.setToolTip(updated or "旧素材未记录更新时间；不会猜测文件日期。")
             path_item = QtWidgets.QTableWidgetItem(str(group.get("path") or ""))
             path_item.setToolTip(str(group.get("path") or ""))
             self.group_table.setItem(row, 0, check_item)
             self.group_table.setItem(row, 1, type_item)
             self.group_table.setItem(row, 2, name_item)
             self.group_table.setItem(row, 3, count_item)
-            self.group_table.setItem(row, 4, path_item)
+            self.group_table.setItem(row, 4, date_item)
+            self.group_table.setItem(row, 5, path_item)
         self.group_table.blockSignals(False)
         self.apply_filter(self.filter_edit.text())
         if self.groups:
@@ -864,6 +881,33 @@ class MaterialGroupAssignmentDialog(QtWidgets.QDialog):
             )
             self.group_table.selectRow(row)
         self.update_distribution_label()
+
+    def _sort_groups(self):
+        header = self.group_table.horizontalHeader()
+        column = header.sortIndicatorSection()
+        keys = {1: "source_type_label", 2: "name", 5: "path"}
+        if column == 0 or column < 0:
+            return
+        def key(group):
+            if column == 4:
+                return _date_sort_value(group.get("updated_at"))
+            if column == 3:
+                return len(group.get("images") or [])
+            return str(group.get(keys.get(column, "name")) or "").casefold()
+        self.groups.sort(key=key, reverse=header.sortIndicatorOrder() == QtCore.Qt.SortOrder.DescendingOrder)
+
+    def sort_groups(self, column):
+        if column == 0:
+            return
+        checked = self.checked_group_keys()
+        header = self.group_table.horizontalHeader()
+        order = QtCore.Qt.SortOrder.AscendingOrder
+        if column == header.sortIndicatorSection() and header.sortIndicatorOrder() == order:
+            order = QtCore.Qt.SortOrder.DescendingOrder
+        header.setSortIndicator(column, order)
+        self._sort_groups()
+        self.populate(checked)
+
 
     def apply_filter(self, text):
         needle = str(text or "").strip().casefold()
@@ -906,6 +950,7 @@ class MaterialGroupAssignmentDialog(QtWidgets.QDialog):
             self.groups[target_row],
             self.groups[row],
         )
+        self.group_table.horizontalHeader().setSortIndicator(-1, QtCore.Qt.SortOrder.AscendingOrder)
         self.populate(checked_keys, selected_row=target_row)
 
     def selected_groups(self):
@@ -1208,14 +1253,23 @@ class InventoryManagerDialog(QtWidgets.QDialog):
     material_monitor_stopped = QtCore.pyqtSignal()
     material_monitor_sync_requested = QtCore.pyqtSignal()
 
-    def __init__(self, store, parent=None, material_sync_settings=None):
+    def __init__(self, store, parent=None, material_sync_settings=None, context=None):
         super().__init__(parent)
         self.setAttribute(QtCore.Qt.WA_DeleteOnClose, False)
         self.setModal(False)
         self.setWindowModality(QtCore.Qt.NonModal)
         self.store = store
+        self.context = context
+        self._material_stats = {}
+        self._stats_handle = None
+        self._stats_pending = set()
+        self._stats_timer = QtCore.QTimer(self)
+        self._stats_timer.setSingleShot(True)
+        self._stats_timer.timeout.connect(self._start_stats_job)
         self.material_copy_thread = None
         self.material_copy_operation = None
+        self.material_background_jobs = {}
+        self._material_error_dialogs = {}
         self.material_name_lookup_thread = None
         self.material_name_resolved_url = ""
         self.material_name_lookup_error_url = ""
@@ -1685,7 +1739,7 @@ class InventoryManagerDialog(QtWidgets.QDialog):
         self.material_name_lookup_thread = thread
         thread.resolved.connect(self._material_name_resolved)
         thread.failed.connect(self._material_name_lookup_failed)
-        thread.finished.connect(self._material_name_lookup_finished)
+        connect_thread_finished(thread, self, 'material_name_lookup_thread', self._material_name_lookup_finished)
         thread.start()
 
     def _material_name_resolved(self, folder_url, name):
@@ -1726,6 +1780,10 @@ class InventoryManagerDialog(QtWidgets.QDialog):
             self.material_name_lookup_timer.start()
 
     def _set_material_copying(self, copying):
+        # Host jobs own snapshots and can queue independently of this form.
+        # Only the legacy window-owned worker (or check) locks the full form.
+        foreground = copying and (not callable(getattr(self.context, "submit_background_task", None))
+                                  or self.material_copy_thread is not None)
         for widget in (
             self.add_button,
             self.edit_button,
@@ -1755,11 +1813,31 @@ class InventoryManagerDialog(QtWidgets.QDialog):
             self.person_remove_btn,
             self.people_table,
         ):
-            widget.setEnabled(not copying)
+            widget.setEnabled(not foreground)
+        for widget in (self.material_remove_btn, self.material_check_btn,
+                       self.person_edit_btn, self.person_remove_btn, self.person_check_btn):
+            widget.setEnabled(not foreground and not self.material_background_jobs)
         self.material_submit_btn.setText(
-            "正在复制，请稍候…" if copying else "保存到素材库"
+            "正在复制，请稍候…" if foreground else
+            "保存到素材库（后台排队）" if callable(getattr(self.context, "submit_background_task", None)) else "保存到素材库"
         )
-        self._update_material_name_mode(copying=copying)
+        self._update_material_name_mode(copying=foreground)
+
+    def material_job_handles(self):
+        """All host jobs, including queued work; used by plugin shutdown."""
+        handles = [item["handle"] for item in self.material_background_jobs.values()]
+        if isinstance(self.material_copy_thread, BackgroundTaskHandle):
+            handles.append(self.material_copy_thread)
+        return handles
+
+    def _clear_material_form(self):
+        self.material_name_lookup_timer.stop()
+        self.material_name_edit.clear()
+        self.material_sources_edit.clear()
+        self.material_use_drive_folder_name_checkbox.setChecked(False)
+        self.material_drive_monitor_checkbox.setChecked(False)
+        self.material_name_resolved_url = ""
+        self.material_auto_name_value = ""
 
     def add_material(self):
         name = self.material_name_edit.text().strip()
@@ -1804,6 +1882,9 @@ class InventoryManagerDialog(QtWidgets.QDialog):
         if self.material_copy_thread is not None:
             return
 
+        if not self._validate_new_material_name(name):
+            return
+
         self._set_material_copying(True)
         display_name = name
         self.material_status_label.setText(
@@ -1823,26 +1904,130 @@ class InventoryManagerDialog(QtWidgets.QDialog):
             self,
             use_drive_folder_name=False,
         )
-        self.material_copy_thread = thread
-        thread.completed.connect(self._material_copy_completed)
-        thread.failed.connect(self._material_copy_failed)
-        thread.progress.connect(self._material_copy_progress)
-        thread.finished.connect(self._material_copy_finished)
-        thread.start()
+        self._launch_material_worker(thread)
 
-    def _material_copy_progress(self, message):
+    def _validate_new_material_name(self, name):
+        """Reject before queueing; keep the draft and use fresh on-disk state."""
+        try:
+            self.store.validate_material_name(name)
+        except MaterialNameConflictError as error:
+            QtWidgets.QMessageBox.warning(
+                self, "素材名称已存在",
+                f"{error}\n\n请修改名称；如果要补充这个素材，请在素材库中选中它，再点击“追加素材”。",
+            )
+        except Exception as error:
+            QtWidgets.QMessageBox.warning(
+                self, "无法检查素材名称", f"{error}\n\n尚未提交导入／下载，填写的内容已保留。",
+            )
+        else:
+            # The inventory plugin reuses this dialog even when it is hidden.
+            # Pending jobs have no library record yet, so check their snapshots too.
+            pending = any(
+                job["operation"].get("kind") == "material_add"
+                and str(job["operation"].get("name", "")).strip().casefold() == name.casefold()
+                for job in self.material_background_jobs.values()
+            )
+            if not pending:
+                return True
+            QtWidgets.QMessageBox.warning(
+                self, "同名素材正在导入",
+                f"“{name}”已在排队或导入／下载中，请勿重复提交。\n\n"
+                "可等待完成后使用“追加素材”，或修改名称再提交。填写的内容已保留。",
+            )
+        self.material_name_edit.setFocus()
+        self.material_name_edit.selectAll()
+        return False
+
+    def _launch_material_worker(self, thread):
+        """Keep standalone compatibility, but the installed plugin uses the host queue."""
+        if not callable(getattr(self.context, "submit_background_task", None)):
+            self.material_copy_thread = thread
+            thread.completed.connect(self._material_copy_completed)
+            thread.failed.connect(self._material_copy_failed)
+            thread.progress.connect(self._material_copy_progress)
+            connect_thread_finished(thread, self, 'material_copy_thread', self._material_copy_finished)
+            thread.start()
+            return
+        payload = {"state_path": str(self.store.path.resolve()),
+            "material_root": str(self.store.material_root.resolve()), "name": thread.name,
+            "source_paths": [str(path) for path in thread.source_paths], "material_id": thread.material_id,
+            "operation": thread.operation, "profile": thread.profile,
+            "use_drive_folder_name": thread.use_drive_folder_name}
+        thread.deleteLater()  # Never started; no native worker is owned by this window.
+        operation = copy.deepcopy(self.material_copy_operation or {})
+        try:
+            handle = self.context.submit_background_task(
+                title="素材导入／下载 · " + str(operation.get("name") or "素材"), runner=run_material_job, payload=payload,
+                kind="network" if any(str(path).startswith(("https://", "http://"))
+                    for path in payload["source_paths"]) else "cpu", resources=inventory_resources(self.store))
+        except Exception as error:
+            self._material_copy_failed(str(error))
+            self._material_copy_finished()
+            return
+        self.material_background_jobs[handle.task_id] = {"handle": handle, "operation": operation}
+        self.material_copy_operation = None
+        handle.progressChanged.connect(lambda message, _percent, op=operation: self._material_copy_progress(message, op))
+        handle.completed.connect(lambda result, op=operation: self._material_copy_completed(result["item"], op))
+        handle.failed.connect(lambda message, current=handle, op=operation: self._background_material_failed(current, message, op))
+        handle.finished.connect(lambda current=handle: self._background_material_finished(current))
+        if operation.get("kind") == "material_add":
+            # Clear on accepted submission, never on completion of an older job.
+            self._clear_material_form()
+        self._set_material_copying(False)
+        self._material_copy_progress(
+            f"已提交后台（{len(self.material_background_jobs)} 项）；可继续添加、追加或关闭窗口，任务不会停止。", operation)
+        return handle
+
+    def _background_material_finished(self, handle):
+        self.material_background_jobs.pop(handle.task_id, None)
+        self._set_material_copying(self.material_copy_thread is not None)
+
+    def _background_material_failed(self, handle, message, operation=None):
+        self._material_copy_progress(message, operation)
+        if handle.manager.get(handle.task_id)["status"] == "failed":
+            # The host emits this signal on the GUI thread. Show without exec()
+            # so cleanup and later jobs keep running, even with this window hidden.
+            handle.set_result_handler(
+                lambda: self._show_background_material_error(handle, message, operation), pending=True)
+            handle.show_result()
+
+    def _show_background_material_error(self, handle, message, operation=None):
+        box = self._material_error_dialogs.get(handle.task_id)
+        if box is None:
+            parent = self if self.isVisible() else getattr(self.context, "parent_widget", None)
+            box = QtWidgets.QMessageBox(parent or self)
+            box.setAttribute(QtCore.Qt.WA_DeleteOnClose)
+            box.setWindowTitle("素材导入／下载失败")
+            box.setIcon(QtWidgets.QMessageBox.Icon.Warning)
+            box.setTextFormat(QtCore.Qt.TextFormat.PlainText)
+            name = str((operation or {}).get("name") or "素材")
+            box.setText(f"{name}：\n{message}")
+            box.setInformativeText("本项未成功，其他后台任务会继续。详细错误已写入日志，也可从后台任务中再次查看。")
+            box.setStandardButtons(QtWidgets.QMessageBox.Ok)
+            box.setModal(False)
+            box.setWindowModality(QtCore.Qt.NonModal)
+            box.finished.connect(
+                lambda _result, task_id=handle.task_id: self._material_error_dialogs.pop(task_id, None))
+            self._material_error_dialogs[handle.task_id] = box
+        box.show()
+        box.raise_()
+
+    def _material_copy_progress(self, message, operation=None):
         message = str(message or "").strip()
         if not message:
             return
-        operation = self.material_copy_operation or {}
+        if operation is not None:
+            message = str(operation.get("name") or "素材") + "：" + message
+        operation = operation if operation is not None else self.material_copy_operation or {}
         if str(operation.get("kind", "")).startswith("person_"):
             self.person_status_label.setText(message)
         else:
             self.material_status_label.setText(message)
         self.log.emit(message)
 
-    def _material_copy_completed(self, material):
-        operation = self.material_copy_operation or {}
+    def _material_copy_completed(self, material, operation=None):
+        queued = operation is not None
+        operation = operation if queued else self.material_copy_operation or {}
         kind = operation.get("kind")
         if kind == "person_import":
             person = material.get("person", {})
@@ -1871,10 +2056,8 @@ class InventoryManagerDialog(QtWidgets.QDialog):
 
         appended = kind == "material_append"
         if not appended:
-            self.material_name_edit.clear()
-            self.material_sources_edit.clear()
-            self.material_use_drive_folder_name_checkbox.setChecked(False)
-            self.material_drive_monitor_checkbox.setChecked(False)
+            if not queued:
+                self._clear_material_form()
             monitor_folder_url = str(operation.get("monitor_folder_url") or "")
             if monitor_folder_url:
                 self.material_monitor_requested.emit({
@@ -1929,7 +2112,7 @@ class InventoryManagerDialog(QtWidgets.QDialog):
         self.material_copy_thread = None
         self._set_material_copying(False)
         self.material_copy_operation = None
-        if thread is not None:
+        if thread is not None and not isinstance(thread, BackgroundTaskHandle):
             thread.deleteLater()
         if self.pending_material_sources:
             pending = self.pending_material_sources
@@ -1961,12 +2144,7 @@ class InventoryManagerDialog(QtWidgets.QDialog):
             self,
             material_id=material.get("id"),
         )
-        self.material_copy_thread = thread
-        thread.completed.connect(self._material_copy_completed)
-        thread.failed.connect(self._material_copy_failed)
-        thread.progress.connect(self._material_copy_progress)
-        thread.finished.connect(self._material_copy_finished)
-        thread.start()
+        self._launch_material_worker(thread)
 
     def show_material_context_menu(self, position):
         index = self.material_table.indexAt(position)
@@ -1990,6 +2168,7 @@ class InventoryManagerDialog(QtWidgets.QDialog):
         sync_action.setEnabled(monitored)
         menu.addSeparator()
         remove_action = menu.addAction("移除记录")
+        remove_action.setEnabled(not self.material_background_jobs and self.material_copy_thread is None)
         selected = menu.exec(self.material_table.viewport().mapToGlobal(position))
         if selected == append_action:
             self.append_material()
@@ -2052,7 +2231,7 @@ class InventoryManagerDialog(QtWidgets.QDialog):
         data = cell.data(QtCore.Qt.UserRole) if cell else None
         return data if isinstance(data, dict) else None
 
-    def refresh_people(self, selected_id=None):
+    def refresh_people(self, selected_id=None, schedule_stats=True):
         if selected_id is None:
             selected = self._selected_person(show_message=False)
             selected_id = selected.get("id") if selected else None
@@ -2067,16 +2246,16 @@ class InventoryManagerDialog(QtWidgets.QDialog):
         default_icon = self.style().standardIcon(QtWidgets.QStyle.SP_DirHomeIcon)
         for row, person in enumerate(people):
             material_path = person.get("material_path") or person.get("path")
-            stats = material_directory_stats(material_path)
+            stats = self._directory_stats(material_path)
             links = person.get("bindings", {}).get("google_sheets", [])
             updated_at = str(person.get("updated_at", "")).replace("T", " ")[:16]
-            file_status = stats["file_count"] if stats["file_count"] else "暂无素材"
+            file_status = "读取中" if stats["file_count"] is None else stats["file_count"] if stats["file_count"] else "暂无素材"
             values = [
                 person.get("name", ""),
                 f"{len(links)} 个",
                 person.get("source_summary") or "尚未导入",
                 file_status,
-                _format_file_size(stats["size_bytes"]),
+                "—" if stats["size_bytes"] is None else _format_file_size(stats["size_bytes"]),
                 updated_at,
                 material_path,
             ]
@@ -2119,6 +2298,8 @@ class InventoryManagerDialog(QtWidgets.QDialog):
                 self.people_table.setItem(row, column, cell)
             self.people_table.setRowHeight(row, 64)
         self._finish_table_refresh(self.people_table, sort_state, selected_id)
+        if schedule_stats:
+            self._request_directory_stats(person.get("material_path") or person.get("path") for person in people)
 
     def add_person(self):
         if self.material_copy_thread is not None:
@@ -2143,16 +2324,11 @@ class InventoryManagerDialog(QtWidgets.QDialog):
             operation="person_add",
             profile=profile,
         )
-        self.material_copy_thread = thread
-        thread.completed.connect(self._material_copy_completed)
-        thread.failed.connect(self._material_copy_failed)
-        thread.progress.connect(self._material_copy_progress)
-        thread.finished.connect(self._material_copy_finished)
-        thread.start()
+        self._launch_material_worker(thread)
 
     def edit_person(self):
         person = self._selected_person()
-        if not person or self.material_copy_thread is not None:
+        if not person or self.material_copy_thread is not None or self.material_background_jobs:
             return
         dialog = PersonProfileDialog(person, self)
         if dialog.exec() != QtWidgets.QDialog.Accepted:
@@ -2202,12 +2378,7 @@ class InventoryManagerDialog(QtWidgets.QDialog):
             material_id=person.get("id"),
             operation="person_append",
         )
-        self.material_copy_thread = thread
-        thread.completed.connect(self._material_copy_completed)
-        thread.failed.connect(self._material_copy_failed)
-        thread.progress.connect(self._material_copy_progress)
-        thread.finished.connect(self._material_copy_finished)
-        thread.start()
+        self._launch_material_worker(thread)
 
     def import_person_materials(self):
         person = self._selected_person()
@@ -2225,7 +2396,8 @@ class InventoryManagerDialog(QtWidgets.QDialog):
                 "素材管理中还没有可导入的素材。",
             )
             return
-        dialog = ImportMaterialsToPersonDialog(person, materials, self)
+        dialog = ImportMaterialsToPersonDialog(person, materials, self,
+            stats_cache=self._material_stats if callable(getattr(self.context, "submit_background_task", None)) else None)
         if dialog.exec() != QtWidgets.QDialog.Accepted:
             return
         material_ids = dialog.selected_material_ids()
@@ -2253,12 +2425,7 @@ class InventoryManagerDialog(QtWidgets.QDialog):
                 "remove_originals": remove_originals,
             },
         )
-        self.material_copy_thread = thread
-        thread.completed.connect(self._material_copy_completed)
-        thread.failed.connect(self._material_copy_failed)
-        thread.progress.connect(self._material_copy_progress)
-        thread.finished.connect(self._material_copy_finished)
-        thread.start()
+        self._launch_material_worker(thread)
 
     def open_selected_person_material(self, _index=None):
         person = self._selected_person()
@@ -2347,7 +2514,7 @@ class InventoryManagerDialog(QtWidgets.QDialog):
         self.person_status_label.setText(f"已复制 {len(links)} 个表格链接。")
 
     def check_people(self):
-        if self.material_copy_thread is not None:
+        if self.material_copy_thread is not None or self.material_background_jobs:
             return
         try:
             result = self.store.check_people()
@@ -2377,6 +2544,8 @@ class InventoryManagerDialog(QtWidgets.QDialog):
             )
 
     def remove_person_record(self):
+        if self.material_copy_thread is not None or self.material_background_jobs:
+            return
         person = self._selected_person()
         if not person:
             return
@@ -2403,6 +2572,7 @@ class InventoryManagerDialog(QtWidgets.QDialog):
         person = self._selected_person(show_message=False)
         menu = QtWidgets.QMenu(self.people_table)
         edit_action = menu.addAction("编辑人物资料…")
+        edit_action.setEnabled(not self.material_background_jobs and self.material_copy_thread is None)
         append_action = menu.addAction("追加人物素材…")
         import_action = menu.addAction("从素材管理导入…")
         open_material_action = menu.addAction("打开人物素材目录")
@@ -2417,6 +2587,7 @@ class InventoryManagerDialog(QtWidgets.QDialog):
         copy_sheets_action = menu.addAction("复制表格链接")
         menu.addSeparator()
         remove_action = menu.addAction("移除人物记录")
+        remove_action.setEnabled(not self.material_background_jobs and self.material_copy_thread is None)
         selected = menu.exec(self.people_table.viewport().mapToGlobal(position))
         if selected == edit_action:
             self.edit_person()
@@ -2447,7 +2618,45 @@ class InventoryManagerDialog(QtWidgets.QDialog):
         data = cell.data(QtCore.Qt.UserRole) if cell else None
         return data if isinstance(data, dict) else None
 
-    def refresh_materials(self, selected_id=None):
+    def _directory_stats(self, path):
+        if not callable(getattr(self.context, "submit_background_task", None)):
+            return material_directory_stats(path)
+        return self._material_stats.get(str(path), {"status": "后台读取中", "file_count": None, "size_bytes": None})
+
+    def _request_directory_stats(self, paths):
+        if not callable(getattr(self.context, "submit_background_task", None)):
+            return
+        self._stats_pending.update(str(path) for path in paths if path)
+        if self._stats_pending and self._stats_handle is None:
+            self._stats_timer.start(0)
+
+    def _start_stats_job(self):
+        if self._stats_handle is not None or not self._stats_pending:
+            return
+        paths = sorted(self._stats_pending)
+        self._stats_pending.clear()
+        try:
+            handle = self.context.submit_background_task(title=f"素材目录信息刷新 · {len(paths)} 个", runner=run_material_stats_job,
+                payload={"directories": paths}, kind="cpu", resources=inventory_resources(self.store))
+        except RuntimeError as error:
+            self.log.emit(str(error))
+            return
+        self._stats_handle = handle
+        handle.completed.connect(self._directory_stats_ready)
+        handle.finished.connect(lambda current=handle: self._directory_stats_finished(current))
+
+    def _directory_stats_ready(self, result):
+        self._material_stats.update(result["stats"])
+        self.refresh_materials(schedule_stats=False)
+        self.refresh_people(schedule_stats=False)
+
+    def _directory_stats_finished(self, handle):
+        if self._stats_handle is handle:
+            self._stats_handle = None
+        if self._stats_pending:
+            self._stats_timer.start(0)
+
+    def refresh_materials(self, selected_id=None, schedule_stats=True):
         if selected_id is None:
             selected = self._selected_material(show_message=False)
             selected_id = selected.get("id") if selected else None
@@ -2460,7 +2669,7 @@ class InventoryManagerDialog(QtWidgets.QDialog):
         sort_state = self._begin_table_refresh(self.material_table)
         self.material_table.setRowCount(len(materials))
         for row, material in enumerate(materials):
-            stats = material_directory_stats(material["path"])
+            stats = self._directory_stats(material["path"])
             created_at = str(material.get("created_at", "")).replace("T", " ")[:16]
             updated_at = str(material.get("updated_at", "")).replace("T", " ")[:16]
             values = [
@@ -2471,15 +2680,15 @@ class InventoryManagerDialog(QtWidgets.QDialog):
                     else stats["status"]
                 ),
                 material.get("source_summary", f"{material.get('source_count', 0)} 项"),
-                stats["file_count"],
-                _format_file_size(stats["size_bytes"]),
+                "—" if stats["file_count"] is None else stats["file_count"],
+                "—" if stats["size_bytes"] is None else _format_file_size(stats["size_bytes"]),
                 created_at,
                 updated_at,
                 material["path"],
             ]
             warning_color = (
                 QtGui.QColor("#FFD6D6")
-                if stats["status"] != "正常"
+                if stats["status"] not in {"正常", "后台读取中"}
                 else None
             )
             for column, value in enumerate(values):
@@ -2509,9 +2718,23 @@ class InventoryManagerDialog(QtWidgets.QDialog):
                     cell.setBackground(warning_color)
                 self.material_table.setItem(row, column, cell)
         self._finish_table_refresh(self.material_table, sort_state, selected_id)
+        if schedule_stats:
+            self._request_directory_stats(material["path"] for material in materials)
 
     def check_materials(self):
-        if self.material_copy_thread is not None:
+        if self.material_copy_thread is not None or self.material_background_jobs:
+            return
+        if callable(getattr(self.context, "submit_background_task", None)):
+            handle = self.context.submit_background_task(title="素材库查库", runner=run_material_check_job,
+                payload={"state_path": str(self.store.path.resolve()), "material_root": str(self.store.material_root.resolve())},
+                kind="cpu", resources=inventory_resources(self.store))
+            self.material_copy_thread = handle
+            self._set_material_copying(True)
+            self.material_copy_operation = {"kind": "material_check"}
+            handle.completed.connect(lambda result, current=handle: self._background_check_completed(current, result))
+            handle.failed.connect(lambda message, current=handle: self._background_material_failed(current, message))
+            handle.finished.connect(self._material_copy_finished)
+            self.material_status_label.setText("查库已提交后台，不阻塞主界面。")
             return
         try:
             result = self.store.check_materials()
@@ -2519,6 +2742,20 @@ class InventoryManagerDialog(QtWidgets.QDialog):
         except (OSError, ValueError) as error:
             self._handle_material_error(error)
             return
+
+        self._show_material_check(result)
+
+    def _background_check_completed(self, handle, result):
+        self.refresh_materials()
+        removed = result.get("removed", [])
+        monitored_id = str(self.material_sync_settings.get("material_id") or "")
+        if monitored_id and any(str(item.get("id") or "") == monitored_id for item in removed):
+            self.material_monitor_stopped.emit()
+        self.material_status_label.setText(f"查库完成：有效 {len(result['kept'])} 条，移除失效记录 {len(removed)} 条。")
+        self.changed.emit()
+        handle.set_result_handler(lambda: self._show_material_check(result), pending=bool(removed))
+
+    def _show_material_check(self, result):
 
         removed = result["removed"]
         if removed:
@@ -2594,6 +2831,8 @@ class InventoryManagerDialog(QtWidgets.QDialog):
         self.material_status_label.setText(f"已复制 {len(sources)} 条素材来源。")
 
     def remove_material_record(self):
+        if self.material_copy_thread is not None or self.material_background_jobs:
+            return
         material = self._selected_material()
         if not material:
             return

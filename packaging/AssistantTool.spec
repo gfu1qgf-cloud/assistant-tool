@@ -30,6 +30,28 @@ for data_file in waste_data.rglob("*"):
         destination = data_file.parent.relative_to(project_root).as_posix()
         datas.append((str(data_file), destination))
 
+# Preserve all real Poppins weights (including italic) and their OFL notice.
+font_data = project_root / "app_plugins" / "builtin" / "batch_text_video" / "fonts" / "poppins"
+for style in ("Thin", "ThinItalic", "ExtraLight", "ExtraLightItalic", "Light", "LightItalic",
+              "Regular", "Italic", "Medium", "MediumItalic", "SemiBold", "SemiBoldItalic",
+              "Bold", "BoldItalic", "ExtraBold", "ExtraBoldItalic", "Black", "BlackItalic"):
+    if not (font_data / ("Poppins-" + style + ".ttf")).is_file():
+        raise SystemExit("Missing bundled Poppins font: " + style)
+for notice in ("OFL.txt", "METADATA.pb", "SOURCE.txt"):
+    if not (font_data / notice).is_file():
+        raise SystemExit("Missing bundled font notice: " + notice)
+for data_file in font_data.iterdir():
+    if data_file.is_file() and data_file.suffix.lower() in {".ttf", ".txt", ".pb"}:
+        datas.append((str(data_file), data_file.parent.relative_to(project_root).as_posix()))
+
+# Open Sans variable axes include all 300–800 weights, upright and italic.
+open_sans_data = project_root / "app_plugins" / "builtin" / "batch_text_video" / "fonts" / "opensans"
+for resource in ("OpenSans[wdth,wght].ttf", "OpenSans-Italic[wdth,wght].ttf", "OFL.txt", "METADATA.pb", "SOURCE.txt"):
+    data_file = open_sans_data / resource
+    if not data_file.is_file():
+        raise SystemExit("Missing bundled Open Sans resource: " + resource)
+    datas.append((str(data_file), data_file.parent.relative_to(project_root).as_posix()))
+
 mpv_runtime = project_root / "runtime" / "mpv"
 required_mpv_files = ("mpv.exe", "vulkan-1.dll")
 missing_mpv_files = [

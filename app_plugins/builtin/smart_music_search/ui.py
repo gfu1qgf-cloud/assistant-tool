@@ -1,5 +1,6 @@
 """Non-modal music search window; all decoding and inference stays off the GUI thread."""
 
+from model.QtThreadLifecycle import connect_thread_finished, thread_is_active
 import logging
 import os
 from pathlib import Path
@@ -113,6 +114,10 @@ class SmartMusicSearchDialog(QtWidgets.QDialog):
         self._feedback_key = ""
         self._pending_settings = None
         self.worker = None
+        self._shutting_down = False
+        self._finish_timer = QtCore.QTimer(self)
+        self._finish_timer.setSingleShot(True)
+        self._finish_timer.timeout.connect(self._finished)
         self._task_kind = ""
         self._results = []
         self._shown_count = 0
@@ -328,14 +333,14 @@ class SmartMusicSearchDialog(QtWidgets.QDialog):
         return self.worker is not None
 
     def _start(self, kind, task):
-        if self.is_busy():
+        if self._shutting_down or self.is_busy():
             return
         self._task_kind = kind
         self.worker = _Worker(task, self)
         self.worker.progressChanged.connect(self._progress)
         self.worker.completed.connect(self._completed)
         self.worker.failed.connect(self._failed)
-        self.worker.finished.connect(self._finished)
+        connect_thread_finished(self.worker, self, 'worker', self._finished)
         self.index_button.setEnabled(False)
         self.search_button.setEnabled(False)
         self.reference_button.setEnabled(False)
@@ -353,6 +358,10 @@ class SmartMusicSearchDialog(QtWidgets.QDialog):
         self.status.setText(message)
 
     def _finished(self):
+        worker = self.worker
+        if isinstance(worker, QtCore.QThread) and not worker.wait(0):
+            self._finish_timer.start(20)
+            return
         self.index_button.setEnabled(True)
         self.search_button.setEnabled(True)
         self.reference_button.setEnabled(True)
@@ -363,6 +372,8 @@ class SmartMusicSearchDialog(QtWidgets.QDialog):
         self.progress.hide()
         worker, self.worker = self.worker, None
         if worker is not None:
+            if isinstance(worker, _Worker):
+                worker.task = None
             worker.deleteLater()
         if self._pending_settings is not None:
             updated, self._pending_settings = self._pending_settings, None
@@ -581,6 +592,8 @@ class SmartMusicSearchDialog(QtWidgets.QDialog):
         return self._results[row] if 0 <= row < len(self._results) else None
 
     def preview_selected(self, *_args):
+        if self._shutting_down:
+            return
         result = self._selected()
         if not result:
             return
@@ -622,6 +635,8 @@ class SmartMusicSearchDialog(QtWidgets.QDialog):
             self._pending_seek_ms = None
 
     def _preview_position_changed(self, position):
+        if self._shutting_down:
+            return
         if not self._seek_dragging:
             self.seek_slider.setValue(max(0, min(int(position), self.seek_slider.maximum())))
             self.preview_current_time.setText(format_time(position / 1000))
@@ -629,6 +644,8 @@ class SmartMusicSearchDialog(QtWidgets.QDialog):
             self.stop_preview()
 
     def _preview_duration_changed(self, duration_ms):
+        if self._shutting_down:
+            return
         duration_ms = max(0, int(duration_ms))
         if duration_ms:
             self.seek_slider.setRange(0, duration_ms)
@@ -668,6 +685,30 @@ class SmartMusicSearchDialog(QtWidgets.QDialog):
         self._pending_seek_ms = None
         self._preview_end_ms = None
         self._seek_dragging = False
+
+    def shutdown(self):
+        if self.is_busy():
+            self.cancel_work()
+            return False
+        self._shutting_down = True
+        self._pending_settings = None
+        self._finish_timer.stop()
+        self.tag_input.picker.close()
+        self.stop_preview()
+        player, self._player = self._player, None
+        output, self._audio_output = self._audio_output, None
+        if player is not None:
+            player.blockSignals(True)
+            player.setSource(QtCore.QUrl())
+            player.setAudioOutput(None)
+            player.deleteLater()
+        if output is not None:
+            output.deleteLater()
+        release = getattr(self.encoder, "release", None)
+        if callable(release):
+            release()
+        self.hide()
+        return True
 
     def _context_menu(self, position):
         clicked = self.table.indexAt(position)

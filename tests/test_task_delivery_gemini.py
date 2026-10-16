@@ -20,6 +20,12 @@ class FakeContext:
     def register_command(self, _command):
         pass
 
+    def register_node(self, _node):
+        pass
+
+    def register_workflow_type(self, _workflow):
+        pass
+
     def register_main_widget(self, _widget):
         pass
 

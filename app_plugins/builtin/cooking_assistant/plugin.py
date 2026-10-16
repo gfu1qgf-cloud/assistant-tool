@@ -2,7 +2,7 @@ import logging
 from pathlib import Path
 
 from qt_compat import QtCore
-from app_paths import APP_ROOT
+from app_paths import DATA_ROOT as APP_ROOT
 from app_plugins.api import MAIN_MENU, PluginCommand, PluginSettingsPage
 from .settings import CONFIG_KEY, CookingSettingsPage, normalize_settings
 from .store import FoodStore, stock_status, today
@@ -22,12 +22,16 @@ class CookingAssistantPlugin:
         self._reported_error = None
 
     def register(self, context):
-        self.context = context
-        self.settings = normalize_settings(context.load_config().get(CONFIG_KEY))
+        self.bind_context(context)
         context.register_command(PluginCommand("open", "做饭小助手…", lambda _rows: self.open_dialog(),
             frozenset({MAIN_MENU}), tooltip="食材库存、临期提醒、两顿份量的中文做饭建议", order=20))
         context.register_settings_page(PluginSettingsPage("settings", "做饭小助手",
             lambda parent=None: CookingSettingsPage(context, parent), order=220))
+
+    def bind_context(self, context):
+        """Allow the Life Assistant to host cooking without a second plugin entry."""
+        self.context = context
+        self.settings = normalize_settings(context.load_config().get(CONFIG_KEY))
 
     def start(self):
         if self.timer is None:

@@ -1,6 +1,7 @@
 import copy
 from pathlib import Path
 import tempfile
+import time
 from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock,patch
@@ -19,6 +20,27 @@ class PreviewLinkTests(unittest.TestCase):
     def setUpClass(cls):
         cls.app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
         ensure_fonts()
+
+    def tearDown(self):
+        # Production closeEvent intentionally hides this modeless editor so
+        # exports can continue. Tests must explicitly retire its native widgets
+        # before QApplication/interpreter teardown, not leave hidden windows.
+        dialogs = [widget for widget in self.app.topLevelWidgets()
+                   if isinstance(widget, BatchTextVideoDialog)]
+        for dialog in dialogs:
+            dialog.cancel_work()
+            for timer in dialog.findChildren(QtCore.QTimer):
+                timer.stop()
+        deadline = time.monotonic() + 5
+        while any(dialog.is_busy() for dialog in dialogs) and time.monotonic() < deadline:
+            self.app.processEvents()
+            time.sleep(.002)
+        self.assertFalse(any(dialog.is_busy() for dialog in dialogs), "preview workers must join before deleting widgets")
+        for widget in self.app.topLevelWidgets():
+            if isinstance(widget, (BatchTextVideoDialog, Preview)):
+                widget.deleteLater()
+        self.app.sendPostedEvents(None, QtCore.QEvent.Type.DeferredDelete)
+        self.app.processEvents()
 
     def context(self,root,name="任务登记表格.ods"):
         window = SimpleNamespace(loaded_project_dir=root,load_config=lambda:{"task_table_file_name":name})
@@ -171,7 +193,7 @@ class PreviewLinkTests(unittest.TestCase):
                     dialog.splitter.setSizes([320,450,420])
                     panel = dialog.layer_panel
                     for tab in (0,1,2):
-                        panel.property_tabs.setCurrentIndex(tab)
+                        panel.reveal_property(('font','position','source')[tab])
                         self.app.processEvents()
                         field = panel.text_properties.controls["font"] if tab == 0 else panel.properties["width"] if tab == 1 else panel.content_editor.source
                         field.setFocus()

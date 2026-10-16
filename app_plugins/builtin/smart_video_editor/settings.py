@@ -121,7 +121,7 @@ class SmartVideoEditorSettingsPage:
         form.addRow("切点搜索范围：", self.boundary_search_spinbox)
 
         self.compress_pauses_checkbox = QtWidgets.QCheckBox(
-            "实验性：压缩句子内部的过长停顿（默认关闭）", content
+            "裁剪视频内部的长停顿（默认关闭）", content
         )
         self.compress_pauses_checkbox.setToolTip(
             "正常智能剪辑已经会删除每段开头和结尾的气口。句内停顿可能包含"
@@ -227,6 +227,10 @@ class SmartVideoEditorSettingsPage:
         self.existing_output_combo.addItem("保留旧文件并生成新版本", "version")
         self.existing_output_combo.addItem("覆盖旧输出", "overwrite")
         self.existing_output_combo.addItem("已有输出时跳过", "skip")
+        self.export_mode_combo = QtWidgets.QComboBox(content)
+        self.export_mode_combo.addItem("合并视频 + SRT", "joined")
+        self.export_mode_combo.addItem("导出分段视频（不拼接，不生成 SRT）", "segments")
+        self.export_mode_combo.setToolTip("按核对顺序每个保留的源视频输出一段，编号 001、002…；同样应用裁切和排除决定。")
         self.auto_export_checkbox = QtWidgets.QCheckBox(
             "没有发生裁切且全部通过时直接导出；有裁切或异常时打开核对界面",
             content,
@@ -234,6 +238,7 @@ class SmartVideoEditorSettingsPage:
         form.addRow("输出目录名：", self.output_folder_edit)
         form.addRow("FFmpeg 编码器：", browse_row)
         form.addRow("已有输出：", self.existing_output_combo)
+        form.addRow("默认导出方式：", self.export_mode_combo)
         form.addRow("", self.auto_export_checkbox)
 
         note = QtWidgets.QLabel(
@@ -241,8 +246,7 @@ class SmartVideoEditorSettingsPage:
             "正确内容，Whisper 只负责定位和核对。原视频永不覆盖，分析报告和"
             "识别缓存保存在输出目录中。气口可以按分贝、人声或两者的"
             "并集/交集判断；旧版分贝模式最积极，人声模式更适合有底噪的素材。"
-            "句内停顿压缩属于实验功能，"
-            "默认关闭。",
+            "视频内部长停顿裁剪默认关闭，可保存设置并在时间线核对删除区。",
             content,
         )
         note.setWordWrap(True)
@@ -359,6 +363,7 @@ class SmartVideoEditorSettingsPage:
         self.ffmpeg_path_edit.setText(settings["ffmpeg_path"])
         index = self.existing_output_combo.findData(settings["existing_output"])
         self.existing_output_combo.setCurrentIndex(index if index >= 0 else 0)
+        self.export_mode_combo.setCurrentIndex(1 if settings["export_mode"] == "segments" else 0)
         self.auto_export_checkbox.setChecked(settings["auto_export_clean"])
         self._update_enabled_state()
         self._update_subtitle_state()
@@ -380,7 +385,7 @@ class SmartVideoEditorSettingsPage:
             "min_silence_ms": self.min_silence_spinbox.value(),
             "boundary_search_ms": self.boundary_search_spinbox.value(),
             "compress_internal_pauses": self.compress_pauses_checkbox.isChecked(),
-            "internal_pause_mode": "experimental" if self.compress_pauses_checkbox.isChecked() else "off",
+            "internal_pause_mode": "enabled" if self.compress_pauses_checkbox.isChecked() else "off",
             "pause_threshold_ms": self.pause_threshold_spinbox.value(),
             "pause_keep_before_ms": self.pause_keep_before_spinbox.value(),
             "pause_keep_after_ms": self.pause_keep_after_spinbox.value(),
@@ -403,6 +408,7 @@ class SmartVideoEditorSettingsPage:
             "output_folder_name": self.output_folder_edit.text().strip(),
             "ffmpeg_path": self.ffmpeg_path_edit.text().strip(),
             "existing_output": self.existing_output_combo.currentData(),
+            "export_mode": self.export_mode_combo.currentData(),
             "auto_export_clean": self.auto_export_checkbox.isChecked(),
         })
 

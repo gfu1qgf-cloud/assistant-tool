@@ -178,10 +178,11 @@ class PluginHostTests(unittest.TestCase):
         plugin_menu = self.host.attach_main_menu(menu_bar)
 
         self.assertEqual(plugin_menu.title(), "插件")
-        self.assertEqual(plugin_menu.actions()[0].text(), "演示插件")
-        self.assertEqual(plugin_menu.actions()[1].text(), "演示监听")
-        plugin_menu.actions()[0].trigger()
-        plugin_menu.actions()[1].trigger()
+        self.assertEqual(plugin_menu.actions()[0].text(), "插件管理…")
+        self.assertEqual(plugin_menu.actions()[2].text(), "演示插件")
+        self.assertEqual(plugin_menu.actions()[3].text(), "演示监听")
+        plugin_menu.actions()[2].trigger()
+        plugin_menu.actions()[3].trigger()
 
         task_menu = QtWidgets.QMenu(self.main)
         actions = self.host.populate_task_context_menu(task_menu, [1, 4])
@@ -260,14 +261,117 @@ class PluginHostTests(unittest.TestCase):
         self.host.install(GroupedMainPlugin())
         plugin_menu = self.host.attach_main_menu(QtWidgets.QMenuBar(self.main))
 
-        self.assertEqual(len(plugin_menu.actions()), 1)
-        submenu = plugin_menu.actions()[0].menu()
+        self.assertEqual(len(plugin_menu.actions()), 3)
+        submenu = plugin_menu.actions()[2].menu()
         self.assertIsNotNone(submenu)
         self.assertEqual(submenu.title(), "任务交付")
         self.assertEqual(
             [action.text() for action in submenu.actions()],
             ["第一项", "第二项"],
         )
+
+    def test_task_menu_groups_legacy_commands_by_plugin_without_reordering(self):
+        invoked = []
+
+        class TaskPlugin:
+            def __init__(self, plugin_id, name, commands):
+                self.plugin_id = plugin_id
+                self.display_name = name
+                self.commands = commands
+
+            def register(self, context):
+                for command_id, title, order in self.commands:
+                    context.register_command(PluginCommand(
+                        command_id, title,
+                        lambda rows, cid=command_id: invoked.append((cid, rows)),
+                        frozenset({TASK_CONTEXT_MENU}), order=order,
+                    ))
+
+        self.host.install(TaskPlugin("first", "视频处理", [
+            ("one", "第一项", 10), ("three", "第三项", 30),
+        ]))
+        self.host.install(TaskPlugin("second", "图片处理", [("two", "第二项", 20)]))
+        menu = QtWidgets.QMenu(self.main)
+        rows = [2, 5]
+        actions = self.host.populate_task_context_menu(menu, rows)
+        rows.clear()
+        self.assertEqual([action.text() for action in actions], ["第一项", "第二项", "第三项"])
+        self.assertEqual([action.menu().title() for action in menu.actions()], ["视频处理", "图片处理"])
+        self.assertEqual([action.text() for action in menu.actions()[0].menu().actions()], ["第一项", "第三项"])
+        self.assertEqual(len(menu.actions()[1].menu().actions()), 1)
+        for action in actions:
+            action.trigger()
+        self.assertEqual(invoked, [("one", (2, 5)), ("two", (2, 5)), ("three", (2, 5))])
+
+    def test_task_menu_does_not_merge_same_named_submenus_from_different_plugins(self):
+        class SharedTitlePlugin:
+            def __init__(self, plugin_id):
+                self.plugin_id = plugin_id
+
+            def register(self, context):
+                context.register_command(PluginCommand(
+                    "command", self.plugin_id, lambda _rows: None,
+                    frozenset({TASK_CONTEXT_MENU}), submenu="自定义分组",
+                ))
+
+        self.host.install(SharedTitlePlugin("first"))
+        self.host.install(SharedTitlePlugin("second"))
+        menu = QtWidgets.QMenu(self.main)
+        actions = self.host.populate_task_context_menu(menu, [0])
+        groups = [action.menu() for action in menu.actions()]
+        self.assertEqual(len(groups), 2)
+        self.assertEqual([group.property("plugin_id") for group in groups], ["first", "second"])
+        self.assertNotEqual(groups[0].objectName(), groups[1].objectName())
+        self.assertEqual([group.actions() for group in groups], [[actions[0]], [actions[1]]])
+
+    def test_task_menu_omits_empty_groups_and_preserves_disabled_actions(self):
+        class FilteredPlugin:
+            plugin_id = "filtered"
+            display_name = "隐藏的插件"
+
+            def register(self, context):
+                context.register_command(PluginCommand(
+                    "hidden", "隐藏项", lambda _rows: None,
+                    frozenset({TASK_CONTEXT_MENU}), visible=lambda _rows: False,
+                ))
+
+        class DisabledCommandPlugin:
+            plugin_id = "disabled_command"
+            display_name = "可见插件"
+
+            def register(self, context):
+                context.register_command(PluginCommand(
+                    "disabled", "不可用项", lambda _rows: None,
+                    frozenset({TASK_CONTEXT_MENU}), enabled=lambda _rows: False,
+                ))
+
+        self.host.install(FilteredPlugin())
+        self.host.install(DisabledCommandPlugin())
+        menu = QtWidgets.QMenu(self.main)
+        actions = self.host.populate_task_context_menu(menu, [0])
+        self.assertEqual([action.menu().title() for action in menu.actions()], ["可见插件"])
+        self.assertEqual(len(actions), 1)
+        self.assertFalse(actions[0].isEnabled())
+
+    def test_task_menu_falls_back_to_existing_plugin_name_or_id(self):
+        self.host.install(DemoPlugin())
+        menu = QtWidgets.QMenu(self.main)
+        self.host.populate_task_context_menu(menu, [0])
+        self.assertEqual(menu.actions()[0].menu().title(), "演示插件")
+
+        class NamelessPlugin:
+            plugin_id = "task_only"
+
+            def register(self, context):
+                context.register_command(PluginCommand(
+                    "command", "任务操作", lambda _rows: None,
+                    frozenset({TASK_CONTEXT_MENU}),
+                ))
+
+        self.host.install(NamelessPlugin())
+        menu = QtWidgets.QMenu(self.main)
+        self.host.populate_task_context_menu(menu, [0])
+        self.assertIn("task_only", [action.menu().title() for action in menu.actions()])
 
     def test_plugin_widget_is_mounted_inside_host_controlled_area(self):
         class WidgetPlugin:
@@ -364,13 +468,13 @@ class PluginHostTests(unittest.TestCase):
         tabs = QtWidgets.QTabWidget(dialog)
         self.host.create_settings_pages(dialog, tabs)
 
-        self.assertEqual(plugin_menu.actions()[0].text(), "库存与素材管理器")
+        self.assertEqual(plugin_menu.actions()[2].text(), "库存与素材管理器")
         self.assertEqual(task_actions[0].text(), "分配库存图片…")
         self.assertIn("分配图片智能版…", [action.text() for action in task_actions])
         self.assertEqual(tabs.tabText(0), "库存插件")
         self.assertIn("图片智能分配", [tabs.tabText(i) for i in range(tabs.count())])
 
-    def test_chrome_plugin_registers_launcher_next_command_and_settings(self):
+    def test_chrome_plugin_registers_launcher_and_settings_without_next_menu_entry(self):
         self.host.install(ChromeLauncherPlugin())
         menu_bar = QtWidgets.QMenuBar(self.main)
         plugin_menu = self.host.attach_main_menu(menu_bar)
@@ -380,7 +484,7 @@ class PluginHostTests(unittest.TestCase):
 
         self.assertEqual(
             [action.text() for action in plugin_menu.actions()],
-            ["Chrome 启动器", "启动下一个 Chrome"],
+            ["插件管理…", "", "Chrome 启动器", "浏览器书签库…"],
         )
         self.assertEqual(tabs.tabText(0), "Chrome 插件")
 
@@ -418,7 +522,7 @@ class PluginHostTests(unittest.TestCase):
         self.host.update_settings_config(saved)
         self.host.update_runtime_config(saved)
 
-        self.assertEqual(plugin_menu.actions()[0].text(), "启用音乐压制")
+        self.assertEqual(plugin_menu.actions()[2].text(), "启用音乐压制")
         self.assertEqual(tabs.tabText(0), "音乐压制")
         self.assertEqual(plugin.settings["duck_to_percent"], 17)
         self.assertEqual(saved[MUSIC_DUCKER_CONFIG_KEY]["duck_to_percent"], 17)
@@ -450,7 +554,14 @@ class PluginHostTests(unittest.TestCase):
         self.host.update_settings_config(saved)
         self.host.update_runtime_config(saved)
 
-        self.assertEqual(plugin_menu.actions()[0].text(), "智能剪辑并生成 SRT…")
+        self.assertEqual(plugin_menu.actions()[2].text(), "智能剪辑")
+        self.assertEqual(len(plugin_menu.actions()), 3)
+        from unittest.mock import patch
+        with patch.object(QtWidgets.QMessageBox, "information") as about, patch.object(plugin, "start_editor") as start:
+            plugin_menu.actions()[2].trigger()
+            about.assert_called_once()
+            self.assertIn(plugin.version, about.call_args.args[2])
+            start.assert_not_called()
         self.assertEqual(task_actions[0].text(), "智能剪辑并生成 SRT…")
         self.assertEqual(tools_menu.actions()[-1].text(), "待处理智能剪辑（1）")
         self.assertEqual(tabs.tabText(0), "智能剪辑")

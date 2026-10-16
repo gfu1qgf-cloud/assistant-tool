@@ -6,6 +6,7 @@ The service response is treated as optional: every failure returns a displayable
 """
 
 from __future__ import annotations
+from model.AppDataStorage import data_file, data_io
 
 import base64
 import json
@@ -245,7 +246,7 @@ def atomic_update_auth_tokens(auth_path: Path, new_tokens: dict[str, Any]) -> bo
     try:
         if not auth_path.is_file() or not auth_path.parent.is_dir():
             return False
-        payload = json.loads(auth_path.read_text(encoding="utf-8"))
+        payload = json.loads(data_file(auth_path).read_text(encoding="utf-8"))
         if not isinstance(payload, dict):
             return False
         tokens = payload.get("tokens")
@@ -258,7 +259,7 @@ def atomic_update_auth_tokens(auth_path: Path, new_tokens: dict[str, Any]) -> bo
                     payload[key] = value
         payload["tokens"] = tokens
         payload["last_refresh"] = utc_now()
-        descriptor, temporary_name = tempfile.mkstemp(prefix="auth-refresh-", suffix=".tmp", dir=auth_path.parent)
+        descriptor, temporary_name = data_io.mkstemp(prefix="auth-refresh-", suffix=".tmp", dir=auth_path.parent)
         temporary = Path(temporary_name)
         try:
             with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
@@ -266,13 +267,13 @@ def atomic_update_auth_tokens(auth_path: Path, new_tokens: dict[str, Any]) -> bo
                 handle.write("\n")
                 handle.flush()
                 os.fsync(handle.fileno())
-            os.replace(temporary, auth_path)
+            data_io.replace(temporary, auth_path)
             if os.name != "nt":
                 auth_path.chmod(stat.S_IRUSR | stat.S_IWUSR)
             return True
         finally:
             if temporary.exists():
-                temporary.unlink()
+                data_file(temporary).remove()
     except (OSError, ValueError, json.JSONDecodeError):
         return False
 
@@ -320,7 +321,7 @@ def fetch_profile_quota(
         if not auth_path.is_file() or auth_path.stat().st_size <= 2:
             return QuotaInfo(profile_id, False, "未绑定", "未找到有效的登录缓存文件 (auth.json)。", error_message="auth_file_not_found")
         try:
-            auth_data = json.loads(auth_path.read_text(encoding="utf-8"))
+            auth_data = json.loads(data_file(auth_path).read_text(encoding="utf-8"))
         except (OSError, ValueError, json.JSONDecodeError) as error:
             return QuotaInfo(profile_id, False, "查询失败", f"读取凭据文件失败: {error}", error_message=str(error))
         if not isinstance(auth_data, dict):

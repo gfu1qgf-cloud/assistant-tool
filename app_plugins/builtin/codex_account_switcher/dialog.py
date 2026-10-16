@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from qt_compat import QtCore, QtGui, QtWidgets
+from model.QtThreadLifecycle import connect_thread_finished, thread_is_active
 
 from .launcher import (
     LaunchError,
@@ -241,7 +242,7 @@ class AccountSwitcherDialog(QtWidgets.QDialog):
             quota = self._quotas.get(profile.profile_id)
             if quota:
                 quota_item = self._quota_item(quota)
-            elif self._quota_worker and self._quota_worker.isRunning():
+            elif thread_is_active(self._quota_worker):
                 quota_item = QtWidgets.QTableWidgetItem("查询中...")
             else:
                 quota_item = QtWidgets.QTableWidgetItem("待检测" if self.store.has_file_auth(profile) else "未绑定")
@@ -299,7 +300,7 @@ class AccountSwitcherDialog(QtWidgets.QDialog):
         profiles = self.store.profiles()
         if not profiles:
             return
-        if self._quota_worker and self._quota_worker.isRunning():
+        if thread_is_active(self._quota_worker):
             if not force:
                 return
             self._stop_quota_worker()
@@ -317,9 +318,7 @@ class AccountSwitcherDialog(QtWidgets.QDialog):
         self._quota_worker = worker
         worker.quota_ready.connect(self._on_quota_ready)
         worker.all_finished.connect(self._on_quota_finished)
-        worker.finished.connect(
-            lambda value=worker: self._cleanup_worker(value)
-        )
+        connect_thread_finished(worker, self, None, self._cleanup_worker, pass_thread=True)
         worker.start()
 
     def _on_quota_ready(self, profile_id, quota):
@@ -527,10 +526,13 @@ class AccountSwitcherDialog(QtWidgets.QDialog):
 
     def shutdown(self):
         self._stop_quota_worker()
-        for worker in list(self._lingering_workers):
-            worker.wait(300)
-        self._lingering_workers = []
+        # Preserve ownership on timeout. Never destroy a dialog that still
+        # owns a quota request; finished will safely clean the retired worker.
+        return not any(thread_is_active(worker) for worker in self._lingering_workers)
 
     def closeEvent(self, event):
-        self.shutdown()
+        if not self.shutdown():
+            self.hide()
+            event.ignore()
+            return
         super().closeEvent(event)

@@ -1,3 +1,5 @@
+
+from model.AppDataStorage import data_io, data_file, data_directory
 import hashlib
 import json
 import os
@@ -9,7 +11,7 @@ from urllib.error import HTTPError, URLError
 
 from qt_compat import QtCore
 
-from app_paths import APP_ROOT
+from app_paths import DATA_ROOT as APP_ROOT
 from model.GoogleDriveDownloader import (
     DownloadError,
     download_one,
@@ -54,7 +56,7 @@ class TaskReferenceDownloadCache:
         if not self.path.exists():
             return self._default_state()
         try:
-            state = json.loads(self.path.read_text(encoding="utf-8-sig"))
+            state = json.loads(data_file(self.path).read_text(encoding="utf-8-sig"))
         except (OSError, json.JSONDecodeError) as error:
             self.warning = "参考文件下载索引无法读取，将重新核对：{}".format(error)
             return self._default_state()
@@ -114,18 +116,18 @@ class TaskReferenceDownloadCache:
     def save(self):
         if not self.dirty:
             return
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        data_directory(self.path.parent).ensure(parents=True, exist_ok=True)
         temp_path = self.path.with_name(self.path.name + ".tmp")
         try:
-            temp_path.write_text(
+            data_file(temp_path).write_text_direct(
                 json.dumps(self.state, ensure_ascii=False, indent=2),
                 encoding="utf-8",
             )
-            os.replace(str(temp_path), str(self.path))
+            data_io.replace(str(temp_path), str(self.path))
             self.dirty = False
         except OSError:
             try:
-                temp_path.unlink()
+                data_file(temp_path).unlink()
             except OSError:
                 pass
             raise
@@ -255,7 +257,7 @@ class TaskReferenceDownloadThread(QtCore.QThread):
                 )
             )
             try:
-                job.output_dir.mkdir(parents=True, exist_ok=True)
+                data_directory(job.output_dir).ensure(parents=True, exist_ok=True)
                 drive_link = parse_drive_link(job.url)
             except (DownloadError, OSError, ValueError) as error:
                 result["failed"] += 1

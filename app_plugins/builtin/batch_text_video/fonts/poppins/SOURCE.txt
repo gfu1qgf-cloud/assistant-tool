@@ -1,0 +1,7 @@
+Poppins — unmodified Google Fonts distribution
+Source: https://github.com/google/fonts/tree/8b0a1d0f5983c89bc2b93f1b5fb55f9e252744b5/ofl/poppins
+Revision: 8b0a1d0f5983c89bc2b93f1b5fb55f9e252744b5
+Retrieved: 2026-10-07
+Copyright and distribution license: see the original OFL.txt and METADATA.pb.
+Includes the nine upright weights 100–900 and their nine italic counterparts.
+Registered only inside AssistantTool; no system-font installation is performed.

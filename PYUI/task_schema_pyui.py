@@ -29,6 +29,9 @@ class TaskTableSchemaDialog(QtWidgets.QDialog):
             "会继续使用后面的列。以后表格改名时，只需在这里增加新表头。"
             "每日统计可在本地表末尾增添“每日统计分页”“每日统计类别”两列；"
             "原有“类型”“任务类型”及旧表格保持不变。"
+            "“语音ID”可填写ElevenLabs Voice ID；填后优先使用最新模型和该声音，语音类型可留空。"
+            "“任务需求”“备注”“sora2提示词”“需要达芬奇吗？”会分别提供给整理视频输入节点；"
+            "其他自定义列（含空单元格）保留在原始表格字段，按列名读取。"
         )
         intro.setWordWrap(True)
         layout.addWidget(intro)

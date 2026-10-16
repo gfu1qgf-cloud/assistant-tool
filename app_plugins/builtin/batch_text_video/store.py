@@ -8,13 +8,15 @@ import tempfile
 import threading
 import uuid
 
-from app_paths import APP_ROOT
+from app_paths import DATA_ROOT as APP_ROOT
+from model.AppDataStorage import data_file, data_directory
 from .layers import DEFAULT_LAYERS, normalize_layers
 from .effects import blur_strength
 
 SCHEMES = {"static_text": "静态文字版"}
 DEFAULTS = {
     "scheme": "static_text", "aspect": "portrait", "fit": "contain",
+    "auto_crop_black_bars": True,
     "geometry_units": "percent", "show_layer_bounds": True,
     "background_tint_color":"#000000","background_tint_strength":0,
     "background_blur":0,
@@ -23,10 +25,13 @@ DEFAULTS = {
     "body_min": 26, "body_max": 42, "title_color": "#d3e55a",
     "body_color": "#ffffff", "margin_x": 8, "margin_top": 8,
     "margin_bottom": 18, "line_spacing": 1.15, "gap": 22,
-    "darkness": 14, "music_volume": 70, "keep_audio": False,
+    "darkness": 14, "music_volume": 70, "keep_audio": False, "music_pool_id": "",
     "skip_silence": True, "silence_db": -50, "silence_seconds": 0.6,
     "fade_seconds": 0.5, "overwrite": False, "output_dir": "", "ffmpeg_path": "",
-    "use_voice": False, "duration_strategy": "loop", "loop_transition": "fade",
+    "video_encoder": "cpu", "encoder_fallback": True, "export_workers": 1, "export_quality": "high",
+    "use_voice": False, "voice_pool_id": "", "voice_pool_mode": "task", "music_enabled": True,
+    "duration_strategy": "loop", "loop_transition": "fade",
+    "unvoiced_duration_mode": "source", "unvoiced_duration_seconds": 15.0,
     "transition_seconds": 0.4, "min_speed": 0.5, "slow_interpolation": "repeat",
     "voice_volume": 100, "voice_music_volume": 25,
     "voice_eq": True, "eq_frequency": 1500, "eq_width": 2.0, "eq_gain": -9,
@@ -38,10 +43,15 @@ _LOCK = threading.RLock()
 
 
 def fresh_state():
-    return {"version": 1, "revision": 0, "settings": copy.deepcopy(DEFAULTS),
+    from .render_settings import KEYS
+    settings = copy.deepcopy(DEFAULTS)
+    settings['export_workers'] = 2
+    return {"version": 1, "revision": 0, "settings": settings,
+            'render_settings': {key: copy.deepcopy(settings[key]) for key in KEYS},
             "jobs": [], "music": [], "next_music_id": "", "backgrounds": [],
-            "copy_pool": [], "image_pool": [], "active_profile": "default",
-            "profiles": [{"id": "default", "name": "默认配置", "data": None}]}
+            "copy_pool": [], "image_pool": [], "resource_pools": [], "active_profile": "default",
+            "profiles": [{"id": "default", "name": "默认配置", "data": None}],
+            "render_plans": []}
 
 
 def file_identity(path):
@@ -68,17 +78,22 @@ def add_paths(items, paths, music=False):
 
 class Store:
     def __init__(self, directory=None):
-        self.directory = Path(directory or APP_ROOT / "BatchTextVideo")
+        self.directory = data_directory(directory or APP_ROOT / "BatchTextVideo").path
         self.path = self.directory / "state.json"
 
     def load(self):
         with _LOCK:
-            if not self.path.exists():
+            managed = data_file(self.path)
+            if not managed.exists():
                 return fresh_state()
-            state = json.loads(self.path.read_text("utf-8"))
+            state = managed.read_json()
             if state.get("version") != 1 or not isinstance(state.get("jobs"), list) or not isinstance(state.get("music"), list):
                 raise ValueError("批量文案视频记录格式异常，未清空或覆盖；请检查 state.json。")
             state["settings"] = {**copy.deepcopy(DEFAULTS), **state.get("settings", {})}
+            from .adaptation import normalize_duration
+            normalize_duration(state["settings"])
+            from model.MediaEncoding import normalize_export_settings
+            normalize_export_settings(state['settings'])
             state["settings"]["background_blur"] = blur_strength(state["settings"])
             state["settings"]["layers"] = normalize_layers(state["settings"].get("layers"))
             state.setdefault("backgrounds", [])
@@ -86,18 +101,45 @@ class Store:
             migrate_pools(state)
             if "profiles" not in state:
                 state.update(active_profile="default", profiles=[{"id": "default", "name": "默认配置", "data": None}])
+            state.setdefault("render_plans", [])
             if (not isinstance(state["profiles"], list) or not state["profiles"] or
                     len({item["id"] for item in state["profiles"]}) != len(state["profiles"]) or
                     not any(item["id"] == state.get("active_profile") for item in state["profiles"])):
                 raise ValueError("配置列表格式异常，未清空或覆盖原记录。")
-            return state
+            from .render_settings import apply_global
+            return apply_global(state, DEFAULTS)
 
-    def save(self, state, expected_revision):
+    def save(self, state, expected_revision, *, touch_profile=True):
         with _LOCK:
             current = self.load()
-            if current["revision"] != expected_revision:
-                raise ValueError("插件记录已被其他窗口或程序修改，请重新打开后再操作。")
+            from .render_settings import normalized, apply_global
+            baseline = state.get('render_settings', current['render_settings'])
+            requested = normalized(state['settings'], DEFAULTS)
+            changed_globals = requested != baseline
+            if changed_globals and baseline != current['render_settings']:
+                raise ValueError('全局渲染设置已被其他窗口修改，请重新载入后再调整。')
             state = copy.deepcopy(state)
+            state['render_settings'] = requested if changed_globals else copy.deepcopy(current['render_settings'])
+            if current["revision"] != expected_revision:
+                # A background render may have committed another profile while
+                # this editor was open. Merge only that other profile's data.
+                same_active = current['active_profile'] == state.get('active_profile')
+                old = next((p for p in state.get('profiles', []) if p['id'] == state.get('active_profile')), None)
+                live = next((p for p in current['profiles'] if p['id'] == current['active_profile']), None)
+                same_profiles = {p['id'] for p in state.get('profiles', [])} == {p['id'] for p in current['profiles']}
+                if not (same_active and same_profiles and old and live and
+                        old.get('revision', 0) == live.get('revision', 0)):
+                    raise ValueError("当前配置已被其他窗口或后台任务修改，请重新载入后再操作。")
+                state = copy.deepcopy(state)
+                state['profiles'] = [next(p for p in state['profiles'] if p['id'] == live['id'])
+                    if p['id'] == live['id'] else copy.deepcopy(p) for p in current['profiles']]
+                state['render_plans'] = copy.deepcopy(current.get('render_plans', []))
+            state = copy.deepcopy(state)
+            apply_global(state, DEFAULTS)
+            from .adaptation import normalize_duration
+            normalize_duration(state["settings"])
+            from model.MediaEncoding import normalize_export_settings
+            normalize_export_settings(state['settings'])
             state["settings"]["background_blur"] = blur_strength(state["settings"])
             state["settings"]["layers"] = normalize_layers(state["settings"].get("layers"))
             from .pools import migrate_pools, snapshot
@@ -106,19 +148,126 @@ class Store:
             state.setdefault("profiles", [{"id": "default", "name": "默认配置", "data": None}])
             profile = next(item for item in state["profiles"] if item["id"] == state["active_profile"])
             profile["data"] = snapshot(state)
+            if touch_profile:
+                profile['revision'] = profile.get('revision', 0) + 1
             state["revision"] = current["revision"] + 1
-            self.directory.mkdir(parents=True, exist_ok=True)
-            handle, temporary = tempfile.mkstemp(prefix="state-", suffix=".tmp", dir=self.directory)
-            try:
-                with os.fdopen(handle, "w", encoding="utf-8") as file:
-                    json.dump(state, file, ensure_ascii=False, indent=2)
-                    file.flush()
-                    os.fsync(file.fileno())
-                os.replace(temporary, self.path)
-            finally:
-                if os.path.exists(temporary):
-                    os.unlink(temporary)
+            data_file(self.path).write_json(state, indent=2)
+            if changed_globals:
+                from .render_slots import configure
+                configure(file_identity(self.path), state['render_settings']['export_workers'])
             return state
+
+    def profile_state(self, identifier):
+        """One profile's saved resources with its own revision token."""
+        with _LOCK:
+            state = Store.load(self)
+            profile = next((p for p in state['profiles'] if p['id'] == identifier), None)
+            if profile is None:
+                raise ValueError('渲染配置已不存在，请重新加入队列。')
+            if identifier != state['active_profile']:
+                if not isinstance(profile.get('data'), dict):
+                    raise ValueError('渲染配置尚无保存内容。')
+                state.update(copy.deepcopy(profile['data']))
+            state['active_profile'] = identifier
+            state['revision'] = profile.get('revision', 0)
+            from .render_settings import apply_global
+            apply_global(state, DEFAULTS)
+            return state
+
+    def save_profile(self, state, expected_revision, identifier):
+        """Commit only this profile; never replace the editor's active project."""
+        from .pools import snapshot
+        with _LOCK:
+            current = Store.load(self)
+            profile = next((p for p in current['profiles'] if p['id'] == identifier), None)
+            if profile is None or profile.get('revision', 0) != expected_revision:
+                raise ValueError('此项目在排队期间被修改，已停止该项目导出；其他项目不受影响。')
+            data = snapshot(state)
+            data['settings'].update(copy.deepcopy(current['render_settings']))
+            profile['data'] = copy.deepcopy(data)
+            profile['revision'] = expected_revision + 1
+            if current['active_profile'] == identifier:
+                current.update(copy.deepcopy(data))
+            current['revision'] += 1
+            data_file(self.path).write_json(current, indent=2)
+            result = copy.deepcopy(state)
+            result['revision'] = profile['revision']
+            return result
+
+    def save_render_settings(self, values, *, expected=None):
+        from .render_settings import normalized, apply_global
+        values = normalized(values, DEFAULTS)
+        with _LOCK:
+            current = Store.load(self)
+            if expected is not None and expected != current['render_settings'] and values != current['render_settings']:
+                raise ValueError('全局渲染设置已被其他窗口修改，请重新载入后再调整。')
+            if values != current['render_settings']:
+                current['render_settings'] = values
+                apply_global(current, DEFAULTS)
+                current['revision'] += 1
+                data_file(self.path).write_json(current, indent=2)
+            from .render_slots import configure
+            configure(file_identity(self.path), current['render_settings']['export_workers'])
+            return copy.deepcopy(current['render_settings'])
+
+    def add_render_plan(self, identifier, ids):
+        with _LOCK:
+            state = self.load()
+            profile = next((p for p in state['profiles'] if p['id'] == identifier), None)
+            if profile is None:
+                raise ValueError('当前配置已不存在。')
+            if any(p['profile_id'] == identifier and p['status'] in {'staged', 'submitted'}
+                   for p in state['render_plans']):
+                raise ValueError('这个配置已在全局队列中，请先处理或移除原计划。')
+            if not ids or len(ids) != len(set(ids)):
+                raise ValueError('请选择不重复的待导出视频。')
+            jobs = state['jobs'] if state['active_profile'] == identifier else profile['data']['jobs']
+            if not set(ids).issubset({job['id'] for job in jobs}):
+                raise ValueError('队列中的任务已变化，请重新选择。')
+            plan = {'id': uuid.uuid4().hex, 'profile_id': identifier, 'name': profile['name'],
+                    'ids': list(ids), 'status': 'staged', 'task_id': '', 'error': ''}
+            state['render_plans'].append(plan)
+            state['revision'] += 1
+            data_file(self.path).write_json(state, indent=2)
+            return plan
+
+    def update_render_plan(self, plan_id, status, task_id='', error=''):
+        with _LOCK:
+            state = self.load()
+            plan = next((p for p in state['render_plans'] if p['id'] == plan_id), None)
+            if plan is None:
+                return
+            plan.update(status=status, task_id=task_id or plan.get('task_id', ''), error=str(error))
+            state['revision'] += 1
+            data_file(self.path).write_json(state, indent=2)
+
+    def remove_render_plan(self, plan_id, *, active_task_ids=()):
+        with _LOCK:
+            state = self.load()
+            plan = next((p for p in state['render_plans'] if p['id'] == plan_id), None)
+            if plan is None:
+                return
+            if plan['status'] == 'submitted' and plan.get('task_id') in active_task_ids:
+                raise ValueError('渲染计划已提交，请先在后台任务中取消。')
+            state['render_plans'] = [p for p in state['render_plans'] if p['id'] != plan_id]
+            state['revision'] += 1
+            data_file(self.path).write_json(state, indent=2)
+
+    def read_profile(self, identifier=""):
+        """Read one saved project/profile without switching or saving anything."""
+        from .pools import snapshot, migrate_pools
+        state = self.load()
+        identifier = identifier or state["active_profile"]
+        selected = next((item for item in state["profiles"] if item["id"] == identifier), None)
+        if selected is None:
+            raise ValueError("文案视频配置已不存在，请重新选择。")
+        data = snapshot(state) if identifier == state["active_profile"] else copy.deepcopy(selected["data"])
+        if not isinstance(data, dict):
+            raise ValueError("所选配置尚无保存内容。")
+        data.setdefault("resource_pools", [])
+        data['settings'].update(copy.deepcopy(state['render_settings']))
+        migrate_pools(data)
+        return selected["name"], data
 
     def select_profile(self, state, identifier):
         from .pools import snapshot
@@ -128,9 +277,14 @@ class Store:
         selected = next(item for item in state["profiles"] if item["id"] == identifier)
         if not selected.get("data"):
             raise ValueError("配置没有内容，原配置未更改。")
-        state.update(copy.deepcopy(selected["data"]), active_profile=identifier)
+        selected_data = copy.deepcopy(selected["data"])
+        # Older profiles must not inherit the custom pools of the current profile.
+        selected_data.setdefault("resource_pools", [])
+        state.update(selected_data, active_profile=identifier)
         state["settings"] = {**copy.deepcopy(DEFAULTS), **state["settings"]}
-        return self.save(state, state["revision"])
+        from .render_settings import apply_global
+        apply_global(state, DEFAULTS)
+        return self.save(state, state["revision"], touch_profile=False)
 
     def create_profile(self, state, name, clone=False):
         from .pools import snapshot
@@ -147,6 +301,11 @@ class Store:
         """Advance the rotation/playhead only after a verified output exists."""
         if not Path(output).is_file():
             raise FileNotFoundError("成品尚未保存，不能推进音乐进度。")
+        state = self.completion_state(state, job_id, output, music_plan, sequence_plan)
+        return self.save(state, state['revision'])
+
+    def completion_state(self, state, job_id, output, music_plan, sequence_plan=None):
+        """Pure reservation/commit calculation; never writes or advances persisted state."""
         state = copy.deepcopy(state)
         if sequence_plan:
             from .components import commit_sequences
@@ -154,9 +313,30 @@ class Store:
         job = next(item for item in state["jobs"] if item["id"] == job_id)
         job.update(status="已完成", output=str(output), error="")
         if music_plan:
-            music = next(item for item in state["music"] if item["id"] == music_plan["id"])
+            from .custom_pools import get_pool
+            pool_id = music_plan.get("pool_id", "")
+            pool = get_pool(state, pool_id, "music") if pool_id else None
+            items = pool["items"] if pool else state["music"]
+            music = next(item for item in items if item["id"] == music_plan["id"])
             music.update(cursor=music_plan["cursor"], audio_key=music_plan["audio_key"],
                          last_used=datetime.now().astimezone().isoformat(timespec="seconds"))
-            index = state["music"].index(music)
-            state["next_music_id"] = state["music"][(index + 1) % len(state["music"])]["id"]
-        return self.save(state, state["revision"])
+            index = items.index(music)
+            next_id = items[(index + 1) % len(items)]["id"]
+            if pool:
+                pool["next_id"] = next_id
+            else:
+                state["next_music_id"] = next_id
+        return state
+
+
+class ProfileStore(Store):
+    """Render worker's profile-scoped view of the shared private state file."""
+    def __init__(self, directory, identifier):
+        super().__init__(directory)
+        self.identifier = identifier
+
+    def load(self):
+        return Store.profile_state(self, self.identifier)
+
+    def save(self, state, expected_revision):
+        return Store.save_profile(self, state, expected_revision, self.identifier)

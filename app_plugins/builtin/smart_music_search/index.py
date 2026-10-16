@@ -9,7 +9,8 @@ from pathlib import Path
 
 import numpy as np
 
-from app_paths import APP_ROOT
+from app_paths import DATA_ROOT as APP_ROOT
+from model.AppDataStorage import data_file, data_directory, application_storage
 from .audio import (
     AUDIO_SUFFIXES, SEGMENT_SECONDS, decode_segment, media_duration, segment_starts,
 )
@@ -39,7 +40,7 @@ def discover_music(root, cancelled=lambda: False):
 class MusicIndex:
     def __init__(self, root=None, filename="index.sqlite3"):
         self.root = Path(root or INDEX_ROOT)
-        self.root.mkdir(parents=True, exist_ok=True)
+        data_directory(self.root).ensure()
         if Path(filename).name != filename:
             raise ValueError("索引文件名不能包含目录")
         self.path = self.root / filename
@@ -69,7 +70,7 @@ class MusicIndex:
 
     @contextmanager
     def _connect(self):
-        db = sqlite3.connect(str(self.path), timeout=30)
+        db = data_file(self.path).connect(timeout=30)
         try:
             db.row_factory = sqlite3.Row
             db.execute("PRAGMA busy_timeout=30000")
@@ -158,6 +159,7 @@ class MusicIndex:
             progress(0, total, "正在加载音频模型…")
             encoder._load_music()
         for path, size, mtime_ns in pending:
+            if application_storage().protected: application_storage().check(self.root,write=True)
             if cancelled():
                 break
             duration, vectors, error = 0.0, [], ""

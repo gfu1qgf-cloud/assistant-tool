@@ -209,6 +209,13 @@ class TaskData:
         ).strip()
         self.task_audio_text = str(value("task_audio_text") or "").strip()
         self.task_audio_type = str(value("task_audio_type") or "").strip()
+        self.task_audio_voice_id = str(value("task_audio_voice_id") or "").strip()
+        self.task_requirements = str(value("task_requirements") or "").strip()
+        self.task_notes = str(value("task_notes") or "").strip()
+        self.task_video_prompt = str(value("task_video_prompt") or "").strip()
+        # Preserve the customer's wording; this is data, not a new business
+        # rule that decides whether to run Resolve or changes upload routing.
+        self.task_resolve_requirement = str(value("task_resolve_requirement") or "").strip()
         self.review_required_text = str(value("review_required") or "").strip()
         self.review_required = normalize_review_required(self.review_required_text)
         self.subcategory_text = str(value("subcategory") or "").strip()
@@ -244,7 +251,7 @@ def ReadTaskOds2(doc_path, schema=None, return_report=False):
         raw = {
             headers[index]: records[index][0]
             for index in range(len(headers))
-            if headers[index] and records[index][0]
+            if headers[index]
         }
         mapped = {}
         has_source_value = False
@@ -257,7 +264,11 @@ def ReadTaskOds2(doc_path, schema=None, return_report=False):
                 candidate = str(candidate or "").strip()
                 if candidate:
                     field_value = candidate
-                    has_source_value = True
+                    # Descriptive columns must not turn a note-only row into
+                    # a new task via default IDs/types (and inflate counts).
+                    if field_name not in {'task_requirements', 'task_notes',
+                                          'task_video_prompt', 'task_resolve_requirement'}:
+                        has_source_value = True
                     break
             mapped[field_name] = field_value
 
@@ -318,6 +329,8 @@ def ReadTaskOds2(doc_path, schema=None, return_report=False):
         "header_row": header_index + 1,
         "header_score": header_score,
         "headers": headers,
+        "extra_headers": [header for header in headers if header
+                          and header not in {name for names in matched_headers.values() for name in names}],
         "matched_headers": matched_headers,
         "unmatched_fields": [
             field_name for field_name in FIELD_ORDER if not matched_headers[field_name]
@@ -353,4 +366,6 @@ def format_task_table_report(report):
         text += "；字段映射：" + "，".join(matched)
     if generated:
         text += "；使用默认值：" + "，".join(generated)
+    if report.get('extra_headers'):
+        text += '；其他列保留在原始表格字段：' + '、'.join(report['extra_headers'])
     return text

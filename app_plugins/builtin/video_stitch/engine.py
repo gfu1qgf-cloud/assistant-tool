@@ -1,4 +1,5 @@
 """Native-size horizontal composition using the bundled FFmpeg, never editing sources."""
+from model.AppDataStorage import data_directory, data_file, data_io
 from dataclasses import dataclass
 from fractions import Fraction
 import json
@@ -35,18 +36,23 @@ def resolve_tools():
     return str(ffmpeg), str(ffprobe)
 
 
-def run_process(args, cancel=None, progress=None, duration=0, timeout=40):
+def run_process(args, cancel=None, progress=None, duration=0, timeout=40, *, output_path=None):
     """Bounded diagnostics, responsive cancellation, and no shell/GUI calls."""
+    from model.MediaStorage import require_media_output
+    if output_path is not None: require_media_output(output_path)
     if cancel is not None and cancel.is_set():
         raise Canceled("操作已取消，源视频未改动。")
-    with tempfile.TemporaryDirectory(prefix="video-stitch-log-") as folder:
+    with data_io.TemporaryDirectory(prefix="video-stitch-log-") as folder:
         output, errors = Path(folder) / "stdout", Path(folder) / "stderr"
-        with output.open("wb") as out, errors.open("wb") as err, output.open("rb") as reader:
+        with data_file(output).open("wb") as out, data_file(errors).open("wb") as err, data_file(output).open("rb") as reader:
             process = subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=out, stderr=err,
                                        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
             started, pending = time.monotonic(), ""
             try:
                 while process.poll() is None:
+                    from model.AppDataStorage import application_storage
+                    if application_storage().protected: application_storage().check(write=True)
+                    if output_path is not None: require_media_output(output_path)
                     if cancel is not None and cancel.is_set():
                         raise Canceled("操作已取消，源视频未改动。")
                     if time.monotonic() - started > timeout:
@@ -72,8 +78,8 @@ def run_process(args, cancel=None, progress=None, duration=0, timeout=40):
         if max(output.stat().st_size, errors.stat().st_size) > 4 * 1024 * 1024:
             raise RuntimeError("媒体处理输出异常过大。")
         if process.returncode:
-            raise RuntimeError("FFmpeg/FFprobe 处理失败：" + errors.read_text(encoding="utf-8", errors="replace")[-2400:])
-        return output.read_bytes()
+            raise RuntimeError("FFmpeg/FFprobe 处理失败：" + data_file(errors).read_text(encoding="utf-8", errors="replace")[-2400:])
+        return data_file(output).read_bytes()
 
 
 def positive(value):
@@ -164,7 +170,9 @@ def make_plan(left, right, basis=0, audio="basis", compatible=True):
     if basis not in (0, 1) or audio not in {"basis", "left", "right", "mix", "mute"}:
         raise ValueError("拼接参数无效。")
     baseline = (left, right)[basis]
-    frames = max(1, math.ceil(baseline.duration * float(baseline.fps) - 1e-6))
+    # ffprobe rounds duration to microseconds; avoid inventing an extra frame
+    # for e.g. 8/12 seconds reported as 0.666667. Genuine partial frames still ceil.
+    frames = max(1, math.ceil(baseline.duration * float(baseline.fps) - max(1e-6, float(baseline.fps)*1e-6)))
     width, height = left.width + right.width, max(left.height, right.height)
     if compatible:
         width += width % 2
@@ -180,6 +188,36 @@ def make_plan(left, right, basis=0, audio="basis", compatible=True):
             "pixel_format": "yuv420p" if width % 2 == height % 2 == 0 else "yuv444p"}
 
 
+def composition_filters(media, plan, video_labels=None, audio_labels=None, prefix=''):
+    """One shared layout/audio algorithm for the dialog and node compiler."""
+    duration = f"{plan['duration']:.9f}"
+    video_labels = video_labels or [f'{i}:{source.video_index}' for i, source in enumerate(media)]
+    audio_labels = audio_labels or [f'{i}:{source.audio_index}' for i, source in enumerate(media)]
+    filters = []
+    height = plan['content_height']
+    for index, source in enumerate(media):
+        filters.append(
+            f"[{video_labels[index]}]setpts=PTS-STARTPTS,scale={source.width}:{source.height}:flags=lanczos,"
+            f"setsar=1,format=yuv444p,fps={plan['fps']},"
+            f"tpad=stop_mode=clone:stop_duration={2 / float(Fraction(plan['fps'])):.9f},"
+            f"trim=duration={duration},pad={source.width}:{height}:0:{(height-source.height)//2}:black[{prefix}v{index}]"
+        )
+    video = prefix+'video'
+    filters.append(f"[{prefix}v0][{prefix}v1]hstack=inputs=2:shortest=1,pad={plan['width']}:{plan['height']}:0:0:black,"
+                   f"format={plan['pixel_format']}[{video}]")
+    for index in plan['audio_indices']:
+        if audio_labels[index] is None:
+            raise ValueError('已选择的音轨没有可用的编译输入。')
+        filters.append(f"[{audio_labels[index]}]asetpts=PTS-STARTPTS,"
+                       f"aresample=48000:async=1:first_pts=0,aformat=channel_layouts=stereo,"
+                       f"apad,atrim=duration={duration}[{prefix}a{index}]")
+    indices = plan['audio_indices']
+    audio = prefix+'audio' if len(indices) == 2 else prefix+f'a{indices[0]}' if indices else None
+    if len(indices) == 2:
+        filters.append(f"[{prefix}a0][{prefix}a1]amix=inputs=2:duration=longest:normalize=1,atrim=duration={duration}[{audio}]")
+    return filters, video, audio
+
+
 def build_command(ffmpeg, media, plan, destination, audio_cycle=None):
     duration = f"{plan['duration']:.9f}"
     args = [ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
@@ -190,28 +228,12 @@ def build_command(ffmpeg, media, plan, destination, audio_cycle=None):
         args += ["-protocol_whitelist", "file,pipe,crypto", "-threads", "2", "-i", source.path]
     if audio_cycle:
         args += ["-stream_loop", "-1", "-protocol_whitelist", "file,pipe,crypto", "-i", str(audio_cycle)]
-    filters = []
-    height = plan["content_height"]
-    for index, source in enumerate(media):
-        filters.append(
-            f"[{index}:{source.video_index}]setpts=PTS-STARTPTS,scale={source.width}:{source.height}:flags=lanczos,"
-            f"setsar=1,format=yuv444p,fps={plan['fps']},"
-            f"tpad=stop_mode=clone:stop_duration={2 / float(Fraction(plan['fps'])):.9f},"
-            f"trim=duration={duration},pad={source.width}:{height}:0:{(height - source.height) // 2}:black[v{index}]"
-        )
-    filters.append(f"[v0][v1]hstack=inputs=2:shortest=1,pad={plan['width']}:{plan['height']}:0:0:black,"
-                   f"format={plan['pixel_format']}[video]")
-    for index in plan["audio_indices"]:
-        source_label = "2:a:0" if audio_cycle and index != plan["basis"] else f"{index}:{media[index].audio_index}"
-        filters.append(f"[{source_label}]asetpts=PTS-STARTPTS,"
-                       f"aresample=48000:async=1:first_pts=0,aformat=channel_layouts=stereo,"
-                       f"apad,atrim=duration={duration}[a{index}]")
-    audio = plan["audio_indices"]
-    if len(audio) == 2:
-        filters.append(f"[a0][a1]amix=inputs=2:duration=longest:normalize=1,atrim=duration={duration}[audio]")
-    args += ["-filter_complex", ";".join(filters), "-map", "[video]"]
+    labels = ["2:a:0" if audio_cycle and index != plan['basis'] else f"{index}:{source.audio_index}"
+              for index, source in enumerate(media)]
+    filters, video, audio = composition_filters(media, plan, audio_labels=labels)
+    args += ["-filter_complex", ";".join(filters), "-map", "["+video+"]"]
     if audio:
-        args += ["-map", "[audio]" if len(audio) == 2 else f"[a{audio[0]}]", "-c:a", "aac", "-b:a", "192k"]
+        args += ["-map", "["+audio+"]", "-c:a", "aac", "-b:a", "192k"]
     else:
         args += ["-an"]
     return args + ["-c:v", "libx264", "-preset", "fast", "-crf", "20", "-threads", "2",
@@ -250,13 +272,15 @@ def prepare_audio_cycle(media, plan, ffmpeg, directory, cancel=None):
                  "-i", source.path, "-map", f"0:{source.audio_index}", "-vn", "-af",
                  f"asetpts=PTS-STARTPTS,aresample=48000:async=1:first_pts=0,apad,atrim=duration={duration}",
                  "-t", duration, "-ac", "2", "-c:a", "flac", "-compression_level", "0", str(path)],
-                cancel, timeout=max(60, source.duration * 5))
+                cancel, timeout=max(60, source.duration * 5), output_path=path)
     return path
 
 
 def export_pair(left, right, output, *, basis=0, audio="basis", compatible=True,
                 overwrite=False, cancel=None, progress=None, report=None):
     output = Path(output).expanduser().resolve()
+    from model.MediaStorage import require_media_output
+    require_media_output(output)
     inputs = [Path(left).expanduser().resolve(), Path(right).expanduser().resolve()]
     if output.suffix.casefold() != ".mp4":
         raise ValueError("成品请选择 .mp4 文件。")
@@ -273,13 +297,13 @@ def export_pair(left, right, output, *, basis=0, audio="basis", compatible=True,
     plan = make_plan(*media, basis, audio, compatible)
     if report:
         report(media, plan)
-    output.parent.mkdir(parents=True, exist_ok=True)
+    data_directory(output.parent).ensure(parents=True, exist_ok=True)
     temporary = output.parent / (".video-stitch-" + uuid4().hex + ".mp4")
     try:
-        with tempfile.TemporaryDirectory(prefix=".video-stitch-audio-", dir=output.parent) as cycle_folder:
+        with data_io.TemporaryDirectory(prefix=".video-stitch-audio-", dir=output.parent) as cycle_folder:
             audio_cycle = prepare_audio_cycle(media, plan, ffmpeg, cycle_folder, cancel)
             run_process(build_command(ffmpeg, media, plan, temporary, audio_cycle), cancel, progress, plan["duration"],
-                        timeout=max(180, plan["duration"] * 30 + 60))
+                        timeout=max(180, plan["duration"] * 30 + 60), output_path=temporary)
         result = probe(temporary, ffprobe, cancel)
         tolerance = max(0.15, 2 / float(Fraction(plan["fps"])))
         if (result.width, result.height) != (plan["width"], plan["height"]) or abs(result.duration - plan["duration"]) > tolerance:
@@ -293,15 +317,15 @@ def export_pair(left, right, output, *, basis=0, audio="basis", compatible=True,
         if initial is not None:
             if not output.exists() or signature(output) != initial:
                 raise RuntimeError("已有成品在导出期间发生变化，为避免覆盖已停止。")
-            os.replace(temporary, output)
+            data_io.replace(temporary, output)
         elif os.name == "nt":
-            os.rename(temporary, output)  # Windows refuses a concurrently-created destination.
+            data_io.rename(temporary, output)  # Windows refuses a concurrently-created destination.
         else:
-            os.link(temporary, output)
-            temporary.unlink()
+            data_io.link(temporary, output)
+            data_file(temporary).remove()
         if progress:
             progress(100)
         return {"output": str(output), "plan": plan}
     finally:
         if temporary.exists():
-            temporary.unlink()
+            data_file(temporary).remove()

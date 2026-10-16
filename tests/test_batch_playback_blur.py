@@ -104,7 +104,7 @@ class PlaybackBlurTests(unittest.TestCase):
 
     def test_still_preview_fits_canvas_before_blurring_so_cover_does_not_overblur(self):
         for fit in ("contain","cover"):
-            worker = PreviewWorker("video.mp4","",blur=8,frame_settings={"aspect":"portrait","fit":fit})
+            worker = PreviewWorker("video.mp4","",blur=8,frame_settings={"aspect":"portrait","fit":fit,"auto_crop_black_bars":False})
             with patch("app_plugins.builtin.batch_text_video.ui.resolve_tools",return_value=("ffmpeg","ffprobe")), \
                     patch("app_plugins.builtin.batch_text_video.ui.probe",return_value={"video":{"width":1920,"height":1080},"duration":2}), \
                     patch("app_plugins.builtin.batch_text_video.ui.subprocess.run",return_value=SimpleNamespace(returncode=0,stdout=b"png")) as run:
@@ -112,8 +112,8 @@ class PlaybackBlurTests(unittest.TestCase):
             args = run.call_args.args[0]
             graph = args[args.index("-vf")+1]
             self.assertIn("scale=720:1280",graph)
-            self.assertIn("crop=720:1280" if fit == "cover" else "pad=720:1280",graph)
-            self.assertTrue(graph.endswith("gblur=sigma=5.333333:steps=2"))
+            self.assertIn("crop=1080:1920" if fit == "cover" else "pad=1080:1920",graph)
+            self.assertIn("gblur=sigma=8.000000:steps=2,scale=720:1280",graph)
 
     def test_cache_identity_tracks_effects_files_and_rotation_but_not_output_folder(self):
         with tempfile.TemporaryDirectory() as root:
@@ -237,7 +237,7 @@ class PlaybackBlurTests(unittest.TestCase):
             proxy = Path(root)/"proxy.mp4"
             proxy.write_bytes(b"fixture")
             dialog._playback_key = key
-            with patch("app_plugins.builtin.smart_video_editor.player.FfplayReviewSurface",FakePlayer):
+            with patch("model.MediaPlayback.FfplayReviewSurface",FakePlayer):
                 dialog._playback_ready({"key":key,"path":str(proxy),"duration":10})
             player = dialog.playback_surface
             self.assertTrue(player.is_playing())

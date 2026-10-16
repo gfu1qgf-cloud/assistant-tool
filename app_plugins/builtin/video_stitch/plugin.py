@@ -4,7 +4,7 @@ from app_plugins.api import TOOLS_MENU, PluginCommand
 class VideoStitchPlugin:
     plugin_id = "video_stitch"
     display_name = "视频拼接"
-    version = "1.0"
+    version = "1.2"
     required_api_version = 1
 
     def __init__(self):
@@ -13,6 +13,8 @@ class VideoStitchPlugin:
 
     def register(self, context):
         self.context = context
+        from .workflow_nodes import stitch_node
+        context.register_node(stitch_node())
         context.register_command(PluginCommand(
             command_id="open", title="视频拼接…", callback=lambda _rows: self.open_dialog(),
             locations=frozenset({TOOLS_MENU}), order=45,
@@ -37,6 +39,9 @@ class VideoStitchPlugin:
         return True
 
     def can_close(self):
+        from model.BackgroundTasks import BackgroundTaskHandle
+        if self.dialog is not None and isinstance(self.dialog._worker, BackgroundTaskHandle):
+            return True, ""
         if self.dialog is not None and self.dialog.is_busy():
             self.dialog.cancel_work()
             return False, "视频拼接正在取消，请稍候再退出；源视频不会改变。"

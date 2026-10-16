@@ -15,10 +15,12 @@ from .engine import (
     kept_ranges,
     refine_trim_boundaries,
     select_duplicate_group_clip,
+    smart_video_export_blockers,
     smart_video_task_review_decision,
     subtract_time_ranges,
 )
-from .player import FfplayReviewSurface
+from model.MediaPlayback import FfplayReviewSurface
+from model.FileLocations import open_file_location
 from .timeline_model import (
     build_issue_markers,
     build_subtitle_tracks,
@@ -42,20 +44,26 @@ class SmartVideoTimelineReview(QtWidgets.QWidget):
     taskDecisionRequested = QtCore.pyqtSignal(int, str)
     openAdvancedRequested = QtCore.pyqtSignal()
     orderChanged = QtCore.pyqtSignal(int)
+    reanalysisRequested = QtCore.pyqtSignal(int)
+    reanalysisCancelRequested = QtCore.pyqtSignal()
 
     def __init__(
         self,
         bundle,
         parent=None,
         save_subtitle_defaults=None,
+        save_breath_defaults=None,
     ):
         super().__init__(parent)
         self.bundle = bundle
         self._save_subtitle_defaults_callback = save_subtitle_defaults
+        self._save_breath_defaults_callback = save_breath_defaults
         self.breath_only = str(bundle.get("workflow") or "") == "breath_cut"
         self.task_index = 0
         self.segments = []
         self.markers = []
+        self._export_blockers = []
+        self._task_missing_counts = {}
         self.recognized_subtitles = []
         self.aligned_subtitles = []
         self.duration = 0.0
@@ -65,6 +73,9 @@ class SmartVideoTimelineReview(QtWidgets.QWidget):
         self._resume_after_seek = False
         self._preview_removed_once = False
         self._breath_reanalysis_running = False
+        self._task_refresh_available = False
+        self._task_refresh_running = False
+        self._task_refresh_canceling = False
         self._breath_db_results = None
         self._breath_voice_results = None
         self._manual_delete_anchor = None
@@ -79,6 +90,12 @@ class SmartVideoTimelineReview(QtWidgets.QWidget):
         self.task_combo = QtWidgets.QComboBox(self)
         self.task_combo.currentIndexChanged.connect(self._load_task)
         toolbar.addWidget(self.task_combo, 1)
+        self.task_refresh_button = QtWidgets.QPushButton("刷新", self)
+        self.task_refresh_button.setAutoDefault(False)
+        self.task_refresh_button.setIcon(self.style().standardIcon(QtWidgets.QStyle.StandardPixmap.SP_BrowserReload))
+        self.task_refresh_button.setToolTip("重新扫描当前任务目录，选择片段后重新分析；结果在本窗口更新，其他任务不变。")
+        self.task_refresh_button.clicked.connect(self._request_task_refresh)
+        toolbar.addWidget(self.task_refresh_button)
         self.move_clip_left_button = QtWidgets.QPushButton("片段前移", self)
         self.move_clip_right_button = QtWidgets.QPushButton("片段后移", self)
         self.move_clip_left_button.setToolTip("调整当前视频片段的最终导出顺序")
@@ -116,6 +133,8 @@ class SmartVideoTimelineReview(QtWidgets.QWidget):
         task_filter_bar.addWidget(QtWidgets.QLabel("任务筛选：", self))
         self.task_filter_combo = QtWidgets.QComboBox(self)
         self.task_filter_combo.addItem("全部任务", "all")
+        self.task_filter_combo.addItem("仅阻碍导出", "blocked")
+        self.task_filter_combo.addItem("疑似多余片段", "extra_clip")
         self.task_filter_combo.addItem("仅未处理缺段", "unresolved")
         self.task_filter_combo.addItem("全部缺段任务", "missing")
         self.task_filter_combo.setToolTip(
@@ -200,7 +219,7 @@ class SmartVideoTimelineReview(QtWidgets.QWidget):
             "人声两侧保护量；过大会把环境音也一起保留。"
         )
         self.compress_pauses_checkbox = QtWidgets.QCheckBox(
-            "压缩句内长停顿", breath_panel
+            "裁剪视频内部长停顿", breath_panel
         )
         self.compress_pauses_checkbox.setToolTip(
             "句内气口存在误删说话的风险；时间线会把计划删除部分显示为灰色。"
@@ -224,6 +243,16 @@ class SmartVideoTimelineReview(QtWidgets.QWidget):
             "按当前参数重新检测，并立即更新灰色删除区。"
         )
         self.apply_breath_button.setMaximumWidth(110)
+        self.save_breath_defaults_button = QtWidgets.QPushButton(
+            "保存气口默认", breath_panel
+        )
+        self.save_breath_defaults_button.setMaximumWidth(110)
+        self.save_breath_defaults_button.setToolTip(
+            "保存检测方式、内部停顿开关、阈值和前后保留量，供下次分析使用；"
+            "不会重新检测当前任务，也不会重载模型。"
+            if save_breath_defaults is not None
+            else "当前入口不提供默认设置保存。"
+        )
         self.mark_delete_start_button = QtWidgets.QPushButton(
             "记删除起点", breath_panel
         )
@@ -266,6 +295,9 @@ class SmartVideoTimelineReview(QtWidgets.QWidget):
         breath_layout.addWidget(self.pause_keep_after_spinbox, 3, 5)
         breath_layout.addWidget(
             self.apply_breath_button, 0, 6, 1, 1, QtCore.Qt.AlignRight
+        )
+        breath_layout.addWidget(
+            self.save_breath_defaults_button, 1, 6, 1, 1, QtCore.Qt.AlignRight
         )
         breath_layout.addWidget(self.mark_delete_start_button, 4, 0)
         breath_layout.addWidget(self.mark_delete_end_button, 4, 1)
@@ -338,6 +370,15 @@ class SmartVideoTimelineReview(QtWidgets.QWidget):
         preview_layout.addWidget(self.seek_slider)
         preview_layout.addWidget(self.time_label)
         preview_layout.addWidget(self.remaining_duration_label)
+        self.open_video_location_button = QtWidgets.QPushButton("打开文件位置", preview_column)
+        self.open_video_location_button.setAutoDefault(False)
+        self.open_video_location_button.setIcon(
+            self.style().standardIcon(QtWidgets.QStyle.StandardPixmap.SP_DirOpenIcon)
+        )
+        self.open_video_location_button.setToolTip("打开当前预览片段的文件夹，并选中源视频；不打开播放器、不修改文件。")
+        self.open_video_location_button.setEnabled(False)
+        self.open_video_location_button.clicked.connect(self.open_current_video_location)
+        preview_layout.addWidget(self.open_video_location_button)
 
         timeline_column = QtWidgets.QWidget(body)
         timeline_column.setMinimumWidth(480)
@@ -346,9 +387,12 @@ class SmartVideoTimelineReview(QtWidgets.QWidget):
 
         legend = QtWidgets.QLabel(
             "绿色＝通过　橙色＝需核对　粉色＝严重异常　"
-            "灰色＝导出时删除　红色缺口＝原文没有对应视频。"
-            "点击灰色区可试听，双击可取消该段删除；点击字幕块可查看差异。",
+            "灰色＝删除　红色＝缺段",
             timeline_column,
+        )
+        legend.setToolTip(
+            "红色缺口＝原文没有对应视频。点击灰色区可试听，双击可取消该段删除；"
+            "点击字幕块可查看差异。时间线片段右键可手动删除或恢复。"
         )
         legend.setStyleSheet("color:#616B7E;")
         legend.setWordWrap(True)
@@ -451,6 +495,7 @@ class SmartVideoTimelineReview(QtWidgets.QWidget):
         self.timeline.clipActivated.connect(self._timeline_clip_activated)
         self.timeline.clipReorderRequested.connect(self._move_clip_to)
         self.timeline.clipInclusionRequested.connect(self._set_clip_included)
+        self.timeline.clipLocationRequested.connect(self.open_clip_location)
         self.timeline.removedSegmentRestoreRequested.connect(
             self._restore_removed_segment
         )
@@ -507,6 +552,8 @@ class SmartVideoTimelineReview(QtWidgets.QWidget):
         issue_title_bar.addWidget(QtWidgets.QLabel("显示：", right))
         self.issue_filter_combo = QtWidgets.QComboBox(right)
         self.issue_filter_combo.addItem("全部问题", "all")
+        self.issue_filter_combo.addItem("仅阻碍导出", "blocked")
+        self.issue_filter_combo.addItem("疑似多余片段", "extra_clip")
         self.issue_filter_combo.addItem("只看确认缺段", "missing")
         self.issue_filter_combo.addItem("只看严重异常", "pink")
         self.issue_filter_combo.addItem("只看需核对", "orange")
@@ -648,6 +695,7 @@ class SmartVideoTimelineReview(QtWidgets.QWidget):
         self.move_clip_left_button.clicked.connect(lambda: self._move_current_clip(-1))
         self.move_clip_right_button.clicked.connect(lambda: self._move_current_clip(1))
         self.apply_breath_button.clicked.connect(self._apply_breath_settings)
+        self.save_breath_defaults_button.clicked.connect(self._save_breath_defaults)
         self.mark_delete_start_button.clicked.connect(
             self._mark_manual_delete_start
         )
@@ -724,6 +772,8 @@ class SmartVideoTimelineReview(QtWidgets.QWidget):
                 "双击灰色区可单独取消删除；正常播放会自动跳过灰色区。"
             )
             body.setSizes([1, 0])
+        from .review_layout import arrange_timeline
+        arrange_timeline(self, toolbar, refresh_button)
         self._update_breath_control_state()
         self.refresh()
 
@@ -731,6 +781,30 @@ class SmartVideoTimelineReview(QtWidgets.QWidget):
         if watched is self.timeline_scroll.viewport() and event.type() == QtCore.QEvent.Resize:
             self.timeline.set_viewport_width(event.size().width())
         return super().eventFilter(watched, event)
+
+    def set_task_refresh_available(self, available):
+        self._task_refresh_available = bool(available) and not self.breath_only
+        self.task_refresh_button.setVisible(self._task_refresh_available)
+        self._update_breath_control_state()
+
+    def set_task_refresh_state(self, running, *, canceling=False):
+        self._task_refresh_running = bool(running)
+        self._task_refresh_canceling = bool(canceling) and bool(running)
+        self.task_refresh_button.setText("正在取消…" if self._task_refresh_canceling else
+                                        "取消刷新" if running else "刷新")
+        self.task_refresh_button.setIcon(self.style().standardIcon(
+            QtWidgets.QStyle.StandardPixmap.SP_DialogCancelButton if running else QtWidgets.QStyle.StandardPixmap.SP_BrowserReload))
+        self._update_breath_control_state()
+
+    def _request_task_refresh(self):
+        try:
+            if self._task_refresh_running:
+                self.reanalysisCancelRequested.emit()
+            elif self._task_refresh_available and not self._breath_reanalysis_running and self.task_combo.currentIndex() >= 0:
+                self.player.pause()
+                self.reanalysisRequested.emit(int(self.task_combo.currentData()))
+        except Exception as error:
+            QtWidgets.QMessageBox.warning(self, "无法刷新任务", str(error))
 
     def _load_subtitle_controls(self):
         settings = self.bundle.get("settings", {})
@@ -881,6 +955,9 @@ class SmartVideoTimelineReview(QtWidgets.QWidget):
         )
 
     def _update_breath_control_state(self):
+        busy = self._breath_reanalysis_running or self._task_refresh_running
+        self.task_refresh_button.setEnabled(self._task_refresh_available and not self._breath_reanalysis_running
+            and not self._task_refresh_canceling and self.task_combo.currentIndex() >= 0)
         mode = str(self.breath_detection_mode_combo.currentData() or "voice_refined")
         needs_db = mode in {"db_only", "union", "intersection", "voice_refined"}
         needs_voice = mode in {
@@ -900,29 +977,37 @@ class SmartVideoTimelineReview(QtWidgets.QWidget):
         self.pause_threshold_spinbox.setEnabled(internal)
         self.pause_keep_before_spinbox.setEnabled(internal)
         self.pause_keep_after_spinbox.setEnabled(internal)
-        self.apply_breath_button.setEnabled(not self._breath_reanalysis_running)
-        self.task_combo.setEnabled(not self._breath_reanalysis_running)
-        self.task_filter_combo.setEnabled(not self._breath_reanalysis_running)
+        self.apply_breath_button.setEnabled(not busy)
+        self.save_breath_defaults_button.setEnabled(
+            not busy
+            and self._save_breath_defaults_callback is not None
+        )
+        self.task_combo.setEnabled(not busy)
+        self.task_filter_combo.setEnabled(not busy)
         self.previous_missing_task_button.setEnabled(
-            not self._breath_reanalysis_running
+            not busy
             and bool(self._missing_task_indexes())
         )
         self.next_missing_task_button.setEnabled(
-            not self._breath_reanalysis_running
+            not busy
             and bool(self._missing_task_indexes())
         )
         has_segment = self.current_segment is not None
+        self.open_video_location_button.setEnabled(has_segment)
+        self.open_video_location_button.setToolTip(
+            str(self.current_segment.get("source") or "") if has_segment else "请先选择一个视频片段。"
+        )
         self.mark_delete_start_button.setEnabled(
-            has_segment and not self._breath_reanalysis_running
+            has_segment and not busy
         )
         self.mark_delete_end_button.setEnabled(
             self._manual_delete_anchor is not None
-            and not self._breath_reanalysis_running
+            and not busy
         )
         self.restore_removed_button.setEnabled(
             has_segment
             and bool(self.current_segment.get("is_removed"))
-            and not self._breath_reanalysis_running
+            and not busy
         )
         has_manual = False
         if has_segment:
@@ -936,7 +1021,7 @@ class SmartVideoTimelineReview(QtWidgets.QWidget):
                 clip.get("manual_keep_tail"),
             ))
         self.clear_manual_button.setEnabled(
-            has_manual and not self._breath_reanalysis_running
+            has_manual and not busy
         )
 
     def _waveform_loading_changed(self, loading):
@@ -952,6 +1037,55 @@ class SmartVideoTimelineReview(QtWidgets.QWidget):
     def _breath_progress(self, message):
         if self._breath_reanalysis_running:
             self.breath_status_label.setText(str(message))
+
+    def _breath_settings_from_controls(self):
+        return {
+            "breath_detection_mode": self.breath_detection_mode_combo.currentData(),
+            "silence_detection_enabled": self.silence_detection_checkbox.isChecked(),
+            "silence_threshold_db": self.silence_db_spinbox.value(),
+            "voice_detection_enabled": self.voice_detection_checkbox.isChecked(),
+            "vad_threshold": self.vad_threshold_spinbox.value(),
+            "vad_neg_threshold": self.vad_neg_threshold_spinbox.value(),
+            "vad_min_speech_ms": self.vad_min_speech_spinbox.value(),
+            "vad_speech_pad_ms": self.vad_speech_pad_spinbox.value(),
+            "min_silence_ms": self.min_silence_spinbox.value(),
+            "compress_internal_pauses": self.compress_pauses_checkbox.isChecked(),
+            "internal_pause_mode": (
+                "enabled" if self.compress_pauses_checkbox.isChecked() else "off"
+            ),
+            "pause_threshold_ms": self.pause_threshold_spinbox.value(),
+            "pause_keep_before_ms": self.pause_keep_before_spinbox.value(),
+            "pause_keep_after_ms": self.pause_keep_after_spinbox.value(),
+            "retained_pause_ms": (
+                self.pause_keep_before_spinbox.value()
+                + self.pause_keep_after_spinbox.value()
+            ),
+        }
+
+    def _save_breath_defaults(self):
+        callback = self._save_breath_defaults_callback
+        if callback is None or self._breath_reanalysis_running:
+            return
+        values = self._breath_settings_from_controls()
+        if (values["voice_detection_enabled"]
+                and values["vad_neg_threshold"] >= values["vad_threshold"]):
+            self.breath_status_label.setText("人声结束阈值必须低于开始阈值。")
+            self.vad_neg_threshold_spinbox.setFocus()
+            return
+        if (values["compress_internal_pauses"]
+                and values["retained_pause_ms"] >= values["pause_threshold_ms"]):
+            self.breath_status_label.setText("前后保留量之和必须小于长停顿阈值。")
+            self.pause_threshold_spinbox.setFocus()
+            return
+        try:
+            saved, message = callback(values)
+        except Exception as error:
+            saved, message = False, f"保存失败：{error}"
+        self.breath_status_label.setText(str(message or ""))
+        self.breath_status_label.setStyleSheet(
+            "color:#176B35;font-weight:600;"
+            if saved else "color:#B3261E;font-weight:600;"
+        )
 
     def _apply_breath_settings(self):
         if (
@@ -976,28 +1110,7 @@ class SmartVideoTimelineReview(QtWidgets.QWidget):
             self.pause_keep_after_spinbox.setValue(keep_after)
         settings = self.bundle.setdefault("settings", {})
         previous_settings = dict(settings)
-        settings.update({
-            "breath_detection_mode": (
-                self.breath_detection_mode_combo.currentData()
-            ),
-            "silence_detection_enabled": self.silence_detection_checkbox.isChecked(),
-            "silence_threshold_db": self.silence_db_spinbox.value(),
-            "voice_detection_enabled": self.voice_detection_checkbox.isChecked(),
-            "vad_threshold": self.vad_threshold_spinbox.value(),
-            "vad_neg_threshold": self.vad_neg_threshold_spinbox.value(),
-            "vad_min_speech_ms": self.vad_min_speech_spinbox.value(),
-            "vad_speech_pad_ms": self.vad_speech_pad_spinbox.value(),
-            "min_silence_ms": self.min_silence_spinbox.value(),
-            "compress_internal_pauses": self.compress_pauses_checkbox.isChecked(),
-            "internal_pause_mode": (
-                "experimental"
-                if self.compress_pauses_checkbox.isChecked() else "off"
-            ),
-            "pause_threshold_ms": threshold,
-            "pause_keep_before_ms": keep_before,
-            "pause_keep_after_ms": keep_after,
-            "retained_pause_ms": keep_before + keep_after,
-        })
+        settings.update(self._breath_settings_from_controls())
         self._breath_reanalysis_running = True
         self._update_breath_control_state()
         mode = str(settings.get("breath_detection_mode") or "voice_refined")
@@ -1451,7 +1564,7 @@ class SmartVideoTimelineReview(QtWidgets.QWidget):
     def _missing_task_indexes(self, unresolved_only=False):
         result = []
         for task_index, task in enumerate(self.bundle.get("tasks", []) or []):
-            if not task.get("missing_blocks"):
+            if not self._task_missing_counts.get(task_index, 0):
                 continue
             if unresolved_only and smart_video_task_review_decision(task):
                 continue
@@ -1461,9 +1574,15 @@ class SmartVideoTimelineReview(QtWidgets.QWidget):
     def _task_filter_changed(self, _index=None):
         self.refresh(preserve_time=False)
 
-    def _task_matches_filter(self, task):
+    def _task_matches_filter(self, task, task_index):
         mode = str(self.task_filter_combo.currentData() or "all")
-        has_missing = bool(task.get("missing_blocks"))
+        if mode in {"blocked", "extra_clip"}:
+            return any(
+                block.get("task_index") == task_index
+                and (mode == "blocked" or block.get("kind") == "extra_clip")
+                for block in self._export_blockers
+            )
+        has_missing = bool(self._task_missing_counts.get(task_index, 0))
         if mode == "missing":
             return has_missing
         if mode == "unresolved":
@@ -1471,9 +1590,10 @@ class SmartVideoTimelineReview(QtWidgets.QWidget):
         return True
 
     @staticmethod
-    def _task_display_text(task):
+    def _task_display_text(task, missing_count=None):
         label = str(task.get("label") or task.get("task_id") or "任务")
-        missing_count = len(task.get("missing_blocks") or [])
+        if missing_count is None:
+            missing_count = len(task.get("missing_blocks") or [])
         if not missing_count:
             return label
         decision = smart_video_task_review_decision(task)
@@ -1516,6 +1636,11 @@ class SmartVideoTimelineReview(QtWidgets.QWidget):
     def refresh(self, bundle=None, preserve_time=False):
         if bundle is not None:
             self.bundle = bundle
+        self._export_blockers = [] if self.breath_only else smart_video_export_blockers(self.bundle)
+        self._task_missing_counts = {
+            index: len(_task_missing_findings(task))
+            for index, task in enumerate(self.bundle.get("tasks", []) or [])
+        } if not self.breath_only else {}
         previous_task = self.task_index
         previous_time = self.output_position if preserve_time else 0.0
         missing_count = len(self._missing_task_indexes())
@@ -1529,10 +1654,15 @@ class SmartVideoTimelineReview(QtWidgets.QWidget):
         self.task_combo.blockSignals(True)
         self.task_combo.clear()
         for task_index, task in enumerate(self.bundle.get("tasks", []) or []):
-            if self._task_matches_filter(task):
-                self.task_combo.addItem(
-                    self._task_display_text(task), task_index
+            if self._task_matches_filter(task, task_index):
+                text = self._task_display_text(task, self._task_missing_counts.get(task_index, 0))
+                extra_count = sum(
+                    block.get("task_index") == task_index and block.get("kind") == "extra_clip"
+                    for block in self._export_blockers
                 )
+                if extra_count:
+                    text = f"⛔ 多余 {extra_count} · {text}"
+                self.task_combo.addItem(text, task_index)
         if self.task_combo.count():
             selected = self.task_combo.findData(previous_task)
             self.task_combo.setCurrentIndex(selected if selected >= 0 else 0)
@@ -1685,6 +1815,8 @@ class SmartVideoTimelineReview(QtWidgets.QWidget):
         except (TypeError, ValueError):
             task_index = -1
         if task_index < 0 or task_index >= len(self.bundle.get("tasks", [])):
+            self._media_generation += 1
+            self._waveform_generation += 1
             self.player.pause()
             self.current_segment = None
             if hasattr(self, "waveform_loader"):
@@ -1720,6 +1852,50 @@ class SmartVideoTimelineReview(QtWidgets.QWidget):
         self._apply_preview_aspect()
         self._update_duration_summary(task)
         self.markers = build_issue_markers(task, self.segments)
+        task_blockers = [
+            block for block in self._export_blockers
+            if block.get("task_index") == task_index
+        ]
+        for marker in self.markers:
+            if marker.get("kind") == "missing":
+                marker["export_blocker"] = any(
+                    block.get("kind") != "extra_clip"
+                    and self._same_missing_block(marker.get("block") or {}, block)
+                    for block in task_blockers
+                )
+        # Old reports can contain stale missing_blocks. The export gate uses
+        # live coverage, so every live blocker must still have a marker.
+        for block in task_blockers:
+            if block.get("kind") == "extra_clip" or any(
+                marker.get("kind") == "missing"
+                and self._same_missing_block(marker.get("block") or {}, block)
+                for marker in self.markers
+            ):
+                continue
+            for marker in build_issue_markers(
+                {"clips": [], "missing_blocks": [block]}, self.segments
+            ):
+                marker["export_blocker"] = True
+                self.markers.append(marker)
+        for block in task_blockers:
+            if block.get("kind") != "extra_clip":
+                continue
+            clip_index = int(block["clip_index"])
+            clip = task["clips"][clip_index]
+            segment = next((part for part in self.segments if part["clip_index"] == clip_index), None)
+            self.markers.append({
+                "kind": "extra_clip", "clip_index": clip_index, "issue_index": None,
+                "time": segment["timeline_start"] if segment else 0.0,
+                "source_start": float(clip.get("trim_start") or 0.0),
+                "source_end": float(clip.get("trim_end") or 0.0),
+                "severity": "pink", "export_blocker": True,
+                "title": f"⛔ 疑似多余：{block.get('file_name') or '视频片段'}",
+                "detail": str(block.get("issue_reason") or ""),
+                "expected": str(clip.get("expected_text") or ""),
+                "recognized": str(clip.get("recognized_text") or ""),
+                "block": block,
+            })
+        self.markers.sort(key=lambda marker: (marker["time"], not marker.get("export_blocker", False)))
         self.recognized_subtitles, self.aligned_subtitles = build_subtitle_tracks(
             task,
             self.segments,
@@ -1780,6 +1956,8 @@ class SmartVideoTimelineReview(QtWidgets.QWidget):
         visible_markers = [
             marker for marker in self.markers
             if mode == "all"
+            or (mode == "blocked" and marker.get("export_blocker"))
+            or (mode == "extra_clip" and marker.get("kind") == "extra_clip")
             or (mode == "missing" and marker.get("kind") == "missing")
             or marker.get("severity") == mode
         ]
@@ -1814,7 +1992,10 @@ class SmartVideoTimelineReview(QtWidgets.QWidget):
         self._select_clip(clip_index)
 
     def _marker_activated(self, marker):
-        desired_filter = "missing" if marker.get("kind") == "missing" else "all"
+        desired_filter = (
+            "blocked" if marker.get("export_blocker")
+            else "missing" if marker.get("kind") == "missing" else "all"
+        )
         if self.issue_filter_combo.currentData() != desired_filter:
             self.issue_filter_combo.setCurrentIndex(
                 self.issue_filter_combo.findData(desired_filter)
@@ -1907,6 +2088,19 @@ class SmartVideoTimelineReview(QtWidgets.QWidget):
         self._update_breath_control_state()
         if emit:
             self.clipSelected.emit(self.task_index, int(clip_index))
+
+    def open_current_video_location(self, _checked=False):
+        source = (self.current_segment or {}).get("source")
+        return open_file_location(source, self)
+
+    def open_clip_location(self, clip_index):
+        tasks = self.bundle.get("tasks", [])
+        if not 0 <= self.task_index < len(tasks):
+            return open_file_location(None, self)
+        clips = tasks[self.task_index].get("clips", [])
+        if not 0 <= clip_index < len(clips):
+            return open_file_location(None, self)
+        return open_file_location(clips[clip_index].get("source"), self)
 
     def _clear_duplicate_choices(self):
         for button in self.duplicate_button_group.buttons():
@@ -2197,7 +2391,7 @@ class SmartVideoTimelineReview(QtWidgets.QWidget):
         self.taskDecisionRequested.emit(self.task_index, str(decision or ""))
 
     def _update_task_decision_controls(self, task):
-        has_missing = bool(task.get("missing_blocks"))
+        has_missing = bool(self._task_missing_counts.get(self.task_index, 0))
         decision = smart_video_task_review_decision(task)
         if decision == "approved":
             text = "✓ 已人工确认内容完整；这个任务会继续生成。"
@@ -2284,22 +2478,56 @@ class SmartVideoTimelineReview(QtWidgets.QWidget):
     def _show_player_error(self, message):
         QtWidgets.QMessageBox.warning(self, "时间线播放器", str(message))
 
-    def select_clip(self, task_index, clip_index):
-        if task_index != self.task_index:
+    @staticmethod
+    def _same_missing_block(left, right):
+        return all(left.get(key) == right.get(key) for key in (
+            "script_word_start", "script_word_end", "text",
+        ))
+
+    def _select_task_index(self, task_index):
+        combo_index = self.task_combo.findData(int(task_index))
+        if combo_index < 0:
+            self.task_filter_combo.setCurrentIndex(self.task_filter_combo.findData("all"))
             combo_index = self.task_combo.findData(int(task_index))
-            if combo_index < 0:
-                self.task_filter_combo.setCurrentIndex(
-                    self.task_filter_combo.findData("all")
-                )
-                combo_index = self.task_combo.findData(int(task_index))
-            if combo_index >= 0:
-                self.task_combo.setCurrentIndex(combo_index)
+        if combo_index >= 0:
+            self.task_combo.setCurrentIndex(combo_index)
+        return combo_index >= 0
+
+    def select_export_blocker(self, block):
+        if not self._select_task_index(int(block["task_index"])):
+            return False
+        self.issue_filter_combo.setCurrentIndex(self.issue_filter_combo.findData("blocked"))
+        for marker in self.markers:
+            if not marker.get("export_blocker"):
+                continue
+            matches = (
+                marker.get("kind") == "extra_clip"
+                and block.get("kind") == "extra_clip"
+                and marker.get("clip_index") == block.get("clip_index")
+            ) or (
+                marker.get("kind") == "missing"
+                and block.get("kind") != "extra_clip"
+                and self._same_missing_block(marker.get("block") or {}, block)
+            )
+            if matches:
+                self._seek_output(marker["time"], autoplay=False)
+                self._select_marker_item(marker)
+                return True
+        return False
+
+    def select_clip(self, task_index, clip_index):
+        if not self._select_task_index(task_index):
+            return
         for segment in self.segments:
             if int(segment["clip_index"]) == int(clip_index):
                 self._seek_output(segment["timeline_start"], autoplay=False)
                 return
 
     def close_player(self):
+        # singleShot callbacks retain Python references after widget deletion;
+        # invalidate them before releasing the Qt controls they would access.
+        self._media_generation += 1
+        self._waveform_generation += 1
         self.player.release()
         self.waveform_loader.cancel()
         self.silence_loader.cancel()

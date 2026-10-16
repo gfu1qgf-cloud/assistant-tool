@@ -42,6 +42,7 @@ PRIVATE_FILES = {
     "taskreferencedownloadstate.json",
 }
 PRIVATE_DIRECTORIES = {
+    "plugindata",
     ".venv",
     ".git",
     ".github",

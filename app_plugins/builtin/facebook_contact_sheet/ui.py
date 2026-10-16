@@ -3,9 +3,10 @@
 import hashlib
 import logging
 from pathlib import Path
-import tempfile
+from uuid import uuid4
 
 from qt_compat import QtCore, QtGui, QtWidgets
+from model.BackgroundTasks import BackgroundTaskManager, BackgroundTaskCanceled, directory_resource
 
 from .download import DownloadCanceled, download_facebook_video, is_facebook_video_url
 from .engine import AnalysisCanceled, Cut, add_overview_frames, detect_cuts, format_timestamp, render_contact_sheets
@@ -35,23 +36,29 @@ class _InputEdit(QtWidgets.QLineEdit):
             super().dropEvent(event)
 
 
-class _Worker(QtCore.QThread):
-    progressChanged = QtCore.pyqtSignal(str, int)
-    completed = QtCore.pyqtSignal(object)
-    failed = QtCore.pyqtSignal(str)
-
-    def __init__(self, *, source, cache_dir, output_dir, browser, profile, sensitivity,
-                 min_scene_seconds, max_interval, previous=None, parent=None):
-        super().__init__(parent)
+class _JobRunner:
+    """Plain worker data; no widget or QThread lifetime belongs to this view."""
+    def __init__(self, payload, context):
+        source, cache_dir, output_dir = payload['source'], payload['cache_dir'], payload['output_dir']
         self.source = source
         self.cache_dir = cache_dir
         self.output_dir = output_dir
-        self.browser = browser
-        self.profile = profile
-        self.sensitivity = sensitivity
-        self.min_scene_seconds = min_scene_seconds
-        self.max_interval = max_interval
-        self.previous = previous
+        self.browser = payload['browser']
+        self.profile = payload['profile']
+        self.sensitivity = payload['sensitivity']
+        self.min_scene_seconds = payload['min_scene_seconds']
+        self.max_interval = payload['max_interval']
+        self.previous = payload['previous']
+        self.context = context
+        self.task_reference = payload.get('task_reference')
+        self.phase = 0
+
+    def report(self, message, percent):
+        base, scale = [(0, .35), (35, .40), (75, .24)][self.phase]
+        self.context.report(message, None if percent is None else base + int(percent * scale))
+
+    def isInterruptionRequested(self):
+        return self.context.is_canceled()
 
     def run(self):
         try:
@@ -62,12 +69,12 @@ class _Worker(QtCore.QThread):
                     if not video.is_file():
                         raise ValueError("临时视频已清理，请重新读取 Facebook 链接。")
                 elif is_facebook_video_url(self.source):
-                    self.progressChanged.emit("正在后台获取 Facebook 视频", 0)
+                    self.report("正在后台获取 Facebook 视频", None)
                     video, title = download_facebook_video(
                         self.source, self.cache_dir,
                         browser=self.browser, profile=self.profile,
-                        progress=lambda done, total: self.progressChanged.emit(
-                            "正在后台获取 Facebook 视频", int(done / total * 100) if total else 0
+                        progress=lambda done, total: self.report(
+                            "正在后台获取 Facebook 视频", int(done / total * 100) if total else None
                         ),
                         canceled=self.isInterruptionRequested,
                     )
@@ -76,11 +83,12 @@ class _Worker(QtCore.QThread):
                     title = video.stem
                     if not video.is_file():
                         raise ValueError("请选择存在的本地视频，或粘贴 Facebook 视频链接。")
-                self.progressChanged.emit("正在检测换镜头", 0)
+                self.phase = 1
+                self.report("正在检测换镜头", 0)
                 duration, cuts = detect_cuts(
                     video, sensitivity=self.sensitivity,
                     min_scene_seconds=self.min_scene_seconds,
-                    progress=lambda percent: self.progressChanged.emit("正在检测换镜头", percent),
+                    progress=lambda percent: self.report("正在检测换镜头", percent),
                     canceled=self.isInterruptionRequested,
                 )
                 cuts = add_overview_frames(cuts, duration, self.max_interval)
@@ -90,30 +98,38 @@ class _Worker(QtCore.QThread):
                 duration = self.previous["duration"]
                 cuts = self.previous["cuts"]
             identifier = hashlib.sha256(self.source.encode("utf-8")).hexdigest()[:8]
-            self.progressChanged.emit("正在拼接分镜大图", 0)
+            self.phase = 2
+            self.report("正在拼接分镜大图", 0)
             paths = render_contact_sheets(
                 video, duration, cuts, self.output_dir,
                 title=f"{title}_{identifier}",
-                progress=lambda percent: self.progressChanged.emit("正在拼接分镜大图", percent),
+                progress=lambda percent: self.report("正在拼接分镜大图", percent),
                 canceled=self.isInterruptionRequested,
             )
-            self.completed.emit({"source": self.source, "video": str(video), "title": title, "duration": duration,
-                                 "cuts": cuts, "paths": [str(path) for path in paths]})
-        except (AnalysisCanceled, DownloadCanceled):
-            self.failed.emit("操作已取消。")
-        except Exception as exc:
-            if self.isInterruptionRequested():
-                self.failed.emit("操作已取消。")
-            else:
-                logger.exception("Facebook 视频分镜处理失败")
-                self.failed.emit(f"{type(exc).__name__}: {exc}")
+            self.context.check_canceled()
+            if self.task_reference:
+                url, folder = self.task_reference
+                remember_sheets(folder, url, paths)
+                self.context.log(f"任务参考大图已缓存到：{folder}")
+            return {"source": self.source, "video": str(video), "title": title, "duration": duration,
+                    "cuts": cuts, "paths": [str(path) for path in paths]}
+        except (AnalysisCanceled, DownloadCanceled) as error:
+            raise BackgroundTaskCanceled("操作已取消。") from error
+
+
+def _run_job(payload, context):
+    return _JobRunner(payload, context).run()
 
 
 class ContactSheetDialog(QtWidgets.QDialog):
-    def __init__(self, logger=None, parent=None):
+    def __init__(self, logger=None, parent=None, task_manager=None):
         super().__init__(parent)
         self._log = logger or (lambda _message: None)
-        self._cache = tempfile.TemporaryDirectory(prefix="facebook_contact_sheet_")
+        self._own_manager = task_manager is None
+        self._manager = task_manager or BackgroundTaskManager(
+            parent=QtWidgets.QApplication.instance(), logger=lambda text, _level: self._log(text))
+        self._cache_dir = self._manager.work_root / uuid4().hex
+        self._external_caches = set()
         self._worker = None
         self._result = None
         self._source = ""
@@ -279,7 +295,15 @@ class ContactSheetDialog(QtWidgets.QDialog):
 
     def dispose(self):
         if not self.is_busy():
-            self._cache.cleanup()
+            from model.AppDataStorage import data_io
+            for folder in tuple(self._external_caches):
+                try:
+                    data_io.rmtree(folder, ignore_errors=True)
+                    self._external_caches.discard(folder)
+                except OSError:
+                    self._log('临时下载目录仍被占用，保留以免误删：'+str(folder))
+        if self._own_manager and not self.is_busy():
+            self._manager.shutdown()
 
     def clear_task_reference(self):
         self._task_reference = None
@@ -324,15 +348,34 @@ class ContactSheetDialog(QtWidgets.QDialog):
             QtWidgets.QMessageBox.warning(self, "缺少目录", "请选择导出目录。")
             return
         output = Path(output_text).expanduser()
-        self._worker = _Worker(
+        from model.MediaStorage import media_cache_root
+        try:
+            cache_root = media_cache_root(self._cache_dir, anchors=(output,),
+                                          namespace='facebook-reference')
+        except (ValueError, OSError) as error:
+            QtWidgets.QMessageBox.warning(self,'无法准备媒体缓存',str(error))
+            return
+        if cache_root != self._cache_dir:
+            cache_root = cache_root / self._cache_dir.name
+            self._external_caches.add(cache_root)
+        payload = dict(
             source=self._source,
-            cache_dir=str(Path(self._cache.name) / hashlib.sha256(self._source.encode("utf-8")).hexdigest()[:12]),
+            cache_dir=str(cache_root / hashlib.sha256(self._source.encode("utf-8")).hexdigest()[:12]),
             output_dir=output,
             browser=self.browser_combo.currentData(), profile=self.profile_edit.text().strip(),
             sensitivity=self.sensitivity.value(), min_scene_seconds=self.min_scene.value(),
             max_interval=self.max_interval.value(),
-            previous=previous, parent=self,
+            previous=previous, task_reference=self._task_reference,
         )
+        try:
+            self._worker = self._manager.submit(
+                owner="facebook_contact_sheet", title="FB 参考大图 · " + (getattr(self, "task_label", "") or Path(self._source).name),
+                runner=_run_job, payload=payload, kind="media", resources=[directory_resource(output)],
+                dedup_key="single:" + directory_resource(output), retryable=True)
+        except (RuntimeError, ValueError, TypeError) as error:
+            self._log(f"无法提交参考大图任务：{error}")
+            QtWidgets.QMessageBox.information(self, "无法提交任务", str(error))
+            return
         self._worker.progressChanged.connect(self._on_progress)
         self._worker.completed.connect(self._on_completed)
         self._worker.failed.connect(self._on_failed)
@@ -342,11 +385,12 @@ class ContactSheetDialog(QtWidgets.QDialog):
         self.cancel_button.setEnabled(True)
         self.progress.setValue(0)
         self.status.setText("开始处理…")
-        self._worker.start()
 
     def _on_progress(self, message, percent):
         self.status.setText(message)
-        self.progress.setValue(max(0, min(100, percent)))
+        self.progress.setRange(0, 0 if percent is None else 100)
+        if percent is not None:
+            self.progress.setValue(max(0, min(100, percent)))
 
     def _on_completed(self, result):
         self._result = result
@@ -357,6 +401,7 @@ class ContactSheetDialog(QtWidgets.QDialog):
             f"已导出 {len(result['paths'])} 张大图\n" + "\n".join(result["paths"])
         )
         self.status.setText("完成。可修正切点后重新生成。")
+        self.progress.setRange(0, 100)
         self.progress.setValue(100)
         self._show_preview(result["paths"][0])
         self._log(f"分镜生成完成：{count} 个镜头，{len(result['paths'])} 张大图。")
@@ -365,19 +410,14 @@ class ContactSheetDialog(QtWidgets.QDialog):
             if result.get("source") == url and all(
                 Path(path).parent.resolve() == folder.resolve() for path in result["paths"]
             ):
-                try:
-                    remember_sheets(folder, url, result["paths"])
-                    self._log(f"任务参考大图已缓存到：{folder}")
-                except (OSError, ValueError) as error:
-                    self.status.setText("大图已生成，但缓存索引写入失败；请查看程序日志。")
-                    self._log(f"任务参考大图缓存索引失败：{error}")
                 local = result["paths"][0] if len(result["paths"]) == 1 else str(folder)
-                QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(str(local)))
+                if self.isVisible():
+                    QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(str(local)))
 
     def _on_failed(self, message):
         self.status.setText(message)
         self._log(f"视频分镜失败：{message}")
-        if message != "操作已取消。":
+        if message != "操作已取消。" and self.isVisible():
             QtWidgets.QMessageBox.warning(self, "视频分镜失败", message)
 
     def _on_finished(self):
@@ -443,8 +483,5 @@ class ContactSheetDialog(QtWidgets.QDialog):
             QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(str(Path(self._result["paths"][0]).parent)))
 
     def closeEvent(self, event):
-        if self.is_busy():
-            self.cancel_work()
-            event.ignore()
-            return
+        # Closing this view only hides it; the host keeps the worker/cache alive.
         super().closeEvent(event)

@@ -1,5 +1,7 @@
 """Non-modal Chinese image search for existing inventory material files."""
+from model.AppDataStorage import data_directory, data_file, data_io
 
+from model.QtThreadLifecycle import connect_thread_finished, thread_is_active
 import logging
 import shutil
 import time
@@ -9,8 +11,8 @@ from qt_compat import QtCore, QtGui, QtWidgets
 
 from model.InventoryManager import InventoryStore
 
-from .encoder import ChineseImageEncoder, MODEL_SPECS, combine_search_vectors
-from .index import ImageSearchIndex, discover_external_groups
+from model.image_retrieval.encoder import ChineseImageEncoder, MODEL_SPECS, combine_search_vectors
+from model.image_retrieval.index import ImageSearchIndex, discover_external_groups
 from .settings import normalize_settings
 
 
@@ -134,7 +136,7 @@ def _copy_selected(paths, target_dir, progress, cancelled):
         while candidate.exists():
             candidate = target_dir / f"{source.stem} ({suffix}){source.suffix}"
             suffix += 1
-        shutil.copy2(source, candidate)
+        data_io.copy2(source, candidate)
         copied.append(str(candidate))
         progress(number, len(paths), f"已复制 {number}/{len(paths)} 张")
     return {"kind": "copy", "paths": copied, "cancelled": cancelled()}
@@ -143,7 +145,7 @@ def _copy_selected(paths, target_dir, progress, cancelled):
 def _move_external(paths, target_dir):
     """Move loose-library images as a batch; restore prior moves on failure."""
     target_dir = Path(target_dir).resolve()
-    target_dir.mkdir(parents=True, exist_ok=True)
+    data_directory(target_dir).ensure(parents=True, exist_ok=True)
     moved = []
     try:
         for raw_source in paths:
@@ -155,7 +157,7 @@ def _move_external(paths, target_dir):
             while target.exists():
                 target = target_dir / f"{source.stem} ({suffix}){source.suffix}"
                 suffix += 1
-            shutil.move(str(source), str(target))
+            data_io.move(str(source), str(target))
             moved.append({"source": str(source), "target": str(target)})
     except Exception:
         _restore_external(moved)
@@ -167,7 +169,7 @@ def _restore_external(moved):
     failures = []
     for item in reversed(moved):
         try:
-            shutil.move(item["target"], item["source"])
+            data_io.move(item["target"], item["source"])
         except Exception as error:
             failures.append(f"{item['source']}：{error}")
     if failures:
@@ -186,6 +188,14 @@ class SmartImageSearchDialog(QtWidgets.QDialog):
         self.encoder = encoder or ChineseImageEncoder(self.settings["model"])
         self.index = index or ImageSearchIndex.for_encoder(self.encoder)
         self.worker = None
+        self._count_worker = None
+        self._count_generation = 0
+        self._count_pending = False
+        self._shutting_down = False
+        self._drag_cleanup_timers = set()
+        self._finish_timer = QtCore.QTimer(self)
+        self._finish_timer.setSingleShot(True)
+        self._finish_timer.timeout.connect(self._finished)
         self._pending_settings = None
         self._search_rows = []
         self._shown = 0
@@ -263,10 +273,8 @@ class SmartImageSearchDialog(QtWidgets.QDialog):
         filter_row = QtWidgets.QHBoxLayout()
         filter_row.addWidget(QtWidgets.QLabel("范围"))
         self.scope = QtWidgets.QComboBox()
-        self.scope.addItem("全部素材", "")
-        self.scope.addItem("普通素材", "material")
-        self.scope.addItem("人物素材", "person")
-        self.scope.addItem("额外图片库", "folder")
+        self.scope.setToolTip("仅搜索设置中添加的图片库，不自动包含程序库存和人物素材。")
+        self._refresh_scopes()
         filter_row.addWidget(self.scope)
         filter_row.addStretch(1)
         self.search_button = QtWidgets.QPushButton("搜索")
@@ -310,29 +318,119 @@ class SmartImageSearchDialog(QtWidgets.QDialog):
         layout.addLayout(action_row)
         self.model_combo.currentIndexChanged.connect(self._search_options_changed)
         self.text_weight.valueChanged.connect(self._search_options_changed)
+        self.scope.currentIndexChanged.connect(self._scope_changed)
         self._refresh_index_status()
 
+    def _refresh_scopes(self):
+        previous = self.scope.currentData()
+        blocker = QtCore.QSignalBlocker(self.scope)
+        self.scope.clear()
+        self.scope.addItem("全部已配置图片库", "")
+        for root in self.settings["library_roots"]:
+            self.scope.addItem(str(root), str(root))
+        selected = self.scope.findData(previous)
+        self.scope.setCurrentIndex(max(0, selected))
+        del blocker
+
+    def _selected_roots(self):
+        root = self.scope.currentData()
+        roots = self.settings["library_roots"]
+        return [root] if root and root in roots else list(roots)
+
+    def _clear_results(self):
+        self.results.clear()
+        self._search_rows = []
+        self._shown = 0
+        self.load_more_button.setVisible(False)
+        self._search_details = ""
+
+    def _scope_changed(self, _value=None):
+        self._clear_results()
+        self._refresh_index_status()
+        self.status.setText("搜索范围已切换，请重新搜索；不会混入程序库存。")
+
     def _refresh_index_status(self):
-        count = self.index.count(self.encoder.model_id)
-        self.index_status.setText(f"已索引 {count:,} 张图片")
+        self._count_generation += 1
+        if not self._selected_roots():
+            self._count_pending = False
+            if self._count_worker is not None:
+                self._count_worker.requestInterruption()
+            self.index_status.setText("当前图片库已索引 0 张图片")
+            return
+        self._count_pending = True
+        self.index_status.setText("正在后台统计当前图片库…")
+        if self._count_worker is not None:
+            self._count_worker.requestInterruption()
+        else:
+            self._start_count()
+
+    def _start_count(self):
+        if self._shutting_down or not self._count_pending:
+            return
+        self._count_pending = False
+        generation = self._count_generation
+        index, model_id, roots = self.index, self.encoder.model_id, self._selected_roots()
+        def task(_progress, cancelled):
+            return generation, index.count(model_id, allowed_roots=roots, cancelled=cancelled)
+        worker = _SearchWorker(task, QtWidgets.QApplication.instance())
+        worker.count_generation = generation
+        self._count_worker = worker
+        worker.completed.connect(self._count_ready)
+        worker.failed.connect(self._count_failed)
+        connect_thread_finished(worker, self, '_count_worker', self._count_finished)
+        worker.start()
+
+    def _count_ready(self, result):
+        generation, count = result
+        if not self._shutting_down and generation == self._count_generation and count is not None:
+            self.index_status.setText(f"当前图片库已索引 {count:,} 张图片")
+
+    def _count_failed(self, message):
+        if (not self._shutting_down and not self._count_pending and self._count_worker is not None
+                and self._count_worker.count_generation == self._count_generation):
+            self.index_status.setText("图片库统计失败：" + message)
+
+    def _count_finished(self):
+        self._count_worker = None
+        self._start_count()
+
+    def is_counting(self):
+        return self._count_worker is not None
+
+    def cancel_statistics(self):
+        self._count_generation += 1
+        self._count_pending = False
+        if self._count_worker is not None:
+            self._count_worker.requestInterruption()
+
+    def closeEvent(self, event):
+        self.cancel_statistics()
+        super().closeEvent(event)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._refresh_index_status()
 
     def update_settings(self, settings):
         updated = normalize_settings(settings)
         if self.is_busy():
             self._pending_settings = updated
             return
-        if self.encoder.model_key != updated["model"]:
+        roots_changed = self.settings["library_roots"] != updated["library_roots"]
+        model_changed = self.encoder.model_key != updated["model"]
+        if model_changed:
             self.encoder = ChineseImageEncoder(updated["model"])
             self.index = ImageSearchIndex.for_encoder(self.encoder, self.index.root)
             self._model_notice_acknowledged = False
-            self.results.clear()
-            self._search_rows = []
-            self._shown = 0
-            self.load_more_button.setVisible(False)
-            self._search_details = ""
+            self._clear_results()
             self.status.setText("已切换模型，旧索引保留。新模型尚无索引时，请先增量更新索引。")
-            self._refresh_index_status()
         self.settings = updated
+        self._refresh_scopes()
+        if roots_changed:
+            self._clear_results()
+            self.status.setText("图片库范围已更新，请重新搜索；原模型和索引保留。")
+        if model_changed or roots_changed:
+            self._refresh_index_status()
         blockers = [QtCore.QSignalBlocker(self.model_combo), QtCore.QSignalBlocker(self.text_weight)]
         self.model_combo.setCurrentIndex(self.model_combo.findData(updated["model"]))
         self.text_weight.setValue(updated["text_weight"])
@@ -373,18 +471,19 @@ class SmartImageSearchDialog(QtWidgets.QDialog):
         return self.worker is not None
 
     def cancel_work(self):
+        self.cancel_statistics()
         if self.is_busy():
             self.worker.requestInterruption()
             self.status.setText("正在停止；当前图片处理完后会保存已完成的索引。")
 
     def _start(self, task, message):
-        if self.is_busy():
+        if self._shutting_down or self.is_busy():
             return False
         self.worker = _SearchWorker(task, self)
         self.worker.progressChanged.connect(self._progress)
         self.worker.completed.connect(self._completed)
         self.worker.failed.connect(self._failed)
-        self.worker.finished.connect(self._finished)
+        connect_thread_finished(self.worker, self, 'worker', self._finished)
         self.index_button.setEnabled(False)
         self.search_button.setEnabled(False)
         self.move_button.setEnabled(False)
@@ -403,25 +502,32 @@ class SmartImageSearchDialog(QtWidgets.QDialog):
         return True
 
     def update_index(self):
-        if self.is_busy() or not self._confirm_model():
+        if self.is_busy():
             return
         roots = list(self.settings["library_roots"])
+        if not roots:
+            self.status.setText("未配置图片库，请到程序设置 → 智能搜索 → 图片中添加文件夹。")
+            return
+        if not self._confirm_model():
+            return
         encoder, index = self.encoder, self.index
         def task(progress, cancelled):
-            progress(0, 0, "正在扫描库存中的图片…")
-            groups = self.store.list_image_groups()
-            progress(0, 0, "正在扫描额外图片库…")
-            groups.extend(discover_external_groups(roots))
-            result = index.sync(groups, encoder, progress, cancelled)
+            progress(0, 0, "正在扫描已配置的图片库…")
+            groups = discover_external_groups(roots)
+            # Inventory vectors share this database with image assignment. Keep
+            # them intact while pruning obsolete external-library records only.
+            result = index.sync(groups, encoder, progress, cancelled,
+                                prune_source_kinds=("folder",))
             return {"kind": "sync", **result}
-        self._start(task, "正在扫描素材库；新增图片才会运行中文模型…")
+        self._start(task, "正在扫描图片库；新增图片才会运行中文模型，不扫描程序库存…")
 
     def search(self):
         if self.is_busy():
             return
-        if not self.index.count(self.encoder.model_id):
+        roots = self._selected_roots()
+        if not roots:
             QtWidgets.QMessageBox.information(
-                self, "尚无索引", "先点击“增量更新索引”，完成第一次建库。"
+                self, "未配置图片库", "请到程序设置 → 智能搜索 → 图片中添加文件夹。不会自动搜索程序库存。"
             )
             return
         mode = self.search_tabs.currentIndex()
@@ -437,11 +543,16 @@ class SmartImageSearchDialog(QtWidgets.QDialog):
                 return
         if not self._confirm_model():
             return
-        scope = str(self.scope.currentData() or "")
         description = self.image_description.text().strip() if mode else ""
         weight = self.text_weight.value() / 100
         encoder, index = self.encoder, self.index
         def task(progress, _cancelled):
+            progress(0, 0, "正在核对当前图片库索引…")
+            count = index.count(encoder.model_id, allowed_roots=roots, cancelled=_cancelled)
+            if count is None or _cancelled():
+                return {"kind": "canceled"}
+            if not count:
+                return {"kind": "empty"}
             load_start = time.perf_counter()
             prepare = getattr(encoder, "prepare", None)
             if callable(prepare) and not getattr(encoder, "is_loaded", False):
@@ -465,7 +576,7 @@ class SmartImageSearchDialog(QtWidgets.QDialog):
             progress(0, 0, "正在检索已建立的图片索引…")
             search_start = time.perf_counter()
             return {"kind": "search", "rows": index.search(
-                encoder.model_id, vector, None, scope
+                encoder.model_id, vector, None, allowed_roots=roots
             ), "load_seconds": load_seconds,
                 "search_mode": search_mode,
                 "encode_seconds": encode_seconds,
@@ -482,7 +593,11 @@ class SmartImageSearchDialog(QtWidgets.QDialog):
 
     def _completed(self, result):
         kind = result.get("kind")
-        if kind == "sync":
+        if kind == "empty":
+            self.status.setText("当前图片库尚无索引，请先点击“增量更新索引”。")
+        elif kind == "canceled":
+            self.status.setText("已取消搜索。")
+        elif kind == "sync":
             self._refresh_index_status()
             self.status.setText(
                 f"增量更新完成：处理 {result['new_or_changed']} / "
@@ -515,8 +630,15 @@ class SmartImageSearchDialog(QtWidgets.QDialog):
 
     def _finished(self):
         worker = self.worker
+        # finished() precedes native thread-local cleanup. Keep ownership and
+        # keep exit blocked until wait(0) confirms the OS thread has joined.
+        if isinstance(worker, QtCore.QThread) and not worker.wait(0):
+            self._finish_timer.start(20)
+            return
         self.worker = None
         if worker is not None:
+            if isinstance(worker, _SearchWorker):
+                worker.task = None
             worker.deleteLater()
         self.index_button.setEnabled(True)
         self.search_button.setEnabled(True)
@@ -592,9 +714,41 @@ class SmartImageSearchDialog(QtWidgets.QDialog):
 
     def _schedule_drag_cleanup(self, paths, action):
         # Shell file moves may finish just after the drag returns.
-        QtCore.QTimer.singleShot(
-            500, lambda: self._finalize_dragged_move(paths, action)
-        )
+        if self._shutting_down:
+            return
+        timer = QtCore.QTimer(self)
+        timer.setSingleShot(True)
+        self._drag_cleanup_timers.add(timer)
+
+        def finish():
+            self._drag_cleanup_timers.discard(timer)
+            timer.deleteLater()
+            if not self._shutting_down:
+                self._finalize_dragged_move(paths, action)
+
+        timer.timeout.connect(finish)
+        timer.start(500)
+
+    def shutdown(self):
+        if self.is_busy():
+            self.cancel_work()
+            return False
+        self._shutting_down = True
+        self.cancel_statistics()
+        if self._count_worker is not None:
+            self._count_worker.requestInterruption()
+            return False  # The lifecycle gate joins asynchronously, never wait here.
+        self._pending_settings = None
+        self._finish_timer.stop()
+        for timer in self._drag_cleanup_timers:
+            timer.stop()
+            timer.deleteLater()
+        self._drag_cleanup_timers.clear()
+        release = getattr(self.encoder, "release", None)
+        if callable(release):
+            release()
+        self.hide()
+        return True
 
     def _finalize_dragged_move(self, paths, action):
         moved = []
@@ -608,7 +762,7 @@ class SmartImageSearchDialog(QtWidgets.QDialog):
                 # and the source must remove the original. On Windows,
                 # TargetMoveAction means the target already owns the move.
                 try:
-                    source.unlink()
+                    data_file(source).remove()
                     moved.append(path)
                 except OSError as error:
                     failures.append(f"{source.name}：{error}")

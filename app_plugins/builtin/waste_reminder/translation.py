@@ -4,6 +4,7 @@ import html
 import json
 import os
 from pathlib import Path
+from model.AppDataStorage import data_file
 import re
 import tempfile
 from datetime import datetime, timezone
@@ -96,7 +97,7 @@ class NoticeTranslator:
         self.path = Path(folder)/"translations.json"
         self.cancelled = cancelled
         try:
-            self.cache = json.loads(self.path.read_text(encoding="utf-8"))
+            self.cache = data_file(self.path).read_json()
             if not isinstance(self.cache, dict):
                 self.cache = {}
         except (OSError, ValueError):
@@ -105,15 +106,7 @@ class NoticeTranslator:
     def _save(self):
         # Save each successful chunk: an interrupted multi-page notice resumes cheaply.
         self.cache = dict(list(self.cache.items())[-500:])
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        handle, tmp = tempfile.mkstemp(prefix="translations-", suffix=".tmp", dir=self.path.parent)
-        try:
-            with os.fdopen(handle, "w", encoding="utf-8") as stream:
-                json.dump(self.cache, stream, ensure_ascii=False, indent=2)
-            os.replace(tmp, self.path)
-        finally:
-            if os.path.exists(tmp):
-                os.unlink(tmp)
+        data_file(self.path).write_json(self.cache, indent=2)
 
     def translate(self, text):
         translated, providers = [], set()

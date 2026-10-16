@@ -1,4 +1,5 @@
-"""Fetch an accessible Facebook video into a private temporary directory."""
+"""Fetch an accessible Facebook video into task-owned temporary media storage."""
+from model.AppDataStorage import data_directory
 
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -37,9 +38,14 @@ def download_facebook_video(url, destination, *, browser="", profile="", progres
         raise RuntimeError("缺少 yt-dlp 依赖；请安装更新后的 requirements.txt。") from exc
 
     destination = Path(destination)
-    destination.mkdir(parents=True, exist_ok=True)
+    from model.MediaStorage import require_media_output, require_media_space
+    require_media_output(destination)
+    data_directory(destination).ensure(parents=True, exist_ok=True)
 
     def hook(data):
+        downloaded = int(data.get('downloaded_bytes') or 0)
+        expected = int(data.get('total_bytes') or data.get('total_bytes_estimate') or 0)
+        require_media_space(destination, max(0, expected-downloaded))
         if canceled and canceled():
             raise DownloadCanceled("已取消获取视频。")
         if progress and data.get("status") == "downloading":

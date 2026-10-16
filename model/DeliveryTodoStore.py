@@ -1,5 +1,7 @@
 """Durable, user-controlled delivery tasks. Source changes never auto-complete them."""
 
+from model.AppDataStorage import data_directory, data_file
+
 import hashlib
 import json
 import sqlite3
@@ -9,7 +11,7 @@ from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 
-from app_paths import APP_ROOT
+from app_paths import DATA_ROOT as APP_ROOT
 from model.DailyLinkHistory import daily_task_sheet_failures, history_dates
 from model.ReviewSubmissionHistory import canonical_review_link
 from model.VideoUploadHistory import normalize_video_identity
@@ -163,7 +165,7 @@ def collect_delivery_todos(upload_records, review_items, daily_history, review_f
 class DeliveryTodoStore:
     def __init__(self, path=None):
         self.path = Path(path or DEFAULT_TODO_FILE)
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        data_directory(self.path.parent).ensure(parents=True, exist_ok=True)
         with self._connect() as db:
             db.execute("""CREATE TABLE IF NOT EXISTS todos (
                 id TEXT PRIMARY KEY, kind TEXT NOT NULL, title TEXT NOT NULL,
@@ -189,7 +191,7 @@ class DeliveryTodoStore:
 
     @contextmanager
     def _connect(self):
-        db = sqlite3.connect(str(self.path), timeout=30)
+        db = data_file(str(self.path)).connect(timeout=30)
         db.row_factory = sqlite3.Row
         try:
             db.execute("PRAGMA busy_timeout=30000")

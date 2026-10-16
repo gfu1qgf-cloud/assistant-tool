@@ -1,6 +1,6 @@
 import os
 import unittest
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock, sentinel
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -32,6 +32,30 @@ class MainPluginIntegrationTests(unittest.TestCase):
     def setUpClass(cls):
         cls.app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
 
+    def test_background_task_exit_choices_are_cooperative_and_do_not_wait_in_gui(self):
+        for choice in (sentinel.wait, sentinel.cancel, sentinel.keep):
+            window = MagicMock()
+            window._background_exit_pending = False
+            window.background_tasks.is_busy.return_value = True
+            event = MagicMock()
+            with patch("PYUI.main_pyui.QMessageBox") as message_box:
+                box = message_box.return_value
+                box.addButton.side_effect = [sentinel.wait, sentinel.cancel, sentinel.keep]
+                box.clickedButton.return_value = choice
+                MainDialog.closeEvent(window, event)
+            event.ignore.assert_called_once()
+            window.background_tasks.wait.assert_not_called()
+            if choice == sentinel.keep:
+                self.assertFalse(window._background_exit_pending)
+                window.background_tasks.stop_accepting.assert_not_called()
+            else:
+                self.assertTrue(window._background_exit_pending)
+                window.background_tasks.stop_accepting.assert_called_once()
+            if choice == sentinel.cancel:
+                window.background_tasks.cancel_all.assert_called_once()
+            else:
+                window.background_tasks.cancel_all.assert_not_called()
+
     @unittest.skipIf(
         os.environ.get("GITHUB_ACTIONS") == "true",
         "requires an interactive Windows Qt desktop; covered by the local release suite",
@@ -53,9 +77,17 @@ class MainPluginIntegrationTests(unittest.TestCase):
             MainDialog,
             "saveCurrentConfig",
             lambda self: True,
+        ), patch.object(
+            MainDialog, "startFlowParameterGuard", lambda self: None,
+        ), patch.object(
+            MainDialog, "startGoogleSheetMonitor", lambda self: None,
         ):
             window = MainDialog()
             try:
+                background_index = window.tabWidget.indexOf(window.background_tasks_page)
+                self.assertEqual(background_index, window.tabWidget.indexOf(window.tab_2) + 1)
+                self.assertEqual(window.tabWidget.tabText(background_index), "后台任务")
+                self.assertIs(window.background_tasks, window.plugin_host.background_tasks)
                 menu_titles = [action.text() for action in window.main_menu_bar.actions()]
                 tool_titles = [action.text() for action in window.tools_menu.actions()]
                 plugin_titles = [action.text() for action in window.plugin_host.menu.actions()]
@@ -63,16 +95,28 @@ class MainPluginIntegrationTests(unittest.TestCase):
                 self.assertIn("任务提交表自查", tool_titles)
                 self.assertIn("批量切分音频…", tool_titles)
                 self.assertIn("库存与素材管理器", plugin_titles)
-                self.assertIn("素材整理…", plugin_titles)
-                self.assertIn("智能搜图…", plugin_titles)
-                self.assertIn("智能搜音乐…", plugin_titles)
+                self.assertNotIn("素材整理…", plugin_titles)
+                self.assertNotIn("图片/视频素材分类…", plugin_titles)
+                plugin_ids = {entry["plugin_id"] for entry in window.plugin_host.plugin_entries()}
+                self.assertNotIn("material_organizer", plugin_ids)
+                self.assertNotIn("image_classifier", plugin_ids)
+                self.assertIs(window.material_organizer_plugin, window.inventory_plugin.material_tools.organizer)
+                self.assertIs(window.image_classifier_plugin, window.inventory_plugin.material_tools.classifier)
+                self.assertIn("智能搜索…", plugin_titles)
+                self.assertNotIn("智能搜图…", plugin_titles)
+                self.assertNotIn("智能搜音乐…", plugin_titles)
+                self.assertIn("smart_search", plugin_ids)
+                self.assertNotIn("smart_image_search", plugin_ids)
+                self.assertNotIn("smart_music_search", plugin_ids)
                 self.assertIn("批量文案视频…", plugin_titles)
+                self.assertIn("智能文案分段助手…", plugin_titles)
                 self.assertIn("监听剪贴板中的 Google 链接", plugin_titles)
                 self.assertIn("Chrome 启动器", plugin_titles)
-                self.assertIn("启动下一个 Chrome", plugin_titles)
+                self.assertNotIn("启动下一个 Chrome", plugin_titles)
                 self.assertIn("Codex 多账号切换…", plugin_titles)
-                self.assertIn("智能剪辑并生成 SRT…", plugin_titles)
-                self.assertIn("剪辑气口…", plugin_titles)
+                self.assertIn("智能剪辑", plugin_titles)
+                self.assertNotIn("智能剪辑并生成 SRT…", plugin_titles)
+                self.assertNotIn("剪辑气口…", plugin_titles)
                 self.assertIn("每日任务管理", plugin_titles)
                 self.assertIn("任务交付", plugin_titles)
                 delivery_action = next(
@@ -152,6 +196,7 @@ class MainPluginIntegrationTests(unittest.TestCase):
                     [action.text() for action in task_actions],
                 )
                 task_action_titles = [action.text() for action in task_actions]
+                self.assertIn("智能文案分段…", task_action_titles)
                 self.assertIn("生成任务音频【不带字幕】", task_action_titles)
                 self.assertIn("生成任务音频【带字幕】", task_action_titles)
                 self.assertIn("生成任务音频【使用任务名】", task_action_titles)

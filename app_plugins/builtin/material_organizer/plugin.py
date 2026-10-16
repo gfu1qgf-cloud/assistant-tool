@@ -1,3 +1,4 @@
+from model.QtThreadLifecycle import thread_is_active
 from qt_compat import QtCore, QtWidgets
 
 from app_plugins.api import MAIN_MENU, PluginCommand, PluginSettingsPage
@@ -23,12 +24,16 @@ class MaterialOrganizerPlugin:
         self.store = None
         self.dialog = None
 
-    def register(self, context):
+    def bind_context(self, context):
         self.context = context
         config = context.load_config()
         self.settings = normalize_material_organizer_settings(
             config.get(MATERIAL_ORGANIZER_CONFIG_KEY)
         )
+
+    def register(self, context):
+        # Compatibility for callers outside the merged inventory installation.
+        self.bind_context(context)
         context.register_command(PluginCommand(
             command_id="open",
             title="素材整理…",
@@ -95,6 +100,8 @@ class MaterialOrganizerPlugin:
         if (
             self.dialog is not None
             and self.dialog.worker is not None
-            and self.dialog.worker.isRunning()
+            and thread_is_active(self.dialog.worker)
         ):
             self.dialog.worker.requestInterruption()
+            return False
+        return True

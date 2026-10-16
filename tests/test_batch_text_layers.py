@@ -269,7 +269,7 @@ class BatchTextLayerTests(unittest.TestCase):
             store = Store(root/"state")
             state = fresh_state()
             state["settings"]["layers"] = normalize_layers([image_layer(root/"asset.png")])
-            state["jobs"] = [{"id":str(index),"path":"bg.mp4","status":"待生成"} for index in range(50)]
+            state["jobs"] = [{"id":str(index),"name":f"job-{index}","path":"bg.mp4","status":"待生成"} for index in range(50)]
             state = store.save(state,0)
             received = []
             def render(job,state,*_args):

@@ -1,8 +1,13 @@
-import shutil
+
+from model.AppDataStorage import data_directory
 import re
 from datetime import date
 from pathlib import Path
 from typing import Any, Callable, Dict, List, NamedTuple, Optional
+
+from model.TaskResultFileGuard import (
+    FileStillWritingError, copy_if_ready_and_updated, is_copy_temporary,
+)
 
 try:
     from model.OdsHelper import ReadTaskOds
@@ -51,33 +56,27 @@ def render_template(template: str, task, task_date: date, index=None) -> str:
 
 
 def copy_if_updated(src: Path, dst: Path) -> bool:
-    src = Path(src)
-    dst = Path(dst)
-    if not src.exists():
-        return False
+    return copy_if_ready_and_updated(src, dst)
 
-    need_copy = True
-    if dst.exists():
-        src_stat = src.stat()
-        dst_stat = dst.stat()
-        need_copy = (
-            src_stat.st_mtime_ns > dst_stat.st_mtime_ns
-            or src_stat.st_size != dst_stat.st_size
-        )
-    if not need_copy:
-        print(f"跳过未更新: {dst}")
-        return False
 
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(src, dst)
-    print(f"已复制: {dst}")
-    return True
+def _copy_output(src, dst, destination_callback=None, deferred_file_callback=None):
+    try:
+        updated = copy_if_updated(src, dst)
+    except FileStillWritingError as error:
+        print(f"[整理暂缓] {src}：{error}；下次整理自动重试，不计为失败。")
+        if deferred_file_callback is not None:
+            deferred_file_callback(Path(src), Path(dst), str(error))
+        return False
+    if destination_callback is not None:
+        destination_callback(Path(dst))
+    return updated
 
 
 def copytree_if_updated(
     src_dir: Path,
     dst_dir: Path,
     destination_callback: Optional[Callable[[Path], None]] = None,
+    deferred_file_callback=None,
 ) -> List[Path]:
     src_dir = Path(src_dir)
     dst_dir = Path(dst_dir)
@@ -85,13 +84,14 @@ def copytree_if_updated(
         return []
 
     updated_files = []
+    from model.MediaStorage import generated_media_path
     for src_file in src_dir.rglob("*"):
-        if src_file.is_file():
+        if generated_media_path(src_file):
+            continue
+        if src_file.is_file() and not is_copy_temporary(src_file):
             dst_file = dst_dir / src_file.relative_to(src_dir)
-            if copy_if_updated(src_file, dst_file):
+            if _copy_output(src_file, dst_file, destination_callback, deferred_file_callback):
                 updated_files.append(dst_file)
-            if destination_callback is not None:
-                destination_callback(dst_file)
     return updated_files
 
 
@@ -201,6 +201,7 @@ def export_task(
     config: Dict,
     wsp_export: bool,
     exported_file_callback: Optional[Callable[[Path, Any], None]] = None,
+    deferred_file_callback=None,
 ) -> List[Path]:
     def remember_output(file_path: Path) -> None:
         if exported_file_callback is not None:
@@ -224,9 +225,8 @@ def export_task(
             legacy_name = legacy_output_name(task, task_date, config, profile)
             current_name = output_name(task, task_date, config, profile)
             dst = compatible_output_path(output_dir, current_name, legacy_name)
-            if copy_if_updated(result_file, dst):
+            if _copy_output(result_file, dst, remember_output, deferred_file_callback):
                 updated.append(dst)
-            remember_output(dst)
 
         wsp_name = str(profile.get("wsp_candidate") or "").strip()
         if wsp_export and wsp_name:
@@ -237,16 +237,17 @@ def export_task(
                 dst = compatible_output_path(
                     output_dir_wsp, current_name, legacy_name
                 )
-                if copy_if_updated(wsp_file, dst):
+                if _copy_output(wsp_file, dst, remember_output, deferred_file_callback):
                     updated.append(dst)
-                remember_output(dst)
         return updated
 
     if mode == "all_videos":
         if not task_dir.exists():
             return []
         updated = []
-        for index, video_file in enumerate(task_dir.rglob("*.mp4"), start=1):
+        from model.MediaStorage import generated_media_path
+        videos = (path for path in task_dir.rglob('*.mp4') if not generated_media_path(path))
+        for index, video_file in enumerate(videos, start=1):
             legacy_name = legacy_output_name(
                 task,
                 task_date,
@@ -258,9 +259,8 @@ def export_task(
                 task, task_date, config, profile, index=index
             )
             dst = compatible_output_path(output_dir, current_name, legacy_name)
-            if copy_if_updated(video_file, dst):
+            if _copy_output(video_file, dst, remember_output, deferred_file_callback):
                 updated.append(dst)
-            remember_output(dst)
         return updated
 
     if mode == "copy_tree":
@@ -276,6 +276,7 @@ def export_task(
             task_dir,
             output_dir / directory_name,
             destination_callback=remember_output,
+            deferred_file_callback=deferred_file_callback,
         )
 
     print(f"未知导出模式，已跳过：{mode}")
@@ -288,6 +289,7 @@ def export_one_date(
     wsp_export: bool = False,
     config: Optional[Dict] = None,
     exported_file_callback: Optional[Callable[[Path, Any], None]] = None,
+    deferred_file_callback=None,
 ) -> Optional[ExportResult]:
     config = dict(config or {})
     if base_dir is None:
@@ -312,8 +314,8 @@ def export_one_date(
         print(f"没找到登记表，跳过：{doc_path}")
         return None
 
-    output_dir.mkdir(parents=True, exist_ok=True)
-    output_dir_wsp.mkdir(parents=True, exist_ok=True)
+    data_directory(output_dir).ensure(parents=True, exist_ok=True)
+    data_directory(output_dir_wsp).ensure(parents=True, exist_ok=True)
     updated_files = []
     for task in ReadTaskOds(doc_path):
         if (
@@ -339,6 +341,7 @@ def export_one_date(
             config,
             wsp_export,
             exported_file_callback=exported_file_callback,
+            deferred_file_callback=deferred_file_callback,
         )
         updated_files.extend(task_updated_files)
 

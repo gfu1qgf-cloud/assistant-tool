@@ -1,10 +1,14 @@
 """Shot-change analysis and contact-sheet rendering for short/medium videos."""
+from model.AppDataStorage import data_directory
 
 from dataclasses import dataclass
 from pathlib import Path
 import math
 import re
 import statistics
+
+
+ANALYSIS_VERSION = 2
 
 
 class AnalysisCanceled(Exception):
@@ -47,12 +51,16 @@ def _difference(a, b):
 
 
 def classify_cuts(samples, *, sensitivity=5, min_scene_seconds=0.8):
-    """Find hard cuts and short, bounded runs of change (cross-dissolves)."""
+    """Find abrupt cuts and bounded changes against surrounding shot motion."""
     if len(samples) < 2:
         return []
     sensitivity = max(1, min(10, int(sensitivity)))
     hard_limit = 0.32 - 0.014 * (sensitivity - 1)
     soft_limit = 0.068 - 0.0035 * (sensitivity - 1)
+    # A dissolve's blended endpoints are less different than a hard cut.
+    # Do not derive its threshold from hard_limit: that discarded real shots
+    # whose endpoint differences were 0.21 at the default sensitivity.
+    transition_limit = 0.215 - 0.00625 * (sensitivity - 1)
     scores = [_difference(samples[i - 1][1], samples[i][1]) for i in range(1, len(samples))]
     candidates = []
     hard_indexes = set()
@@ -75,7 +83,7 @@ def classify_cuts(samples, *, sensitivity=5, min_scene_seconds=0.8):
         while index < len(scores) and index not in hard_indexes and scores[index] >= soft_limit:
             index += 1
         end = index
-        if not 2 <= end - start <= 10:
+        if not 1 <= end - start <= 10:
             continue
         run_mean = statistics.mean(scores[start:end])
         before = scores[max(0, start - 4):start]
@@ -84,9 +92,18 @@ def classify_cuts(samples, *, sensitivity=5, min_scene_seconds=0.8):
         if surrounding > run_mean * 0.72:
             continue
         accumulated = _difference(samples[start][1], samples[end][1])
-        if accumulated >= max(0.19, hard_limit * 0.85):
-            midpoint = (start + end) // 2
-            candidates.append(Cut(samples[midpoint + 1][0], "叠化/渐变", accumulated))
+        if accumulated < max(transition_limit, surrounding * 2.6):
+            continue
+        # A brief flash/subtitle must not become another shot if the picture
+        # immediately returns to its pre-transition appearance.
+        settled = min(len(samples) - 1, end + 2)
+        if _difference(samples[start][1], samples[settled][1]) < accumulated * 0.7:
+            continue
+        # scores[start:end] spans samples[start] through samples[end], not
+        # samples[end + 1]. The old +1 shifted every boundary into the next shot.
+        midpoint = (samples[start][0] + samples[end][0]) / 2
+        kind = "硬切" if end - start == 1 else "叠化/渐变"
+        candidates.append(Cut(midpoint, kind, accumulated))
 
     # A fade through black may span longer than the short dissolve window.
     for index in range(1, len(samples) - 1):
@@ -163,10 +180,29 @@ def _font(size):
     return ImageFont.load_default()
 
 
-def _representative_frame(capture, start, end):
+def _representative_frame(capture, start, end, *, opening=False, canceled=None):
     import cv2
 
     span = max(0.01, end - start)
+    if opening:
+        import numpy as np
+
+        # The opening is a reference in its own right, not a sharpness contest.
+        # Read sequentially so a short opening cannot be replaced by a later
+        # frame. Only skip nearly uniform black decoder/fade-in frames.
+        capture.set(cv2.CAP_PROP_POS_MSEC, start * 1000)
+        fps = float(capture.get(cv2.CAP_PROP_FPS) or 25)
+        if not math.isfinite(fps) or fps <= 0:
+            fps = 25
+        for _ in range(max(1, math.ceil(min(span, 2.0) * fps))):
+            if canceled and canceled():
+                raise AnalysisCanceled("已取消生成分镜图。")
+            ok, frame = capture.read()
+            if not ok:
+                break
+            grey = cv2.cvtColor(cv2.resize(frame, (48, 27)), cv2.COLOR_BGR2GRAY)
+            if float(grey.mean()) > 4 or float(np.percentile(grey, 99)) > 12:
+                return frame
     best = None
     best_quality = -1.0
     for fraction in (0.35, 0.55, 0.72):
@@ -197,7 +233,7 @@ def render_contact_sheets(video_path, duration, cuts, output_dir, *, title="视�
     from PIL import Image, ImageDraw, ImageOps
 
     output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
+    data_directory(output_dir).ensure(parents=True, exist_ok=True)
     boundaries = [0.0] + [cut.seconds for cut in cuts if 0 < cut.seconds < duration] + [duration]
     boundaries = sorted(set(boundaries))
     shot_count = len(boundaries) - 1
@@ -222,7 +258,8 @@ def render_contact_sheets(video_path, duration, cuts, output_dir, *, title="视�
                 if canceled and canceled():
                     raise AnalysisCanceled("已取消生成分镜图。")
                 start, end = boundaries[shot_index:shot_index + 2]
-                frame = _representative_frame(capture, start, end)
+                frame = _representative_frame(capture, start, end, opening=shot_index == 0,
+                                              canceled=canceled)
                 col = (shot_index - page_start) % columns
                 row = (shot_index - page_start) // columns
                 x = margin + col * (cell_width + margin)

@@ -7,6 +7,8 @@ until its remote revision changes or the user explicitly forces a download.
 
 from __future__ import annotations
 
+from model.AppDataStorage import data_io, data_file, data_directory
+
 import json
 import os
 import threading
@@ -14,7 +16,7 @@ import time
 import uuid
 from pathlib import Path
 
-from app_paths import APP_ROOT
+from app_paths import APP_ROOT, DATA_ROOT
 from model.GoogleDriveDownloader import jfif_content_extension, safe_filename
 from model.GoogleDriveHelper import (
     get_remote_file,
@@ -32,7 +34,7 @@ from model.MaterialSourceDownloader import (
 )
 
 
-DEFAULT_MATERIAL_SYNC_STATE_FILE = APP_ROOT / "MaterialDriveSyncState.json"
+DEFAULT_MATERIAL_SYNC_STATE_FILE = DATA_ROOT / "MaterialDriveSyncState.json"
 DEFAULT_MATERIAL_SYNC_DIRECTORY = APP_ROOT / "MaterialLibrary" / "网盘同步素材"
 MATERIAL_SYNC_CONFIG_KEYS = {
     "enabled": "material_drive_sync_enabled",
@@ -87,7 +89,7 @@ class MaterialSyncStateStore:
             if not self.path.is_file():
                 return {"version": 1, "folder_id": "", "files": {}}
             try:
-                value = json.loads(self.path.read_text(encoding="utf-8"))
+                value = json.loads(data_file(self.path).read_text(encoding="utf-8"))
             except (OSError, ValueError, TypeError) as error:
                 raise ValueError(
                     "网盘素材同步历史损坏，已停止自动同步以避免重复下载："
@@ -109,19 +111,19 @@ class MaterialSyncStateStore:
 
     def save(self, state):
         with self._lock:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
+            data_directory(self.path.parent).ensure(parents=True, exist_ok=True)
             temporary = self.path.with_name(
                 f"{self.path.name}.{uuid.uuid4().hex}.tmp"
             )
             try:
-                temporary.write_text(
+                data_file(temporary).write_text_direct(
                     json.dumps(state, ensure_ascii=False, indent=2),
                     encoding="utf-8",
                 )
-                os.replace(str(temporary), str(self.path))
+                data_io.replace(str(temporary), str(self.path))
             finally:
                 try:
-                    temporary.unlink()
+                    data_file(temporary).unlink()
                 except OSError:
                     pass
 
@@ -246,37 +248,41 @@ def _signature(item):
     ))
 
 
-def _download_item(service, item, local_root, progress_callback=None):
+def _download_item(service, item, local_root, progress_callback=None, cancelled=None):
     from googleapiclient.http import MediaIoBaseDownload
 
     request, parts = _download_request(service, item)
     if request is None or not parts:
         return None
     parent = Path(local_root).joinpath(*parts[:-1])
-    parent.mkdir(parents=True, exist_ok=True)
+    data_directory(parent).ensure(parents=True, exist_ok=True)
     requested_target = parent / parts[-1]
     part = requested_target.with_name(requested_target.name + ".part")
     if progress_callback:
         progress_callback(f"正在同步：{'/'.join(parts)}")
     try:
-        with part.open("wb") as stream:
+        with data_io.open(part,"wb") as stream:
             downloader = MediaIoBaseDownload(stream, request, chunksize=2 * 1024 * 1024)
             done = False
             while not done:
+                if cancelled and cancelled():
+                    raise InterruptedError("网盘同步已取消，已完成的文件保留。")
                 _status, done = downloader.next_chunk(num_retries=4)
+            if cancelled and cancelled():
+                raise InterruptedError("网盘同步已取消，已完成的文件保留。")
         target = requested_target
         if requested_target.suffix.casefold() == ".jfif":
             target = requested_target.with_suffix(jfif_content_extension(part))
-        os.replace(str(part), str(target))
+        data_io.replace(str(part), str(target))
         if target != requested_target and requested_target.exists():
             try:
-                requested_target.unlink()
+                data_file(requested_target).unlink()
             except OSError:
                 pass
         return target
     finally:
         try:
-            part.unlink()
+            data_file(part).unlink()
         except OSError:
             pass
 
@@ -289,6 +295,7 @@ def sync_material_drive_folder(
     service_factory=load_drive_service,
     progress_callback=None,
     material_root=None,
+    cancelled=None,
 ):
     settings = normalize_material_sync_settings({
         MATERIAL_SYNC_CONFIG_KEYS[key]: value for key, value in settings.items()
@@ -297,7 +304,7 @@ def sync_material_drive_folder(
     if not link.is_folder:
         raise ValueError("持续同步来源必须是 Google Drive 文件夹链接。")
     local_root = Path(settings["local_dir"])
-    local_root.mkdir(parents=True, exist_ok=True)
+    data_directory(local_root).ensure(parents=True, exist_ok=True)
     # Most polls find no changed remote files. Build the size index only when
     # an automatic download is actually needed.
     duplicate_index = None
@@ -339,7 +346,7 @@ def sync_material_drive_folder(
             )
             item["relative_parts"] = tuple(parts)
     force_ids = {str(value) for value in (force_ids or ())}
-    current_ids = set()
+    current_ids = {str(item.get("id") or "") for item in remote_files}
     downloaded = []
     skipped = 0
     duplicates = 0
@@ -347,6 +354,8 @@ def sync_material_drive_folder(
     now = time.time()
 
     for item in remote_files:
+        if cancelled and cancelled():
+            break
         file_id = str(item.get("id") or "")
         if not file_id:
             continue
@@ -426,6 +435,7 @@ def sync_material_drive_folder(
                 item,
                 local_root,
                 progress_callback=progress_callback,
+                **({"cancelled": cancelled} if cancelled is not None else {}),
             )
             if target is None:
                 previous["local_status"] = "unsupported"
@@ -437,7 +447,7 @@ def sync_material_drive_folder(
                     if file_id not in force_ids else None
                 )
                 if duplicate is not None:
-                    target.unlink()
+                    data_file(target).unlink()
                     previous["local_path"] = str(duplicate.resolve())
                     previous["local_status"] = "duplicate"
                     previous["deduplicated_at"] = now
@@ -459,6 +469,10 @@ def sync_material_drive_folder(
                 previous["remote_signature"] = signature
                 previous.pop("last_error", None)
                 downloaded.append(str(target))
+        except InterruptedError:
+            if cancelled and cancelled():
+                break
+            raise
         except Exception as error:
             previous["local_status"] = "error"
             previous["last_error"] = f"{type(error).__name__}: {error}"
@@ -479,4 +493,5 @@ def sync_material_drive_folder(
         "errors": errors,
         "state": state,
         "local_dir": str(local_root.resolve()),
+        "cancelled": bool(cancelled and cancelled()),
     }

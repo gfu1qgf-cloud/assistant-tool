@@ -4,6 +4,7 @@ from html.parser import HTMLParser
 import hashlib
 import json
 from pathlib import Path
+from model.AppDataStorage import data_file, data_directory
 import re
 from urllib.parse import urljoin, urlparse, unquote
 from urllib.request import Request, build_opener, HTTPRedirectHandler
@@ -181,7 +182,7 @@ class OfficialUpdateWorker(QtCore.QThread):
         try:
             if self.translation_only:
                 path = self.folder/"notices.json"
-                old = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+                old = data_file(path).read_json() if path.exists() else {}
                 self.result.emit({"documents": [], "available_years": [], "translation_only": True,
                                   "notices": self._translate_notices(old.get("items", [])),
                                   "notices_checked_at": old.get("checked_at"), "errors": []})
@@ -198,12 +199,12 @@ class OfficialUpdateWorker(QtCore.QThread):
                 self.progress.emit(f"正在下载并解析 {year} 年官方 PDF…")
                 pdf = fetch_with_origin_fallback(links[year], 25*1024*1024, self.isInterruptionRequested)
                 # Preserve the original even if a new layout cannot be parsed.
-                archive.mkdir(parents=True, exist_ok=True)
+                data_directory(archive).ensure()
                 digest = hashlib.sha256(pdf).hexdigest()
                 original = archive / f"official_calendar_{year}_{digest[:16]}.pdf"
                 if not original.exists():
-                    original.write_bytes(pdf)
-                (archive / "official_page.html").write_bytes(html)
+                    data_file(original).write_bytes(pdf)
+                data_file(archive / "official_page.html").write_bytes(html)
                 try:
                     document = parse_pdf(pdf, year)
                 except Exception as error:
@@ -221,10 +222,10 @@ class OfficialUpdateWorker(QtCore.QThread):
                 self.progress.emit("正在检查 Valle Lomellina 官方新公告与注意事项…")
                 notice_html = fetch(NOTICE_PAGE, 5*1024*1024, self.isInterruptionRequested)
                 notices = parse_notices(notice_html.decode("utf-8", errors="replace"))
-                archive.mkdir(parents=True, exist_ok=True)
-                (archive/"notices_latest.html").write_bytes(notice_html)
+                data_directory(archive).ensure()
+                data_file(archive/"notices_latest.html").write_bytes(notice_html)
                 cache_path = self.folder/"notices.json"
-                old = json.loads(cache_path.read_text(encoding="utf-8")) if cache_path.exists() else {}
+                old = data_file(cache_path).read_json() if cache_path.exists() else {}
                 known = {x["id"]: x for x in old.get("items", [])}
                 for item in notices[:20]:
                     prior = known.get(item["id"], {})
@@ -240,7 +241,7 @@ class OfficialUpdateWorker(QtCore.QThread):
                             digest = hashlib.sha256(pdf).hexdigest()
                             original = archive/f"notice_{item['date']}_{digest[:16]}.pdf"
                             if not original.exists():
-                                original.write_bytes(pdf)
+                                data_file(original).write_bytes(pdf)
                             item["file"] = str(original.relative_to(self.folder)).replace("\\", "/")
                             item["sha256"] = digest
                             from pypdf import PdfReader

@@ -7,6 +7,10 @@ from qt_compat import QtCore, QtGui, QtWidgets
 from .calendar import ReminderEvent, message
 from .details import bind_category_menu
 from .translation import readable_text
+from .weather_visuals import WeatherGlyph, card
+from .weather import location_key
+from .weather import LABELS, number, local_time
+from .scene import WeatherSceneDialog, forecast_for_day
 
 
 class TonightPanel(QtWidgets.QWidget):
@@ -31,13 +35,29 @@ class TonightPanel(QtWidgets.QWidget):
         self.note.setWordWrap(True)
         self.note.setTextFormat(QtCore.Qt.TextFormat.PlainText)
         layout.addWidget(self.note)
-        button = QtWidgets.QPushButton("垃圾日历 / 分类说明 / 最新消息…")
+        weather_card = card(self)
+        weather_line = QtWidgets.QHBoxLayout(weather_card)
+        weather_line.setContentsMargins(8, 4, 8, 4)
+        self.weather_glyph = WeatherGlyph()
+        self.weather_glyph.setFixedSize(44, 40)
+        weather_line.addWidget(self.weather_glyph)
+        self.weather_label = QtWidgets.QLabel()
+        self.weather_label.setWordWrap(True)
+        self.weather_label.setTextFormat(QtCore.Qt.TextFormat.PlainText)
+        weather_line.addWidget(self.weather_label, 1)
+        layout.addWidget(weather_card)
+        button = QtWidgets.QPushButton("打开生活助手：垃圾 / 天气 / 做饭 / 库存…")
         button.clicked.connect(lambda: plugin.open_dialog())
         layout.addWidget(button)
         self.refresh()
 
     def refresh(self):
         try:
+            self.weather_label.setText(self.plugin.weather_summary())
+            data, selected = self.plugin.weather_data, self.plugin.settings["weather"].get("location")
+            self.weather_glyph.set_code(data["current"]["weather_code"] if (
+                self.plugin.settings["weather"]["enabled"] and data and selected
+                and location_key(data["location"]) == location_key(selected)) else None)
             now = self.plugin.now()
             day = now.date()+timedelta(days=1)
             calendar = self.plugin.calendar_for(day.year)
@@ -131,7 +151,9 @@ class ReminderDialog(QtWidgets.QDialog):
         from .sound import ReminderAudio
         self.audio = ReminderAudio(self)
         self.audio.failed.connect(self.error.setText)
-        actions = QtWidgets.QHBoxLayout()
+        self.garbage_actions = QtWidgets.QWidget(self)
+        actions = QtWidgets.QHBoxLayout(self.garbage_actions)
+        actions.setContentsMargins(0, 0, 0, 0)
         self.snooze = QtWidgets.QPushButton(f"Rimanda {settings['snooze_minutes']} min" if self.italian else f"推迟 {settings['snooze_minutes']} 分钟")
         self.snooze.clicked.connect(lambda: self.actionRequested.emit(False))
         self.confirm = QtWidgets.QPushButton()
@@ -140,7 +162,7 @@ class ReminderDialog(QtWidgets.QDialog):
         actions.addWidget(self.snooze)
         actions.addStretch(1)
         actions.addWidget(self.confirm)
-        layout.addLayout(actions)
+        layout.addWidget(self.garbage_actions)
         self.timer = QtCore.QTimer(self)
         self.timer.setInterval(200)
         self.timer.timeout.connect(self._countdown)
@@ -188,24 +210,81 @@ class ReminderDialog(QtWidgets.QDialog):
             event.ignore()
 
 
-class WasteDashboard(QtWidgets.QDialog):
+class WasteDashboard(WeatherSceneDialog):
     def __init__(self, plugin, parent=None):
         super().__init__(parent)
         self.plugin = plugin
-        self.setWindowTitle("垃圾分类每日提醒 · Valle Lomellina")
-        self.resize(900, 730)
+        self.setWindowTitle("生活助手 · LZX")
+        self.resize(1040, 800)
+        self.setMinimumSize(860, 620)
         self.setWindowFlags(self.windowFlags() | QtCore.Qt.WindowType.WindowMaximizeButtonHint
                             | QtCore.Qt.WindowType.WindowMinimizeButtonHint)
         layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(20, 18, 20, 14)
+        layout.setSpacing(12)
+        header = QtWidgets.QFrame(self)
+        header.setObjectName("lifeHeader")
+        header.setFixedHeight(126)
+        header_layout = QtWidgets.QHBoxLayout(header)
+        header_layout.setContentsMargins(20, 14, 20, 14)
+        heading = QtWidgets.QVBoxLayout()
+        title = QtWidgets.QLabel("生活助手")
+        title.setObjectName("lifeTitle")
+        heading.addWidget(title)
+        subtitle = QtWidgets.QLabel("垃圾、天气与一日三餐，都在这里。")
+        subtitle.setObjectName("lifeSubtitle")
+        heading.addWidget(subtitle)
+        dates = QtWidgets.QHBoxLayout()
+        dates.addWidget(QtWidgets.QLabel("查看日期"))
+        tomorrow_date = plugin.now().date() + timedelta(days=1)
+        self.date = QtWidgets.QDateEdit(QtCore.QDate(tomorrow_date.year, tomorrow_date.month, tomorrow_date.day))
+        self.date.setCalendarPopup(True)
+        self.date.setDisplayFormat("MM月dd日 · ddd")
+        self.date.setFixedWidth(158)
+        self.date.dateChanged.connect(self.refresh)
+        dates.addWidget(self.date)
+        today = QtWidgets.QPushButton("今天")
+        today.clicked.connect(self._today)
+        dates.addWidget(today)
+        dates.addStretch(1)
+        heading.addLayout(dates)
+        header_layout.addLayout(heading, 1)
+        self.scene_glyph = WeatherGlyph()
+        self.scene_glyph.setFixedSize(64, 64)
+        header_layout.addWidget(self.scene_glyph)
+        weather_heading = QtWidgets.QVBoxLayout()
+        self.scene_summary = QtWidgets.QLabel()
+        self.scene_summary.setObjectName("selectedWeather")
+        self.scene_summary.setTextFormat(QtCore.Qt.TextFormat.PlainText)
+        self.scene_summary.setWordWrap(True)
+        weather_heading.addWidget(self.scene_summary)
+        self.scene_note = QtWidgets.QLabel("点选天气列表中的日期，整个窗口随天气换景。")
+        self.scene_note.setObjectName("lifeSubtitle")
+        self.scene_note.setWordWrap(True)
+        weather_heading.addWidget(self.scene_note)
+        header_layout.addLayout(weather_heading, 1)
+        layout.addWidget(header)
+        tabs = self.tabs = QtWidgets.QTabWidget()
+        tabs.setObjectName("lifePages")
+        tabs.setDocumentMode(True)
+        tabs.setUsesScrollButtons(True)
+        tabs.tabBar().setDrawBase(False)
+        body = QtWidgets.QFrame(self)
+        body.setObjectName("lifeBody")
+        body_layout = QtWidgets.QVBoxLayout(body)
+        body_layout.setContentsMargins(12, 12, 12, 12)
+        body_layout.addWidget(tabs)
+        layout.addWidget(body, 1)
+        overview = QtWidgets.QWidget()
+        overview_layout = QtWidgets.QVBoxLayout(overview)
+        overview_layout.setContentsMargins(16, 16, 16, 16)
+        overview_layout.setSpacing(10)
         self.status = QtWidgets.QLabel()
         self.status.setWordWrap(True)
-        layout.addWidget(self.status)
-        actions = QtWidgets.QHBoxLayout()
-        self.date = QtWidgets.QDateEdit(QtCore.QDate.currentDate().addDays(1))
-        self.date.setCalendarPopup(True)
-        self.date.dateChanged.connect(self.refresh)
-        actions.addWidget(QtWidgets.QLabel("查询日期"))
-        actions.addWidget(self.date)
+        overview_layout.addWidget(self.status)
+        self.garbage_actions = QtWidgets.QWidget(overview)
+        actions = QtWidgets.QHBoxLayout(self.garbage_actions)
+        actions.setContentsMargins(0, 0, 0, 0)
         tomorrow = QtWidgets.QPushButton("明天扔什么？")
         tomorrow.clicked.connect(self._tomorrow)
         actions.addWidget(tomorrow)
@@ -216,16 +295,16 @@ class WasteDashboard(QtWidgets.QDialog):
         test.clicked.connect(lambda: plugin.preview_reminder(self.date.date().toPyDate()))
         actions.addWidget(test)
         actions.addStretch(1)
-        layout.addLayout(actions)
-        tabs = self.tabs = QtWidgets.QTabWidget()
-        layout.addWidget(tabs, 1)
-        overview = QtWidgets.QWidget()
-        overview_layout = QtWidgets.QVBoxLayout(overview)
+        overview_layout.addWidget(self.garbage_actions)
+        query_card = card(overview, tone="green")
+        query_layout = QtWidgets.QVBoxLayout(query_card)
+        query_layout.setContentsMargins(14, 10, 14, 10)
         self.query = QtWidgets.QLabel()
         self.query.setWordWrap(True)
         self.query.setTextFormat(QtCore.Qt.TextFormat.PlainText)
-        self.query.setStyleSheet("font-size:16px; padding:10px;")
-        overview_layout.addWidget(self.query)
+        self.query.setStyleSheet("font-size:16px;")
+        query_layout.addWidget(self.query)
+        overview_layout.addWidget(query_card)
         self.week = QtWidgets.QTableWidget(7, 3)
         self.week.setHorizontalHeaderLabels(["收运日期", "当地分类（完整日历）", "提醒/投放情况"])
         self.week.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -233,21 +312,36 @@ class WasteDashboard(QtWidgets.QDialog):
         self.week.horizontalHeader().setSectionResizeMode(1, QtWidgets.QHeaderView.ResizeMode.Stretch)
         self.week.horizontalHeader().setSectionResizeMode(2, QtWidgets.QHeaderView.ResizeMode.ResizeToContents)
         self.week.verticalHeader().hide()
-        self.week.itemDoubleClicked.connect(self._choose_row)
+        self.week.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
+        self.week.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.SingleSelection)
+        self.week.setAlternatingRowColors(True)
+        self.week.setShowGrid(False)
+        self.week.verticalHeader().setDefaultSectionSize(42)
+        self.week.itemClicked.connect(self._choose_row)
         self.week.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
         self.week.customContextMenuRequested.connect(self._week_menu)
         overview_layout.addWidget(self.week, 1)
         self.next = QtWidgets.QLabel()
         self.next.setWordWrap(True)
         overview_layout.addWidget(self.next)
-        self.categories = QtWidgets.QWidget()
+        category_toggle = QtWidgets.QToolButton()
+        category_toggle.setText("提醒类别与分类说明")
+        category_toggle.setToolButtonStyle(QtCore.Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        category_toggle.setArrowType(QtCore.Qt.ArrowType.RightArrow)
+        category_toggle.setCheckable(True)
+        overview_layout.addWidget(category_toggle, alignment=QtCore.Qt.AlignmentFlag.AlignLeft)
+        self.categories = QtWidgets.QGroupBox("提醒哪些类别？右键查看分类说明")
         self.category_layout = QtWidgets.QGridLayout(self.categories)
         overview_layout.addWidget(self.categories)
-        tabs.addTab(overview, "查询与本周")
+        self.categories.hide()
+        category_toggle.toggled.connect(self.categories.setVisible)
+        category_toggle.toggled.connect(lambda shown: category_toggle.setArrowType(
+            QtCore.Qt.ArrowType.DownArrow if shown else QtCore.Qt.ArrowType.RightArrow))
+        tabs.addTab(overview, "垃圾日历")
         self.tips = QtWidgets.QTextBrowser()
         self.tips.setOpenExternalLinks(False)
         self.tips.anchorClicked.connect(self.open_source)
-        tabs.addTab(self.tips, "分类小贴士与注意事项")
+        tabs.addTab(self.tips, "分类指南")
         news = QtWidgets.QWidget()
         news_layout = QtWidgets.QVBoxLayout(news)
         self.news_status = QtWidgets.QLabel()
@@ -264,7 +358,7 @@ class WasteDashboard(QtWidgets.QDialog):
         self.news_text.setOpenExternalLinks(False)
         self.news_text.anchorClicked.connect(self._news_open)
         news_layout.addWidget(self.news_text, 2)
-        tabs.addTab(news, "官方最新消息")
+        tabs.addTab(news, "最新公告")
         sources = QtWidgets.QWidget()
         source_layout = QtWidgets.QVBoxLayout(sources)
         self.sources = QtWidgets.QListWidget()
@@ -280,16 +374,59 @@ class WasteDashboard(QtWidgets.QDialog):
             button.clicked.connect(callback)
             buttons.addWidget(button)
         source_layout.addLayout(buttons)
-        tabs.addTab(sources, "官方原件与年度数据")
+        tabs.addTab(sources, "官方原件")
+        from .weather_ui import WeatherTab
+        self.weather = WeatherTab(plugin)
+        self.weather.show_cities(plugin.weather_cities)
+        self.weather.daySelected.connect(self.date.setDate)
+        self.weather.forecastChanged.connect(self._refresh_scene)
+        tabs.insertTab(1, self.weather, "天气")
+        from app_plugins.builtin.cooking_assistant.ui import CookingDialog
+        self.cooking = CookingDialog(plugin.cooking, self)
+        self.cooking.setWindowFlags(QtCore.Qt.WindowType.Widget)
+        plugin.cooking.dialog = self.cooking
+        tabs.insertTab(2, self.cooking, "做饭与食材库存")
+        tabs.currentChanged.connect(self._page_changed)
         bottom = QtWidgets.QHBoxLayout()
-        note = QtWidgets.QLabel("程序需保持运行。设置：程序设置 → 垃圾分类提醒。首次默认启用 22:00 提醒。")
+        note = QtWidgets.QLabel("💡 保持程序运行才能提醒 · 垃圾投放默认 22:00 · 菜谱仅点击生成时联网")
+        note.setObjectName("lifeFooter")
         note.setWordWrap(True)
         bottom.addWidget(note, 1)
         close = QtWidgets.QPushButton("关闭")
+        close.setObjectName("lifePrimary")
         close.clicked.connect(self.hide)
         bottom.addWidget(close)
         layout.addLayout(bottom)
+        self._page_changed()
         self.refresh()
+
+    def _page_changed(self, *_args):
+        # Page-specific controls live inside their page. Nothing above the tabs
+        # is hidden or resized when switching, so the entire viewport stays put.
+        if self.tabs.currentWidget() is self.cooking:
+            self.cooking.refresh_stock()
+
+    def _today(self):
+        day = self.plugin.now().date()
+        self.date.setDate(QtCore.QDate(day.year, day.month, day.day))
+
+    def _refresh_scene(self):
+        selected = self.date.date()
+        options = self.plugin.settings["weather"]
+        data = self.plugin.weather_data
+        row = forecast_for_day(data, options.get("location"), selected)
+        self.set_weather_scene(row["weather_code"] if row else None)
+        self.scene_glyph.set_code(row["weather_code"] if row else None)
+        if row:
+            self.scene_summary.setText(selected.toString("MM月dd日") + " · " + LABELS.get(row["weather_code"], "未知天气")
+                + "\n" + number(row["temperature_2m_min"], "°") + " ～ " + number(row["temperature_2m_max"], "°")
+                + "  · 降雨 " + number(row["precipitation_probability_max"], "%"))
+            self.scene_summary.setToolTip("所选日期预报，背景仅为示意。\n缓存获取于：" +
+                local_time(data["checked_at"], options["location"]["timezone"]).toString("yyyy-MM-dd HH:mm"))
+        else:
+            self.scene_summary.setText(selected.toString("MM月dd日") + " · 暂无该日预报")
+            self.scene_summary.setToolTip("不会用今天的天气代替所选日期，也不会外推未知天气。")
+        self.weather.select_day(selected)
 
     def _tomorrow(self):
         day = self.plugin.now().date() + timedelta(days=1)
@@ -302,6 +439,8 @@ class WasteDashboard(QtWidgets.QDialog):
 
     def refresh(self, *_):
         plugin, settings = self.plugin, self.plugin.settings
+        self.weather.refresh()
+        self._refresh_scene()
         self.update_button.setEnabled(not plugin.is_updating())
         self.translate_button.setEnabled(not plugin.is_updating() and settings.get("translate_news", True))
         self.status.setText(f"{settings['commune']} · {settings['timezone']} · {'已启用' if settings['enabled'] else '已关闭'} · "
@@ -371,6 +510,10 @@ class WasteDashboard(QtWidgets.QDialog):
                 item.setData(QtCore.Qt.ItemDataRole.UserRole, day)
                 self.week.setItem(row, col, item)
         self.week.resizeRowsToContents()
+        for row in range(self.week.rowCount()):
+            self.week.setRowHeight(row, max(42, self.week.rowHeight(row)))
+            if self.week.item(row, 0).data(QtCore.Qt.ItemDataRole.UserRole) == selected:
+                self.week.setCurrentCell(row, 0)
 
     def _refresh_categories(self, calendar):
         while self.category_layout.count():

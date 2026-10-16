@@ -1,3 +1,5 @@
+
+from model.AppDataStorage import data_io, data_file, data_directory
 import json
 import os
 import threading
@@ -7,7 +9,7 @@ from urllib.error import HTTPError, URLError
 
 from qt_compat import QtCore
 
-from app_paths import APP_ROOT
+from app_paths import DATA_ROOT as APP_ROOT
 from model.GoogleDriveDownloader import DownloadError, download_one, parse_drive_link
 from model.GoogleSheetsHelper import (
     extract_sheet_gid,
@@ -65,7 +67,7 @@ def read_monitor_state(path=None):
     if not state_path.exists():
         return _default_state()
     try:
-        raw = json.loads(state_path.read_text(encoding="utf-8-sig"))
+        raw = json.loads(data_file(state_path).read_text(encoding="utf-8-sig"))
     except (OSError, json.JSONDecodeError):
         return _default_state()
     if not isinstance(raw, dict):
@@ -81,10 +83,10 @@ def read_monitor_state(path=None):
 
 def write_monitor_state(state, path=None):
     state_path = Path(path or DEFAULT_MONITOR_STATE_FILE)
-    state_path.parent.mkdir(parents=True, exist_ok=True)
+    data_directory(state_path.parent).ensure(parents=True, exist_ok=True)
     temp_path = state_path.with_name(state_path.name + ".tmp")
-    temp_path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
-    os.replace(str(temp_path), str(state_path))
+    data_file(temp_path).write_text_direct(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+    data_io.replace(str(temp_path), str(state_path))
 
 
 def reset_monitor_baseline(path=None):
@@ -147,7 +149,7 @@ def _safe_download_root(project_dir, folder):
     target = project_root.joinpath(folder_path).resolve()
     if os.path.commonpath((str(project_root), str(target))) != str(project_root):
         raise ValueError("下载目录超出了当前项目目录")
-    target.mkdir(parents=True, exist_ok=True)
+    data_directory(target).ensure(parents=True, exist_ok=True)
     return target
 
 

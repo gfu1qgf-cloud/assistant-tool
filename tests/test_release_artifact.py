@@ -76,6 +76,12 @@ class ReleaseArtifactTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     validate_release_archive(self.make_archive((*REQUIRED, name)))
 
+    def test_language_environment_and_all_plugin_runtime_data_are_private(self):
+        for name in ('PluginData/chrome_launcher/language_environments/id/User Data/Default/Cookies',
+                     '_internal/PluginData/chrome_launcher/language_environments/id/environment.json'):
+            with self.subTest(name=name), self.assertRaises(ValueError):
+                validate_release_archive(self.make_archive((*REQUIRED, name)))
+
     def test_both_icon_formats_are_required(self):
         for name in ('app_icon.png', 'app_icon.ico'):
             with self.subTest(name=name):

@@ -36,6 +36,12 @@ def media(path="test.mp4", width=160, height=90, duration=2, fps=25, audio=-1):
 
 
 class StitchPlanTests(unittest.TestCase):
+    def test_ffprobe_microsecond_rounding_does_not_add_a_frame(self):
+        for fps in (Fraction(12),Fraction(25),Fraction(30000,1001),Fraction(240),Fraction(1000)):
+            left=media(duration=round(8/float(fps),6),fps=fps)
+            self.assertEqual(engine.make_plan(left,media())['frames'],8)
+        self.assertEqual(engine.make_plan(media(duration=.667,fps=12),media())['frames'],9)
+
     def test_width_sum_height_max_and_frame_basis(self):
         plan = engine.make_plan(media(width=1080, height=1920, fps=30),
                                 media(width=1920, height=1080, duration=3, fps=24))
@@ -279,7 +285,7 @@ class StitchUiTests(unittest.TestCase):
         cls.ui = load("ui")
 
     def context(self):
-        return types.SimpleNamespace(parent_widget=None, log=mock.Mock(), register_command=mock.Mock())
+        return types.SimpleNamespace(parent_widget=None, log=mock.Mock(), register_command=mock.Mock(), register_node=mock.Mock())
 
     def test_plugin_registers_tool_only_and_keeps_window(self):
         from app_plugins.api import TOOLS_MENU
@@ -402,6 +408,7 @@ class StitchUiTests(unittest.TestCase):
         from app_plugins.host import PluginHost
         window = QtWidgets.QWidget()
         window.appendLog = mock.Mock()
+        window.load_config = lambda: {}
         host = PluginHost(window)
         plugin = host.install(plugin_module.VideoStitchPlugin())
         menu = QtWidgets.QMenu(window)

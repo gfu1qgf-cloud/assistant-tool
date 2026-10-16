@@ -1,15 +1,22 @@
+
+from model.AppDataStorage import data_io, data_file, data_directory
 import hashlib
 import mimetypes
+import os
 import random
 import re
 import socket
 import ssl
 import time
+import contextvars
+from contextlib import contextmanager
 from datetime import date
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
 
-from app_paths import APP_ROOT
+from app_paths import DATA_ROOT as APP_ROOT
+from model.OfflineMode import require_online
+from model.TaskResultFileGuard import is_copy_temporary
 
 CLIENT_SECRET_FILE = APP_ROOT / "GoogleDriveCredentials.json"
 TOKEN_FILE = APP_ROOT / "GoogleDriveToken.json"
@@ -19,6 +26,36 @@ GOOGLE_SHORTCUT_MIME = "application/vnd.google-apps.shortcut"
 UPLOAD_CHUNK_SIZE = 8 * 1024 * 1024
 UPLOAD_MAX_RETRIES = 8
 METADATA_MAX_RETRIES = 5
+
+_upload_observer = contextvars.ContextVar("drive_upload_observer", default=None)
+
+
+@contextmanager
+def observe_uploads(context, total):
+    token = _upload_observer.set({"context": context, "total": max(1, total), "done": 0,
+                                  "records": []})
+    try:
+        yield
+    finally:
+        _upload_observer.reset(token)
+
+
+def observed_upload_records():
+    observer = _upload_observer.get()
+    return list(observer["records"]) if observer else []
+
+
+def _report_upload(label, fraction=0.0, finished=False):
+    observer = _upload_observer.get()
+    if observer is None:
+        return
+    observer["context"].check_canceled()
+    done, total = observer["done"], observer["total"]
+    observer["context"].report(
+        f"上传 {min(done + 1, total)}/{total}：{label}",
+        min(90, int(90 * (done + fraction) / total)))
+    if finished:
+        observer["done"] += 1
 
 
 def folder_name(task_date: date) -> str:
@@ -100,6 +137,7 @@ def read_drive_parent_folder_id(configured_value: str = "") -> str:
 
 
 def load_drive_service():
+    require_online("Google Drive 请求")
     try:
         from google.auth.transport.requests import Request
         from google.oauth2.credentials import Credentials
@@ -130,7 +168,7 @@ def load_drive_service():
             flow = InstalledAppFlow.from_client_secrets_file(str(CLIENT_SECRET_FILE), SCOPES)
             credentials = flow.run_local_server(port=0)
 
-        TOKEN_FILE.write_text(credentials.to_json(), encoding="utf-8")
+        data_file(TOKEN_FILE).write_text_direct(credentials.to_json(), encoding="utf-8")
 
     return build("drive", "v3", credentials=credentials)
 
@@ -382,7 +420,7 @@ def get_or_create_remote_folder_path_with_root(
 def file_md5(file_path: Path) -> str:
     # Drive supplies MD5 for content comparison, not authentication/signatures.
     digest = hashlib.md5(usedforsecurity=False)
-    with file_path.open("rb") as handle:
+    with data_io.open(file_path,"rb") as handle:
         for chunk in iter(lambda: handle.read(8 * 1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
@@ -415,6 +453,7 @@ def execute_resumable_upload(request, local_file: Path, action_text: str) -> Dic
     retry_count = 0
 
     while response is None:
+        _report_upload(local_file.name)
         try:
             status, response = request.next_chunk()
             retry_count = 0
@@ -431,6 +470,7 @@ def execute_resumable_upload(request, local_file: Path, action_text: str) -> Dic
 
         if status:
             percent = int(status.progress() * 100)
+            _report_upload(local_file.name, status.progress())
             if percent >= last_reported + 5 or percent >= 99:
                 print(f"  进度：{percent}%")
                 last_reported = percent
@@ -571,12 +611,15 @@ def sync_file(
             print(f"快捷方式创建失败，但原视频已覆盖：{local_file.name} -> {updated['shortcut_error']}")
     return updated
 
-def sync_directory_contents(service, local_dir: Path, remote_parent_id: str) -> None:
+def sync_directory_contents(service, local_dir: Path, remote_parent_id: str, excluded_files=None) -> None:
     for item in sorted(local_dir.iterdir(), key=lambda path: (path.is_file(), path.name.lower())):
         if item.is_dir():
             remote_folder_id = get_or_create_remote_folder(service, remote_parent_id, item.name)
-            sync_directory_contents(service, item, remote_folder_id)
+            sync_directory_contents(service, item, remote_folder_id, excluded_files=excluded_files)
         elif item.is_file():
+            if (is_copy_temporary(item)
+                    or os.path.normcase(str(item.resolve())) in (excluded_files or ())):
+                continue
             try:
                 sync_file(service, item, remote_parent_id)
             except Exception as exc:
@@ -621,6 +664,7 @@ def upload_changed_files_to_drive_date_folder(
         root_dir = Path(root_dir)
         for changed_file in changed_files:
             changed_file = Path(changed_file)
+            _report_upload(changed_file.name)
             if not changed_file.exists():
                 print(f"本地文件不存在，跳过：{changed_file}")
                 continue
@@ -655,6 +699,7 @@ def upload_routed_changed_files_to_drive_batch(
 
     total = 0
     synced_files = []
+    prefix_folders = {}
     print(f"\nGoogle Drive 上传批次：{folder_name(batch_date)}/{batch_slot}（{batch_date:%Y-%m-%d}）")
 
     for root_dir, changed_files, remote_prefix in routed_file_batches:
@@ -663,17 +708,18 @@ def upload_routed_changed_files_to_drive_batch(
         remote_prefix_folder_id = slot_folder_id
         remote_prefix_root_folder_id = ""
         if str(remote_prefix) not in {"", "."}:
+            key = str(remote_prefix)
+            if key not in prefix_folders:
+                prefix_folders[key] = get_or_create_remote_folder_path_with_root(
+                    service, slot_folder_id, remote_prefix)
             (
                 remote_prefix_folder_id,
                 remote_prefix_root_folder_id,
-            ) = get_or_create_remote_folder_path_with_root(
-                service,
-                slot_folder_id,
-                remote_prefix,
-            )
+            ) = prefix_folders[key]
 
         for changed_file in changed_files:
             changed_file = Path(changed_file)
+            _report_upload(changed_file.name)
             if not changed_file.exists():
                 print(f"本地文件不存在，跳过：{changed_file}")
                 continue
@@ -703,8 +749,12 @@ def upload_routed_changed_files_to_drive_batch(
                     ),
                 )
             except Exception as exc:
+                from model.BackgroundTasks import BackgroundTaskCanceled
+                if isinstance(exc, BackgroundTaskCanceled):
+                    raise
                 print(f"上传失败，跳过当前文件：{changed_file.name} -> {type(exc).__name__}: {exc}")
                 total += 1
+                _report_upload(changed_file.name + "（失败，待重试）", 1.0, finished=True)
                 continue
 
             if synced:
@@ -714,7 +764,11 @@ def upload_routed_changed_files_to_drive_batch(
                 synced["remote_prefix_folder_id"] = remote_prefix_folder_id
                 synced["remote_prefix_root_folder_id"] = remote_prefix_root_folder_id
                 synced_files.append(synced)
+                observer = _upload_observer.get()
+                if observer is not None:
+                    observer["records"].append(synced)
             total += 1
+            _report_upload(changed_file.name + "（已处理）", 1.0, finished=True)
 
     if total == 0:
         print("没有本次新增/更新的文件需要上传。")
@@ -728,6 +782,7 @@ def upload_local_dirs_to_drive_batch(
     parent_folder_id: str,
     batch_date: date,
     batch_slot: str,
+    excluded_files=None,
 ) -> None:
     date_folder_id = get_or_create_remote_folder(service, parent_folder_id, folder_name(batch_date))
     slot_folder_id = get_or_create_remote_folder(service, date_folder_id, batch_slot)
@@ -740,6 +795,6 @@ def upload_local_dirs_to_drive_batch(
             continue
 
         print(f"\n开始上传本地目录：{local_dir}")
-        sync_directory_contents(service, local_dir, slot_folder_id)
+        sync_directory_contents(service, local_dir, slot_folder_id, excluded_files=excluded_files)
         print(f"上传完成：{local_dir}")
 

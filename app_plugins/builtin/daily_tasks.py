@@ -1,4 +1,5 @@
 """Built-in plugin: Daily Task Management with intelligent execution suggestions."""
+from model.AppDataStorage import data_io
 
 import json
 import logging
@@ -11,7 +12,8 @@ from pathlib import Path
 
 from qt_compat import QtCore, QtGui, QtWidgets
 
-from app_paths import APP_ROOT
+from app_paths import DATA_ROOT as APP_ROOT
+from model.AppDataStorage import data_file
 from app_plugins.api import MAIN_MENU, PluginCommand
 
 DEFAULT_DAILY_TASKS_FILE = APP_ROOT / "DailyTasks.json"
@@ -414,7 +416,7 @@ class DailyTaskStore:
         if not self.path.exists():
             return self._data
         try:
-            content = self.path.read_text(encoding="utf-8-sig")
+            content = data_file(self.path).read_text(encoding="utf-8-sig")
             if not content.strip():
                 return self._data
             raw = json.loads(content)
@@ -500,7 +502,7 @@ class DailyTaskStore:
                 import shutil
                 bak_name = f"{self.path.name}.corrupted.{datetime.now().strftime('%Y%m%d_%H%M%S')}.bak"
                 bak_path = self.path.with_name(bak_name)
-                shutil.copy2(str(self.path), str(bak_path))
+                data_io.copy2(str(self.path), str(bak_path))
                 logging.error(f"每日任务数据文件异常，已自动备份至 {bak_name}：{e}")
             except Exception:
                 pass
@@ -508,22 +510,11 @@ class DailyTaskStore:
         return self._data
 
     def save(self):
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        temp_path = self.path.with_name(f"{self.path.name}.{uuid.uuid4().hex[:8]}.tmp")
         try:
-            temp_path.write_text(
-                json.dumps(self._data, ensure_ascii=False, indent=2),
-                encoding="utf-8",
-            )
-            os.replace(str(temp_path), str(self.path))
+            data_file(self.path).write_json(self._data, indent=2)
             return True
         except Exception as e:
             logging.error(f"保存每日任务数据失败：{e}")
-            try:
-                if temp_path.exists():
-                    temp_path.unlink()
-            except Exception:
-                pass
             return False
 
     def _mutate(self, action_fn):

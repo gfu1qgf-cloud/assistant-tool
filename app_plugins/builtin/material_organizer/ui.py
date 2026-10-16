@@ -1,4 +1,5 @@
 from __future__ import annotations
+from model.AppDataStorage import data_file
 
 import json
 import logging
@@ -6,6 +7,7 @@ import os
 from pathlib import Path
 
 from qt_compat import QtCore, QtGui, QtWidgets
+from model.QtThreadLifecycle import connect_thread_finished, thread_is_active
 
 from .analyzer import (
     VIDEO_SUFFIXES,
@@ -445,7 +447,7 @@ class MaterialOrganizerDialog(QtWidgets.QDialog):
             self.start_analysis([path])
 
     def start_analysis(self, paths, force=False):
-        if self.worker is not None and self.worker.isRunning():
+        if thread_is_active(self.worker):
             QtWidgets.QMessageBox.information(self, "正在分析", "请等待当前素材分析完成。")
             return
         videos = discover_videos(paths)
@@ -459,6 +461,7 @@ class MaterialOrganizerDialog(QtWidgets.QDialog):
         self.worker.assetUpdated.connect(self._asset_updated)
         self.worker.itemFailed.connect(self._analysis_failed)
         self.worker.completed.connect(self._analysis_completed)
+        connect_thread_finished(self.worker, self, 'worker', self._analysis_finished)
         self.progress_bar.setRange(0, len(videos))
         self.progress_bar.setValue(0)
         self.progress_bar.setVisible(True)
@@ -494,8 +497,6 @@ class MaterialOrganizerDialog(QtWidgets.QDialog):
 
     def _analysis_completed(self, summary):
         self._refresh_timer.stop()
-        self.progress_bar.setVisible(False)
-        self._set_controls_enabled(True)
         self.refresh_categories()
         self.refresh_assets()
         self.status_label.setText(
@@ -506,8 +507,11 @@ class MaterialOrganizerDialog(QtWidgets.QDialog):
             f"[素材整理] 分析完成：更新 {summary['completed']}，"
             f"复用 {summary['skipped']}，失败 {summary['failed']}。"
         )
-        self.worker.deleteLater()
+
+    def _analysis_finished(self):
         self.worker = None
+        self.progress_bar.setVisible(False)
+        self._set_controls_enabled(True)
 
     def selected_assets(self):
         result = []
@@ -527,7 +531,7 @@ class MaterialOrganizerDialog(QtWidgets.QDialog):
         self.start_analysis(paths, force=True)
 
     def repair_incomplete_assets(self):
-        if self.worker is not None and self.worker.isRunning():
+        if thread_is_active(self.worker):
             return
         paths = []
         for asset in self.store.list_assets():
@@ -666,7 +670,7 @@ class MaterialOrganizerDialog(QtWidgets.QDialog):
             for thumbnail in thumbnails:
                 try:
                     if thumbnail:
-                        Path(thumbnail).unlink(missing_ok=True)
+                        data_file(Path(thumbnail)).remove(missing_ok=True)
                 except OSError:
                     pass
             self.refresh_categories()
@@ -684,7 +688,7 @@ class MaterialOrganizerDialog(QtWidgets.QDialog):
         event.acceptProposedAction()
 
     def can_close(self):
-        if self.worker is None or not self.worker.isRunning():
+        if not thread_is_active(self.worker):
             return True
         self.worker.requestInterruption()
         return False

@@ -1,3 +1,5 @@
+
+from model.AppDataStorage import data_io, data_file, data_directory
 import hashlib
 import json
 import os
@@ -9,7 +11,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Dict, Iterable, List, Mapping, Optional
 
-from app_paths import APP_ROOT
+from app_paths import DATA_ROOT as APP_ROOT
 
 
 VIDEO_UPLOAD_HISTORY_VERSION = 1
@@ -145,13 +147,14 @@ def _record_from_upload(
     file_name = str(record.get("name") or "").strip()
     file_id = str(record.get("id") or "").strip()
     link = _drive_link(record)
-    logical_key = normalize_video_identity(file_name)
+    logical_key = normalize_video_identity(record.get('logical_source_name') or file_name)
     if not file_name or not file_id or not link or not logical_key:
         return None
     item = {
         "recorded_at": _iso(now),
         "source": "upload",
         "logical_key": logical_key,
+        'logical_source_name': str(record.get('logical_source_name') or ''),
         "file_name": file_name,
         "drive_file_id": file_id,
         "drive_link": link,
@@ -206,7 +209,7 @@ def _empty_state() -> Dict:
 def load_video_upload_history(config: Optional[Mapping] = None) -> Dict:
     path = video_upload_history_path(config)
     try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
+        raw = json.loads(data_file(path).read_text(encoding="utf-8"))
     except (FileNotFoundError, OSError, ValueError, TypeError):
         return _empty_state()
     if not isinstance(raw, Mapping):
@@ -249,13 +252,13 @@ def preferred_drive_file_ids_by_identity(
 
 
 def _save_state(path: Path, state: Mapping) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
+    data_directory(path.parent).ensure(parents=True, exist_ok=True)
     temp_path = path.with_name(path.name + ".tmp")
-    temp_path.write_text(
+    data_file(temp_path).write_text_direct(
         json.dumps(state, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
-    os.replace(temp_path, path)
+    data_io.replace(temp_path, path)
 
 
 def _archive_path(archive_dir: Path, month: str) -> Path:
@@ -295,7 +298,7 @@ def _merge_records(existing: Iterable[Mapping], incoming: Iterable[Mapping]) -> 
 
 
 def _write_archive(archive_dir: Path, month: str, records: Iterable[Mapping]) -> Path:
-    archive_dir.mkdir(parents=True, exist_ok=True)
+    data_directory(archive_dir).ensure(parents=True, exist_ok=True)
     path = _archive_path(archive_dir, month)
     merged = _merge_records(_read_archive(path, month), records)
     payload = {
@@ -314,7 +317,7 @@ def _write_archive(archive_dir: Path, month: str, records: Iterable[Mapping]) ->
             _archive_member(month),
             json.dumps(payload, ensure_ascii=False, indent=2),
         )
-    os.replace(temp_path, path)
+    data_io.replace(temp_path, path)
     return path
 
 
@@ -362,7 +365,7 @@ def _migrate_task_submission_audit(
         return 0
     migrated = {}
     try:
-        handle = audit_path.open("r", encoding="utf-8")
+        handle = data_io.open(audit_path,"r", encoding="utf-8")
     except (FileNotFoundError, OSError):
         state["audit_migration_complete"] = True
         return 0
@@ -447,6 +450,7 @@ def _all_archive_records(archive_dir: Path) -> List[Dict]:
 def all_video_upload_records(
     config: Optional[Mapping] = None,
     now: Optional[datetime] = None,
+    read_only: bool = False,
 ) -> List[Dict]:
     """Return active and archived uploads, migrating the legacy audit if needed.
 
@@ -473,6 +477,9 @@ def all_video_upload_records(
             DEFAULT_TASK_SUBMISSION_AUDIT_FILE,
         )
         migrated = _migrate_task_submission_audit(state, audit_path, moment)
+        if read_only:
+            # Inspection must not rotate archives or rewrite the live ledger.
+            return list(state.get("records", [])) + _all_archive_records(archive_dir)
         archived_paths = _archive_expired_records(
             state,
             archive_dir,

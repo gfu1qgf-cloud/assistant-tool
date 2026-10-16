@@ -2,6 +2,7 @@
 
 Strict adapter, not a universal PDF guesser. Unknown layouts fail closed.
 """
+from model.AppDataStorage import data_file
 import calendar
 from collections import Counter
 from datetime import date
@@ -55,7 +56,7 @@ def read_table(im, year, first_month, tolerance=45):
         raise ParseError("日期行高不一致，需检查新版日历结构。")
     palette = np.asarray(list(PALETTE.values()), dtype=np.int32)
     templates_path = Path(__file__).parent/"data/weekday_templates.json"
-    templates = json.loads(templates_path.read_text(encoding="utf-8")) if templates_path.exists() else None
+    templates = json.loads(data_file(templates_path).read_text(encoding="utf-8")) if templates_path.exists() else None
     if templates is None:
         raise ParseError("缺少星期校验模板，不能可靠判断月份顺序。")
     dates = {}

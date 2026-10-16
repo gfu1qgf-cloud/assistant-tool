@@ -23,7 +23,7 @@ class SmartImageSearchPlugin:
             title="智能搜图…",
             callback=lambda _rows: self.open_dialog(),
             locations=frozenset({MAIN_MENU}),
-            tooltip="用中文描述或参考图片搜索库存、人物素材和指定图片库",
+            tooltip="用中文描述或参考图片搜索已配置的图片库，不自动加入程序库存",
             order=14,
         ))
         context.register_settings_page(PluginSettingsPage(
@@ -77,6 +77,9 @@ class SmartImageSearchPlugin:
         return config
 
     def can_close(self):
+        if self.dialog is not None and self.dialog.is_counting():
+            self.dialog.cancel_statistics()
+            return False, "智能搜图正在结束图片库统计，请稍候再退出。"
         if self.dialog is not None and self.dialog.is_busy():
             self.dialog.cancel_work()
             return False, "智能搜图正在停止后台任务，请稍候再退出。"
@@ -84,4 +87,5 @@ class SmartImageSearchPlugin:
 
     def stop(self):
         if self.dialog is not None:
-            self.dialog.cancel_work()
+            if not self.dialog.shutdown():
+                raise RuntimeError("搜图线程尚未完全结束，不能释放模型和窗口。")

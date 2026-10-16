@@ -16,6 +16,45 @@ from PYUI.task_delivery_pyui import TaskReviewListDialog
 
 
 class TaskReviewPlanTests(unittest.TestCase):
+    def test_table_requirement_survives_negative_detection_and_user_can_override(self):
+        root = Path("result")
+        video = root / "AliceMARKER-0930-1-video.mp4"
+        config = {"video_detection_mode": "ai", "video_filename_creator_marker": "MARKER"}
+        tasks = {file_identity(video): SimpleNamespace(review_required=True)}
+        received = []
+
+        def choose(entries):
+            received.extend(entries)
+            return {str(video): "normal_upload"}
+
+        with mock.patch("model.TaskResultOrganizer.detect_video_element", return_value={"found": False, "confidence": 0, "from_cache": True}), \
+             mock.patch("model.VideoElementDetector.save_detection_report") as save:
+            kwargs = dict(task_by_file=tasks, gemini_keys=object())
+            automatic = build_routed_batches([(root, [video])], config, **kwargs)
+            overridden = build_routed_batches([(root, [video])], config, review_plan_resolver=choose, **kwargs)
+        self.assertEqual(automatic, [(root, [video], Path("review"))])
+        self.assertEqual(received[0]["decision"], "review")
+        self.assertIs(received[0]["review_required"], True)
+        self.assertIn("本地表格", received[0]["summary"])
+        self.assertEqual(overridden, [(root, [video], Path("Alice"))])
+        self.assertFalse(save.call_args.args[1]["found"])
+
+    def test_table_requirement_survives_detection_failure_even_when_fallback_is_off(self):
+        root = Path("result")
+        video = root / "AliceMARKER-0930-1-video.mp4"
+        config = {"video_detection_mode": "ai", "video_filename_creator_marker": "MARKER",
+                  "detection_failure_goes_to_review": False}
+        received = []
+        def choose(entries):
+            received.extend(entries)
+            return {str(video): "review"}
+        with mock.patch("model.TaskResultOrganizer.detect_video_element", side_effect=RuntimeError("test failure")):
+            result = build_routed_batches([(root, [video])], config,
+                                         task_by_file={file_identity(video): SimpleNamespace(review_required=True)},
+                                         gemini_keys=object(), review_plan_resolver=choose)
+        self.assertEqual(result, [(root, [video], Path("review"))])
+        self.assertEqual(received[0]["decision"], "review")
+
     def test_explicit_choice_survives_compressed_filename_change(self):
         root = Path("result")
         source = root / "video.mp4"
@@ -105,6 +144,18 @@ class TaskReviewListUiTests(unittest.TestCase):
         # Inspecting and editing the table does not modify the caller's plan.
         self.assertEqual(entries[0]["decision"], "review")
         dialog.reject()
+
+    def test_inspecting_detail_does_not_silently_clear_task_table_requirement(self):
+        entries = [{"file_path": "C:/task/video.mp4", "decision": "review", "review_required": True}]
+        dialog = TaskReviewListDialog(entries)
+        dialog._detail_row = 0
+        dialog._on_detail_completed({"found": False, "summary": "未检出"})
+        self.assertEqual(dialog.combos[0].currentData(), "review")
+        dialog.combos[0].setCurrentIndex(dialog.combos[0].findData("normal_upload"))
+        self.assertEqual(dialog.decisions()[entries[0]["file_path"]]["decision"], "normal_upload")
+        dialog._on_detail_completed({"skip_upload": True, "summary": "有问题"})
+        self.assertEqual(dialog.combos[0].currentData(), "skip_upload")
+        dialog.deleteLater()
 
 
 if __name__ == "__main__":

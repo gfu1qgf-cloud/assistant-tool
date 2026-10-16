@@ -6,6 +6,8 @@ without uploading the video again.  Only the three period input cells are
 owned here; quotas and SUM formulas are never written.
 """
 
+from model.AppDataStorage import data_io, data_file, data_directory
+
 import copy
 import json
 import logging
@@ -17,7 +19,7 @@ from collections import defaultdict
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
-from app_paths import APP_ROOT
+from app_paths import DATA_ROOT as APP_ROOT
 from model.DailyQuantityCategories import CategoryStore
 from model.GoogleSheetsHelper import (
     column_to_letter,
@@ -278,7 +280,8 @@ def _review_index(history=None):
 
 
 def collect_assignments(config, root, records=None, allowed_dates=None,
-                        include_unapproved_reviews=False):
+                        include_unapproved_reviews=False, inspection_records=None,
+                        ignored_file_ids=None, classification_overrides=None):
     """Return one first-delivery assignment per logical finished video."""
     root = Path(root).resolve()
     table_name = str(config.get("task_table_file_name") or "任务登记表格.ods").strip()
@@ -290,6 +293,8 @@ def collect_assignments(config, root, records=None, allowed_dates=None,
     review_history = read_review_history()
     review_statuses = _review_index(review_history)
     first, latest = {}, {}
+    ignored_file_ids = set(ignored_file_ids or ())
+    classification_overrides = classification_overrides or {}
     for record in records:
         if record.get("source") != "upload":
             continue
@@ -325,6 +330,28 @@ def collect_assignments(config, root, records=None, allowed_dates=None,
         file_id = str(record.get("drive_file_id") or "")
         if rework_to_original.get(file_id) in first_ids:
             continue
+        if file_id in ignored_file_ids and inspection_records is None:
+            continue
+        override = classification_overrides.get(file_id, {})
+        candidate = {
+            **_duration_fields(latest[identity][1]), **video_content_fields(record),
+            "id": "upload:" + uuid.uuid5(uuid.NAMESPACE_URL, identity).hex,
+            "upload_history": True, "identity": identity,
+            "drive_file_id": file_id,
+            "drive_link": str(record.get("drive_link") or
+                              (f"https://drive.google.com/file/d/{file_id}/view" if file_id else "")),
+            "file_name": str(record.get("file_name") or identity.rsplit("|", 1)[-1]),
+            "folder_name": ods.parent.name, "batch_date": day, "batch_slot": slot,
+            "detected_batch_slot": slot,
+            "sheet": str(override.get("sheet") or ""),
+            "category": str(override.get("category") or ""), "included": True,
+            "task_table": str(ods),
+            "review_path": bool(_review_upload(record, config.get("review_folder_name"))
+                                or file_id in review_statuses),
+            "review_status": review_statuses.get(file_id, "untracked"),
+        }
+        if inspection_records is not None:
+            inspection_records.append(candidate)
         if (not include_unapproved_reviews
                 and (_review_upload(record, config.get("review_folder_name"))
                      or file_id in review_statuses)
@@ -336,7 +363,9 @@ def collect_assignments(config, root, records=None, allowed_dates=None,
             else:
                 try:
                     tasks, report = ReadTaskOds2(
-                        ods, schema=load_task_table_schema(), return_report=True
+                        ods, schema=(load_task_table_schema(migrate_legacy=False)
+                                     if inspection_records is not None else load_task_table_schema()),
+                        return_report=True,
                     )
                     tasks_by_ods[ods] = tasks
                     absent = [label for field, label in (
@@ -370,6 +399,11 @@ def collect_assignments(config, root, records=None, allowed_dates=None,
         task = candidates[0]
         sheet = task.daily_stat_sheet
         category = task.daily_stat_category
+        override = classification_overrides.get(file_id, {})
+        if not sheet or not category:
+            sheet = str(override.get("sheet") or sheet or "").strip()
+            category = str(override.get("category") or category or "").strip()
+        candidate.update(sheet=sheet, category=category)
         if not sheet or not category:
             warnings.append(f"{label}：每日统计分页/类别未填，暂不计数；填好后点刷新")
             continue
@@ -458,20 +492,24 @@ def read_daily_quantity_categories(config, service=None):
     return CategoryStore(config).load()[0]
 
 
-def _load_state(path):
+def _load_state(path, strict=False):
     try:
-        data = json.loads(Path(path).read_text(encoding="utf-8"))
+        data = json.loads(data_file(Path(path)).read_text(encoding="utf-8"))
     except (OSError, ValueError):
+        if strict and Path(path).exists():
+            raise ValueError("每日数量记录文件无法读取或已损坏，请先恢复备份；未清空或覆盖。") from None
         data = {}
+    if strict and not isinstance(data, dict):
+        raise ValueError("每日数量记录格式无效，未清空或覆盖。")
     return data if isinstance(data, dict) else {}
 
 
 def _save_state(path, data):
     path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
+    data_directory(path.parent).ensure(parents=True, exist_ok=True)
     temporary = path.with_name(path.name + ".tmp")
-    temporary.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    os.replace(temporary, path)
+    data_file(temporary).write_text_direct(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    data_io.replace(temporary, path)
 
 
 def _scope_key(config, root):
@@ -503,9 +541,21 @@ def _sync_progress_summary(previous):
     warnings = previous.get("last_refresh_warning_count")
     if not isinstance(warnings, int) or isinstance(warnings, bool) or warnings < 0:
         warnings = None
+    manual = previous.get("last_manual_refresh", {})
+    manual = manual if isinstance(manual, dict) else {}
     return {"latest_date": dates[-1] if dates else "", "first_date": dates[0] if dates else "",
             "dates": [{"date": day, "cells": days[day]} for day in dates],
-            "updated_at": str(previous.get("updated_at") or ""), "warning_count": warnings}
+            "updated_at": str(previous.get("updated_at") or ""), "warning_count": warnings,
+            "manual_refresh": dict(manual)}
+
+
+def _record_manual_refresh(next_state, manual_refresh, verified_cells):
+    """Snapshot only this explicit refresh; automatic writes never advance it."""
+    if not manual_refresh:
+        return
+    summary = _sync_progress_summary({**next_state, "cells": verified_cells})
+    summary.pop("manual_refresh", None)
+    next_state["last_manual_refresh"] = summary
 
 
 def daily_quantity_sync_progress(config, root, state_path=None):
@@ -530,7 +580,7 @@ def repair_future_scan_dates(config, root, corrections, state_path=None, dry_run
     path = Path(state_path or STATE_FILE)
     with _LOCK:
         # A repair must fail closed on malformed state, not replace it with {}.
-        state = json.loads(path.read_text(encoding="utf-8"))
+        state = json.loads(data_file(path).read_text(encoding="utf-8"))
         scope_key = _scope_key(config, root)
         original = state.get(scope_key)
         if not isinstance(original, dict):
@@ -568,6 +618,8 @@ def repair_future_scan_dates(config, root, corrections, state_path=None, dry_run
 
 def _included(item):
     """Honor explicit exclusions, but migrate the old review-folder default."""
+    if item.get("quantity_ignored"):
+        return False
     if item.get("included", True):
         return True
     if item.get("manual_included") or item.get("possible_revision"):
@@ -606,6 +658,105 @@ def external_video_sources(config, root, state_path=None):
         return [dict(item) for item in scope.get("external_folders", [])]
 
 
+def inspect_daily_quantity(config, root, state_path=None, records=None):
+    """Read all known delivery dates locally. No Drive/Sheets requests or writes.
+
+    Date-folder snapshots remain authoritative; upload-history candidates fill
+    the gaps on dates that have never been scanned. Explicitly ignored items
+    stay available for recovery, not in the pending queue.
+    """
+    with _LOCK:
+        scope = copy.deepcopy(_load_state(state_path or STATE_FILE, strict=True).get(_scope_key(config, root), {}))
+    records = all_video_upload_records(config, read_only=True) if records is None else records
+    external = _with_review_status([dict(item, included=_included(item))
+                                   for item in scope.get("external_videos", [])])
+    candidates = []
+    overrides = {str(item.get("drive_file_id") or ""): item for item in external
+                 if item.get("upload_history")}
+    _groups, warnings = collect_assignments(
+        config, root, records, include_unapproved_reviews=True,
+        inspection_records=candidates, classification_overrides=overrides,
+    )
+    by_id = {str(item.get("drive_file_id") or ""): item for item in candidates
+             if item.get("drive_file_id")}
+    scanned_days = set(scope.get("daily_scans", {}))
+    rows = [item for item in candidates if item["batch_date"] not in scanned_days
+            or item.get("quantity_ignored")]
+    rows_by_file = {str(item.get("drive_file_id") or item.get("id")): item for item in rows}
+    ignored_by_file = {str(item.get("drive_file_id") or item.get("id")): item
+                       for item in external if item.get("quantity_ignored")}
+    for item in external:
+        source = by_id.get(str(item.get("drive_file_id") or ""))
+        if item.get("upload_history") and source:
+            # A corrected local task table takes effect on the next inspection.
+            item.update(sheet=source["sheet"], category=source["category"])
+        file_id = str(item.get("drive_file_id") or "")
+        rows_by_file[file_id or str(item.get("id"))] = item
+    rows_by_file.update(ignored_by_file)
+    options, _revision = CategoryStore(config).load()
+    pending, ignored, days = [], [], defaultdict(lambda: {"pending": 0, "ignored": 0})
+    visible = []
+    for item in rows_by_file.values():
+        if item.get("missing_from_daily") or item.get("outside_daily_scan"):
+            if not item.get("quantity_ignored"):
+                continue
+        sheet, category = str(item.get("sheet") or ""), str(item.get("category") or "")
+        reason = ("统计分页/类别未填" if not sheet or not category else
+                  "类别不在当前分类列表中，请核对" if category not in options.get(sheet, []) else "")
+        item = dict(item, classification_issue=reason)
+        visible.append(item)
+        day = str(item.get("batch_date") or "")
+        if item.get("quantity_ignored"):
+            ignored.append(item)
+            days[day]["ignored"] += 1
+        elif reason:
+            pending.append(item)
+            days[day]["pending"] += 1
+    return {"records": visible, "pending": pending, "ignored": ignored,
+            "dates": [{"date": day, **counts} for day, counts in sorted(days.items(), reverse=True)],
+            "warnings": warnings, "checked": len(visible)}
+
+
+def set_daily_quantity_ignored(config, root, record_ids, ignored=True, state_path=None):
+    """Persist an explicit, reversible decision; never write the remote sheet."""
+    path = Path(state_path or STATE_FILE)
+    ids = set(map(str, record_ids))
+    with _LOCK:
+        state = _load_state(path, strict=True)
+        key = _scope_key(config, root)
+        scope = copy.deepcopy(state.get(key, {}))
+        videos = scope.setdefault("external_videos", [])
+        known = {str(item.get("id")): item for item in videos}
+        missing = ids - known.keys()
+        if missing:
+            inspected = inspect_daily_quantity(config, root, state_path=path)
+            available = {str(item.get("id")): item for item in inspected["records"]}
+            if missing - available.keys():
+                raise ValueError("视频记录已变化，请重新检索后再忽略。")
+            for item_id in missing:
+                item = dict(available[item_id])
+                videos.append(item)
+                known[item_id] = item
+        file_ids = {str(known[item_id].get("drive_file_id")) for item_id in ids
+                    if known[item_id].get("drive_file_id")}
+        affected = ids | {str(item.get("id")) for item in videos
+                          if str(item.get("drive_file_id") or "") in file_ids}
+        for item_id in affected:
+            item = known[item_id]
+            if ignored:
+                if not item.get("quantity_ignored"):
+                    item["included_before_ignore"] = _included(item)
+                item.update(quantity_ignored=True, included=False, manual_included=True,
+                            ignored_at=datetime.now().astimezone().isoformat(timespec="seconds"))
+            else:
+                item.update(quantity_ignored=False, included=bool(item.pop("included_before_ignore", True)),
+                            manual_included=True)
+                item.pop("ignored_at", None)
+        state[key] = scope
+        _save_state(path, state)
+        return len(ids)
+
+
 def pending_review_quantity_records(config, root, state_path=None, records=None):
     """List review-linked uploads in this project still waiting to be counted."""
     root = Path(root).resolve()
@@ -619,9 +770,13 @@ def pending_review_quantity_records(config, root, state_path=None, records=None)
             str(item.get("drive_file_id") or ""), "untracked"
         ) for item in external if item.get("review_path")
     }
+    ignored_ids = {str(item.get("drive_file_id") or "") for item in external
+                   if item.get("quantity_ignored")}
     result = {}
     for item in external:
         file_id = str(item.get("drive_file_id") or "")
+        if file_id in ignored_ids:
+            continue
         name = str(item.get("file_name") or "")
         if not file_id or not (item.get("review_path") or file_id in statuses
                                or normalize_video_identity(name) in review_names):
@@ -642,6 +797,8 @@ def pending_review_quantity_records(config, root, state_path=None, records=None)
         if record.get("source") != "upload" or _project_ods(root, record, table_name) is None:
             continue
         file_id = str(record.get("drive_file_id") or "")
+        if file_id in ignored_ids:
+            continue
         if not file_id or not (_review_upload(record, config.get("review_folder_name"))
                                or file_id in statuses):
             continue
@@ -786,6 +943,7 @@ def scan_daily_drive_date(
                 was_auto_excluded_review = bool(
                     entry.get("review_path") and not entry.get("included", True)
                     and not entry.get("manual_included")
+                    and not entry.get("quantity_ignored")
                 )
             was_included = _included(entry)
             manual_slot = str(entry.get("manual_batch_slot") or "")
@@ -799,7 +957,7 @@ def scan_daily_drive_date(
                 if len(possible) == 1:
                     entry["sheet"], entry["category"] = next(iter(possible))
             if not entry.get("sheet") or not entry.get("category"):
-                pending += 1
+                pending += int(not entry.get("quantity_ignored"))
             if is_review:
                 review += 1
             entry.update({
@@ -958,24 +1116,33 @@ def update_external_video_records(config, root, edits, state_path=None):
     """Apply explicit classification/date/include edits by stable local ID."""
     state_path = Path(state_path or STATE_FILE)
     with _LOCK:
-        state = _load_state(state_path)
+        state = _load_state(state_path, strict=True)
         scope_key = _scope_key(config, root)
         scope = dict(state.get(scope_key, {}))
         videos = [dict(item) for item in scope.get("external_videos", [])]
         pending = {str(item.get("id")): item for item in edits}
         known = {str(item.get("id")) for item in videos}
         if set(pending) - known:
-            raise ValueError("补录记录已经变化，请重新打开后再保存。")
+            available = {str(item.get("id")): item for item in
+                         inspect_daily_quantity(config, root, state_path=state_path)["records"]
+                         if item.get("upload_history")}
+            missing = set(pending) - known
+            if missing - available.keys():
+                raise ValueError("补录记录已经变化，请重新打开后再保存。")
+            videos.extend(dict(available[item_id]) for item_id in missing)
         for item in videos:
             edit = pending.get(str(item.get("id")))
             if edit is None:
                 continue
             day = _date(edit.get("batch_date"))
             slot = effective_batch_slot(edit.get("batch_slot"))
-            included = bool(edit.get("included", True))
+            included = bool(edit.get("included", True)) and not item.get("quantity_ignored")
             if not day:
                 raise ValueError(f"{item.get('file_name')}：交付日期无效，请填写 YYYY-MM-DD")
             _reject_future_date(day)
+            if item.get("upload_history") and (day != item.get("batch_date")
+                    or slot != effective_batch_slot(item.get("batch_slot"))):
+                raise ValueError(f"{item.get('file_name')}：日期和时段由首次上传历史确定，不能在此改变。")
             if included and slot not in _PERIOD_LABELS:
                 raise ValueError(
                     f"{item.get('file_name')}：已勾选计数，但时段无效；"
@@ -1018,6 +1185,8 @@ def _external_assignments(scope, creator, local_groups):
     counted_ids = {str(video.get("drive_file_id") or "") for videos in local_groups.values()
                    for video in videos}
     seen_ids = set()
+    ignored_ids = {str(item.get("drive_file_id") or "")
+                   for item in scope.get("external_videos", []) if item.get("quantity_ignored")}
     scanned_days = set(scope.get("daily_scans", {}))
     review_statuses = _review_index()
     review_names = {
@@ -1038,6 +1207,7 @@ def _external_assignments(scope, creator, local_groups):
         day = _date(item.get("batch_date"))
         return (bool(_included(item) and review_passed(item)
                      and item.get("sheet") and item.get("category"))
+                and str(item.get("drive_file_id") or "") not in ignored_ids
                 and effective_batch_slot(item.get("batch_slot")) in _PERIOD_LABELS
                 and not item.get("missing_from_daily")
                 and not item.get("outside_daily_scan")
@@ -1060,6 +1230,8 @@ def _external_assignments(scope, creator, local_groups):
         if item.get("review_path") and eligible(item)
     }
     for item in scope.get("external_videos", []):
+        if str(item.get("drive_file_id") or "") in ignored_ids:
+            continue
         if not _included(item):
             continue
         if not review_passed(item):
@@ -1122,6 +1294,8 @@ def preview_external_day(records, day):
     items = [item for item in records if _date(item.get("batch_date")) == day]
     missing_slot = missing_category = 0
     for item in items:
+        if item.get("quantity_ignored"):
+            continue
         slot = effective_batch_slot(item.get("batch_slot"))
         sheet = str(item.get("sheet") or "").strip()
         category = str(item.get("category") or "").strip()
@@ -1145,6 +1319,7 @@ def preview_external_day(records, day):
 def reconcile_daily_quantity(
     config, root, service=None, records=None, state_path=None, dry_run=False,
     drive_service=None, only_sheet=None, only_dates=None, verify_content=False,
+    manual_refresh=False,
 ):
     """Apply verified absolute counts; never guess over a nonempty manual cell."""
     scope = _scope_key(config, root)
@@ -1208,8 +1383,13 @@ def reconcile_daily_quantity(
             if (parsed := _date(raw))
         }
         records = all_video_upload_records(config) if records is None else records
+        ignored_ids = {str(item.get("drive_file_id") or "")
+                       for item in previous.get("external_videos", []) if item.get("quantity_ignored")}
+        overrides = {str(item.get("drive_file_id") or ""): item
+                     for item in previous.get("external_videos", []) if item.get("upload_history")}
         groups, warnings = collect_assignments(
-            config, root, records, allowed_dates=allowed_dates
+            config, root, records, allowed_dates=allowed_dates,
+            ignored_file_ids=ignored_ids, classification_overrides=overrides,
         )
         scanned_days = set(previous.get("daily_scans", {}))
         scanned_ids = {
@@ -1255,6 +1435,7 @@ def reconcile_daily_quantity(
             next_state = {**previous, "last_refresh_warning_count": len(warnings),
                           "updated_at": datetime.now().astimezone().isoformat(timespec="seconds")}
             if not dry_run:
+                _record_manual_refresh(next_state, manual_refresh, {})
                 state[scope] = next_state
                 _save_state(state_path, state)
             return {"updated": [], "warnings": warnings, "counted": 0,
@@ -1266,6 +1447,7 @@ def reconcile_daily_quantity(
         updates = []
         pending = []
         next_cells = dict(old_cells)
+        verified_cells = {}
         for key in sorted(relevant):
             sheet, day, slot, category, creator = json.loads(key)
             if sheet not in snapshots:
@@ -1284,6 +1466,7 @@ def reconcile_daily_quantity(
             if prior is None and current != 0 and current == desired_count:
                 next_cells[key] = {"base": 0, "written": current,
                                    "videos": desired.get(key, [])}
+                verified_cells[key] = next_cells[key]
                 continue
             if prior is None and current != 0:
                 warnings.append(f"{sheet} / {day} / {category}：已有手填数字 {current}，未覆盖；请先核对")
@@ -1301,6 +1484,7 @@ def reconcile_daily_quantity(
                 pending.append((key, next_entry, a1, target))
             else:
                 next_cells[key] = next_entry
+                verified_cells[key] = next_entry
         if updates and not dry_run:
             result = service.spreadsheets().values().batchUpdate(
                 spreadsheetId=spreadsheet_id,
@@ -1314,6 +1498,7 @@ def reconcile_daily_quantity(
                 )
         for key, entry, _, _ in pending:
             next_cells[key] = entry
+            verified_cells[key] = entry
         if not dry_run:
             state[scope] = {**previous,
                             "content_cache": content_cache,
@@ -1321,6 +1506,7 @@ def reconcile_daily_quantity(
                             "last_refresh_warning_count": len(warnings),
                             "updated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
                             "cells": next_cells}
+            _record_manual_refresh(state[scope], manual_refresh, verified_cells)
             _save_state(state_path, state)
         return {"updated": [{"range": a1, "count": number}
                             for _, _, a1, number in pending],

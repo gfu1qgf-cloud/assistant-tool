@@ -2,7 +2,7 @@
 import math
 
 
-def audio_graph(settings, duration, voice_index=None, music_index=None, music=None, original_audio=False):
+def audio_graph(settings, duration, voice_index=None, music_index=None, music=None, original_audio=False, *, original_speed=None):
     graph, sources = [], []
     voice = voice_index is not None
     if voice:
@@ -29,7 +29,16 @@ def audio_graph(settings, duration, voice_index=None, music_index=None, music=No
                          f"release={settings['duck_release_ms']}:makeup=1:detection=rms[music]")
         sources.append("[music]")
     if original_audio and settings["keep_audio"] and not voice:
-        graph.append("[0:a]asetpts=PTS-STARTPTS[original]")
+        chain = "[0:a]asetpts=PTS-STARTPTS"
+        if original_speed is not None:
+            if isinstance(original_speed, bool) or not isinstance(original_speed, (int, float)) or not math.isfinite(original_speed) or not .05 <= original_speed <= 1:
+                raise ValueError("背景原声的适配速度无效。")
+            speed = original_speed
+            while speed < .5:
+                chain += ",atempo=0.5"; speed /= .5
+            if speed < .999999: chain += f",atempo={speed:.12f}"
+            chain += f",apad=whole_dur={duration:.9f},atrim=duration={duration:.9f}"
+        graph.append(chain+"[original]")
         sources.append("[original]")
     if not sources:
         return graph, False

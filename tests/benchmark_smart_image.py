@@ -18,10 +18,10 @@ os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 
-from app_plugins.builtin.smart_image_search.encoder import (
+from model.image_retrieval.encoder import (
     ChineseImageEncoder, MODEL_IDS, combine_search_vectors,
 )
-from app_plugins.builtin.smart_image_search.index import ImageSearchIndex
+from model.image_retrieval.index import ImageSearchIndex
 
 
 QUERIES = ("耶稣向人伸出手", "玛丽亚面带微笑", "十字架", "洪水中的城市",

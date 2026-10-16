@@ -6,6 +6,7 @@ import sqlite3
 import time
 from contextlib import contextmanager
 from pathlib import Path
+from model.AppDataStorage import data_file
 
 
 def search_key(query, moods=(), sounds=()):
@@ -17,7 +18,6 @@ def search_key(query, moods=(), sounds=()):
 class MusicFeedback:
     def __init__(self, root):
         self.path = Path(root) / "preferences.sqlite3"
-        self.path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as db:
             db.execute("PRAGMA journal_mode=WAL")
             db.execute("""CREATE TABLE IF NOT EXISTS feedback (
@@ -28,7 +28,7 @@ class MusicFeedback:
 
     @contextmanager
     def _connect(self):
-        db = sqlite3.connect(str(self.path), timeout=30)
+        db = data_file(self.path).connect(timeout=30)
         try:
             with db:
                 yield db

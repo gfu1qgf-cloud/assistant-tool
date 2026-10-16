@@ -4,6 +4,7 @@ from datetime import date, datetime, time, timedelta
 import hashlib
 import json
 from pathlib import Path
+from model.AppDataStorage import data_file
 
 
 class CalendarError(ValueError):
@@ -59,7 +60,7 @@ class AnnualCalendar:
     @classmethod
     def load(cls, path):
         try:
-            return cls(json.loads(Path(path).read_text(encoding="utf-8-sig")), path)
+            return cls(data_file(path).read_json(encoding="utf-8-sig"), path)
         except (OSError, UnicodeError, json.JSONDecodeError) as error:
             raise CalendarError(f"无法读取年度日历：{path}；{error}") from error
 

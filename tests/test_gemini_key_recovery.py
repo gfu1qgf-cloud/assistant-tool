@@ -2,7 +2,7 @@ import json
 import os
 from pathlib import Path
 import tempfile
-from types import SimpleNamespace
+from types import SimpleNamespace, MethodType
 import unittest
 from unittest.mock import Mock, patch
 
@@ -76,6 +76,7 @@ class GeminiRecoveryTests(unittest.TestCase):
             path.write_text(json.dumps({KEYS_CONFIG_KEY: ['stored'], 'other': 'keep'}))
             manager = GeminiKeyManager({KEYS_CONFIG_KEY: []})
             fake = SimpleNamespace(config_name=str(path), gemini_keys=manager, appendLog=Mock())
+            fake._save_current_config_locked = MethodType(MainDialog._save_current_config_locked, fake)
             fake.load_config = lambda: json.loads(path.read_text())
             fake.dump = lambda: manager.update_config(fake.load_config())
             self.assertTrue(MainDialog.saveCurrentConfig(fake, show_errors=False))

@@ -1,3 +1,5 @@
+
+from model.AppDataStorage import data_io, data_file, data_directory
 import hashlib
 import json
 import os
@@ -10,7 +12,7 @@ from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from app_paths import APP_ROOT
+from app_paths import DATA_ROOT as APP_ROOT
 from model.GoogleDriveDownloader import DownloadError, parse_drive_link
 from model.GoogleDriveHelper import load_drive_service
 from model.GoogleSheetsHelper import (
@@ -131,8 +133,8 @@ def get_audit_log_path(config: Dict) -> Path:
 def append_audit_events(config: Dict, events: List[Dict]) -> Path:
     log_path = get_audit_log_path(config)
     with _AUDIT_LOG_LOCK:
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        with log_path.open("a", encoding="utf-8") as handle:
+        data_directory(log_path.parent).ensure(parents=True, exist_ok=True)
+        with data_io.open(log_path,"a", encoding="utf-8") as handle:
             for event in events:
                 handle.write(json.dumps(event, ensure_ascii=False, default=str) + "\n")
             handle.flush()

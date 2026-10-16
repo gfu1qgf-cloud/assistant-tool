@@ -1,4 +1,5 @@
 """Task-local cache for Facebook reference contact sheets."""
+from model.AppDataStorage import data_directory, data_file, data_io
 
 import hashlib
 import html
@@ -10,6 +11,7 @@ from urllib.parse import parse_qs, urlsplit
 from uuid import uuid4
 
 from .download import is_facebook_video_url
+from .engine import ANALYSIS_VERSION
 
 
 _URL = re.compile(r"https?://[^\s<>\"']+", re.IGNORECASE)
@@ -64,8 +66,10 @@ def cache_directory(task_dir, url):
 def cached_sheets(folder, url):
     folder = Path(folder)
     try:
-        manifest = json.loads((folder / "manifest.json").read_text(encoding="utf-8"))
+        manifest = json.loads(data_file(folder / "manifest.json").read_text(encoding="utf-8"))
         if manifest.get("version") != 1 or manifest.get("key") != reference_key(url):
+            return []
+        if manifest.get("analysis_version") != ANALYSIS_VERSION:
             return []
         names = manifest.get("files")
         if not isinstance(names, list) or not names:
@@ -85,7 +89,7 @@ def cached_sheets(folder, url):
 
 def remember_sheets(folder, url, sheets):
     folder = Path(folder)
-    folder.mkdir(parents=True, exist_ok=True)
+    data_directory(folder).ensure(parents=True, exist_ok=True)
     names = []
     for sheet in sheets:
         path = Path(sheet)
@@ -94,11 +98,12 @@ def remember_sheets(folder, url, sheets):
         names.append(path.name)
     if not names:
         raise ValueError("没有可缓存的分镜大图。")
-    payload = {"version": 1, "key": reference_key(url), "files": names}
+    payload = {"version": 1, "analysis_version": ANALYSIS_VERSION,
+               "key": reference_key(url), "files": names}
     temporary = folder / (".manifest-" + uuid4().hex + ".tmp")
     try:
-        temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-        os.replace(temporary, folder / "manifest.json")
+        data_file(temporary).write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        data_io.replace(temporary, folder / "manifest.json")
     finally:
         if temporary.exists():
-            temporary.unlink()
+            data_file(temporary).remove()

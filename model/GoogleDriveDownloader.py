@@ -7,6 +7,8 @@ filename returned by Google Drive (except for characters Windows cannot store).
 
 from __future__ import annotations
 
+from model.AppDataStorage import data_directory, data_file, data_io
+
 import argparse
 import html
 import http.cookiejar
@@ -263,7 +265,7 @@ def normalize_jfif_filename(name: str) -> tuple[str, bool]:
 def jfif_content_extension(path: Path) -> str:
     """Return .png for a PNG payload; JFIF/JPEG and unknown data use .jpg."""
     try:
-        with Path(path).open("rb") as stream:
+        with data_io.open(Path(path), "rb") as stream:
             header = stream.read(16)
     except OSError:
         return ".jpg"
@@ -284,7 +286,7 @@ def migrate_legacy_mojibake_file(output_dir: Path, correct_filename: str) -> Pat
             continue
         legacy_target = output_dir / legacy_name
         if legacy_target.is_file():
-            legacy_target.replace(target)
+            data_io.replace(legacy_target, target)
             return target
     return None
 
@@ -310,7 +312,7 @@ def print_progress(written: int, total: int | None) -> None:
 def copy_response(response: BinaryIO, target: Path, total: int | None) -> None:
     written = 0
     last_update = 0.0
-    with target.open("wb") as output:
+    with data_io.open(target, "wb") as output:
         while True:
             block = response.read(CHUNK_SIZE)
             if not block:
@@ -429,12 +431,12 @@ def download_one(
                 if was_jfif else target
             )
             if final_target.exists() and not overwrite:
-                part.unlink()
+                data_file(part).unlink()
                 return "skipped", final_target
-            part.replace(final_target)
+            data_io.replace(part, final_target)
         except BaseException:
             if part.exists():
-                part.unlink()
+                data_file(part).unlink()
             raise
         return "downloaded", final_target
     finally:
@@ -443,7 +445,7 @@ def download_one(
 
 def load_config(path: Path) -> dict[str, object]:
     try:
-        with path.open("r", encoding="utf-8-sig") as file:
+        with data_io.open(path, "r", encoding="utf-8-sig") as file:
             config = json.load(file)
     except FileNotFoundError as exc:
         raise DownloadError(f"找不到配置文件：{path}") from exc
@@ -476,7 +478,7 @@ def run(config_path: Path) -> int:
     output_dir = Path(output_setting).expanduser()
     if not output_dir.is_absolute():
         output_dir = config_path.parent / output_dir
-    output_dir.mkdir(parents=True, exist_ok=True)
+    data_directory(output_dir).ensure(parents=True, exist_ok=True)
 
     overwrite = config.get("overwrite", False)
     if not isinstance(overwrite, bool):

@@ -5,6 +5,7 @@ sessions, project state, and configuration, stays in place at all times.
 """
 
 from __future__ import annotations
+from model.AppDataStorage import data_directory, data_file, data_io
 
 import json
 import os
@@ -36,12 +37,14 @@ class AccountProfile:
 
     @property
     def home_path(self) -> Path:
-        return Path(self.credential_dir)
+        # Metadata keeps its compatible format; host mapping resolves the
+        # migrated archive without falling back to the old plaintext folder.
+        return data_directory(self.credential_dir).path
 
     @property
     def codex_home(self) -> str:
         """Compatibility name used by standalone switcher profile records."""
-        return self.credential_dir
+        return str(self.home_path)
 
     def to_dict(self) -> dict[str, Any]:
         # Keep the field name used by the standalone switcher so its existing
@@ -126,11 +129,11 @@ class AccountProfileStore:
         self.legacy_profiles_root = self.root / "profiles"
         self.migration_performed = False
         self.migration_backup_path: Path | None = None
-        self.root.mkdir(parents=True, exist_ok=True)
-        self.credentials_root.mkdir(parents=True, exist_ok=True)
-        self.archive_root.mkdir(parents=True, exist_ok=True)
-        self.rollback_root.mkdir(parents=True, exist_ok=True)
-        self.live_home.parent.mkdir(parents=True, exist_ok=True)
+        data_directory(self.root).ensure(parents=True, exist_ok=True)
+        data_directory(self.credentials_root).ensure(parents=True, exist_ok=True)
+        data_directory(self.archive_root).ensure(parents=True, exist_ok=True)
+        data_directory(self.rollback_root).ensure(parents=True, exist_ok=True)
+        data_directory(self.live_home.parent).ensure(parents=True, exist_ok=True)
         self._tighten_directory(self.root)
 
         self._data = self._load()
@@ -177,7 +180,7 @@ class AccountProfileStore:
             self._atomic_write_index(data)
             return data
         try:
-            data = json.loads(self.index_path.read_text(encoding="utf-8"))
+            data = json.loads(data_file(self.index_path).read_text(encoding="utf-8"))
         except (OSError, ValueError, json.JSONDecodeError) as error:
             backup = self.index_path.with_name(
                 "desktop-profiles.broken-"
@@ -185,7 +188,7 @@ class AccountProfileStore:
                 + ".json"
             )
             try:
-                shutil.copy2(self.index_path, backup)
+                data_io.copy2(self.index_path, backup)
                 self._tighten_file(backup)
             except OSError:
                 backup = None
@@ -202,7 +205,7 @@ class AccountProfileStore:
         return data
 
     def _atomic_write_index(self, data: dict[str, Any]) -> None:
-        descriptor, temporary_name = tempfile.mkstemp(
+        descriptor, temporary_name = data_io.mkstemp(
             prefix="desktop-profiles-", suffix=".tmp", dir=self.root
         )
         temporary_path = Path(temporary_name)
@@ -212,11 +215,11 @@ class AccountProfileStore:
                 handle.write("\n")
                 handle.flush()
                 os.fsync(handle.fileno())
-            os.replace(temporary_path, self.index_path)
+            data_io.replace(temporary_path, self.index_path)
             self._tighten_file(self.index_path)
         finally:
             if temporary_path.exists():
-                temporary_path.unlink()
+                data_file(temporary_path).remove()
 
     def _save(self) -> None:
         self._atomic_write_index(self._data)
@@ -319,23 +322,23 @@ class AccountProfileStore:
     def _atomic_copy_auth(self, source: Path, destination: Path) -> None:
         if not self._is_valid_auth_file(source):
             raise AccountSwitcherError("登录缓存不存在、过大或不是普通文件。")
-        destination.parent.mkdir(parents=True, exist_ok=True)
+        data_directory(destination.parent).ensure(parents=True, exist_ok=True)
         self._tighten_directory(destination.parent)
-        descriptor, temporary_name = tempfile.mkstemp(
+        descriptor, temporary_name = data_io.mkstemp(
             prefix="auth-", suffix=".tmp", dir=destination.parent
         )
         temporary_path = Path(temporary_name)
         try:
-            with source.open("rb") as source_handle, os.fdopen(descriptor, "wb") as target_handle:
+            with data_file(source).open("rb") as source_handle, os.fdopen(descriptor, "wb") as target_handle:
                 shutil.copyfileobj(source_handle, target_handle)
                 target_handle.flush()
                 os.fsync(target_handle.fileno())
             self._tighten_file(temporary_path)
-            os.replace(temporary_path, destination)
+            data_io.replace(temporary_path, destination)
             self._tighten_file(destination)
         finally:
             if temporary_path.exists():
-                temporary_path.unlink()
+                data_file(temporary_path).remove()
 
     @staticmethod
     def _normalize_name(name: str) -> str:
@@ -367,8 +370,8 @@ class AccountProfileStore:
     def _ensure_file_credential_store(self) -> None:
         """Request file-backed auth only when the user creates the first profile."""
         path = self.live_home / "config.toml"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        original = path.read_text(encoding="utf-8") if path.exists() else ""
+        data_directory(path.parent).ensure(parents=True, exist_ok=True)
+        original = data_file(path).read_text(encoding="utf-8") if path.exists() else ""
         lines = original.splitlines()
         first_table = next(
             (index for index, line in enumerate(lines) if line.lstrip().startswith("[")),
@@ -388,9 +391,9 @@ class AccountProfileStore:
             return
         backup = path.with_name("config.before-account-switcher.toml")
         if path.exists() and not backup.exists():
-            shutil.copy2(path, backup)
+            data_io.copy2(path, backup)
             self._tighten_file(backup)
-        descriptor, temporary_name = tempfile.mkstemp(
+        descriptor, temporary_name = data_io.mkstemp(
             prefix="config-", suffix=".tmp", dir=path.parent
         )
         temporary_path = Path(temporary_name)
@@ -399,11 +402,11 @@ class AccountProfileStore:
                 handle.write(updated)
                 handle.flush()
                 os.fsync(handle.fileno())
-            os.replace(temporary_path, path)
+            data_io.replace(temporary_path, path)
             self._tighten_file(path)
         finally:
             if temporary_path.exists():
-                temporary_path.unlink()
+                data_file(temporary_path).remove()
 
     def adopt_current(self, name: str) -> AccountProfile:
         """Save the live account as the first profile without moving sessions."""
@@ -413,10 +416,10 @@ class AccountProfileStore:
             not self.live_home.is_dir() or is_reparse_or_symlink(self.live_home)
         ):
             raise AccountSwitcherError("当前 .codex 不是可安全使用的普通文件夹。")
-        self.live_home.mkdir(parents=True, exist_ok=True)
+        data_directory(self.live_home).ensure(parents=True, exist_ok=True)
         self._ensure_file_credential_store()
         profile = self._new_profile(name)
-        profile.home_path.mkdir(parents=True, exist_ok=False)
+        data_directory(profile.home_path).ensure(parents=True, exist_ok=False)
         self._tighten_directory(profile.home_path)
         if self._is_valid_auth_file(self.live_auth_path):
             self._atomic_copy_auth(self.live_auth_path, self.profile_auth_path(profile))
@@ -429,7 +432,7 @@ class AccountProfileStore:
         if not self.active_profile_id:
             raise AccountSwitcherError("请先保存当前登录账号。")
         profile = self._new_profile(name)
-        profile.home_path.mkdir(parents=True, exist_ok=False)
+        data_directory(profile.home_path).ensure(parents=True, exist_ok=False)
         self._tighten_directory(profile.home_path)
         self._data["profiles"].append(profile.to_dict())
         self.save()
@@ -515,7 +518,7 @@ class AccountProfileStore:
         if had_live_auth:
             self._atomic_copy_auth(self.live_auth_path, self.rollback_auth_path)
         elif self.rollback_auth_path.exists():
-            self.rollback_auth_path.unlink()
+            data_file(self.rollback_auth_path).remove()
 
         transaction = {
             "from": current.profile_id,
@@ -530,7 +533,7 @@ class AccountProfileStore:
             if target_ready:
                 self._atomic_copy_auth(target_auth, self.live_auth_path)
             elif self.live_auth_path.exists():
-                self.live_auth_path.unlink()
+                data_file(self.live_auth_path).remove()
             self._data["active_profile_id"] = target.profile_id
             updated = self._mark_used(target.profile_id, save=False)
             self._data["transaction"] = None
@@ -559,14 +562,14 @@ class AccountProfileStore:
             raise AccountSwitcherError(message) from error
         finally:
             if cleanup_backup and self.rollback_auth_path.exists():
-                self.rollback_auth_path.unlink()
+                data_file(self.rollback_auth_path).remove()
 
     def _restore_previous_auth(self, had_live_auth: bool) -> str | None:
         try:
             if had_live_auth:
                 self._atomic_copy_auth(self.rollback_auth_path, self.live_auth_path)
             elif self.live_auth_path.exists():
-                self.live_auth_path.unlink()
+                data_file(self.live_auth_path).remove()
             return None
         except (OSError, AccountSwitcherError) as error:
             return str(error)
@@ -585,7 +588,7 @@ class AccountProfileStore:
         self._data["transaction"] = None
         self.save()
         if self.rollback_auth_path.exists():
-            self.rollback_auth_path.unlink()
+            data_file(self.rollback_auth_path).remove()
 
     def _recover_v2_interrupted_switch(self) -> None:
         """Stabilize an old whole-directory switch before the v3 migration."""
@@ -609,12 +612,12 @@ class AccountProfileStore:
             if live_exists and source_exists and not target_exists:
                 self._data["active_profile_id"] = str(target["profile_id"])
             elif not live_exists and source_exists and target_exists:
-                os.replace(target_home, self.live_home)
+                data_io.replace(target_home, self.live_home)
                 self._data["active_profile_id"] = str(target["profile_id"])
             elif live_exists and not source_exists and target_exists:
                 self._data["active_profile_id"] = str(source["profile_id"])
             elif not live_exists and source_exists and not target_exists:
-                os.replace(source_home, self.live_home)
+                data_io.replace(source_home, self.live_home)
                 self._data["active_profile_id"] = str(source["profile_id"])
             else:
                 raise AccountSwitcherError(
@@ -633,14 +636,14 @@ class AccountProfileStore:
             )
         timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         backup = self.root / f"desktop-profiles-v2-backup-{timestamp}.json"
-        shutil.copy2(self.index_path, backup)
+        data_io.copy2(self.index_path, backup)
         self._tighten_file(backup)
         active_id = str(self._data.get("active_profile_id") or "")
         migrated: list[dict[str, Any]] = []
         for item in self._data.get("profiles", []):
             profile_id = str(item["profile_id"])
             credential_dir = (self.credentials_root / profile_id).resolve()
-            credential_dir.mkdir(parents=True, exist_ok=True)
+            data_directory(credential_dir).ensure(parents=True, exist_ok=True)
             self._tighten_directory(credential_dir)
             old_home = Path(str(item["codex_home"]))
             source_auth = (
@@ -685,7 +688,7 @@ class AccountProfileStore:
             "credentials-"
             f"{profile.profile_id}-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
         )
-        shutil.move(str(profile.home_path), str(destination))
+        data_io.move(str(profile.home_path), str(destination))
         self._data["profiles"] = [
             item for item in self._data["profiles"]
             if item.get("profile_id") != profile.profile_id

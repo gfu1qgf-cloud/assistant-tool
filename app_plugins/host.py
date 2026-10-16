@@ -18,6 +18,22 @@ from app_plugins.api import (
 
 PLUGIN_MAIN_WIDGET_ORDER_CONFIG_KEY = "plugin_main_widget_order"
 PLUGIN_MAIN_WIDGET_MIME = "application/x-lzx-plugin-main-widget"
+PLUGIN_ENABLED_CONFIG_KEY = "plugin_enabled"
+
+
+def plugin_enabled_states(config):
+    """Only explicit booleans change startup policy; old configs stay compatible."""
+    raw = config.get(PLUGIN_ENABLED_CONFIG_KEY, {})
+    if not isinstance(raw, dict):
+        return {}
+    states = {key: value for key, value in raw.items()
+              if isinstance(key, str) and isinstance(value, bool)}
+    # Search is now one plugin. If both old plugins were explicitly disabled,
+    # do not silently reactivate them after upgrading. An explicit new choice wins.
+    legacy = ('smart_image_search', 'smart_music_search')
+    if 'smart_search' not in states and any(key in states for key in legacy):
+        states['smart_search'] = any(states.get(key, True) for key in legacy)
+    return states
 
 def _card_color_indices(full_ids):
     """Generate separated hues for any registered cards, independent of drag order."""
@@ -218,11 +234,68 @@ class PluginContext:
     def register_tab_page(self, page):
         self._host.register_tab_page(self.plugin_id, page)
 
+    def register_node(self, definition):
+        """Register a pure plan builder, not a widget or live worker resource."""
+        self._host.node_registry.register(self.plugin_id, definition)
+
+    def register_function(self, function):
+        """Register a trusted @node_function in this plugin's namespace."""
+        self._host.node_registry.register_function(self.plugin_id, function)
+
+    def register_workflow_type(self, definition):
+        """Declare plugin-specific entry/output nodes and preview input factory."""
+        self._host.node_registry.register_workflow_type(self.plugin_id, definition)
+
+    @property
+    def workflow_library(self):
+        from model.node_workflow.library import WorkflowLibrary
+        return WorkflowLibrary()
+
+    def available_nodes(self):
+        return self._host.available_nodes()
+
+    def workflow_runtime_context(self, plugin_id):
+        return self._host.workflow_runtime_context(plugin_id)
+
+    def open_workflow_editor(self, *, workflow_id='', workflow_type=''):
+        """Main-thread named-workflow editor service; no plugin UI internals."""
+        self._host.background_tasks._assert_main_thread()
+        controller = getattr(self._host.main_window, 'node_workspace', None)
+        if controller is None:
+            raise RuntimeError('主程序节点工作流面板尚未就绪。')
+        return controller.open_workflow(workflow_id, workflow_type)
+
+    @property
+    def background_tasks(self):
+        return self._host.background_tasks
+
+    def submit_background_task(self, *, title, runner, payload=None, **options):
+        """Submit only from the GUI thread, with submission-time input snapshots."""
+        if not self._host.is_enabled(self.plugin_id):
+            raise RuntimeError("插件已禁用，请在插件管理中启用并重启程序。")
+        return self.background_tasks.submit(
+            owner=self.plugin_id, title=title, runner=runner, payload=payload, **options
+        )
+
     def load_config(self):
         return self._host.main_window.load_config()
 
+    @property
+    def storage(self):
+        """Relative-name data namespace; host creates files and connections."""
+        return self._host.data_storage.for_plugin(self.plugin_id)
+
     def save_config(self):
         return self._host.main_window.saveCurrentConfig()
+
+    def patch_config(self, updates, *, expected):
+        """Save confirmed fields without reloading models or plugin services."""
+        app = QtWidgets.QApplication.instance()
+        if app is None or QtCore.QThread.currentThread() != app.thread():
+            raise RuntimeError("配置补全只能在 GUI 主线程保存")
+        return self._host.main_window.saveCurrentConfig(
+            config_updates=dict(updates), expected_config=dict(expected),
+        )
 
     @property
     def gemini_keys(self):
@@ -231,6 +304,23 @@ class PluginContext:
 
     def open_gemini_key_manager(self):
         return self._host.main_window.openGeminiKeyManager()
+
+    @property
+    def ai_client(self):
+        """Shared plain service; workers pass immutable config snapshots."""
+        return self._host.ai_client
+
+    @property
+    def ai_workflows(self):
+        """Headless host AI capability; no widgets/keys in workflow payloads."""
+        return self._host.ai_workflows
+
+    def prepare_ai_workflow(self, provider):
+        return self._host.prepare_ai_workflow(provider)
+
+    def prepare_elevenlabs(self):
+        """Only an opaque credential session may enter plugin job snapshots."""
+        return self._host.prepare_elevenlabs()
 
     def log(self, message, level=logging.INFO):
         self._host.main_window.appendLog(
@@ -359,6 +449,130 @@ class PluginHost:
         self._tools_separator = None
         self.menu = None
         self.tools_menu = None
+        self._background_tasks = None
+        self._ai_client = None
+        self._ai_workflows = None
+        self._elevenlabs = None
+        from model.AppDataStorage import application_storage
+        self.data_storage = application_storage()
+        # Keep the running policy immutable. Config edits take effect next launch,
+        # never tear down QThreads, media players or modal reminders mid-flight.
+        self._enabled_states = plugin_enabled_states(main_window.load_config())
+        self._started = set()
+        self._start_errors = {}
+        self._manager_dialog = None
+        from model.node_workflow.graph import NodeRegistry, register_core
+        self.node_registry = NodeRegistry()
+        register_core(self.node_registry)
+
+    def available_nodes(self):
+        return self.node_registry.subset(lambda owner: owner == "core" or self.is_enabled(owner))
+
+    def workflow_runtime_context(self, plugin_id):
+        """GUI-side provider snapshot; never persisted in the workflow graph."""
+        self.background_tasks._assert_main_thread()
+        plugin = self.plugin(plugin_id)
+        provider = getattr(plugin,'workflow_runtime_context',None)
+        if not self.is_enabled(plugin_id) or not callable(provider):
+            raise ValueError('插件未提供本次节点运行数据：'+str(plugin_id))
+        from model.node_workflow.tasks import _plain
+        return _plain(provider())
+
+    def is_enabled(self, plugin_id):
+        return self._enabled_states.get(plugin_id, True)
+
+    @property
+    def ai_client(self):
+        if self._ai_client is None:
+            from model.AIProviderClient import AIProviderClient
+            self._ai_client = AIProviderClient(getattr(self.main_window, "gemini_keys", None))
+        return self._ai_client
+
+    @property
+    def ai_workflows(self):
+        if self._ai_workflows is None:
+            from model.AIWorkflowService import AIWorkflowService
+            self._ai_workflows = AIWorkflowService(self.ai_client,
+                self.data_storage.for_plugin('ai_model_client').directory('workflow_cache'))
+        return self._ai_workflows
+
+    def prepare_ai_workflow(self, provider):
+        app = QtWidgets.QApplication.instance()
+        if app is None or QtCore.QThread.currentThread() != app.thread():
+            raise RuntimeError('AI 连接快照只能在 GUI 主线程准备。')
+        return self.ai_workflows.bind(provider, self.main_window.load_config())
+
+    def prepare_elevenlabs(self):
+        app = QtWidgets.QApplication.instance()
+        if app is None or QtCore.QThread.currentThread() != app.thread():
+            raise RuntimeError('ELE 会话只能由主线程准备。')
+        if self._elevenlabs is None:
+            from model.ElevenLabsService import ElevenLabsService
+            self._elevenlabs = ElevenLabsService()
+        from app_paths import DATA_ROOT
+        path = getattr(self.main_window, 'config_name', None) or DATA_ROOT / 'config.json'
+        return self._elevenlabs.bind(self.main_window.load_config(), str(path))
+
+    def plugin_entries(self):
+        return [dict(plugin_id=plugin_id,
+                     name=str(getattr(plugin, "display_name", "") or next(
+                         (command.title for owner, command in self._commands.values()
+                          if owner == plugin_id and MAIN_MENU in command.locations), plugin_id)),
+                     version=str(getattr(plugin, "version", "") or "—"),
+                     enabled=self.is_enabled(plugin_id),
+                     error=self._start_errors.get(plugin_id, ""))
+                for plugin_id, plugin in self._plugins.items()]
+
+    def save_plugin_states(self, updates, *, expected):
+        app = QtWidgets.QApplication.instance()
+        if app is None or QtCore.QThread.currentThread() != app.thread():
+            raise RuntimeError("插件启停设置只能在主界面保存。")
+        if any(key not in self._plugins or not isinstance(value, bool)
+               for key, value in updates.items()):
+            raise ValueError("插件启停设置无效，请重新打开插件管理。")
+        raw = expected.get(PLUGIN_ENABLED_CONFIG_KEY, {})
+        states = dict(raw) if isinstance(raw, dict) else {}
+        states.update(updates)
+        return self.main_window.saveCurrentConfig(
+            config_updates={PLUGIN_ENABLED_CONFIG_KEY: states},
+            expected_config=expected,
+        )
+
+    def open_manager(self):
+        from PYUI.plugin_manager_pyui import PluginManagerDialog
+
+        if self._manager_dialog is None:
+            self._manager_dialog = PluginManagerDialog(self, self.main_window)
+        self._manager_dialog.reload()
+        self._manager_dialog.showNormal()
+        self._manager_dialog.raise_()
+        self._manager_dialog.activateWindow()
+        return self._manager_dialog
+
+    @property
+    def background_tasks(self):
+        if self._background_tasks is None:
+            from model.BackgroundTasks import BackgroundTaskManager
+            from model.BackgroundTaskSettings import CONFIG_KEY,manager_options
+            try:options=manager_options(self.main_window.load_config().get(CONFIG_KEY))
+            except ValueError as error:
+                options=manager_options()
+                self.main_window.appendLog('[后台任务] 并发设置无效，暂用安全默认值；请在程序设置中修正：'+str(error))
+
+            self._background_tasks = BackgroundTaskManager(
+                self.main_window,
+                history_path=getattr(self.main_window, "background_task_history_path", None),
+                logger=lambda message, level: self.main_window.appendLog(message, end="", level=level),
+                **options,
+            )
+        return self._background_tasks
+
+    def apply_background_task_settings(self,config):
+        from model.BackgroundTaskSettings import CONFIG_KEY,normalize_settings
+        settings=normalize_settings(config.get(CONFIG_KEY))
+        if self._background_tasks is not None:
+            self._background_tasks.apply_limits(settings)
+        return settings
 
     def install(self, plugin):
         plugin_id = str(getattr(plugin, "plugin_id", "") or "").strip()
@@ -377,6 +591,8 @@ class PluginHost:
         existing_pages = set(self._settings_pages)
         existing_widgets = set(self._main_widgets)
         existing_tabs = set(self._tab_pages)
+        existing_nodes = set(self.node_registry.definitions)
+        existing_workflow_types = set(self.node_registry.workflow_types)
         self._plugins[plugin_id] = plugin
         self._contexts[plugin_id] = context
         try:
@@ -392,6 +608,12 @@ class PluginHost:
                 self._main_widgets.pop(widget_id, None)
             for page_id in set(self._tab_pages) - existing_tabs:
                 self._tab_pages.pop(page_id, None)
+            for kind in set(self.node_registry.definitions) - existing_nodes:
+                self.node_registry.definitions.pop(kind, None)
+                self.node_registry.owners.pop(kind, None)
+            for kind in set(self.node_registry.workflow_types) - existing_workflow_types:
+                self.node_registry.workflow_types.pop(kind, None)
+                self.node_registry.workflow_type_owners.pop(kind, None)
             raise
         if self.menu is not None:
             self._rebuild_main_menu()
@@ -458,11 +680,16 @@ class PluginHost:
         pages = sorted(self._tab_pages.items(), key=lambda entry: (
             entry[1][1].order, entry[0],
         ))
+        pages = [entry for entry in pages if self.is_enabled(entry[1][0])]
+        if not pages and placeholder is not None:
+            tab_widget.setTabText(tab_widget.indexOf(placeholder), "插件面板")
+            tab_widget.setTabVisible(tab_widget.indexOf(placeholder), False)
         for index, (full_id, (_plugin_id, page)) in enumerate(pages):
             if full_id in self._tab_controllers:
                 continue
             if index == 0 and placeholder is not None:
                 container = placeholder
+                tab_widget.setTabVisible(tab_widget.indexOf(container), True)
                 layout = container.layout()
                 if layout is None:
                     layout = QtWidgets.QVBoxLayout(container)
@@ -495,7 +722,7 @@ class PluginHost:
         self._rebuild_tools_menu()
         return self.tools_menu
 
-    def attach_main_widget_area(self, container, layout=None):
+    def attach_main_widget_area(self, container, layout=None, compatibility_ids=()):
         """Mount plugin widgets while keeping placement under host control."""
         if not isinstance(container, QtWidgets.QWidget):
             raise TypeError("插件主界面区域必须是 QWidget。")
@@ -527,6 +754,9 @@ class PluginHost:
         for full_id, (plugin_id, descriptor) in entries:
             if full_id in self._main_widget_controllers:
                 continue
+            enabled = self.is_enabled(plugin_id)
+            if not enabled and full_id not in compatibility_ids:
+                continue
             try:
                 controller = descriptor.factory(container)
                 widget = getattr(controller, "widget", controller)
@@ -548,12 +778,15 @@ class PluginHost:
                 target_layout.addWidget(frame)
                 self._main_widget_controllers[full_id] = controller
                 self._main_widget_frames[full_id] = frame
+                if not enabled:
+                    # Legacy host aliases still need these controls for config
+                    # serialization; they stay inert and occupy no visible space.
+                    frame.setEnabled(False)
+                    frame.hide()
             except Exception as error:
                 self._report_error(plugin_id, descriptor.widget_id, error)
-        self._main_widget_order = [
-            full_id for full_id in ordered_ids
-            if full_id in self._main_widget_frames
-        ]
+        # Disabled cards retain their saved position without mounting their UI.
+        self._main_widget_order = list(ordered_ids)
         return list(self._main_widget_controllers.items())
 
     def main_widget_controller(self, plugin_id, widget_id):
@@ -592,7 +825,7 @@ class PluginHost:
         entries = [
             (full_id, plugin_id, command)
             for full_id, (plugin_id, command) in self._commands.items()
-            if location in command.locations
+            if location in command.locations and self.is_enabled(plugin_id)
         ]
         return sorted(entries, key=lambda item: (item[2].order, item[2].title, item[0]))
 
@@ -601,6 +834,11 @@ class PluginHost:
             return
         self.menu.clear()
         self._main_actions.clear()
+        manager = self.menu.addAction("插件管理…")
+        manager.setObjectName("plugin_manager_action")
+        manager.setToolTip("选择插件启用状态；保存后重启生效，保留原有配置和数据")
+        manager.triggered.connect(lambda _checked=False: self.open_manager())
+        self.menu.addSeparator()
         submenus = {}
         for full_id, plugin_id, command in self._sorted_commands(MAIN_MENU):
             submenu_title = str(command.submenu or "").strip()
@@ -662,6 +900,9 @@ class PluginHost:
         actions = []
         context_rows = tuple(rows or ())
         submenus = {}
+        plugin_names = {
+            entry["plugin_id"]: entry["name"] for entry in self.plugin_entries()
+        }
         for full_id, plugin_id, command in self._sorted_commands(TASK_CONTEXT_MENU):
             if command.visible is not None:
                 try:
@@ -670,16 +911,22 @@ class PluginHost:
                 except Exception as error:
                     self._report_error(plugin_id, command.title, error)
                     continue
-            submenu_title = str(command.submenu or "").strip()
-            target_menu = menu
-            if submenu_title:
-                target_menu = submenus.get(submenu_title)
-                if target_menu is None:
-                    target_menu = menu.addMenu(submenu_title)
-                    target_menu.setObjectName(
-                        "plugin_submenu_" + "_".join(submenu_title.split())
-                    )
-                    submenus[submenu_title] = target_menu
+            # The host groups legacy commands too; plugins need no API changes.
+            # Never merge equally named submenus belonging to different plugins.
+            submenu_title = (
+                str(command.submenu or "").strip()
+                or str(plugin_names.get(plugin_id) or "").strip()
+                or plugin_id
+            )
+            submenu_key = (plugin_id, submenu_title)
+            target_menu = submenus.get(submenu_key)
+            if target_menu is None:
+                target_menu = menu.addMenu(submenu_title)
+                target_menu.setObjectName(
+                    "plugin_submenu_" + plugin_id + "_" + "_".join(submenu_title.split())
+                )
+                target_menu.setProperty("plugin_id", plugin_id)
+                submenus[submenu_key] = target_menu
             action = target_menu.addAction(command.title)
             action.setObjectName(full_id.replace(".", "_"))
             action.setToolTip(command.tooltip)
@@ -703,6 +950,9 @@ class PluginHost:
         if entry is None:
             return None
         plugin_id, command = entry
+        if not self.is_enabled(plugin_id):
+            self.main_window.appendLog(f"[插件/{plugin_id}] 已禁用，未执行 {command.title}。", end="")
+            return None
         try:
             if command.checkable:
                 return command.callback(tuple(rows or ()), bool(checked))
@@ -747,11 +997,17 @@ class PluginHost:
             key=lambda item: (item[1][1].order, item[1][1].title, item[0]),
         )
         for full_id, (plugin_id, page) in entries:
+            if not self.is_enabled(plugin_id):
+                continue
             try:
                 controller = page.factory(dialog)
                 widget = getattr(controller, "widget", controller)
                 if not isinstance(widget, QtWidgets.QWidget):
                     raise TypeError("设置页工厂必须返回 QWidget 或含 widget 的控制器。")
+                widget.setProperty("settings_plugin_id", plugin_id)
+                widget.setProperty("settings_page_id", full_id)
+                plugin = self.plugin(plugin_id)
+                widget.setProperty("settings_plugin_name", getattr(plugin, "display_name", plugin_id))
                 tab_widget.addTab(widget, page.title)
                 controllers.append((plugin_id, full_id, controller))
             except Exception as error:
@@ -800,16 +1056,23 @@ class PluginHost:
 
     def start_all(self):
         for plugin_id, plugin in self._plugins.items():
+            if not self.is_enabled(plugin_id) or plugin_id in self._started:
+                continue
             try:
                 starter = getattr(plugin, "start", None)
                 if starter is not None:
                     starter()
+                self._started.add(plugin_id)
+                self._start_errors.pop(plugin_id, None)
             except Exception as error:
+                self._start_errors[plugin_id] = str(error)
                 self._report_error(plugin_id, "启动", error)
 
     def apply_settings(self, config):
         results = []
         for plugin_id, plugin in self._plugins.items():
+            if not self.is_enabled(plugin_id):
+                continue
             try:
                 callback = getattr(plugin, "apply_settings", None)
                 result = True if callback is None else bool(callback(config))
@@ -822,6 +1085,10 @@ class PluginHost:
     def update_runtime_config(self, config):
         config[PLUGIN_MAIN_WIDGET_ORDER_CONFIG_KEY] = self.main_widget_order()
         for plugin_id, plugin in self._plugins.items():
+            # A plugin that never started must not replace private settings and
+            # histories with its constructor defaults when any other setting saves.
+            if not self.is_enabled(plugin_id):
+                continue
             try:
                 callback = getattr(plugin, "update_config", None)
                 if callback is not None:
@@ -832,7 +1099,11 @@ class PluginHost:
         return config
 
     def can_close_all(self):
+        if self._background_tasks is not None and self._background_tasks.is_busy():
+            return False, "主程序仍有后台任务，请在后台任务分页中查看或安全取消。"
         for plugin_id, plugin in self._plugins.items():
+            if not self.is_enabled(plugin_id):
+                continue
             checker = getattr(plugin, "can_close", None)
             if checker is None:
                 continue
@@ -847,12 +1118,24 @@ class PluginHost:
 
     def stop_all(self):
         for plugin_id, plugin in reversed(self._plugins.items()):
+            if not self.is_enabled(plugin_id):
+                continue
             try:
                 stopper = getattr(plugin, "stop", None)
                 if stopper is not None:
-                    stopper()
+                    if stopper() is False:
+                        self.main_window.appendLog(
+                            f"[插件/{plugin_id}] 尚未安全停止，保留插件及运行线程，暂缓退出。",
+                            end="", level=logging.WARNING,
+                        )
+                        return False
+                self._started.discard(plugin_id)
             except Exception as error:
                 self._report_error(plugin_id, "停止", error)
+                return False
+        if self._background_tasks is not None:
+            return self._background_tasks.shutdown()
+        return True
 
     def _report_error(self, plugin_id, operation, error):
         self.main_window.appendLog(

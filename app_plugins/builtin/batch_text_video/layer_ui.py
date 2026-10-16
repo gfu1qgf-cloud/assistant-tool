@@ -1,13 +1,15 @@
 """Shared batch layers, with queued image import and explicit stacking controls."""
+from model.QtThreadLifecycle import connect_thread_finished, thread_is_active
 import copy
 from pathlib import Path
 import threading
 import traceback
 
 from qt_compat import QtCore, QtGui, QtWidgets
-from .layers import IMAGE_SUFFIXES, MAX_IMAGES, MAX_TEXT_BOXES, TEXT_KINDS, import_images, normalize_layers, componentize_layers
+from .layers import MAX_IMAGES, MAX_TEXT_BOXES, TEXT_KINDS, normalize_layers, componentize_layers
 from .components import MAX_SEQUENCE_ITEMS, new_text_component
-from .component_ui import Combo, ContentSourceEditor, TextBoxProperties
+from .component_ui import Combo
+from .layer_drag import LayerList, VisualDropArea, accept_copy, visual_file_paths
 
 
 class ImageImportWorker(QtCore.QThread):
@@ -20,7 +22,8 @@ class ImageImportWorker(QtCore.QThread):
 
     def run(self):
         try:
-            self.ready.emit(import_images(self.paths, self.directory, self.cancel))
+            from .visual_media import import_visuals
+            self.ready.emit(import_visuals(self.paths, self.directory, self.cancel))
         except Exception:
             self.ready.emit({"layers": [], "errors": [traceback.format_exc()], "cancelled": False})
 
@@ -31,13 +34,28 @@ class Spin(QtWidgets.QDoubleSpinBox):
 
 
 class LayerPanel(QtWidgets.QWidget):
+    convertRequested = QtCore.pyqtSignal(str)
     changed = QtCore.pyqtSignal()
     busyChanged = QtCore.pyqtSignal(bool)
     message = QtCore.pyqtSignal(str)
     selectionChanged = QtCore.pyqtSignal(str)
     copyRequested = QtCore.pyqtSignal(str)
+    imagePoolRequested = QtCore.pyqtSignal(str)
 
-    def __init__(self, layers, directory, parent=None, settings=None):
+    def _component_menu(self, position):
+        item = self.list.itemAt(position)
+        if item is None or not self.isEnabled(): return
+        self.list.setCurrentItem(item)
+        layer = self.current()
+        if not layer: return
+        menu = QtWidgets.QMenu(self.list)
+        text = '编辑节点工作流…' if layer['kind'] == 'node_effect' else '转换为节点效果…'
+        action = menu.addAction(text)
+        action.setEnabled(self.receivers(self.convertRequested) > 0)
+        action.triggered.connect(lambda: self.convertRequested.emit(layer['id']))
+        menu.exec(self.list.viewport().mapToGlobal(position))
+
+    def __init__(self, layers, directory, parent=None, settings=None, services=None, inspector_mode="batch"):
         super().__init__(parent)
         self.directory = directory
         self.settings = copy.deepcopy(settings or {})
@@ -47,7 +65,9 @@ class LayerPanel(QtWidgets.QWidget):
         self.setAcceptDrops(True)
         self.setMinimumWidth(0)
         self.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored,QtWidgets.QSizePolicy.Policy.Preferred)
-        layout = QtWidgets.QVBoxLayout(self)
+        self.catalog = VisualDropArea(self._can_import_visuals, self.add_images)
+        layout = QtWidgets.QVBoxLayout(self.catalog)
+        layout.setContentsMargins(0,0,0,0)
         note = QtWidgets.QLabel("上方图层盖住下方。\n固定内容整批共用；轮换内容从资源池逐视频取用。")
         note.setWordWrap(True)
         note.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored,QtWidgets.QSizePolicy.Policy.Preferred)
@@ -56,9 +76,11 @@ class LayerPanel(QtWidgets.QWidget):
         self.add_button = QtWidgets.QPushButton("添加图片…")
         menu = QtWidgets.QMenu(self.add_button)
         menu.addAction("添加文本框",self.add_text)
-        menu.addAction("添加轮换文本框（文案池）",self.add_rotating_text)
-        menu.addAction("添加图片框…",self.choose_images)
-        menu.addAction("添加自定义轮换图片…",lambda:self.choose_images(True))
+        menu.addAction("添加滚动文字框", self.add_scrolling_text)
+        menu.addAction("添加动态字幕…",self.add_caption)
+        menu.addAction("四角水印…",self.edit_corner_watermarks)
+        menu.addAction("添加图片／视频／GIF…",self.choose_images)
+        menu.addAction("添加节点效果…", self.add_node_effect)
         self.add_button.setText("添加组件…")
         self.add_button.setMenu(menu)
         self.remove_button = QtWidgets.QPushButton("移除")
@@ -75,15 +97,15 @@ class LayerPanel(QtWidgets.QWidget):
         self.up_button.clicked.connect(lambda: self.move_layer(-1))
         self.down_button.clicked.connect(lambda: self.move_layer(1))
         layout.addLayout(tools)
-        self.list = QtWidgets.QListWidget()
+        self.list = LayerList(self._can_import_visuals, self.add_images)
         self.list.setObjectName("batch_video_layers")
+        self.list.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
+        self.list.customContextMenuRequested.connect(self._component_menu)
         self.list.setMinimumHeight(125)
         self.list.setMaximumHeight(200)
         self.list.setIconSize(QtCore.QSize(28, 28))
         self.list.setTextElideMode(QtCore.Qt.TextElideMode.ElideRight)
         self.list.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.list.setDragDropMode(QtWidgets.QAbstractItemView.DragDropMode.InternalMove)
-        self.list.setDefaultDropAction(QtCore.Qt.DropAction.MoveAction)
         self.list.currentRowChanged.connect(self.select_layer)
         self.list.itemChanged.connect(self._item_changed)
         self.list.model().rowsMoved.connect(self._reordered)
@@ -96,52 +118,37 @@ class LayerPanel(QtWidgets.QWidget):
         text_top.setToolTip("把所有文本框、标题和正文移到图片上方，避免图片遮住文案。")
         text_top.clicked.connect(self.text_to_top)
         layout.addWidget(text_top)
-        common = QtWidgets.QFormLayout()
-        common.setFieldGrowthPolicy(QtWidgets.QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
-        common.setRowWrapPolicy(QtWidgets.QFormLayout.RowWrapPolicy.WrapLongRows)
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(0,0,0,0)
+        layout.addWidget(self.catalog)
+        self.header = QtWidgets.QWidget()
+        common = QtWidgets.QFormLayout(self.header)
+        common.setContentsMargins(0,0,0,0)
+        common.setFieldGrowthPolicy(common.FieldGrowthPolicy.AllNonFixedFieldsGrow)
+        common.setRowWrapPolicy(common.RowWrapPolicy.WrapLongRows)
         self.name = QtWidgets.QLineEdit()
-        self.name.setPlaceholderText("图层名称")
+        self.name.setPlaceholderText('控件名称')
         self.name.editingFinished.connect(self._name_changed)
-        common.addRow("图层名", self.name)
-        self.opacity = self._spin(0, 100)
+        common.addRow('控件名称', self.name)
+        self.opacity = self._spin(0,100)
         self.opacity.valueChanged.connect(self._property_changed)
-        common.addRow("不透明度", self.opacity)
-        layout.addLayout(common)
-        self.geometry = QtWidgets.QWidget()
-        form = QtWidgets.QFormLayout(self.geometry)
-        form.setContentsMargins(0,0,0,0)
-        form.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop)
-        form.setFieldGrowthPolicy(QtWidgets.QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
-        form.setRowWrapPolicy(QtWidgets.QFormLayout.RowWrapPolicy.WrapLongRows)
-        self.units = Combo()
-        self.units.addItem("百分比 %","percent")
-        self.units.addItem("像素 px","pixels")
-        self.units.setCurrentIndex(max(0,self.units.findData(self.settings.get("geometry_units","percent"))))
-        self.units.setToolTip("像素按当前导出画布计算。原点在左上角，位置表示框中心；切换单位不改变布局。更换画布尺寸时仍按原比例适配。")
+        common.addRow('不透明度', self.opacity)
+        layout.addWidget(self.header)
+        self.units = Combo(self)
+        self.units.addItem('百分比 %','percent'); self.units.addItem('像素 px','pixels')
+        self.units.setCurrentIndex(max(0,self.units.findData(self.settings.get('geometry_units','percent'))))
+        self.units.hide()
         self.units.currentIndexChanged.connect(self._units_changed)
-        form.addRow("位置单位",self.units)
-        self.canvas_label = QtWidgets.QLabel()
-        self.canvas_label.setWordWrap(True)
-        self.canvas_label.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored,QtWidgets.QSizePolicy.Policy.Preferred)
-        form.addRow(self.canvas_label)
-        self.properties = {}
-        for key, title, low in (("x", "横向中心", 0), ("y", "纵向中心", 0),
-                                ("width", "框宽度", 1), ("height", "框高度", 1)):
-            spin = self._spin(low, 100)
-            spin.valueChanged.connect(lambda _value,key=key:self._geometry_changed(key))
-            self.properties[key] = spin
-            form.addRow(title,spin)
-        self.content_editor = ContentSourceEditor()
-        self.content_editor.changed.connect(self._content_changed)
-        self.content_editor.addImages.connect(self.append_sequence_images)
-        self.content_editor.selectCopy.connect(self.copyRequested)
-        self.text_properties = TextBoxProperties()
-        self.text_properties.changed.connect(self._text_properties_changed)
-        self.property_tabs = QtWidgets.QTabWidget()
-        self.property_tabs.addTab(self.text_properties,"排版")
-        self.property_tabs.addTab(self.geometry,"位置")
-        self.property_tabs.addTab(self.content_editor,"内容")
-        layout.addWidget(self.property_tabs)
+        self._pool_state = {'resource_pools':[]}
+        from .component_inspector import ComponentInspector
+        self.inspector = ComponentInspector(services, mode=inspector_mode)
+        self.inspector.edited.connect(self._inspector_edited)
+        self.inspector.unitChanged.connect(lambda unit: self.units.setCurrentIndex(self.units.findData(unit)))
+        self.inspector.addImages.connect(self.append_sequence_images)
+        self.inspector.selectCopy.connect(self.copyRequested)
+        self.inspector.selectImagePool.connect(self.imagePoolRequested)
+        self.inspector.message.connect(self.message)
+        layout.addWidget(self.inspector)
         self.hint = QtWidgets.QLabel("直接在预览中拖动框内移动，拖边或角缩放；Esc取消本次拖动。位置单位可切换，对齐在框内生效。图片保持原比例。")
         self.hint.setWordWrap(True)
         self.hint.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored,QtWidgets.QSizePolicy.Policy.Preferred)
@@ -156,6 +163,7 @@ class LayerPanel(QtWidgets.QWidget):
         spin.setSuffix(" %")
         return spin
 
+
     def values(self):
         return copy.deepcopy(self._layers)
 
@@ -164,37 +172,25 @@ class LayerPanel(QtWidgets.QWidget):
         if size != self.canvas_size:
             self.canvas_size = size
             self._refresh_geometry()
+            editor = self.inspector.active
+            if editor and hasattr(editor,'watermark_properties'):
+                editor.watermark_properties.set_canvas_size(size.width(),size.height())
 
     def _refresh_geometry(self):
-        loading,self._loading = self._loading,True
-        layer = self.current()
-        pixels = self.units.currentData() == "pixels"
-        self.canvas_label.setText(f"画布：{self.canvas_size.width()} × {self.canvas_size.height()} px；100% = 整个画布。")
-        for key,spin in self.properties.items():
-            extent = self.canvas_size.width() if key in {"x","width"} else self.canvas_size.height()
-            factor = extent/100 if pixels else 1
-            spin.setDecimals(2 if pixels else 3)
-            spin.setRange((1 if key in {"width","height"} else 0)*factor,100*factor)
-            spin.setSingleStep(1 if pixels else .1)
-            spin.setSuffix(" px" if pixels else " %")
-            if layer:
-                spin.setValue(layer[key]*factor)
-                spin.setToolTip(f"实际值：{layer[key]*extent/100:.2f} px；{layer[key]:.3f}%")
-        self._loading = loading
+        if self.inspector.active:
+            self.inspector.active.sync_geometry(self.current(),self.canvas_size,self.units.currentData())
 
     def _units_changed(self):
         if not self._loading:
             self._refresh_geometry()
             self.changed.emit()
 
-    def _geometry_changed(self,key):
-        layer = self.current()
-        if self._loading or not layer:
-            return
-        extent = self.canvas_size.width() if key in {"x","width"} else self.canvas_size.height()
-        value = self.properties[key].value()
-        layer[key] = value*100/extent if self.units.currentData() == "pixels" else value
-        self.changed.emit()
+
+
+    def snap_to_edges(self,horizontal=None,vertical=None):
+        editor = self.inspector.active
+        if editor and editor.geometry_editor:
+            editor.geometry_editor.snap_to_edges(horizontal,vertical)
 
     def select_layer_id(self,identifier):
         for row in range(self.list.count()):
@@ -204,7 +200,7 @@ class LayerPanel(QtWidgets.QWidget):
 
     def set_geometry(self,identifier,values):
         layer = next((item for item in self._layers if item["id"] == identifier),None)
-        if not layer:
+        if not layer or layer["kind"] == "watermark":
             return False
         candidate = {**layer,**{key:values[key] for key in ("x","y","width","height")}}
         normalized = normalize_layers([candidate])[0]
@@ -230,6 +226,46 @@ class LayerPanel(QtWidgets.QWidget):
         self.rebuild(layer["id"])
         self.changed.emit()
 
+    def add_caption(self):
+        from .captions import new_caption, MAX_CAPTIONS
+        if sum(layer["kind"] == "caption" for layer in self._layers) >= MAX_CAPTIONS:
+            self.message.emit(f"最多允许{MAX_CAPTIONS}个动态字幕组件。")
+            return
+        layer = new_caption()
+        self._layers.append(layer)
+        self.rebuild(layer["id"])
+        self.reveal_property('caption')
+        self.changed.emit()
+
+    def add_scrolling_text(self):
+        if sum(layer["kind"] == "text" for layer in self._layers) >= MAX_TEXT_BOXES:
+            self.message.emit(f"最多允许{MAX_TEXT_BOXES}个文本框。")
+            return
+        from .scrolling_text import new_scrolling_component
+        layer = new_scrolling_component()
+        self._layers.append(layer)
+        self.rebuild(layer["id"])
+        self.reveal_property('scroll')
+        self.changed.emit()
+
+
+
+    def edit_corner_watermarks(self):
+        from .watermarks import new_watermark, OBJECT_ID
+        existing = next((layer for layer in self._layers if layer["kind"] == "watermark"), None)
+        if existing:
+            self.select_layer_id(existing["id"])
+            self.editor.watermark_properties.tabs.setCurrentIndex(0)
+            return
+        if any(layer["id"] == OBJECT_ID for layer in self._layers):
+            self.message.emit("水印编号被其他图层占用，请先移除冲突图层。")
+            return
+        layer = new_watermark()
+        self._layers.append(layer)
+        self.rebuild(layer["id"])
+        self.changed.emit()
+
+
     def add_rotating_text(self):
         if sum(layer["kind"] == "text" for layer in self._layers) >= MAX_TEXT_BOXES:
             self.message.emit(f"最多允许{MAX_TEXT_BOXES}个文本框。")
@@ -239,11 +275,11 @@ class LayerPanel(QtWidgets.QWidget):
         self._layers.append(layer)
         self.rebuild(layer["id"])
         self.changed.emit()
-        self.property_tabs.setCurrentIndex(2)
+        self.reveal_property('source')
 
     def set_fixed_text(self, identifier, value):
         layer = next((item for item in self._layers if item["id"] == identifier), None)
-        if layer and layer["kind"] != "image":
+        if layer and layer["kind"] in TEXT_KINDS:
             layer.update(source="fixed", text=value)
             self.rebuild(identifier)
             self.changed.emit()
@@ -252,6 +288,14 @@ class LayerPanel(QtWidgets.QWidget):
         item = self.list.currentItem()
         identifier = item.data(QtCore.Qt.ItemDataRole.UserRole) if item else None
         return next((layer for layer in self._layers if layer["id"] == identifier), None)
+
+    def add_node_effect(self):
+        from .node_effects import new_effect
+        if sum(layer['kind'] == 'node_effect' for layer in self._layers) >= 8:
+            self.message.emit('每个配置最多允许8个节点效果组件。'); return
+        layer = new_effect(); self._layers.append(layer)
+        self.rebuild(layer['id']); self.reveal_property('node'); self.changed.emit()
+
 
     def rebuild(self, selected=None):
         layer = self.current()
@@ -271,8 +315,14 @@ class LayerPanel(QtWidgets.QWidget):
                 item.setToolTip(source.get("path","") + "\n图片副本；拖动可调整覆盖顺序。")
                 if source.get("thumbnail"):
                     item.setIcon(QtGui.QIcon(source["thumbnail"]))
+            elif layer["kind"] == "watermark":
+                item.setToolTip("独立四角水印组件；内容、样式和位置在“水印设置”中统一管理。")
+            elif layer["kind"] == "caption":
+                item.setToolTip("跟随当前任务人声，字号可随机；在右侧“字幕样式、时间与动画”中选择预设和对齐来源。播放预览可核对。")
+            elif layer['kind'] == 'node_effect':
+                item.setToolTip('节点效果：在此图层位置执行选定工作流，播放预览与导出共用，不重复编码。')
             else:
-                item.setToolTip("选中后在“排版、位置、内容”中设置；标题和正文默认读取任务文案。")
+                item.setToolTip("选中后在右侧属性区设置字体、位置与来源；标题和正文默认读取任务文案。")
             self.list.addItem(item)
             if layer["id"] == selected:
                 self.list.setCurrentRow(row)
@@ -281,67 +331,125 @@ class LayerPanel(QtWidgets.QWidget):
         self._loading = False
         self.select_layer(self.list.currentRow())
 
-    def select_layer(self, _row):
-        if self._loading:
-            return
+    def select_layer(self,_row):
+        if self._loading: return
         layer = self.current()
         self._loading = True
-        geometry = bool(layer)
-        text = bool(layer and layer["kind"] in TEXT_KINDS)
-        self.property_tabs.setEnabled(geometry)
-        self.property_tabs.setTabEnabled(0,text)
-        if not text and self.property_tabs.currentIndex() == 0:
-            self.property_tabs.setCurrentIndex(1)
-        elif text and (not self.text_properties.layer or self.text_properties.layer["kind"] == "image"):
-            self.property_tabs.setCurrentIndex(0)
-        self.remove_button.setEnabled(bool(layer and layer["kind"] in {"image","text"}))
-        self.name.setEnabled(bool(layer))
-        self.opacity.setEnabled(bool(layer))
-        if layer:
-            self.name.setText(layer["name"])
-            self.opacity.setValue(layer["opacity"])
-            if geometry:
-                self._refresh_geometry()
-        self.content_editor.set_layer(layer)
-        self.text_properties.set_layer(layer)
-        row = self.list.currentRow()
-        self.up_button.setEnabled(row > 0)
-        self.down_button.setEnabled(0 <= row < self.list.count()-1)
-        self._loading = False
-        self.selectionChanged.emit(layer["id"] if layer else "")
+        try:
+            self.header.setEnabled(bool(layer))
+            self.name.setText(layer['name'] if layer else '')
+            self.opacity.setValue(layer['opacity'] if layer else 100)
+            self.inspector.show_layer(layer,self.canvas_size,self._pool_state,self.units.currentData())
+            self.remove_button.setEnabled(bool(layer and layer['kind'] in {'image','text','watermark','caption','node_effect'}))
+            row = self.list.currentRow()
+            self.up_button.setEnabled(row > 0)
+            self.down_button.setEnabled(0 <= row < self.list.count()-1)
+        finally:
+            self._loading = False
+        self.selectionChanged.emit(layer['id'] if layer else '')
 
     def _property_changed(self):
         layer = self.current()
-        if self._loading or not layer:
-            return
-        layer["opacity"] = self.opacity.value()
-        self.changed.emit()
+        if not self._loading and layer:
+            self._inspector_edited(layer['id'],{'opacity':self.opacity.value()})
 
-    def _content_changed(self,updated):
-        layer = next((item for item in self._layers if item["id"] == updated["id"]),None)
-        if layer and not self._loading:
-            for key in ("source","text","sequence_items","sequence_cursor","pool_field"):
-                if key in updated:
-                    layer[key] = copy.deepcopy(updated[key])
+    def _inspector_edited(self,identifier,patch):
+        if self._loading: return
+        layer = self.current()
+        # Cached/hidden editors cannot write a stale snapshot into another layer.
+        if not layer or layer['id'] != identifier: return
+        try:
+            candidate = normalize_layers([{**layer,**copy.deepcopy(patch),'id':layer['id'],'kind':layer['kind']}])[0]
+        except ValueError as error:
+            self.message.emit('控件设置未应用：'+str(error))
+            return
+        layer.update(candidate)
+        self._loading = True
+        try:
+            self.inspector.show_layer(layer,self.canvas_size,self._pool_state,self.units.currentData())
             item = self.list.currentItem()
             if item:
-                self._loading = True
-                item.setText(layer["name"]+(" · 轮换" if layer["source"] in {"sequence", "pool"} else ""))
-                self._loading = False
-            self.changed.emit()
+                item.setText(layer['name']+(' · 轮换' if layer['source'] in {'sequence','pool'} else ''))
+                item.setCheckState(QtCore.Qt.CheckState.Checked if layer['enabled'] else QtCore.Qt.CheckState.Unchecked)
+        finally:
+            self._loading = False
+        self.changed.emit()
 
-    def _text_properties_changed(self,values):
-        layer = self.current()
-        if layer and layer["kind"] in TEXT_KINDS and not self._loading:
-            layer.update(values)
-            self.changed.emit()
+    @property
+    def editor(self):
+        return self.inspector.active
+
+    def reveal_property(self,key):
+        self.inspector.reveal(key)
+
+    def hide_catalog(self):
+        self.catalog.hide()
+        self.header.hide()
+
+
+
+    def set_pool_state(self,state):
+        self._pool_state = state
+        editor = self.inspector.active
+        if editor:
+            if hasattr(editor,'content_editor'): editor.content_editor.set_state(state)
+            if hasattr(editor,'watermark_properties'): editor.watermark_properties.set_pool_state(state)
+
+
+
+    @property
+    def text_properties(self):
+        return getattr(self.editor,"text_properties",None) if self.editor else None
+
+    @property
+    def content_editor(self):
+        return getattr(self.editor,"content_editor",None) if self.editor else None
+
+    @property
+    def caption_properties(self):
+        return getattr(self.editor,"caption_properties",None) if self.editor else None
+
+    @property
+    def scroll_properties(self):
+        return getattr(self.editor,"scroll_properties",None) if self.editor else None
+
+    @property
+    def visual_properties(self):
+        return getattr(self.editor,"visual_properties",None) if self.editor else None
+
+    @property
+    def watermark_properties(self):
+        return getattr(self.editor,"watermark_properties",None) if self.editor else None
+
+    @property
+    def node_effect_properties(self):
+        return getattr(self.editor,"node_effect_properties",None) if self.editor else None
+
+    @property
+    def properties(self):
+        return getattr(self.editor.geometry_editor,"properties")
+
+    @property
+    def anchor_controls(self):
+        return getattr(self.editor.geometry_editor,"anchor_controls")
+
+    @property
+    def canvas_label(self):
+        return getattr(self.editor.geometry_editor,"canvas_label")
+
+    @property
+    def snap_button(self):
+        return getattr(self.editor.geometry_editor,"snap_button")
+
+    @property
+    def geometry_labels(self):
+        return getattr(self.editor.geometry_editor,"geometry_labels")
 
     def _name_changed(self):
         layer = self.current()
-        if not self._loading and layer and self.name.text().strip():
-            layer["name"] = self.name.text().strip()[:120]
-            self.rebuild(layer["id"])
-            self.changed.emit()
+        name = self.name.text().strip()[:120]
+        if not self._loading and layer and name and name != layer['name']:
+            self._inspector_edited(layer['id'], {'name': name})
 
     def _item_changed(self, item):
         if self._loading:
@@ -362,14 +470,7 @@ class LayerPanel(QtWidgets.QWidget):
 
     def move_layer(self, direction):
         row, target = self.list.currentRow(), self.list.currentRow()+direction
-        if not 0 <= target < self.list.count() or row < 0:
-            return
-        self._loading = True
-        item = self.list.takeItem(row)
-        self.list.insertItem(target, item)
-        self.list.setCurrentRow(target)
-        self._loading = False
-        self._reordered()
+        self.list.move_row(row, target)
 
     def text_to_top(self):
         selected = self.current()
@@ -381,15 +482,15 @@ class LayerPanel(QtWidgets.QWidget):
 
     def remove_image(self):
         layer = self.current()
-        if layer and layer["kind"] in {"image","text"}:
+        if layer and layer["kind"] in {"image","text","watermark","caption","node_effect"}:
             self._layers.remove(layer)
             self.rebuild()
             self.changed.emit()
 
     def choose_images(self,as_sequence=False):
         title = "创建图片序列，可多选" if as_sequence else "添加图片框，每张一个，可多选"
-        paths, _ = QtWidgets.QFileDialog.getOpenFileNames(self, title, "",
-            "图片 (*.png *.jpg *.jpeg *.jfif *.webp *.bmp *.tif *.tiff)")
+        from .visual_media import VISUAL_FILTER
+        paths, _ = QtWidgets.QFileDialog.getOpenFileNames(self, "添加图片／视频／GIF", "", VISUAL_FILTER)
         if paths:
             self.add_images(paths,as_sequence=as_sequence)
 
@@ -424,7 +525,7 @@ class LayerPanel(QtWidgets.QWidget):
         self._import_as_sequence,self._import_target = as_sequence,target_id
         self.worker = ImageImportWorker(paths, self.directory, self)
         self.worker.ready.connect(self._ready, QtCore.Qt.ConnectionType.QueuedConnection)
-        self.worker.finished.connect(self._finished)
+        connect_thread_finished(self.worker, self, 'worker', self._finished)
         self.busyChanged.emit(True)
         self.worker.start()
         return True
@@ -473,12 +574,20 @@ class LayerPanel(QtWidgets.QWidget):
         if self.worker:
             self.worker.cancel.set()
 
+    def _can_import_visuals(self):
+        return self.isEnabled() and self.catalog.isEnabled() and self.worker is None
+
     def dragEnterEvent(self, event):
-        if not self.worker and event.mimeData().hasUrls() and all(url.isLocalFile() and Path(url.toLocalFile()).suffix.casefold() in IMAGE_SUFFIXES for url in event.mimeData().urls()):
-            event.acceptProposedAction()
+        if self._can_import_visuals() and visual_file_paths(event.mimeData()):
+            accept_copy(event)
+        else:
+            event.ignore()
+
+    dragMoveEvent = dragEnterEvent
 
     def dropEvent(self, event):
-        paths = [url.toLocalFile() for url in event.mimeData().urls() if url.isLocalFile()]
-        if paths and not self.worker:
-            self.add_images(paths)
-            event.acceptProposedAction()
+        paths = visual_file_paths(event.mimeData())
+        if paths and self._can_import_visuals() and self.add_images(paths):
+            accept_copy(event)
+        else:
+            event.ignore()

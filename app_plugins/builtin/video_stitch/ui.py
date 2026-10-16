@@ -1,9 +1,12 @@
 """A non-modal two-file plugin UI; decoding/probing/export only run in a worker."""
+from model.QtThreadLifecycle import connect_thread_finished, thread_is_active
 import logging
 from fractions import Fraction
 from pathlib import Path
 import threading
 import traceback
+from model.BackgroundTasks import BackgroundTaskHandle, directory_resource
+from .background import run_stitch_job
 
 from qt_compat import QtCore, QtGui, QtWidgets
 from .engine import Canceled, export_pair, make_plan, probe, resolve_tools, thumbnail
@@ -274,14 +277,23 @@ class VideoStitchDialog(QtWidgets.QDialog):
         self._start(p, True)
 
     def _start(self, payload, render):
-        worker = StitchWorker(payload, render, self)
+        if render and callable(getattr(self.context, "submit_background_task", None)):
+            worker = self.context.submit_background_task(title="视频左右拼接 · " + Path(payload["output"]).name,
+                runner=run_stitch_job, payload=payload, kind="media", resources=[directory_resource(Path(payload["output"]).parent)])
+            worker.payload, worker.render = dict(payload), True
+            worker.progressChanged.connect(lambda message, value: self._host_progress(message, value))
+            worker.completed.connect(lambda result, current=worker: self._host_completed(current, result))
+            worker.failed.connect(lambda message: self._failed(message, message))
+            worker.finished.connect(self._finished)
+        else:
+            worker = StitchWorker(payload, render, self)
+            worker.metadata.connect(self._metadata)
+            worker.progress.connect(self.progress.setValue)
+            worker.completed.connect(self._completed)
+            worker.failed.connect(self._failed)
+            worker.canceled.connect(self._canceled)
+            connect_thread_finished(worker, self, '_worker', self._finished)
         self._worker = worker
-        worker.metadata.connect(self._metadata)
-        worker.progress.connect(self.progress.setValue)
-        worker.completed.connect(self._completed)
-        worker.failed.connect(self._failed)
-        worker.canceled.connect(self._canceled)
-        worker.finished.connect(self._finished)
         self.export.setEnabled(False)
         self.cancel_button.setEnabled(True)
         if render:
@@ -289,11 +301,21 @@ class VideoStitchDialog(QtWidgets.QDialog):
             for widget in self.paths + self.browse_buttons + [self.swap, self.basis, self.audio,
                                                              self.compatible, self.output, self.output_button]:
                 widget.setEnabled(False)
-            self.status.setText("正在后台拼接…")
+            self.status.setText("拼接已提交后台，可以关闭此窗口。")
             self.context.log("视频拼接开始；成品：" + payload["output"])
         else:
             self.status.setText("正在后台读取首帧和视频信息…")
-        worker.start()
+        if not isinstance(worker, BackgroundTaskHandle):
+            worker.start()
+
+    def _host_progress(self, message, value):
+        self.status.setText(message)
+        if value is not None:
+            self.progress.setValue(value)
+
+    def _host_completed(self, handle, result):
+        self._completed(result)
+        handle.set_result_handler(self._open_folder)
 
     def _metadata(self, data):
         if self._worker is None:
@@ -323,7 +345,7 @@ class VideoStitchDialog(QtWidgets.QDialog):
     def _failed(self, message, detail):
         self.status.setText(message)
         self.context.log(detail)
-        if self._worker is not None and self._worker.render:
+        if self._worker is not None and self._worker.render and not isinstance(self._worker, BackgroundTaskHandle):
             QtWidgets.QMessageBox.warning(self, "视频拼接失败", message)
 
     def _canceled(self):
@@ -332,7 +354,7 @@ class VideoStitchDialog(QtWidgets.QDialog):
     def _finished(self):
         worker = self._worker
         self._worker = None
-        if worker is not None:
+        if worker is not None and not isinstance(worker, BackgroundTaskHandle):
             worker.deleteLater()
         for widget in self.paths + self.browse_buttons + [self.swap, self.basis, self.audio, self.compatible,
                                                          self.output, self.output_button, self.export]:
@@ -351,7 +373,10 @@ class VideoStitchDialog(QtWidgets.QDialog):
         self.timer.stop()
         self._pending_inspect = False
         if self._worker is not None:
-            self._worker.cancel.set()
+            if isinstance(self._worker, BackgroundTaskHandle):
+                self._worker.requestInterruption()
+            else:
+                self._worker.cancel.set()
             self.status.setText("正在取消…")
 
     def _open_folder(self):
@@ -363,6 +388,10 @@ class VideoStitchDialog(QtWidgets.QDialog):
 
     def closeEvent(self, event):
         self.timer.stop()
+        if isinstance(self._worker, BackgroundTaskHandle):
+            self.hide()
+            event.ignore()
+            return
         if self.is_busy():
             self._close_after = True
             self.cancel_work()

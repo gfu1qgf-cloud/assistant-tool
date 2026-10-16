@@ -1,3 +1,7 @@
+from model.AppDataStorage import data_io, data_file, data_directory
+from app_paths import APP_ROOT, DATA_ROOT
+
+CONFIG_PATH = 'config.json' if DATA_ROOT == APP_ROOT else str(DATA_ROOT / 'config.json')
 import copy
 import json
 import os
@@ -6,6 +10,7 @@ from datetime import datetime
 from pathlib import Path
 from qt_compat import QtCore, QtGui, QtWidgets
 from PYUI.gemini_keys_pyui import GeminiKeysEditor
+from PYUI.settings_navigation import SettingsNavigation
 from qt_compat import QMessageBox
 
 from QTUI.main_setting_ui import Ui_MainSettingDialog
@@ -26,6 +31,8 @@ from model.AppTheme import (
     normalize_ui_theme,
 )
 from model.ConfigHotReload import merge_runtime_changes
+from model.BackgroundTaskSettings import CONFIG_KEY as BACKGROUND_TASKS_CONFIG_KEY
+from model.OfflineMode import OFFLINE_CONFIG_KEY, is_offline, offline_setting
 from model.ApiKeyHelper import (
     API_KEY_STATUSES_CONFIG_KEY,
     api_key_id,
@@ -70,7 +77,17 @@ from model.TaskTableSchema import (
 )
 
 
+from model.ConfigTransactions import config_file_lock, merge_latest_api_statuses
+
+
 def _write_config_with_rolling_backups(config_path, config, retain=10):
+    with config_file_lock(config_path):
+        # Merge only worker-owned usage status, never keys or business fields.
+        config = merge_latest_api_statuses(config_path, dict(config))
+        return _write_config_with_rolling_backups_locked(config_path, config, retain)
+
+
+def _write_config_with_rolling_backups_locked(config_path, config, retain=10):
     """Atomically save local settings and retain a small recovery history."""
     config_path = Path(config_path)
     if config_path.exists():
@@ -78,25 +95,25 @@ def _write_config_with_rolling_backups(config_path, config, retain=10):
         backup_path = config_path.with_name(
             f"{config_path.name}.bak-settings-{stamp}"
         )
-        shutil.copy2(config_path, backup_path)
+        data_io.copy2(config_path, backup_path)
         backups = sorted(
             config_path.parent.glob(f"{config_path.name}.bak-settings-*"),
             key=lambda path: path.stat().st_mtime_ns,
             reverse=True,
         )
         for obsolete in backups[max(1, int(retain)):]:
-            obsolete.unlink()
+            data_file(obsolete).unlink()
 
     temp_path = config_path.with_name(f"{config_path.name}.settings.tmp")
     try:
-        with temp_path.open("w", encoding="utf-8") as handle:
-            json.dump(config, handle, indent=4, ensure_ascii=False)
+        with data_io.open(temp_path,"w", encoding="utf-8") as handle:
+            handle.write(json.dumps(config, indent=4, ensure_ascii=False))
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temp_path, config_path)
+        data_io.replace(temp_path, config_path)
     except Exception:
         try:
-            temp_path.unlink()
+            data_file(temp_path).unlink()
         except FileNotFoundError:
             pass
         raise
@@ -286,7 +303,10 @@ class MainSettingDialog(QtWidgets.QDialog, Ui_MainSettingDialog):
             self.chrome_hotkey_help_label.hide()
         self._build_additional_hotkey_editors()
         self._build_appearance_tab()
+        self._build_background_tasks_tab()
+        self._build_network_tab()
         self._build_gemini_tab()
+        self._build_elevenlabs_alignment_settings()
         self._build_flow_guard_tab()
         self.audio_settings = {}
         if self._audio_managed_by_plugin:
@@ -303,6 +323,7 @@ class MainSettingDialog(QtWidgets.QDialog, Ui_MainSettingDialog):
                 self,
                 self.settingTabWidget,
             )
+        self._build_settings_navigation()
         self.api_key_statuses = {}
         
         # 连接按钮信号
@@ -315,6 +336,28 @@ class MainSettingDialog(QtWidgets.QDialog, Ui_MainSettingDialog):
         
         # 加载当前配置
         self.load_config()
+
+    def _build_settings_navigation(self):
+        # The generated, empty sorting tab is an obsolete placeholder, not a
+        # settings page. Existing editors and all configuration keys stay put.
+        empty_index = self.settingTabWidget.indexOf(self.tab_2)
+        if empty_index >= 0 and self.tab_2.layout() is None:
+            self.settingTabWidget.removeTab(empty_index)
+        self.settingTabWidget.setTabText(self.settingTabWidget.indexOf(self.tab_4), "ElevenLabs 密钥")
+        self.settingTabWidget.setTabText(self.settingTabWidget.indexOf(self.gemini_keys_editor), "Gemini 密钥")
+        if self.plugin_host is not None and self.plugin_host.plugin("task_delivery") is not None:
+            self.task_result_tab.setProperty("settings_plugin_id", "task_delivery")
+            self.task_result_tab.setProperty("settings_plugin_name", "任务交付")
+            self.task_result_tab.setProperty("settings_page_id", "task_delivery.organize")
+            self.settingTabWidget.setTabText(self.settingTabWidget.indexOf(self.task_result_tab), "任务交付")
+        self.gridLayout.removeWidget(self.settingTabWidget)
+        self.settings_navigation = SettingsNavigation(self.settingTabWidget, self)
+        self.gridLayout.addWidget(self.settings_navigation, 0, 0, 1, 1)
+        self.setWindowTitle("程序与插件设置")
+        screen = self.screen()
+        available = screen.availableGeometry() if screen is not None else QtCore.QRect(0, 0, 1200, 900)
+        self.resize(min(1080, available.width() - 40), min(760, available.height() - 60))
+        self.settingTabWidget.setCurrentWidget(self.appearance_tab)
     
     def load_config(self):
         """加载配置到界面"""
@@ -325,9 +368,9 @@ class MainSettingDialog(QtWidgets.QDialog, Ui_MainSettingDialog):
         ui_theme = DEFAULT_UI_THEME
         config = load_task_result_config()
         try:
-            migrate_legacy_task_result_config("config.json")
-            if os.path.exists("config.json"):
-                with open("config.json", "r", encoding="utf-8") as f:
+            migrate_legacy_task_result_config(CONFIG_PATH)
+            if data_file(CONFIG_PATH).exists():
+                with data_io.open(CONFIG_PATH, "r", encoding="utf-8") as f:
                     config = load_task_result_config(json.load(f))
                     if not self._audio_managed_by_plugin:
                         self.audio_settings = normalize_audio_settings(
@@ -343,6 +386,7 @@ class MainSettingDialog(QtWidgets.QDialog, Ui_MainSettingDialog):
                         self.api_key_statuses = {}
                     for api_key in normalize_api_keys(api_keys):
                         self._append_api_key(api_key)
+                    self._refresh_alignment_keys(str(config.get('elevenlabs_alignment_key_id') or ''))
                     hotkey = config.get(
                         CHROME_NEXT_HOTKEY_CONFIG_KEY,
                         DEFAULT_CHROME_NEXT_HOTKEY,
@@ -389,9 +433,13 @@ class MainSettingDialog(QtWidgets.QDialog, Ui_MainSettingDialog):
         if self.plugin_host is not None:
             self.plugin_host.load_settings_pages(config)
         self.config_hot_reload_checkbox.setChecked(config.get('config_hot_reload', {}).get('enabled', True))
+        self.offline_mode_checkbox.setChecked(offline_setting(config.get(OFFLINE_CONFIG_KEY, False)))
+        self.background_task_settings.set_settings(config.get(BACKGROUND_TASKS_CONFIG_KEY))
         self._config_form_baseline = copy.deepcopy(self.get_config())
+        if self.background_task_settings.invalid:
+            self._config_form_baseline[BACKGROUND_TASKS_CONFIG_KEY]=copy.deepcopy(config.get(BACKGROUND_TASKS_CONFIG_KEY))
         self._config_form_baseline[API_KEY_STATUSES_CONFIG_KEY] = copy.deepcopy(self.api_key_statuses)
-        self._config_disk_baseline = json.loads(Path('config.json').read_text(encoding='utf-8-sig')) if Path('config.json').exists() else {}
+        self._config_disk_baseline = data_file(CONFIG_PATH).read_json(encoding='utf-8-sig') if data_file(CONFIG_PATH).exists() else {}
 
     def _build_additional_hotkey_editors(self):
         insert_index = max(0, self.hotkey_layout.count() - 1)
@@ -995,9 +1043,9 @@ class MainSettingDialog(QtWidgets.QDialog, Ui_MainSettingDialog):
         root = Path(parent.task_path_edit.text().strip())
         task_date = parent.dateEdit.date().toString('MMdd')
         config = load_task_result_config()
-        if os.path.exists('config.json'):
+        if data_file(CONFIG_PATH).exists():
             try:
-                with open('config.json', 'r', encoding='utf-8') as handle:
+                with data_io.open(CONFIG_PATH, 'r', encoding='utf-8') as handle:
                     config = load_task_result_config(json.load(handle))
             except (OSError, ValueError):
                 pass
@@ -1287,6 +1335,10 @@ class MainSettingDialog(QtWidgets.QDialog, Ui_MainSettingDialog):
         api_key = item.data(QtCore.Qt.UserRole)
         status_text = describe_api_key_status(self.api_key_statuses, api_key)
         item.setText(f"{self._masked_api_key(api_key)}    [{status_text}]")
+        status = self.api_key_statuses.get(api_key_id(api_key), {}).get('forced_alignment_status')
+        labels = {'permission_denied':'权限不足（不影响语音生成）','available':'已成功使用','quota':'额度不足',
+            'cooldown':'冷却中','error':'上次请求失败'}
+        item.setToolTip('云端逐词对齐：'+labels.get(status,'未检测；不会自动上传音频检测权限'))
 
     def add_api_key(self):
         api_key = self.elevenlabs_api_key_edit.text().strip()
@@ -1296,12 +1348,14 @@ class MainSettingDialog(QtWidgets.QDialog, Ui_MainSettingDialog):
         if not self._append_api_key(api_key):
             QMessageBox.information(self, "提示", "这个 API Key 已在列表中。")
         self.elevenlabs_api_key_edit.clear()
+        self._refresh_alignment_keys()
 
     def remove_selected_api_keys(self):
         for item in self.elevenlabs_api_key_list.selectedItems():
             self.elevenlabs_api_key_list.takeItem(
                 self.elevenlabs_api_key_list.row(item)
             )
+        self._refresh_alignment_keys()
 
     def reset_selected_api_key_statuses(self):
         """清除选中 Key 的状态，使它在下一次生成时重新测试。"""
@@ -1320,6 +1374,7 @@ class MainSettingDialog(QtWidgets.QDialog, Ui_MainSettingDialog):
         """获取界面中的配置"""
         config = {
             'elevenlabs_api_keys': self.get_api_keys(),
+            'elevenlabs_alignment_key_id': self.elevenlabs_alignment_key.currentData() or '',
             'audio_settings': copy.deepcopy(self.audio_settings),
             TASK_RESULT_HOTKEY_CONFIG_KEY: normalize_hotkey_sequence(
                 self.task_result_hotkey_edit.keySequence().toString(
@@ -1336,6 +1391,8 @@ class MainSettingDialog(QtWidgets.QDialog, Ui_MainSettingDialog):
                 self.ui_theme_combo.currentData()
             ),
             'config_hot_reload': {'enabled': self.config_hot_reload_checkbox.isChecked()},
+            BACKGROUND_TASKS_CONFIG_KEY: self.background_task_settings.settings(),
+            OFFLINE_CONFIG_KEY: self.offline_mode_checkbox.isChecked(),
         }
         if self._audio_managed_by_plugin:
             config.pop('audio_settings', None)
@@ -1354,6 +1411,57 @@ class MainSettingDialog(QtWidgets.QDialog, Ui_MainSettingDialog):
     def _build_gemini_tab(self):
         self.gemini_keys_editor = GeminiKeysEditor(parent=self.settingTabWidget)
         self.settingTabWidget.addTab(self.gemini_keys_editor, 'AI 密钥')
+
+    def _build_elevenlabs_alignment_settings(self):
+        group = QtWidgets.QGroupBox('现有音频的云端逐词对齐', self.tab_4)
+        form = QtWidgets.QFormLayout(group)
+        self.elevenlabs_alignment_key = QtWidgets.QComboBox(group)
+        form.addRow('指定对齐 Key', self.elevenlabs_alignment_key)
+        note = QtWidgets.QLabel('只用这里指定的 Key，不遍历其他 Key。请在 ElevenLabs 为它开启强制对齐权限。'
+            '对齐会上传所选音频和文案并消耗对应额度。\n新生成 ELE 音频直接附带时间戳，不需要强制对齐权限。'
+            '所有结果另存为“音频名[动态].srt”，原 SRT 不修改。', group)
+        note.setWordWrap(True); form.addRow(note)
+        self.tab_4.layout().addWidget(group)
+        self._refresh_alignment_keys('')
+
+    def _refresh_alignment_keys(self, wanted=None):
+        combo = self.elevenlabs_alignment_key
+        wanted = combo.currentData() if wanted is None else wanted
+        combo.blockSignals(True); combo.clear()
+        combo.addItem('未指定（不调用云端对齐）', '')
+        for key in self.get_api_keys(): combo.addItem(self._masked_api_key(key), api_key_id(key))
+        if wanted and combo.findData(wanted) < 0: combo.addItem('原选择的 Key 暂不可用，请重选', wanted)
+        combo.setCurrentIndex(max(0,combo.findData(wanted or ''))); combo.blockSignals(False)
+
+    def _build_network_tab(self):
+        self.network_tab = QtWidgets.QWidget(self.settingTabWidget)
+        layout = QtWidgets.QVBoxLayout(self.network_tab)
+        state = '离线安全模式' if is_offline() else '在线模式'
+        layout.addWidget(QtWidgets.QLabel('当前运行状态：' + state, self.network_tab))
+        self.offline_mode_checkbox = QtWidgets.QCheckBox(
+            '下次启动使用离线安全模式', self.network_tab,
+        )
+        layout.addWidget(self.offline_mode_checkbox)
+        note = QtWidgets.QLabel(
+            '保存后重启生效，不会在任务中途切断连接。\n\n'
+            '离线模式拦截 Python 网络连接与 DNS、常用 Qt 联网调用、云端 API '
+            '以及外部浏览器启动；暂停审核监视、表格监视和网盘同步。\n'
+            '本地任务、剪辑、已缓存模型、本地垃圾日历与提醒仍可使用。'
+            '缺少模型时不会自动下载，密钥、原有监视设置和业务记录不会删除。\n\n'
+            '这是应用级离线模式，不是防火墙或恶意插件沙箱。'
+            '原生 DLL、任意外部程序及已经打开的浏览器不受完整隔离保障。\n'
+            '也可以用“启动离线模式.cmd”，或以 --offline 参数启动，仅本次离线。',
+            self.network_tab,
+        )
+        note.setWordWrap(True)
+        layout.addWidget(note)
+        layout.addStretch(1)
+        self.settingTabWidget.addTab(self.network_tab, '网络与安全')
+
+    def _build_background_tasks_tab(self):
+        from PYUI.background_task_settings_pyui import BackgroundTaskSettingsPage
+        self.background_task_settings=BackgroundTaskSettingsPage(self.settingTabWidget)
+        self.settingTabWidget.addTab(self.background_task_settings,'后台任务与并发')
 
     def _build_appearance_tab(self):
         self.appearance_tab = QtWidgets.QWidget(self.settingTabWidget)
@@ -1380,10 +1488,10 @@ class MainSettingDialog(QtWidgets.QDialog, Ui_MainSettingDialog):
     def save_config(self):
         """保存配置到文件"""
         try:
-            config_path = Path("config.json")
+            config_path = Path(CONFIG_PATH)
             # 读取现有配置
             if config_path.exists():
-                with config_path.open("r", encoding="utf-8") as f:
+                with data_io.open(config_path,"r", encoding="utf-8") as f:
                     config = json.load(f)
             else:
                 config = {}
@@ -1502,9 +1610,11 @@ class MainSettingDialog(QtWidgets.QDialog, Ui_MainSettingDialog):
             super().accept()
     
     @staticmethod
-    def get_settings(parent=None, plugin_host=None, focus_daily_quantity=False):
+    def get_settings(parent=None, plugin_host=None, focus_daily_quantity=False, focus_offline=False):
         """静态方法：显示设置对话框并返回配置"""
         dialog = MainSettingDialog(parent, plugin_host=plugin_host)
+        if focus_offline:
+            dialog.settingTabWidget.setCurrentWidget(dialog.network_tab)
         if focus_daily_quantity:
             dialog.settingTabWidget.setCurrentWidget(dialog.task_result_tab)
             dialog.daily_quantity_sheet_url_edit.setFocus()

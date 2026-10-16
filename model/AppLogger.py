@@ -1,3 +1,5 @@
+
+from model.AppDataStorage import data_directory
 import faulthandler
 import logging
 import os
@@ -9,6 +11,7 @@ from pathlib import Path
 
 from app_paths import APP_ROOT
 from model.SensitiveData import redact_sensitive_text
+from model.AppDataStorage import application_storage
 
 
 LOGGER_NAME = "assistant_tool"
@@ -18,6 +21,7 @@ FAULT_LOG_MAX_BYTES = 1024 * 1024
 
 _log_file_path = None
 _fault_stream = None
+_fault_fd = None
 _hooks_installed = False
 _qt_message_handler = None
 
@@ -29,6 +33,11 @@ class RedactingFormatter(logging.Formatter):
 
 
 def _candidate_log_directories():
+    storage = application_storage()
+    if storage.protected:
+        storage.check(write=True)
+        yield storage.root / 'logs'
+        return  # NEVER retry LOCALAPPDATA or TEMP for encrypted sessions.
     yield Path(APP_ROOT) / "logs"
     local_app_data = os.environ.get("LOCALAPPDATA")
     if local_app_data:
@@ -36,10 +45,21 @@ def _candidate_log_directories():
     yield Path(tempfile.gettempdir()) / "AssistantTool" / "logs"
 
 
+class StorageFileHandler(RotatingFileHandler):
+    def emit(self, record):
+        storage = application_storage()
+        if storage.protected:
+            try: storage.check(self.baseFilename, write=True)
+            except OSError:
+                self.close()
+                return  # Do not call logging's stderr error dump with private data.
+        super().emit(record)
+
+
 def _create_file_handler(log_dir, max_bytes, backup_count):
-    log_dir.mkdir(parents=True, exist_ok=True)
+    data_directory(log_dir).ensure(parents=True, exist_ok=True)
     log_path = log_dir / "assistant-tool.log"
-    handler = RotatingFileHandler(
+    handler = StorageFileHandler(
         log_path,
         maxBytes=max_bytes,
         backupCount=backup_count,
@@ -53,6 +73,7 @@ def _create_file_handler(log_dir, max_bytes, backup_count):
 
 def _rotate_fault_log(log_path):
     try:
+        application_storage().check(log_path, write=True)
         if not log_path.exists() or log_path.stat().st_size < FAULT_LOG_MAX_BYTES:
             return
         backup_path = log_path.with_name(log_path.name + ".1")
@@ -66,17 +87,24 @@ def _rotate_fault_log(log_path):
 
 
 def _enable_fault_handler(log_dir, logger):
-    global _fault_stream
+    global _fault_stream, _fault_fd
     if _fault_stream is not None:
         return
     try:
         fault_path = log_dir / "python-fault.log"
         _rotate_fault_log(fault_path)
+        application_storage().check(fault_path, write=True)
         _fault_stream = fault_path.open("a", encoding="utf-8", buffering=1)
         _fault_stream.write("\n=== Python fault logging enabled ===\n")
-        faulthandler.enable(file=_fault_stream, all_threads=True)
+        # This descriptor has no Python file-object finalizer. Keep it open
+        # until the OS ends the process, including late Qt/ML destructors.
+        _fault_fd = os.dup(_fault_stream.fileno())
+        faulthandler.enable(file=_fault_fd, all_threads=True)
     except (OSError, RuntimeError, ValueError) as error:
         _fault_stream = None
+        if _fault_fd is not None:
+            os.close(_fault_fd)
+            _fault_fd = None
         logger.warning("无法启用 Python 致命错误日志：%s", error)
 
 
@@ -141,7 +169,8 @@ def install_exception_hooks():
         )
         for handler in logger.handlers:
             handler.flush()
-        original_sys_hook(exc_type, exc_value, exc_traceback)
+        if not application_storage().protected:
+            original_sys_hook(exc_type, exc_value, exc_traceback)
 
     sys.excepthook = system_exception_hook
 
@@ -156,7 +185,8 @@ def install_exception_hooks():
             )
             for handler in logger.handlers:
                 handler.flush()
-            original_thread_hook(args)
+            if not application_storage().protected:
+                original_thread_hook(args)
 
         threading.excepthook = thread_exception_hook
 
@@ -169,7 +199,8 @@ def install_exception_hooks():
                 getattr(args, "err_msg", "") or repr(getattr(args, "object", None)),
                 exc_info=(args.exc_type, args.exc_value, args.exc_traceback),
             )
-            original_unraisable_hook(args)
+            if not application_storage().protected:
+                original_unraisable_hook(args)
 
         sys.unraisablehook = unraisable_exception_hook
 
@@ -195,6 +226,8 @@ def install_qt_message_logging():
                     _fault_stream.fileno(),
                     ("Qt fatal: {}\n".format(redact_sensitive_text(message))).encode("utf-8", "replace"),
                 )
+                import faulthandler
+                faulthandler.dump_traceback(file=_fault_stream, all_threads=True)
             location = "{}:{}".format(
                 getattr(context, "file", "") or "Qt",
                 getattr(context, "line", 0) or 0,
@@ -219,16 +252,27 @@ def install_qt_message_logging():
     QtCore.qInstallMessageHandler(_qt_message_handler)
 
 
-def shutdown_application_logging():
-    global _fault_stream
+def remove_qt_message_logging():
+    """No Python callback may remain installed during native Qt finalization."""
+    global _qt_message_handler
+    if _qt_message_handler is not None:
+        from qt_compat import QtCore
+        QtCore.qInstallMessageHandler(None)
+        _qt_message_handler = None
+
+
+def shutdown_application_logging(*, close=False):
+    global _fault_stream, _fault_fd, _log_file_path
     logger = logging.getLogger(LOGGER_NAME)
-    logger.info("程序正常退出")
-    for handler in logger.handlers:
+    if not close:
+        logger.info("应用资源清理完成，正在结束进程（致命错误日志仍保持启用）。")
+    for handler in list(logger.handlers):
         handler.flush()
-    if _fault_stream is not None:
-        try:
-            faulthandler.disable()
-            _fault_stream.close()
-        except (OSError, RuntimeError):
-            pass
-        _fault_stream = None
+        if close: handler.close(); logger.removeHandler(handler)
+    if close:
+        faulthandler.disable()
+        if _fault_stream is not None: _fault_stream.close(); _fault_stream = None
+        if _fault_fd is not None: os.close(_fault_fd); _fault_fd = None
+        # Keep the old path sentinel so late UI/plugin log requests receive
+        # NullHandler rather than trying to configure a new logger after loss.
+        logger.addHandler(logging.NullHandler())

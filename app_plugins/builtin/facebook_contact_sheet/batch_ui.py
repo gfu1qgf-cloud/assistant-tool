@@ -2,39 +2,27 @@
 
 from qt_compat import QtCore, QtGui, QtWidgets
 
-from .batch import run_batch
+from .batch import run_batch, run_reference_job
 from .task_cache import cached_sheets
-
-
-class _BatchWorker(QtCore.QThread):
-    itemChanged = QtCore.pyqtSignal(int, str)
-    completed = QtCore.pyqtSignal(object)
-
-    def __init__(self, jobs, settings, parent=None):
-        super().__init__(parent)
-        self.jobs = list(jobs)
-        self.settings = dict(settings)
-
-    def run(self):
-        result = run_batch(
-            self.jobs, **self.settings,
-            progress=lambda index, status: self.itemChanged.emit(index, status),
-            canceled=self.isInterruptionRequested,
-        )
-        self.completed.emit(result)
+from model.BackgroundTasks import BackgroundTaskManager, directory_resource, ACTIVE
 
 
 class BatchContactSheetDialog(QtWidgets.QDialog):
-    def __init__(self, logger=None, parent=None):
+    def __init__(self, logger=None, parent=None, task_manager=None):
         super().__init__(parent)
         self._log = logger or (lambda _message: None)
         self._jobs = []
-        self._worker = None
+        self._manager = task_manager or BackgroundTaskManager(
+            parent=QtWidgets.QApplication.instance(), logger=lambda text, _level: self._log(text))
+        self._handles = {}
+        self._was_busy = False
+        self._active_settings = None
+        self._manager.changed.connect(self._on_changed)
         self.setWindowTitle("批量生成 Facebook 参考大图")
         self.resize(850, 560)
         self.setModal(False)
         layout = QtWidgets.QVBoxLayout(self)
-        tip = QtWidgets.QLabel("按所选任务顺序逐个处理；已生成的直接跳过。双击已完成项目可打开大图。", self)
+        tip = QtWidgets.QLabel("提交到主界面后台任务；可同时处理 2 个参考视频。关闭窗口后继续生成；已缓存的跳过下载。", self)
         tip.setWordWrap(True)
         layout.addWidget(tip)
 
@@ -92,12 +80,18 @@ class BatchContactSheetDialog(QtWidgets.QDialog):
         layout.addLayout(bottom)
 
     def is_busy(self):
-        return self._worker is not None and self._worker.isRunning()
+        return any(handle.isRunning() for handle in self._handles.values())
 
     def set_jobs(self, jobs):
-        if self.is_busy():
-            return False
-        self._jobs = list(jobs)
+        busy = self.is_busy()
+        if busy:
+            keys = {(str(job.folder), job.url) for job in self._jobs}
+            start = len(self._jobs)
+            self._jobs.extend(job for job in jobs if (str(job.folder), job.url) not in keys)
+        else:
+            self._jobs = list(jobs)
+            self._handles = {}
+            start = 0
         self.table.setRowCount(len(self._jobs))
         cached_count = 0
         for index, job in enumerate(self._jobs):
@@ -109,7 +103,10 @@ class BatchContactSheetDialog(QtWidgets.QDialog):
                     item.setToolTip(job.url)
                 self.table.setItem(index, column, item)
         self.summary.setText(f"共 {len(self._jobs)} 个参考视频，已有缓存 {cached_count} 个。")
-        self.start_button.setEnabled(bool(self._jobs))
+        if busy:
+            self._submit_rows(range(start, len(self._jobs)), self._active_settings)
+        self.start_button.setEnabled(bool(self._jobs) and not self.is_busy())
+        self._refresh_status()
         return True
 
     def _start(self):
@@ -122,33 +119,50 @@ class BatchContactSheetDialog(QtWidgets.QDialog):
             "min_scene_seconds": self.min_scene.value(),
             "max_interval": self.max_interval.value(),
         }
-        self._worker = _BatchWorker(self._jobs, settings, self)
-        self._worker.itemChanged.connect(self._on_item)
-        self._worker.completed.connect(self._on_completed)
-        self._worker.finished.connect(self._on_finished)
-        self.start_button.setEnabled(False)
-        self.cancel_button.setEnabled(True)
-        self.summary.setText(f"正在处理 0 / {len(self._jobs)}…")
-        self._worker.start()
+        self._active_settings = settings
+        self._submit_rows(range(len(self._jobs)), settings)
 
-    def _on_item(self, index, status):
-        self.table.item(index, 2).setText(status)
-        if status.startswith(("完成", "已缓存", "失败")):
-            self.summary.setText(f"已处理 {index + 1} / {len(self._jobs)}")
+    def _submit_rows(self, rows, settings):
+        for index in rows:
+            job = self._jobs[index]
+            try:
+                self._handles[index] = self._manager.submit(
+                    owner="facebook_contact_sheet", title="FB 参考大图 · " + job.label,
+                    runner=run_reference_job, payload={"job": job, "settings": settings}, kind="media",
+                    resources=[directory_resource(job.folder)], dedup_key="batch:" + directory_resource(job.folder),
+                    retryable=True,
+                )
+            except (RuntimeError, ValueError, TypeError) as error:
+                self._log(f"无法提交参考大图任务：{error}")
+                QtWidgets.QMessageBox.information(self, "无法提交任务", str(error))
+                break
+        self._was_busy = self.is_busy()
+        self._refresh_status()
 
-    def _on_completed(self, outcomes):
-        done = sum(status.startswith("完成") for status in outcomes)
-        cached = sum(status.startswith("已缓存") for status in outcomes)
-        failed = sum(status.startswith("失败") for status in outcomes)
-        canceled = len(outcomes) < len(self._jobs)
-        self.summary.setText(
-            f"{'已取消；' if canceled else '完成；'}新生成 {done} 个，跳过缓存 {cached} 个，失败 {failed} 个。"
-        )
-        self._log(f"Facebook 参考大图批量生成：新生成 {done}，缓存 {cached}，失败 {failed}。")
+    @QtCore.pyqtSlot(str)
+    def _on_changed(self, _task_id):
+        self._refresh_status()
 
-    def _on_finished(self):
-        self.start_button.setEnabled(True)
-        self.cancel_button.setEnabled(False)
+    def _refresh_status(self):
+        done = failed = canceled = active = 0
+        for index, handle in self._handles.items():
+            record = self._manager.get(handle.task_id)
+            status = record["status"]
+            done += status == "succeeded"
+            failed += status == "failed"
+            canceled += status == "canceled"
+            active += status in ACTIVE
+            item = self.table.item(index, 2)
+            if item:
+                item.setText(record["stage"])
+                item.setToolTip(record["error"] or record["stage"])
+        self.start_button.setEnabled(bool(self._jobs) and not active)
+        self.cancel_button.setEnabled(bool(active))
+        if self._handles:
+            self.summary.setText(f"共 {len(self._jobs)} 个 · 运行/等待 {active} · 完成 {done} · 失败 {failed} · 取消 {canceled}")
+        if self._was_busy and not active:
+            self._was_busy = False
+            self._log("Facebook 参考大图批量处理：" + self.summary.text())
 
     def _open_cached(self, row, _column):
         if row >= len(self._jobs):
@@ -163,12 +177,8 @@ class BatchContactSheetDialog(QtWidgets.QDialog):
 
     def cancel_work(self):
         if self.is_busy():
-            self._worker.requestInterruption()
+            self._manager.cancel_many([handle.task_id for handle in self._handles.values() if handle.isRunning()])
             self.summary.setText("正在取消；当前步骤结束后停止…")
 
     def closeEvent(self, event):
-        if self.is_busy():
-            self.cancel_work()
-            event.ignore()
-            return
         super().closeEvent(event)

@@ -79,4 +79,5 @@ class SmartMusicSearchPlugin:
 
     def stop(self):
         if self.dialog is not None:
-            self.dialog.cancel_work()
+            if not self.dialog.shutdown():
+                raise RuntimeError("音乐搜索线程尚未完全结束，不能释放模型和播放器。")

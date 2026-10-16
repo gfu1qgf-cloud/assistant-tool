@@ -1,0 +1,7 @@
+Open Sans unmodified variable fonts (upright and italic), OFL-1.1.
+Google Fonts repository commit: 8b0a1d0f5983c89bc2b93f1b5fb55f9e252744b5
+Source: https://github.com/google/fonts/tree/8b0a1d0f5983c89bc2b93f1b5fb55f9e252744b5/ofl/opensans
+Upstream source commit, per METADATA.pb: bd7e37632246368c60fdcbd374dbf9bad11969b6
+The wght axis covers 300–800, not 100–900; wdth covers 75–100.
+Registered only inside this application. Never installed into Windows.
+Redistributed with original OFL.txt and METADATA.pb notices.

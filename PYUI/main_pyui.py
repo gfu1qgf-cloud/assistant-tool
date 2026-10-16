@@ -1,3 +1,5 @@
+from model.AppDataStorage import data_io, data_file, data_directory
+from model.QtThreadLifecycle import connect_thread_finished, thread_is_active
 import json
 import logging
 import os
@@ -15,27 +17,28 @@ from qt_compat import QMessageBox, QHeaderView
 from app_plugins import PluginHost
 from app_plugins.builtin import (
     AudioSplitterPlugin,
+    AIModelClientPlugin,
     BatchTextVideoPlugin,
     VideoStitchPlugin,
     ChromeLauncherPlugin,
     CodexAccountSwitcherPlugin,
-    CookingAssistantPlugin,
     DailyTasksPlugin,
     FacebookContactSheetPlugin,
     DaVinciRemotePlugin,
-    ImageClassifierPlugin,
     InventoryPlugin,
-    MaterialOrganizerPlugin,
     MusicDuckerPlugin,
     SmartVideoEditorPlugin,
-    SmartImageSearchPlugin,
-    SmartMusicSearchPlugin,
+    SmartSearchPlugin,
     VideoPromptAssistantPlugin,
+    ScriptSegmenterPlugin,
+    DocumentFormatterPlugin,
+    GoogleDriveBrowserPlugin,
     TaskAudioSubtitlePlugin,
     TaskDeliveryPlugin,
     WasteReminderPlugin,
 )
 from PYUI.main_setting_pyui import MainSettingDialog
+from PYUI.main_workspace_layout import MainWorkspaceLayout, PluginPanelScrollArea
 from PYUI.gemini_keys_pyui import GeminiKeysDialog
 from model.GeminiKeyManager import (
     GeminiKeyManager, KEYS_CONFIG_KEY, STATUSES_CONFIG_KEY,
@@ -44,15 +47,18 @@ from model.GeminiKeyManager import (
 from model.GeminiKeyRecovery import preserve_unedited_keys
 from model.AppTheme import UI_THEME_CONFIG_KEY, apply_ui_theme
 from model.ConfigHotReload import ConfigHotReload
+from model.BackgroundTaskSettings import CONFIG_KEY as BACKGROUND_TASKS_CONFIG_KEY
+from model.ConfigTransactions import config_file_lock, merge_latest_api_statuses
+from model.OfflineMode import OFFLINE_CONFIG_KEY, is_offline, offline_setting
 from PYUI.utility_managers_pyui import (
     AboutDialog,
     GoogleSheetMonitorDialog,
 )
 from QTUI.main_ui import Ui_MainDialog
-from app_paths import APP_ROOT
+from app_paths import APP_ROOT, DATA_ROOT
 from globalValue import globalValue
 from model.AppLogger import configure_application_logging
-from model.AudioHelper import CreateTTSAudio, CreateAudio, CreateAudio3
+from model.AudioHelper import CreateTTSAudio, CreateAudio, CreateAudio3, CreateAudioLatest
 from model.ClipboardHelper import set_internal_clipboard_text
 from model.ProjectInitializer import initialize_project_directory, task_table_template_candidates
 from model.ApiKeyHelper import (
@@ -300,7 +306,7 @@ class VideoAssignmentThread(QtCore.QThread):
                                 f"         目标图片: {best_match['name']}\n"
                                 f"         特征重合度: {best_score:.2%}"
                             )
-                            shutil.move(file_path, target_path)
+                            data_io.move(file_path, target_path)
                             moved += 1
                         except Exception as e:
                             self.log.emit(f"\n[错误] 移动文件失败: {e}")
@@ -567,7 +573,7 @@ class TaskSubmissionAuditDialog(QtWidgets.QDialog):
             )
         thread.succeeded.connect(self.onWorkerSucceeded)
         thread.failed.connect(self.onWorkerFailed)
-        thread.finished.connect(self.onWorkerFinished)
+        connect_thread_finished(thread, self, 'worker', self.onWorkerFinished, pass_thread=True)
         self.worker = thread
         thread.start()
 
@@ -631,21 +637,23 @@ class TaskSubmissionAuditDialog(QtWidgets.QDialog):
             f'{message}\n\n详细信息已写入程序日志。',
         )
 
-    def onWorkerFinished(self):
-        thread = self.sender()
+    def onWorkerFinished(self, thread=None):
+        thread = thread if thread is not None else self.sender()
+        if self.worker is not thread:
+            return
         if self.worker is thread:
             self.worker = None
         self.setBusy(False)
         thread.deleteLater()
 
     def reject(self):
-        if self.worker is not None and self.worker.isRunning():
+        if self.worker is not None and thread_is_active(self.worker):
             QMessageBox.information(self, '任务提交表自查', '正在读写表格，请等待操作完成。')
             return
         super().reject()
 
     def accept(self):
-        if self.worker is not None and self.worker.isRunning():
+        if self.worker is not None and thread_is_active(self.worker):
             QMessageBox.information(self, '任务提交表自查', '正在读写表格，请等待操作完成。')
             return
         super().accept()
@@ -735,7 +743,7 @@ class OralDurationCheckResultDialog(QtWidgets.QDialog):
 
 
 class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
-    config_name = "config.json"
+    config_name = 'config.json' if DATA_ROOT == APP_ROOT else str(DATA_ROOT / 'config.json')
     google_sheet_monitor_settings_key = 'google_sheet_monitor'
     log_max_blocks = 200
 
@@ -793,6 +801,7 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
         self.setWindowFlag(QtCore.Qt.WindowMaximizeButtonHint, True)
         self.app_logger, self.app_log_file = configure_application_logging()
         self.setupUi(self)
+        self.workspace_layout = MainWorkspaceLayout(self)
         self.setupTaskPathPicker()
         self.setupProjectInitializer()
         self.setupTaskTableShortcut()
@@ -850,23 +859,34 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
         self.gemini_save_timer.timeout.connect(self.flushGeminiKeyStatus)
         self.gemini_keys.changed.connect(self.scheduleGeminiKeySave, QtCore.Qt.ConnectionType.QueuedConnection)
         self.setupToolsMenu()
+        self.setupOfflineModeIndicator()
         self.setupNotificationTray()
         self.plugin_host = PluginHost(self)
+        from app_paths import APP_ROOT
+        self.background_task_history_path = DATA_ROOT / 'logs' / 'background_tasks.json'
+        self.background_tasks = self.plugin_host.background_tasks
+        self._background_exit_pending = False
+        self.background_tasks.idle.connect(self.onBackgroundTasksIdle)
         self.inventory_plugin = self.plugin_host.install(InventoryPlugin())
-        self.image_classifier_plugin = self.plugin_host.install(
-            ImageClassifierPlugin()
-        )
-        self.smart_image_search_plugin = self.plugin_host.install(
-            SmartImageSearchPlugin()
-        )
-        self.smart_music_search_plugin = self.plugin_host.install(
-            SmartMusicSearchPlugin()
-        )
+        # Compatibility aliases only. These tools are now owned and stopped by
+        # inventory, not registered as independent plugins with the host.
+        self.image_classifier_plugin = self.inventory_plugin.material_tools.classifier
+        self.material_organizer_plugin = self.inventory_plugin.material_tools.organizer
+        self.smart_search_plugin = self.plugin_host.install(SmartSearchPlugin())
+        # One host plugin owns the tabs; original config keys and indexes remain.
+        self.smart_image_search_plugin = self.smart_search_plugin.image
+        self.smart_music_search_plugin = self.smart_search_plugin.music
         self.waste_reminder_plugin = self.plugin_host.install(WasteReminderPlugin())
-        self.cooking_assistant_plugin = self.plugin_host.install(CookingAssistantPlugin())
+        # Backward-compatible reference for existing settings handlers. Cooking
+        # now lives inside the single Life Assistant plugin and keeps its data.
+        self.cooking_assistant_plugin = self.waste_reminder_plugin.cooking
+        self.ai_model_client_plugin = self.plugin_host.install(AIModelClientPlugin())
         self.video_prompt_assistant_plugin = self.plugin_host.install(
             VideoPromptAssistantPlugin()
         )
+        self.script_segmenter_plugin = self.plugin_host.install(ScriptSegmenterPlugin())
+        self.document_formatter_plugin = self.plugin_host.install(DocumentFormatterPlugin())
+        self.google_drive_browser_plugin = self.plugin_host.install(GoogleDriveBrowserPlugin())
         self.batch_text_video_plugin = self.plugin_host.install(BatchTextVideoPlugin())
         self.video_stitch_plugin = self.plugin_host.install(VideoStitchPlugin())
         self.facebook_contact_sheet_plugin = None
@@ -878,9 +898,6 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
             except Exception:
                 self.appendLog("Facebook 分镜插件加载失败，已跳过。", level=logging.ERROR)
                 logging.exception("Facebook 分镜插件加载失败")
-        self.material_organizer_plugin = self.plugin_host.install(
-            MaterialOrganizerPlugin()
-        )
         self.task_delivery_plugin = self.plugin_host.install(TaskDeliveryPlugin())
         self.chrome_plugin = self.plugin_host.install(ChromeLauncherPlugin())
         self.codex_account_switcher_plugin = self.plugin_host.install(
@@ -899,8 +916,19 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
             DaVinciRemotePlugin()
         )
         self.plugin_host.attach_tab_area(self.tabWidget, self.tab_2)
+        from PYUI.background_tasks_pyui import BackgroundTasksWidget
+        from model.CompletionShutdown import CompletionShutdown
+        self.completion_shutdown = CompletionShutdown(self.background_tasks, self.requestCompletionShutdown, self,
+            ready_check=lambda: '请先关闭当前模态对话框。' if QtWidgets.QApplication.activeModalWidget() is not None else '')
+        self.background_tasks_page = BackgroundTasksWidget(self.background_tasks, self.tabWidget,
+            shutdown_controller=self.completion_shutdown)
+        self.tabWidget.insertTab(self.tabWidget.indexOf(self.tab_2) + 1, self.background_tasks_page, '后台任务')
+        self.background_tasks.changed.connect(self.updateBackgroundTasksTab)
+        self.updateBackgroundTasksTab()
         self.plugin_host.attach_main_menu(self.main_menu_bar)
         self.plugin_host.attach_tools_menu(self.tools_menu)
+        from PYUI.node_workspace import NodeWindowController
+        self.node_workspace = NodeWindowController(self)
         self.setupUtilityManagerButtons()
         self.plugin_host.start_all()
 
@@ -1002,6 +1030,33 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
         self.flow_guard_action.toggled.connect(self.toggleFlowParameterGuard)
         self.gridLayout.setMenuBar(self.main_menu_bar)
 
+    def setupOfflineModeIndicator(self):
+        self.network_mode_label = QtWidgets.QLabel(self.main_menu_bar)
+        self.network_mode_label.setContentsMargins(8, 0, 8, 0)
+        self.main_menu_bar.setCornerWidget(self.network_mode_label)
+        self.offline_mode_action = self.tools_menu.addAction('离线安全模式设置…')
+        self.offline_mode_action.triggered.connect(
+            lambda: self.openSettings(focus_offline=True)
+        )
+        if is_offline():
+            self.setWindowTitle(self.windowTitle() + ' [离线]')
+            self.appendLog('[离线模式] 已启用应用级联网拦截；联网监视暂停，配置与本地数据保留。')
+        self.updateOfflineModeIndicator(self.load_config())
+
+    def updateOfflineModeIndicator(self, config):
+        label = getattr(self, 'network_mode_label', None)
+        if label is None:
+            return
+        offline = is_offline()
+        label.setText('离线安全模式' if offline else '在线模式')
+        label.setStyleSheet('color:#a33a00;font-weight:600;' if offline else '')
+        next_mode = '离线' if offline_setting(config.get(OFFLINE_CONFIG_KEY)) else '在线'
+        label.setToolTip(
+            f'当前模式在本次运行中不会变化。配置中的下次启动模式：{next_mode}。\n'
+            '工具 → 离线安全模式设置；更改后重启生效。\n'
+            '--offline 启动参数仅本次强制离线。此模式不是系统防火墙。'
+        )
+
     def _set_flow_guard_action_checked(self, checked):
         action = getattr(self, "flow_guard_action", None)
         if action is None:
@@ -1024,6 +1079,10 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
         )
 
     def startFlowParameterGuard(self):
+        if is_offline():
+            self.flow_guard_status = '离线暂停'
+            self.updateFlowParameterGuardAction()
+            return
         if not self.flow_guard_settings.get("enabled"):
             self.flow_guard_status = "未启用"
             self.updateFlowParameterGuardAction()
@@ -1034,7 +1093,7 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
         thread.status.connect(self.onFlowParameterGuardStatus)
         thread.corrected.connect(self.onFlowParameterGuardCorrected)
         thread.error.connect(self.onFlowParameterGuardError)
-        thread.finished.connect(self.onFlowParameterGuardFinished)
+        connect_thread_finished(thread, self, 'flow_guard_thread', self.onFlowParameterGuardFinished, pass_thread=True)
         self.flow_guard_thread = thread
         self.flow_guard_status = "正在启动…"
         self.updateFlowParameterGuardAction()
@@ -1044,7 +1103,7 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
         thread = self.flow_guard_thread
         if thread is None:
             return True
-        if thread.isRunning():
+        if thread_is_active(thread):
             thread.stop()
             if not thread.wait(wait_ms):
                 return False
@@ -1111,8 +1170,10 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
         self.appendLog(f"[Flow守卫错误] {message}", end="", level=logging.ERROR)
         self.showDesktopNotification("Flow 参数守卫异常", str(message), critical=True)
 
-    def onFlowParameterGuardFinished(self):
-        thread = self.sender()
+    def onFlowParameterGuardFinished(self, thread=None):
+        thread = thread if thread is not None else self.sender()
+        if self.flow_guard_thread is not thread:
+            return
         if self.flow_guard_thread is thread:
             self.flow_guard_thread = None
         if self.flow_guard_settings.get("enabled") and self.flow_guard_status != "异常":
@@ -1135,7 +1196,7 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
 
     def startOralDurationCheck(self):
         thread = self.oral_duration_check_thread
-        if thread is not None and thread.isRunning():
+        if thread_is_active(thread):
             QMessageBox.information(self, '口播长度检测', '检测正在进行，请稍候。')
             return
 
@@ -1148,13 +1209,13 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
         )
         thread.succeeded.connect(self.onOralDurationCheckSucceeded)
         thread.failed.connect(self.onOralDurationCheckFailed)
-        thread.finished.connect(self.onOralDurationCheckFinished)
+        connect_thread_finished(thread, self, 'oral_duration_check_thread', self.onOralDurationCheckFinished, pass_thread=True)
         self.oral_duration_check_thread = thread
         thread.start()
 
     def startTaskSubmissionAudit(self):
         thread = self.task_submission_audit_thread
-        if thread is not None and thread.isRunning():
+        if thread_is_active(thread):
             QMessageBox.information(self, '任务提交表自查', '检查正在进行，请稍候。')
             return
 
@@ -1167,7 +1228,7 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
         )
         thread.succeeded.connect(self.onTaskSubmissionAuditSucceeded)
         thread.failed.connect(self.onTaskSubmissionAuditFailed)
-        thread.finished.connect(self.onTaskSubmissionAuditFinished)
+        connect_thread_finished(thread, self, 'task_submission_audit_thread', self.onTaskSubmissionAuditFinished, pass_thread=True)
         self.task_submission_audit_thread = thread
         thread.start()
 
@@ -1197,8 +1258,10 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
             f'{message}\n\n详细信息已写入程序日志。',
         )
 
-    def onTaskSubmissionAuditFinished(self):
-        thread = self.sender()
+    def onTaskSubmissionAuditFinished(self, thread=None):
+        thread = thread if thread is not None else self.sender()
+        if self.task_submission_audit_thread is not thread:
+            return
         if self.task_submission_audit_thread is thread:
             self.task_submission_audit_thread = None
         self.task_submission_audit_action.setEnabled(True)
@@ -1228,8 +1291,10 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
             f'{message}\n\n详细信息已写入程序日志。',
         )
 
-    def onOralDurationCheckFinished(self):
-        thread = self.sender()
+    def onOralDurationCheckFinished(self, thread=None):
+        thread = thread if thread is not None else self.sender()
+        if self.oral_duration_check_thread is not thread:
+            return
         if self.oral_duration_check_thread is thread:
             self.oral_duration_check_thread = None
         self.oral_duration_check_action.setEnabled(True)
@@ -1245,8 +1310,8 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
         except (OSError, ValueError, json.JSONDecodeError) as error:
             print(f"迁移整理任务结果配置失败：{error}")
 
-        if os.path.exists(f"./{self.config_name}"):
-            with open(f'./{self.config_name}', "r", encoding="utf-8") as rf:
+        if data_file(self.config_name).exists():
+            with data_io.open(self.config_name, "r", encoding="utf-8") as rf:
                 config = json.load(rf)
                 self.load(config)
         self.applyTaskTableLabels()
@@ -1304,11 +1369,21 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
         self.plugin_main_layout = QtWidgets.QVBoxLayout(self.plugin_main_frame)
         self.plugin_main_layout.setContentsMargins(0, 0, 0, 0)
         self.plugin_main_layout.setSpacing(8)
-        self.verticalLayout.insertWidget(insert_index, self.plugin_main_frame)
+        self.plugin_main_layout.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop)
+        self.plugin_main_scroll = PluginPanelScrollArea(self.common_tools)
+        self.plugin_main_scroll.setObjectName("plugin_main_scroll")
+        self.workspace_layout.bind_plugin_scroll(self.plugin_main_scroll)
+        self.plugin_main_scroll.setWidget(self.plugin_main_frame)
+        self.verticalLayout.insertWidget(insert_index, self.plugin_main_scroll, 1)
         self.plugin_host.attach_main_widget_area(
             self.plugin_main_frame,
             self.plugin_main_layout,
+            compatibility_ids=(
+                "task_audio_subtitle.quick_actions", "chrome_launcher.quick_actions",
+                "music_ducker.quick_actions", "task_delivery.quick_actions",
+            ),
         )
+        self.plugin_main_scroll._sync_content_width()
 
         media_actions = self.task_audio_subtitle_plugin.quick_actions
         chrome_actions = self.chrome_plugin.quick_actions
@@ -1336,6 +1411,10 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
         self.tidy_task_result_btn = quick_actions.organize_button
         self.daily_links_btn = quick_actions.daily_links_button
         self.review_status_btn = quick_actions.review_status_button
+        if not self.plugin_host.is_enabled("task_audio_subtitle"):
+            # Shared subtitle readers still use these legacy aliases; initialize
+            # them from disk without starting the audio plugin or any model.
+            self.load(self.load_config())
 
         self.google_sheet_monitor_btn = QtWidgets.QPushButton(self.common_tools)
         self.google_sheet_monitor_btn.setObjectName("google_sheet_monitor_btn")
@@ -1354,6 +1433,7 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
         self.footer_buttons_layout.addWidget(self.setting_btn, 1)
         self.footer_buttons_layout.addWidget(self.about_btn)
         self.verticalLayout.insertLayout(setting_index, self.footer_buttons_layout)
+        self.workspace_layout._update_tools_width()
 
     def openAbout(self):
         AboutDialog(self).exec()
@@ -1395,6 +1475,8 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
         return self.task_delivery_plugin.open_review_status()
 
     def startReviewStatusMonitor(self):
+        if not self.plugin_host.is_enabled("task_delivery"):
+            return True
         return self.task_delivery_plugin.controller.start_review_status_monitor()
 
     def stopReviewStatusMonitor(self, wait_ms=10000):
@@ -1447,6 +1529,10 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
             thread.set_project_dir(self.loaded_project_dir)
 
     def startGoogleSheetMonitor(self):
+        if is_offline():
+            self.google_sheet_monitor_status = '离线暂停'
+            self.updateGoogleSheetMonitorButton()
+            return
         if not self.google_sheet_monitor_settings.get("enabled"):
             self.google_sheet_monitor_status = "未启用"
             self.updateGoogleSheetMonitorButton()
@@ -1463,7 +1549,7 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
         thread.download_result.connect(self.onGoogleSheetDownloadResult)
         thread.queue_changed.connect(self.onGoogleSheetQueueChanged)
         thread.log.connect(self.appendLog)
-        thread.finished.connect(self.onGoogleSheetMonitorFinished)
+        connect_thread_finished(thread, self, 'google_sheet_monitor_thread', self.onGoogleSheetMonitorFinished, pass_thread=True)
         self.google_sheet_monitor_thread = thread
         thread.set_project_dir(self.loaded_project_dir)
         self.google_sheet_monitor_status = "正在启动…"
@@ -1474,7 +1560,7 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
         thread = self.google_sheet_monitor_thread
         if thread is None:
             return True
-        if thread.isRunning():
+        if thread_is_active(thread):
             thread.stop()
             if not thread.wait(wait_ms):
                 return False
@@ -1490,8 +1576,10 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
         self.google_sheet_monitor_status = "未启用"
         self.startGoogleSheetMonitor()
 
-    def onGoogleSheetMonitorFinished(self):
-        thread = self.sender()
+    def onGoogleSheetMonitorFinished(self, thread=None):
+        thread = thread if thread is not None else self.sender()
+        if self.google_sheet_monitor_thread is not thread:
+            return
         if self.google_sheet_monitor_thread is thread:
             self.google_sheet_monitor_thread = None
 
@@ -1578,7 +1666,11 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
                 self.startGoogleSheetMonitor()
                 QMessageBox.critical(self, "表格监视器", "无法重置监视记录：{}".format(error))
                 return
-        if not self.saveCurrentConfig():
+        from model.AppDataStorage import application_storage
+        storage = application_storage()
+        # On volume loss exit must not save defaults or restart services just
+        # because saving is impossible. Other lifecycle checks remain intact.
+        if (not storage.protected or storage.guard.available) and not self.saveCurrentConfig():
             self.google_sheet_monitor_settings = previous_settings
             self.startGoogleSheetMonitor()
             return
@@ -1597,6 +1689,8 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
 
     def toggleTaskDirectory(self, expanded):
         self.file_explorer_tree_view.setVisible(expanded)
+        if expanded:
+            self.workspace_layout.restore_directory()
         self.task_directory_toggle_btn.setArrowType(
             QtCore.Qt.DownArrow if expanded else QtCore.Qt.RightArrow
         )
@@ -1768,7 +1862,7 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
 
 
         try:
-            (today_dir / "result").mkdir(parents=True, exist_ok=True)
+            data_directory(today_dir / "result").ensure(parents=True, exist_ok=True)
             schema = load_task_table_schema()
             self.task_list, table_report = ReadTaskOds2(
                 doc_path,
@@ -1828,7 +1922,7 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
             task_dir = task_directory_for(
                 today_dir, task.task_type, task.task_id
             )
-            task_dir.mkdir(parents=True, exist_ok=True)
+            data_directory(task_dir).ensure(parents=True, exist_ok=True)
             os.startfile(str(task_dir))
         except (OSError, ValueError) as error:
             self.Critical(
@@ -1854,6 +1948,7 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
 
         menu = QtWidgets.QMenu(self.task_table_widget)
         plugin_actions = self.plugin_host.populate_task_context_menu(menu, rows)
+        self.node_workspace.populate_task_menu(menu, rows)
         menu.addSeparator()
         open_action = menu.addAction(
             "打开任务目录"
@@ -1955,7 +2050,7 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
         for target in targets:
             task_dir = pathlib.Path(target["target_dir"])
             try:
-                task_dir.mkdir(parents=True, exist_ok=True)
+                data_directory(task_dir).ensure(parents=True, exist_ok=True)
                 os.startfile(str(task_dir))
             except OSError as error:
                 failures.append(f"{target['label']}：{error}")
@@ -1990,9 +2085,12 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
         self.appendLog(f"已复制 {len(values)} 条{label}。", end="")
 
     def startTaskReferenceDownloads(self, today_dir):
+        if is_offline():
+            self.appendLog('[离线模式] 参考文件自动下载已暂停，本地缓存保留。')
+            return
         if (
             self.task_reference_download_thread is not None
-            and self.task_reference_download_thread.isRunning()
+            and thread_is_active(self.task_reference_download_thread)
         ):
             self.appendLog("参考文件仍在后台下载，本次加载不重复启动。")
             return
@@ -2018,7 +2116,7 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
         thread = TaskReferenceDownloadThread(jobs, self)
         thread.log.connect(self.onTaskReferenceDownloadLog)
         thread.completed.connect(self.onTaskReferenceDownloadCompleted)
-        thread.finished.connect(self.onTaskReferenceDownloadFinished)
+        connect_thread_finished(thread, self, 'task_reference_download_thread', self.onTaskReferenceDownloadFinished)
         self.task_reference_download_thread = thread
         self.task_reference_download_root = pathlib.Path(today_dir)
         self.appendLog(
@@ -2164,7 +2262,7 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
     def onTaskResultFinished(self):
         return self.task_delivery_plugin.controller.on_task_result_finished()
     def assignVideo(self):
-        if self.assign_video_thread is not None and self.assign_video_thread.isRunning():
+        if self.assign_video_thread is not None and thread_is_active(self.assign_video_thread):
             self.assign_video_thread.requestInterruption()
             self.assign_video_btn.setEnabled(False)
             self.assign_video_btn.setText("正在停止…")
@@ -2206,7 +2304,7 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
         thread.log.connect(self.appendLog)
         thread.completed.connect(self.onAssignVideoCompleted)
         thread.failed.connect(self.onAssignVideoFailed)
-        thread.finished.connect(self.onAssignVideoFinished)
+        connect_thread_finished(thread, self, 'assign_video_thread', self.onAssignVideoFinished)
 
         self.assign_video_thread = thread
         thread.start()
@@ -2339,12 +2437,17 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
                    if previous.get(key) != current.get(key)}
         if not changed:
             return set()
+        if OFFLINE_CONFIG_KEY in changed:
+            self.updateOfflineModeIndicator(current)
         applied, retry = set(), set()
+        if BACKGROUND_TASKS_CONFIG_KEY in changed:
+            self.plugin_host.apply_background_task_settings(current)
+            applied.add(BACKGROUND_TASKS_CONFIG_KEY)
         gemini_fields = {KEYS_CONFIG_KEY, STATUSES_CONFIG_KEY}
         if changed & gemini_fields:
             self.gemini_keys.apply_config(current)
             applied.update(changed & gemini_fields)
-        if 'cooking_assistant' in changed:
+        if 'cooking_assistant' in changed and self.plugin_host.is_enabled("waste_reminder"):
             self.cooking_assistant_plugin.apply_settings(current)
             applied.add('cooking_assistant')
         if UI_THEME_CONFIG_KEY in changed:
@@ -2352,14 +2455,14 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
             applied.add(UI_THEME_CONFIG_KEY)
         audio_keys = {'audio_settings', 'task_audio_subtitle', 'audio_use_task_name',
                       'subtitle_include_line_breaks', 'subtitle_max_words_per_block', 'subtitle_block_gap_ms'}
-        if changed & audio_keys:
+        if changed & audio_keys and self.plugin_host.is_enabled("task_audio_subtitle"):
             if self.task_audio_subtitle_plugin.is_running():
                 retry.update(changed & audio_keys)
             else:
                 self.task_audio_subtitle_plugin.apply_settings(current)
                 self.audio_settings = self._load_audio_settings()
                 applied.update(changed & audio_keys)
-        if 'waste_reminder' in changed:
+        if 'waste_reminder' in changed and self.plugin_host.is_enabled("waste_reminder"):
             if self.waste_reminder_plugin.is_updating():
                 retry.add('waste_reminder')
             else:
@@ -2368,7 +2471,7 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
         if 'config_hot_reload' in changed:
             applied.add('config_hot_reload')
         # These are already read directly from disk when a new operation starts.
-        dynamic = {'daily_quantity_sheet_url', 'task_submission_sheet_url', 'elevenlabs_api_keys',
+        dynamic = {'daily_quantity_sheet_url', 'task_submission_sheet_url', 'elevenlabs_api_keys', 'elevenlabs_alignment_key_id',
                    'elevenlabs_api_key_statuses', 'task_table_schema'}
         applied.update(changed & dynamic)
         deferred = changed - applied - retry
@@ -2386,13 +2489,14 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
             self.showDesktopNotification('检测到配置文件更新', note)
         return retry
 
-    def openSettings(self, focus_daily_quantity=False):
+    def openSettings(self, focus_daily_quantity=False, focus_offline=False):
         """打开设置对话框"""
         previous_config = self.load_config()
         loaded_whisper_model = globalValue.loaded_whisper_model_name()
         settings = MainSettingDialog.get_settings(
             self, plugin_host=self.plugin_host,
             focus_daily_quantity=focus_daily_quantity,
+            **({'focus_offline': True} if focus_offline else {}),
         )
         if settings:
             if isinstance(getattr(self, 'config_reload', None), ConfigHotReload):
@@ -2401,11 +2505,30 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
             self.gemini_keys.apply_config(current_config)
             changed_fields = {k for k in set(previous_config) | set(current_config)
                               if previous_config.get(k) != current_config.get(k)}
+            if BACKGROUND_TASKS_CONFIG_KEY in changed_fields:
+                limits=self.plugin_host.apply_background_task_settings(current_config)
+                self.appendLog(f'[后台任务] 并发设置已生效：总{limits["max_parallel"]}、'
+                    f'媒体{limits["kind_limits"]["media"]}、联网{limits["kind_limits"]["network"]}；保留资源和模型锁。')
+                if changed_fields <= {BACKGROUND_TASKS_CONFIG_KEY}:
+                    return
+            if OFFLINE_CONFIG_KEY in changed_fields:
+                self.updateOfflineModeIndicator(current_config)
+                self.appendLog('[离线模式] 启动模式已保存，请重启程序后生效；当前模式不变。')
+                if changed_fields == {OFFLINE_CONFIG_KEY}:
+                    return
             if changed_fields and changed_fields <= {KEYS_CONFIG_KEY, STATUSES_CONFIG_KEY}:
                 self.appendLog('[AI 密钥] Gemini 配置已更新，无需重启插件或模型。')
                 return
+            if changed_fields and changed_fields <= {
+                'elevenlabs_api_keys', 'elevenlabs_api_key', API_KEY_STATUSES_CONFIG_KEY,
+            }:
+                # Audio workers read keys from config for each new generation.
+                # Adding a key must not restart unrelated monitors/models.
+                self.appendLog('[AI 密钥] ElevenLabs Key 已保存，从下一次生成生效；后台服务未重启。')
+                return
             if changed_fields and changed_fields <= {'cooking_assistant'}:
-                self.cooking_assistant_plugin.apply_settings(current_config)
+                if self.plugin_host.is_enabled("waste_reminder"):
+                    self.cooking_assistant_plugin.apply_settings(current_config)
                 self.appendLog('[做饭小助手] 设置已更新；新模型从下一次生成开始使用。')
                 return
             previous_other = dict(previous_config)
@@ -2451,7 +2574,9 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
                 else True
             )
             registration_results = (load_hotkey_ok,)
-            plugin_registration_results = self.plugin_host.apply_settings(settings)
+            # The dialog returns only editable fields. Passing that partial
+            # mapping can erase runtime defaults and needlessly restart monitors.
+            plugin_registration_results = self.plugin_host.apply_settings(current_config)
             registration_results += tuple(
                 result for _plugin_id, result in plugin_registration_results
             )
@@ -2505,7 +2630,50 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
                 self.appendLog('[设置] ' + message, level=logging.ERROR)
                 self.showDesktopNotification('设置未完全生效', message, critical=True)
 
+    def updateBackgroundTasksTab(self, _task_id=None):
+        active = sum(row['status'] in {'queued', 'running', 'canceling'} for row in self.background_tasks.records())
+        index = self.tabWidget.indexOf(self.background_tasks_page)
+        self.tabWidget.setTabText(index, f'后台任务（{active}）' if active else '后台任务')
+
+    def onBackgroundTasksIdle(self):
+        if self._background_exit_pending:
+            self._background_exit_pending = False
+            # Keep the exit gate closed until delayed analysis callbacks finish.
+            # Otherwise they can open a new review dialog just before closing.
+            QtCore.QTimer.singleShot(0, self.close)
+
+    def requestCompletionShutdown(self):
+        if not self.close():
+            return False
+        # Plugins accepted normal close and finished stopping. A leftover
+        # harmless top-level help window must not keep app.exec() alive.
+        QtWidgets.QApplication.instance().quit()
+        return True
+
     def closeEvent(self, event):
+        if self.background_tasks.is_busy():
+            event.ignore()
+            if self._background_exit_pending:
+                return
+            box = QMessageBox(self)
+            box.setWindowTitle('后台任务仍在运行')
+            box.setText('关闭插件窗口不会停止任务。退出整个软件前，请选择如何处理后台任务。')
+            wait_button = box.addButton('完成后退出', QMessageBox.ButtonRole.AcceptRole)
+            cancel_button = box.addButton('安全取消后退出', QMessageBox.ButtonRole.DestructiveRole)
+            box.addButton('继续使用', QMessageBox.ButtonRole.RejectRole)
+            box.exec()
+            if box.clickedButton() in (wait_button, cancel_button):
+                self._background_exit_pending = True
+                self.background_tasks.stop_accepting()
+                if box.clickedButton() == cancel_button:
+                    self.background_tasks.cancel_all()
+                if not self.background_tasks.is_busy():
+                    self.onBackgroundTasksIdle()
+            return
+        if not self.background_tasks.is_accepting():
+            # If another foreground service blocks this close, normal use must
+            # still be possible. Deferred background callbacks ran before here.
+            self.background_tasks.resume_accepting()
         plugins_can_close, plugin_message = self.plugin_host.can_close_all()
         if not plugins_can_close:
             event.ignore()
@@ -2515,8 +2683,11 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
                 plugin_message,
             )
             return
+        if hasattr(self, 'node_workspace') and not self.node_workspace.can_close():
+            event.ignore()
+            return
         oral_thread = self.oral_duration_check_thread
-        if oral_thread is not None and oral_thread.isRunning():
+        if thread_is_active(oral_thread):
             event.ignore()
             QMessageBox.warning(
                 self,
@@ -2525,7 +2696,7 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
             )
             return
         audit_thread = self.task_submission_audit_thread
-        if audit_thread is not None and audit_thread.isRunning():
+        if thread_is_active(audit_thread):
             event.ignore()
             QMessageBox.warning(
                 self,
@@ -2534,7 +2705,7 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
             )
             return
         reference_thread = self.task_reference_download_thread
-        if reference_thread is not None and reference_thread.isRunning():
+        if thread_is_active(reference_thread):
             reference_thread.requestInterruption()
             event.ignore()
             QMessageBox.warning(
@@ -2543,7 +2714,7 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
                 '已请求停止后台下载。当前文件处理结束后即可关闭程序。',
             )
             return
-        if self.task_result_thread is not None and self.task_result_thread.isRunning():
+        if thread_is_active(self.task_result_thread):
             event.ignore()
             QMessageBox.warning(
                 self,
@@ -2552,7 +2723,7 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
             )
             return
         assign_thread = self.assign_video_thread
-        if assign_thread is not None and assign_thread.isRunning():
+        if thread_is_active(assign_thread):
             assign_thread.requestInterruption()
             if not assign_thread.wait(2000):
                 event.ignore()
@@ -2596,14 +2767,29 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
             event.ignore()
             return
 
+        if self.plugin_host.stop_all() is False:
+            # A timed-out native worker still owns resources. Do not destroy
+            # the main window; restore services already stopped during this try.
+            event.ignore()
+            self.background_tasks.resume_accepting()
+            self.plugin_host.start_all()
+            self.startGoogleSheetMonitor()
+            self.startFlowParameterGuard()
+            self.startReviewStatusMonitor()
+            QMessageBox.warning(
+                self, '程序仍在安全停止',
+                '有插件或后台任务尚未安全停止。已保留窗口和线程，请稍后再退出；详情见程序日志。',
+            )
+            return
         if self.load_task_hotkey_manager is not None:
             self.load_task_hotkey_manager.close()
-        self.plugin_host.stop_all()
         self.gemini_save_timer.stop()
         if hasattr(self, 'config_reload'):
             self.config_reload.timer.stop()
         if self.notification_tray_icon is not None:
             self.notification_tray_icon.hide()
+        if hasattr(self, 'node_workspace'):
+            self.node_workspace.hide()
               
         super().closeEvent(event)
 
@@ -2632,7 +2818,13 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
         if not self.saveCurrentConfig(show_errors=False) or self.gemini_keys.dirty:
             self.gemini_save_timer.start(15000)
 
-    def saveCurrentConfig(self, show_errors=True, gemini_config=None):
+    def saveCurrentConfig(self, show_errors=True, gemini_config=None,
+                          config_updates=None, expected_config=None):
+        with config_file_lock(self.config_name):
+            return self._save_current_config_locked(show_errors, gemini_config, config_updates, expected_config)
+
+    def _save_current_config_locked(self, show_errors=True, gemini_config=None,
+                                    config_updates=None, expected_config=None):
         temp_path = f'{self.config_name}.main.tmp'
         try:
             gemini_revision = self.gemini_keys.revision
@@ -2655,19 +2847,32 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
                             '请重新读取配置后再修改：' + '、'.join(conflicts))
                     return False
             if gemini_config is None and os.path.exists(self.config_name):
-                with open(self.config_name, 'r', encoding='utf-8-sig') as disk_file:
+                with data_io.open(self.config_name, 'r', encoding='utf-8-sig') as disk_file:
                     disk_config = json.load(disk_file)
                 if preserve_unedited_keys(config, disk_config):
                     self.appendLog('[AI 密钥] 已阻止自动保存清空 Gemini Key，保留磁盘中的配置。', level=logging.WARNING)
+            if config_updates is not None:
+                if not isinstance(config_updates, dict) or not isinstance(expected_config, dict):
+                    raise ValueError('补全配置需要原始配置快照，请重新打开填写窗口。')
+                # The filling dialog may have stayed open while an external
+                # editor changed a field. Do not silently replace that edit.
+                latest = self.load_config()
+                for field, value in config_updates.items():
+                    if latest.get(field) not in (expected_config.get(field), value):
+                        raise ValueError('填写期间配置已被其他操作修改，请重新打开填写窗口。')
+                config.update(config_updates)
             config[KEYS_CONFIG_KEY] = normalize_keys(config.get(KEYS_CONFIG_KEY, []))
             configured_ids = {key_id(key) for key in config[KEYS_CONFIG_KEY]}
             config[STATUSES_CONFIG_KEY] = {k: v for k, v in config.get(STATUSES_CONFIG_KEY, {}).items()
                                            if k in configured_ids}
-            with open(temp_path, 'w', encoding='utf-8') as config_file:
-                json.dump(config, config_file, indent=4, ensure_ascii=False)
+            config = merge_latest_api_statuses(self.config_name, config)
+            from model.PrivateDataPaths import private_config
+            stored_config = private_config(config,portable=True)
+            with data_io.open(temp_path, 'w', encoding='utf-8') as config_file:
+                config_file.write(json.dumps(stored_config, indent=4, ensure_ascii=False))
             if hasattr(self, 'config_reload'):
                 self.config_reload.check_before_commit()
-            os.replace(temp_path, self.config_name)
+            data_io.replace(temp_path, self.config_name)
             self.gemini_keys.apply_config(config)
             self.gemini_keys.mark_saved(gemini_revision)
             if hasattr(self, 'config_reload'):
@@ -2676,7 +2881,7 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
         except (OSError, ValueError, TypeError) as error:
             try:
                 if os.path.exists(temp_path):
-                    os.remove(temp_path)
+                    data_io.remove(temp_path)
             except OSError:
                 pass
             self.appendLog(f'[配置] 保存失败：{type(error).__name__}: {error}', level=logging.ERROR)
@@ -2685,19 +2890,24 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
             return False
 
     def dump(self):
+        from model.AppDataStorage import application_storage
+        storage = application_storage()
+        if storage.protected: storage.check()
         # 先读取现有配置
         if os.path.exists(self.config_name):
-            with open(self.config_name, "r", encoding="utf-8") as rf:
+            with data_io.open(self.config_name, "r", encoding="utf-8") as rf:
                 existing_config = json.load(rf)
         else:
             existing_config = {}
         
         # 更新任务路径，保留其他配置（如API key）
         existing_config["task_path"] = self.task_path_edit.text()
-        existing_config["audio_use_task_name"] = self.audio_use_task_name_checkbox.isChecked()
-        existing_config["subtitle_include_line_breaks"] = self.subtitle_line_break_checkbox.isChecked()
-        existing_config["subtitle_max_words_per_block"] = self.subtitle_max_words_spinbox.value()
-        existing_config["subtitle_block_gap_ms"] = self.subtitle_gap_ms_spinbox.value()
+        self.workspace_layout.update_config(existing_config)
+        if self.plugin_host.is_enabled("task_audio_subtitle"):
+            existing_config["audio_use_task_name"] = self.audio_use_task_name_checkbox.isChecked()
+            existing_config["subtitle_include_line_breaks"] = self.subtitle_line_break_checkbox.isChecked()
+            existing_config["subtitle_max_words_per_block"] = self.subtitle_max_words_spinbox.value()
+            existing_config["subtitle_block_gap_ms"] = self.subtitle_gap_ms_spinbox.value()
         existing_config[LOAD_TASK_HOTKEY_CONFIG_KEY] = self.load_task_global_hotkey
         existing_config[self.google_sheet_monitor_settings_key] = dict(
             self.google_sheet_monitor_settings
@@ -2708,9 +2918,11 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
         self.plugin_host.update_runtime_config(existing_config)
         self.gemini_keys.update_config(existing_config)
         
-        return existing_config
+        from model.PrivateDataPaths import private_config
+        return private_config(existing_config)
 
     def load(self,dic):
+        self.workspace_layout.load(dic)
         task_path =dic.get("task_path")
         if task_path is not None:
             self.task_path_edit.setText(task_path)
@@ -2747,10 +2959,14 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
             self.load_task_global_hotkey = DEFAULT_LOAD_TASK_HOTKEY
     
     def load_config(self):
+        from model.AppDataStorage import application_storage
+        storage = application_storage()
+        if storage.protected: storage.check()
         """加载配置文件"""
         if os.path.exists(self.config_name):
-            with open(self.config_name, "r", encoding="utf-8") as rf:
-                return json.load(rf)
+            with data_io.open(self.config_name, "r", encoding="utf-8") as rf:
+                from model.PrivateDataPaths import private_config
+                return private_config(json.load(rf))
         return {}
 
     def _load_audio_settings(self):
@@ -2824,15 +3040,16 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
                 block_gap_ms = self.subtitle_gap_ms_spinbox.value()
                 if block_gap_ms < 0:
                     block_gap_ms = None
-                generate_srt_whisper_only(
-                    str(result_file),
-                    task.task_audio_text,
-                    subtitle_file,
-                    include_line_breaks=self.subtitle_line_break_checkbox.isChecked(),
-                    max_words_per_block=self.subtitle_max_words_spinbox.value(),
-                    block_gap_ms=block_gap_ms,
-                    model=globalValue.get_whisper_model(),
-                )
+                from model.ElevenLabsTimings import load_timings
+                words = load_timings(result_file, task.task_audio_text)
+                options = dict(include_line_breaks=self.subtitle_line_break_checkbox.isChecked(),
+                    max_words_per_block=self.subtitle_max_words_spinbox.value(), block_gap_ms=block_gap_ms)
+                if words is not None:
+                    from model.SubtitleHelper import generate_srt_from_word_timings
+                    generate_srt_from_word_timings(words, subtitle_file, **options)
+                else:
+                    generate_srt_whisper_only(str(result_file), task.task_audio_text, subtitle_file,
+                        model=globalValue.get_whisper_model(), **options)
                 self.appendLog(f"[字幕] 卡拉OK字幕已生成：{subtitle_file}", end="")
             except Exception as e:
                 self.app_logger.exception("生成字幕失败：%s", subtitle_file)
@@ -2843,6 +3060,14 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
                 )
 
     def _createTaskAudioFile(self, task, result_file, progress_callback=None):
+        voice_id = str(getattr(task, "task_audio_voice_id", "") or "").strip()
+        if voice_id:
+            created = CreateAudioLatest(
+                getattr(task, "task_audio_text", ""), str(result_file), voice_id=voice_id,
+                api_keys=self.get_elevenlabs_api_keys(progress_callback),
+                api_key_status_config=self.config_name, progress_callback=progress_callback,
+            )
+            return created is not False and result_file.exists()
         settings = self.audio_settings.get(task.task_audio_type)
         if settings is None:
             return False
@@ -2926,16 +3151,14 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
                 continue
 
             audio_type = str(task.task_audio_type or "").strip()
-            if not audio_type or audio_type not in self.audio_settings:
+            if (not str(getattr(task, "task_audio_voice_id", "") or "").strip()
+                    and (not audio_type or audio_type not in self.audio_settings)):
                 skipped_audio_type += 1
                 continue
 
             try:
-                self._audioProgress(
-                    f"[{task_index}/{task_count}] 任务 {task_id}，语音配置：{audio_type}"
-                )
                 result_dir = root_dir.joinpath(task_type, task_id)
-                result_dir.mkdir(parents=True, exist_ok=True)
+                data_directory(result_dir).ensure(parents=True, exist_ok=True)
                 if use_task_name:
                     result_name = str(task.task_name or "task_audio").strip() or "task_audio"
                 else:
@@ -2944,9 +3167,6 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
 
                 if result_file.exists():
                     existing += 1
-                    self._audioProgress(
-                        f"任务 {task_id} 已有音频，跳过：{result_file.name}"
-                    )
                 elif self._createTaskAudioFile(
                     task,
                     result_file,

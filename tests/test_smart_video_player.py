@@ -10,7 +10,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from qt_compat import QtWidgets
 
-from app_plugins.builtin.smart_video_editor.player import (
+from model.MediaPlayback import (
     _EmbeddedMpvReviewSurface,
     _native_client_size,
     resolve_mpv,
@@ -39,7 +39,7 @@ class SmartVideoMpvPlayerTests(unittest.TestCase):
                 rect.bottom = 1000
                 return True
 
-        with patch("app_plugins.builtin.smart_video_editor.player._windows_user32",
+        with patch("model.MediaPlayback._windows_user32",
                    return_value=FakeUser32()):
             self.assertEqual(_native_client_size(123), (557, 1000))
 

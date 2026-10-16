@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import os
 import sys
 import tempfile
@@ -152,9 +153,144 @@ class FacebookLinkTests(unittest.TestCase):
             self.assertTrue(outcomes[2].startswith("完成"))
             self.assertEqual(len(task_cache.cached_sheets(jobs[2].folder, first)), 1)
 
+    def test_old_analysis_cache_is_rebuilt_without_deleting_old_image(self):
+        url = "https://www.facebook.com/reel/2484678672046814/"
+        with tempfile.TemporaryDirectory() as root:
+            folder = task_cache.cache_directory(root, url)
+            folder.mkdir(parents=True)
+            image = folder / "old.jpg"
+            image.write_bytes(b"old contact sheet")
+            manifest = folder / "manifest.json"
+            manifest.write_text(json.dumps({"version": 1, "key": task_cache.reference_key(url),
+                                           "files": [image.name]}), encoding="utf-8")
+            self.assertEqual(task_cache.cached_sheets(folder, url), [])
+            self.assertTrue(image.is_file())
+            task_cache.remember_sheets(folder, url, [image])
+            self.assertEqual(task_cache.cached_sheets(folder, url), [image])
+            payload = json.loads(manifest.read_text(encoding="utf-8"))
+            payload["analysis_version"] += 1
+            manifest.write_text(json.dumps(payload), encoding="utf-8")
+            self.assertEqual(task_cache.cached_sheets(folder, url), [])
+
 
 @unittest.skipUnless(importlib.util.find_spec("cv2"), "OpenCV not available")
 class ContactSheetVideoTests(unittest.TestCase):
+    def test_opening_keeps_first_frame_even_if_later_frames_are_sharper(self):
+        import cv2
+        import numpy as np
+
+        with tempfile.TemporaryDirectory() as folder:
+            video = Path(folder) / "opening.avi"
+            writer = cv2.VideoWriter(str(video), cv2.VideoWriter_fourcc(*"MJPG"), 10, (160, 90))
+            self.assertTrue(writer.isOpened())
+            opening = np.full((90, 160, 3), (0, 0, 230), dtype=np.uint8)
+            later = np.full((90, 160, 3), (0, 230, 0), dtype=np.uint8)
+            later[::4, ::4] = 255
+            try:
+                for frame in [opening] * 3 + [later] * 27:
+                    writer.write(frame)
+            finally:
+                writer.release()
+            capture = cv2.VideoCapture(str(video))
+            try:
+                frame = engine._representative_frame(capture, 0, 3, opening=True)
+                self.assertGreater(float(frame[:, :, 2].mean()), 220)
+                self.assertLess(float(frame[:, :, 1].mean()), 10)
+            finally:
+                capture.release()
+            paths = render_contact_sheets(video, 3, [], folder)
+            from PIL import Image
+            with Image.open(paths[0]) as sheet:
+                red, green, _blue = sheet.getpixel((169, 120))
+                self.assertGreater(red, 200)
+                self.assertLess(green, 30)
+
+    def test_opening_skips_black_intro_but_keeps_first_real_picture(self):
+        import cv2
+        import numpy as np
+
+        with tempfile.TemporaryDirectory() as folder:
+            video = Path(folder) / "black-intro.avi"
+            writer = cv2.VideoWriter(str(video), cv2.VideoWriter_fourcc(*"MJPG"), 10, (160, 90))
+            self.assertTrue(writer.isOpened())
+            frames = [np.zeros((90, 160, 3), dtype=np.uint8)] * 5
+            frames += [np.full((90, 160, 3), (230, 0, 0), dtype=np.uint8)] * 4
+            frames += [np.full((90, 160, 3), (0, 230, 0), dtype=np.uint8)] * 21
+            try:
+                for frame in frames:
+                    writer.write(frame)
+            finally:
+                writer.release()
+            capture = cv2.VideoCapture(str(video))
+            try:
+                frame = engine._representative_frame(capture, 0, 3, opening=True)
+                self.assertGreater(float(frame[:, :, 0].mean()), 220)
+                self.assertLess(float(frame[:, :, 1].mean()), 10)
+            finally:
+                capture.release()
+
+    def test_opening_read_can_be_canceled(self):
+        capture = mock.Mock()
+        capture.get.return_value = 10
+        with self.assertRaises(engine.AnalysisCanceled):
+            engine._representative_frame(capture, 0, 3, opening=True, canceled=lambda: True)
+        capture.read.assert_not_called()
+
+    def test_four_similar_color_scenes_with_subtle_dissolves(self):
+        import numpy as np
+
+        frames = []
+        previous = None
+        expected = []
+        for shade in (55, 115, 175, 235):
+            frame = np.full((90, 160, 3), shade, dtype=np.uint8)
+            if previous is not None:
+                expected.append(len(frames) * .2 + .2)
+                frames += [np.uint8(previous.astype(float) * (1-part) + frame.astype(float)*part)
+                           for part in (1/3, 2/3)]
+            frames += [frame] * 12
+            previous = frame
+        samples = [(index * .2, engine._descriptor(frame)) for index, frame in enumerate(frames)]
+        cuts = engine.classify_cuts(samples)
+        self.assertEqual(len(cuts), 3, cuts)
+        for cut, seconds in zip(cuts, expected):
+            self.assertAlmostEqual(cut.seconds, seconds, delta=.3)
+
+    def test_moderate_abrupt_cut_is_not_lost_between_soft_and_hard_limits(self):
+        import numpy as np
+
+        frames = [np.full((90, 160, 3), shade, dtype=np.uint8)
+                  for shade in ([100] * 12 + [160] * 12)]
+        samples = [(index * .2, engine._descriptor(frame)) for index, frame in enumerate(frames)]
+        cuts = engine.classify_cuts(samples)
+        self.assertEqual(len(cuts), 1, cuts)
+        self.assertEqual(cuts[0].kind, "硬切")
+        self.assertAlmostEqual(cuts[0].seconds, 2.3)
+
+    def test_continuous_motion_and_subtitle_changes_are_not_scene_changes(self):
+        import cv2
+        import numpy as np
+
+        rng = np.random.default_rng(42)
+        canvas = cv2.GaussianBlur(rng.integers(40, 210, (120, 460, 3), dtype=np.uint8), (9, 9), 0)
+        frames = []
+        for index in range(60):
+            frame = canvas[:, index * 3:index * 3 + 160].copy()
+            if index % 8 < 4:
+                cv2.putText(frame, str(index // 8), (50, 110), cv2.FONT_HERSHEY_SIMPLEX,
+                            .6, (255, 255, 255), 2)
+            frames.append(frame)
+        samples = [(index * .2, engine._descriptor(frame)) for index, frame in enumerate(frames)]
+        self.assertEqual(engine.classify_cuts(samples), [])
+
+    def test_brief_brightness_pulse_returns_to_same_scene(self):
+        import numpy as np
+
+        frames = [np.full((90, 160, 3), shade, dtype=np.uint8)
+                  for shade in ([100] * 12 + [160] + [100] * 12)]
+        samples = [(index * .2, engine._descriptor(frame)) for index, frame in enumerate(frames)]
+        self.assertEqual(engine.classify_cuts(samples), [])
+
     def test_detects_short_cross_dissolve(self):
         import numpy as np
 

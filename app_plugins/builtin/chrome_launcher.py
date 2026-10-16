@@ -102,7 +102,7 @@ class ChromeLauncherSettingsPage:
 class ChromeLauncherPlugin:
     plugin_id = "chrome_launcher"
     display_name = "Chrome 启动器"
-    version = "1.0"
+    version = "1.2"
     required_api_version = 1
 
     def __init__(self):
@@ -114,24 +114,17 @@ class ChromeLauncherPlugin:
 
     def register(self, context):
         self.context = context
+        context.register_command(PluginCommand('bookmarks', '浏览器书签库…',
+            lambda _rows:self.open_bookmarks(), frozenset({MAIN_MENU}),
+            tooltip='从 Chrome、Edge、Firefox 导入去重；校验与加密备份后可清理源书签',order=31))
         context.register_command(
             PluginCommand(
                 command_id="open",
                 title="Chrome 启动器",
                 callback=lambda _rows: self.open_launcher(),
                 locations=frozenset({MAIN_MENU}),
-                tooltip="管理并启动 Chrome Profile、预设网站和迭代分组",
+                tooltip="管理任务浏览器、迭代分组，以及外语独立环境配置",
                 order=30,
-            )
-        )
-        context.register_command(
-            PluginCommand(
-                command_id="launch_next",
-                title="启动下一个 Chrome",
-                callback=lambda _rows: self.launch_next_profile(),
-                locations=frozenset({MAIN_MENU}),
-                tooltip="启动已保存迭代队列中的下一个 Chrome Profile",
-                order=40,
             )
         )
         context.register_settings_page(
@@ -173,6 +166,8 @@ class ChromeLauncherPlugin:
         self.dialog = ChromeRunnerDialog(
             self.context.parent_widget,
             config_path=str(config_path),
+            language_storage=self.context.storage,
+            bookmark_context=self.context,
         )
         self.hotkey_manager = GlobalHotkeyManager(
             self.context.parent_widget,
@@ -238,6 +233,12 @@ class ChromeLauncherPlugin:
             raise RuntimeError("Chrome 启动器尚未初始化")
         return self.dialog.exec()
 
+    def open_bookmarks(self):
+        if self.dialog is None: raise RuntimeError('浏览器插件尚未初始化。')
+        self.dialog.environment_tabs.setCurrentWidget(self.dialog.bookmarks_panel)
+        self.dialog.bookmarks_panel.refresh()
+        return self.dialog.exec()
+
     def launch_next_profile(self):
         if self.dialog is None:
             raise RuntimeError("Chrome 启动器尚未初始化")
@@ -264,4 +265,3 @@ class ChromeLauncherPlugin:
             self.hotkey_manager = None
         if self.dialog is not None:
             self.dialog.close()
-

@@ -1,4 +1,5 @@
 """Select and validate table copy before creating batch video jobs."""
+from model.QtThreadLifecycle import connect_thread_finished, thread_is_active
 import traceback
 from pathlib import Path
 from qt_compat import QtCore,QtGui,QtWidgets
@@ -29,7 +30,7 @@ class TaskTextImportDialog(QtWidgets.QDialog):
         self.entries = []
         self.worker = None
         layout = QtWidgets.QVBoxLayout(self)
-        note = QtWidgets.QLabel("第一行作为标题，其余内容作为正文；保留换行。只读取表格，不会修改表格。")
+        note = QtWidgets.QLabel("第一行作为标题，其余内容作为正文；保留换行。同时导入任务已有的人声和 SRT 字幕，没有则跳过。只读取，不修改表格或原文件。")
         note.setWordWrap(True)
         layout.addWidget(note)
         tools = QtWidgets.QHBoxLayout()
@@ -93,7 +94,7 @@ class TaskTextImportDialog(QtWidgets.QDialog):
             self.buttons.button(QtWidgets.QDialogButtonBox.StandardButton.Ok).setEnabled(False)
             self.worker = SheetWorker(path,self)
             self.worker.ready.connect(self.loaded,QtCore.Qt.ConnectionType.QueuedConnection)
-            self.worker.finished.connect(self.finished_loading)
+            connect_thread_finished(self.worker, self, 'worker', self.finished_loading)
             self.worker.start()
         else:
             self.populate_types()

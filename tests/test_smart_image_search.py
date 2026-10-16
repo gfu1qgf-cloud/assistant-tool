@@ -2,6 +2,7 @@ import os
 import shutil
 import sqlite3
 import tempfile
+import time
 import unittest
 from unittest.mock import Mock, patch
 from pathlib import Path
@@ -12,11 +13,11 @@ from PIL import Image
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from qt_compat import QtCore, QtWidgets
-from app_plugins.builtin.smart_image_search.encoder import (
+from model.image_retrieval.encoder import (
     ChineseImageEncoder, MODEL_IDS, MODEL_REVISION, MODEL_SPECS,
     ModelLoadError, combine_search_vectors,
 )
-from app_plugins.builtin.smart_image_search.index import (
+from model.image_retrieval.index import (
     ImageSearchIndex, discover_external_groups,
 )
 from app_plugins.builtin.smart_image_search.settings import (
@@ -151,6 +152,75 @@ class ImageSearchIndexTests(unittest.TestCase):
         self.assertEqual(len(self.index.search(self.encoder.model_id, [1, 0],
                                                limit=None)), 2)
 
+    def test_root_filter_excludes_inventory_before_result_limit(self):
+        library = self.root / "library"
+        library.mkdir()
+        inside = library / "blue.png"
+        shutil.copyfile(self.blue, inside)
+        self.index.sync(group(self.red, kind="material") + group(inside, kind="folder"),
+                        self.encoder)
+        rows = self.index.search(self.encoder.model_id, [1, 0], limit=1,
+                                 allowed_roots=[library])
+        self.assertEqual([Path(row["path"]) for row in rows], [inside])
+        self.assertEqual(self.index.count(self.encoder.model_id, allowed_roots=[library]), 1)
+        self.assertEqual(self.index.count(), 2)
+
+    def test_empty_root_filter_does_not_fall_back_to_inventory(self):
+        self.index.sync(group(self.red), self.encoder)
+        self.assertEqual(self.index.search(self.encoder.model_id, [1, 0], allowed_roots=[]), [])
+        self.assertEqual(self.index.count(allowed_roots=[]), 0)
+        self.assertEqual(len(self.index.search(self.encoder.model_id, [1, 0])), 1)
+
+    def test_root_filter_is_component_based_and_not_source_kind_based(self):
+        library = self.root / "library"
+        sibling = self.root / "library-other"
+        library.mkdir()
+        sibling.mkdir()
+        inside, outside = library / "red.png", sibling / "blue.png"
+        shutil.copyfile(self.red, inside)
+        shutil.copyfile(self.blue, outside)
+        # Shared assignment may label an explicitly configured image as material.
+        self.index.sync(group(inside, kind="material") + group(outside, kind="folder"),
+                        self.encoder)
+        rows = self.index.search(self.encoder.model_id, [0, 1], limit=None,
+                                 allowed_roots=[library])
+        self.assertEqual([Path(row["path"]) for row in rows], [inside])
+        self.assertEqual(self.index.count(allowed_roots=[library]), 1)
+
+    def test_root_filter_excludes_links_to_other_locations(self):
+        library = self.root / "library"
+        library.mkdir()
+        link = library / "outside.png"
+        try:
+            link.symlink_to(self.red)
+        except OSError:
+            self.skipTest("Creating symlinks is not permitted on this machine")
+        self.index.sync(group(link, kind="folder"), self.encoder)
+        self.assertEqual(self.index.search(self.encoder.model_id, [1, 0],
+                                           allowed_roots=[library]), [])
+        self.assertEqual(self.index.count(allowed_roots=[library]), 0)
+
+    def test_external_sync_prunes_only_external_rows_and_reuses_inventory_vectors(self):
+        library = self.root / "library"
+        library.mkdir()
+        image = library / "red.png"
+        shutil.copyfile(self.red, image)
+        self.index.sync(group(self.red, kind="material") + group(self.blue, kind="person")
+                        + discover_external_groups([library]), self.encoder)
+        previous_calls = list(self.encoder.calls)
+        result = self.index.sync(discover_external_groups([library]), self.encoder,
+                                 prune_source_kinds=("folder",))
+        self.assertEqual(result["removed"], 0)
+        self.assertEqual(result["new_or_changed"], 0)
+        self.assertEqual(self.encoder.calls, previous_calls)
+        image.unlink()
+        result = self.index.sync(discover_external_groups([library]), self.encoder,
+                                 prune_source_kinds=("folder",))
+        self.assertEqual(result["removed"], 1)
+        self.assertEqual(self.index.count(), 2)
+        self.assertEqual(len(self.index.search(self.encoder.model_id, [1, 0], limit=None)), 2)
+        self.assertEqual(self.encoder.calls, previous_calls)
+
     def test_model_load_failure_does_not_poison_index(self):
         class BrokenEncoder(FakeEncoder):
             def images(self, _paths):
@@ -250,6 +320,17 @@ class ImageSearchDialogTests(unittest.TestCase):
     def setUpClass(cls):
         cls.app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
 
+    def wait_count(self, dialog):
+        deadline = time.monotonic() + 3
+        while dialog._count_worker is not None and time.monotonic() < deadline:
+            self.app.processEvents()
+            time.sleep(.002)
+        self.assertIsNone(dialog._count_worker)
+
+    def close_dialog(self, dialog):
+        dialog.close()
+        self.wait_count(dialog)
+
     def test_dialog_builds_without_loading_model(self):
         with tempfile.TemporaryDirectory() as folder:
             dialog = SmartImageSearchDialog(
@@ -260,10 +341,11 @@ class ImageSearchDialogTests(unittest.TestCase):
                 self.assertEqual(dialog.windowTitle(), "智能搜图")
                 self.assertEqual(dialog.search_tabs.tabText(0), "文字搜图")
                 self.assertEqual(dialog.search_tabs.tabText(1), "以图找图")
-                self.assertEqual(dialog.scope.itemData(3), "folder")
+                self.assertEqual(dialog.scope.count(), 1)
+                self.assertEqual(dialog.scope.itemText(0), "全部已配置图片库")
                 self.assertIn("0 张", dialog.index_status.text())
             finally:
-                dialog.close()
+                self.close_dialog(dialog)
 
     def test_chinese_query_uses_existing_index_in_background(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -274,7 +356,8 @@ class ImageSearchDialogTests(unittest.TestCase):
             encoder = FakeEncoder()
             index.sync(group(image), encoder)
             dialog = SmartImageSearchDialog(
-                {"model": "base"}, index=index, encoder=encoder, store=object(),
+                {"model": "base", "library_roots": [str(root)]},
+                index=index, encoder=encoder, store=object(),
             )
             try:
                 dialog.query_text.setText("红色图片")
@@ -287,7 +370,7 @@ class ImageSearchDialogTests(unittest.TestCase):
                 self.assertEqual(dialog.results.count(), 1)
                 self.assertIn("red.png", dialog.results.item(0).text())
             finally:
-                dialog.close()
+                self.close_dialog(dialog)
 
     def test_combined_image_and_text_runs_in_worker(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -299,7 +382,8 @@ class ImageSearchDialogTests(unittest.TestCase):
             encoder.text = Mock(return_value=np.array([0, 1], np.float32))
             index = ImageSearchIndex(root / "index")
             index.sync(group(red, blue), encoder)
-            dialog = SmartImageSearchDialog({}, index=index, encoder=encoder, store=object())
+            dialog = SmartImageSearchDialog({"library_roots": [str(root)]},
+                                           index=index, encoder=encoder, store=object())
             try:
                 dialog.search_tabs.setCurrentIndex(1)
                 dialog.query_image.setText(str(red))
@@ -316,7 +400,126 @@ class ImageSearchDialogTests(unittest.TestCase):
                 self.assertIn("图片＋文字", dialog.status.text())
                 encoder.text.assert_called_once_with("蓝色")
             finally:
-                dialog.close()
+                self.close_dialog(dialog)
+
+    def test_text_and_image_queries_exclude_cached_inventory_results(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            library, inventory = root / "library", root / "inventory"
+            library.mkdir()
+            inventory.mkdir()
+            selected = library / "blue.png"
+            excluded = inventory / "red.png"
+            Image.new("RGB", (8, 8), "blue").save(selected)
+            Image.new("RGB", (8, 8), "red").save(excluded)
+            encoder = FakeEncoder()
+            index = ImageSearchIndex(root / "index")
+            index.sync(group(excluded) + discover_external_groups([library]), encoder)
+            dialog = SmartImageSearchDialog({"library_roots": [str(library)]},
+                                           index=index, encoder=encoder, store=Mock())
+            try:
+                self.wait_count(dialog)
+                self.assertIn("1 张", dialog.index_status.text())
+                captured = []
+                def execute(task, _message):
+                    captured.append(task(lambda *_: None, lambda: False))
+                    return True
+                with patch.object(dialog, "_start", side_effect=execute):
+                    dialog.query_text.setText("红色")
+                    dialog.search()
+                    dialog.search_tabs.setCurrentIndex(1)
+                    dialog.query_image.setText(str(excluded))
+                    dialog.search()
+                self.assertEqual(len(captured), 2)
+                for result in captured:
+                    self.assertEqual([Path(row["path"]) for row in result["rows"]], [selected])
+                self.assertEqual(index.count(), 2)
+            finally:
+                self.close_dialog(dialog)
+
+    def test_update_index_does_not_scan_inventory_or_delete_its_vectors(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            library = root / "library"
+            library.mkdir()
+            selected, excluded = library / "blue.png", root / "inventory.png"
+            Image.new("RGB", (8, 8), "blue").save(selected)
+            Image.new("RGB", (8, 8), "red").save(excluded)
+            encoder = FakeEncoder()
+            index = ImageSearchIndex(root / "index")
+            index.sync(group(excluded), encoder)
+            store = Mock()
+            store.list_image_groups.side_effect = AssertionError("Inventory must not be scanned")
+            dialog = SmartImageSearchDialog({"library_roots": [str(library)]},
+                                           index=index, encoder=encoder, store=store)
+            try:
+                def execute(task, _message):
+                    task(lambda *_: None, lambda: False)
+                    return True
+                with patch.object(dialog, "_start", side_effect=execute):
+                    dialog.update_index()
+                    dialog.update_index()
+                store.list_image_groups.assert_not_called()
+                self.assertEqual(index.count(), 2)
+                self.assertEqual(len(encoder.calls), 2)
+            finally:
+                self.close_dialog(dialog)
+
+    def test_library_change_clears_old_results_and_empty_library_blocks_search(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            image = root / "red.png"
+            Image.new("RGB", (8, 8), "red").save(image)
+            encoder = FakeEncoder()
+            index = ImageSearchIndex(root / "index")
+            index.sync(group(image), encoder)
+            dialog = SmartImageSearchDialog({"library_roots": [str(root)]},
+                                           index=index, encoder=encoder, store=Mock())
+            try:
+                dialog._show_results(index.search(encoder.model_id, [1, 0]))
+                self.assertEqual(dialog.results.count(), 1)
+                dialog.update_settings({"library_roots": []})
+                self.assertEqual(dialog.results.count(), 0)
+                self.assertEqual(dialog._search_rows, [])
+                self.assertIn("0 张", dialog.index_status.text())
+                with patch.object(dialog, "_start") as start, \
+                        patch.object(dialog, "_confirm_model") as confirm, \
+                        patch.object(QtWidgets.QMessageBox, "information") as info:
+                    dialog.search()
+                    dialog.update_index()
+                    start.assert_not_called()
+                    confirm.assert_not_called()
+                    info.assert_called_once()
+                self.assertEqual(index.count(), 1)
+            finally:
+                self.close_dialog(dialog)
+
+    def test_individual_library_scope_clears_paging_and_filters_count(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            first, second = root / "first", root / "second"
+            first.mkdir()
+            second.mkdir()
+            for library in (first, second):
+                Image.new("RGB", (8, 8), "red").save(library / "red.png")
+            encoder = FakeEncoder()
+            index = ImageSearchIndex(root / "index")
+            index.sync(discover_external_groups([first, second]), encoder)
+            dialog = SmartImageSearchDialog({"library_roots": [str(first), str(second)]},
+                                           index=index, encoder=encoder, store=Mock())
+            try:
+                self.assertEqual(dialog.scope.count(), 3)
+                self.wait_count(dialog)
+                self.assertIn("2 张", dialog.index_status.text())
+                dialog._show_results(index.search(encoder.model_id, [1, 0]))
+                dialog.scope.setCurrentIndex(dialog.scope.findData(str(second)))
+                self.wait_count(dialog)
+                self.assertEqual(dialog._selected_roots(), [str(second)])
+                self.assertIn("1 张", dialog.index_status.text())
+                self.assertEqual(dialog.results.count(), 0)
+                self.assertEqual(dialog._search_rows, [])
+            finally:
+                self.close_dialog(dialog)
 
     def test_model_switch_keeps_base_index_without_loading_model(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -340,7 +543,7 @@ class ImageSearchDialogTests(unittest.TestCase):
                 self.assertEqual(dialog.index.path, index.path)
                 self.assertEqual(dialog.index.count(), 1)
             finally:
-                dialog.close()
+                self.close_dialog(dialog)
 
     def test_settings_wait_for_queued_worker_finished_handler(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -359,7 +562,7 @@ class ImageSearchDialogTests(unittest.TestCase):
                 self.assertEqual(dialog.text_weight.value(), 70)
                 self.assertFalse(dialog.encoder.is_loaded)
             finally:
-                dialog.close()
+                self.close_dialog(dialog)
 
     def test_settings_page_round_trip_preserves_roots_and_weight(self):
         page = SmartImageSearchSettingsPage()
@@ -404,7 +607,7 @@ class ImageSearchDialogTests(unittest.TestCase):
                 self.assertEqual(dialog.results.count(), 23)
                 self.assertEqual(dialog._shown, 23)
             finally:
-                dialog.close()
+                self.close_dialog(dialog)
 
     def test_portrait_thumbnail_keeps_its_aspect_ratio(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -434,7 +637,7 @@ class ImageSearchDialogTests(unittest.TestCase):
                 self.assertEqual(dialog.results.defaultDropAction(),
                                  QtCore.Qt.DropAction.MoveAction)
             finally:
-                dialog.close()
+                self.close_dialog(dialog)
 
     def test_drag_cleanup_only_removes_files_actually_moved(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -463,7 +666,7 @@ class ImageSearchDialogTests(unittest.TestCase):
                 self.assertEqual(index.count(encoder.model_id), 0)
                 self.assertEqual(dialog.results.count(), 0)
             finally:
-                dialog.close()
+                self.close_dialog(dialog)
 
     def test_successful_move_drop_removes_source_after_target_copy(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -486,7 +689,7 @@ class ImageSearchDialogTests(unittest.TestCase):
                 self.assertTrue(destination.is_file())
                 self.assertEqual(index.count(encoder.model_id), 0)
             finally:
-                dialog.close()
+                self.close_dialog(dialog)
 
 
 if __name__ == "__main__":

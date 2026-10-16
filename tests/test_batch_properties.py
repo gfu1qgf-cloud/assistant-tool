@@ -46,9 +46,9 @@ class PropertyAndTableTests(unittest.TestCase):
             self.assertEqual(panel.current()["vertical"],"bottom")
             self.assertEqual(panel.current()["align"],"right")
             self.assertEqual(panel.current()["x"],35)
-        self.assertEqual(panel.property_tabs.tabText(0),"排版")
-        self.assertEqual(panel.property_tabs.tabText(1),"位置")
-        self.assertEqual(panel.property_tabs.tabText(2),"内容")
+        self.assertEqual(panel.editor.sections["font"].toggle.text(),"字体")
+        self.assertEqual(panel.editor.sections["position"].toggle.text(),"位置与尺寸")
+        self.assertEqual(panel.editor.sections["source"].toggle.text(),"内容与来源")
 
     def test_nine_alignments_really_change_rendering_and_legacy_fields_no_longer_override(self):
         layers = componentize_layers(None,DEFAULTS)

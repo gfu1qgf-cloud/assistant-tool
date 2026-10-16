@@ -1,7 +1,10 @@
+from model.QtThreadLifecycle import connect_thread_finished, thread_is_active
+import logging
 import math
 import os
 import re
 from pathlib import Path
+from model.BackgroundTasks import BackgroundTaskResultError, directory_resource, directory_tree_resource
 
 from qt_compat import QtCore, QtGui, QtWidgets
 from pydub import AudioSegment, silence
@@ -120,21 +123,25 @@ def is_generated_chunk(path):
     return bool(_GENERATED_CHUNK_PATTERN.search(Path(path).stem))
 
 
-def collect_audio_files(paths, settings):
+def collect_audio_files(paths, settings, cancelled=None):
     normalized = normalize_audio_splitter_settings(settings)
     supported = set(normalized["extensions"])
     recursive = normalized["recursive"]
     result = []
     seen = set()
     for raw_path in paths or ():
+        if cancelled and cancelled():
+            break
         path = Path(str(raw_path)).expanduser()
         candidates = []
         if path.is_file():
             candidates = [path]
         elif path.is_dir():
             iterator = path.rglob("*") if recursive else path.glob("*")
-            candidates = [candidate for candidate in iterator if candidate.is_file()]
+            candidates = (candidate for candidate in iterator if candidate.is_file())
         for candidate in candidates:
+            if cancelled and cancelled():
+                return result
             if candidate.suffix.casefold() not in supported or is_generated_chunk(candidate):
                 continue
             key = _path_key(candidate)
@@ -286,6 +293,34 @@ class AudioSplitWorker(QtCore.QThread):
             }[status]
             self.file_status.emit(str(path), label)
         self.completed.emit(result)
+
+
+def run_audio_split_job(payload, context):
+    settings = normalize_audio_splitter_settings(payload["settings"])
+    context.report("扫描待切分音频", None)
+    files = collect_audio_files(payload["paths"], settings, cancelled=context.is_canceled)
+    result = {"source_count": len(payload["paths"]), "file_count": len(files), "split_count": 0,
+        "skipped_count": 0, "failed_count": 0, "chunk_count": 0, "files": [], "paths": [],
+        "origin": payload.get("origin", "切分音频")}
+    for index, path in enumerate(files):
+        if context.is_canceled():
+            break
+        context.report(f"[{index+1}/{len(files)}] {path.name}", int(index*100/max(1, len(files))))
+        try:
+            # Finish the current file safely, cancel between files. Pydub's
+            # decode/export is not forcibly terminated halfway through a file.
+            item = split_audio_file(path, settings, context.log)
+        except Exception as error:
+            item = {"path": str(path), "status": "failed", "reason": f"{type(error).__name__}: {error}", "outputs": []}
+            context.log(item["reason"])
+        result[item["status"] + "_count"] += 1
+        result["chunk_count"] += len(item.get("outputs", []))
+        result["files"].append(item)
+        result["paths"].extend(item.get("outputs", []))
+    result["cancelled"] = context.is_canceled()
+    if result["failed_count"] and not context.is_canceled():
+        raise BackgroundTaskResultError(f"切分音频失败 {result['failed_count']} 个，请查看结果。", result)
+    return result
 
 
 class DropPathListWidget(QtWidgets.QListWidget):
@@ -527,7 +562,7 @@ class AudioSplitterSettingsPage:
 class AudioSplitterPlugin:
     plugin_id = "audio_splitter"
     display_name = "切分音频"
-    version = "1.0"
+    version = "1.1"
     required_api_version = 1
 
     def __init__(self):
@@ -535,6 +570,7 @@ class AudioSplitterPlugin:
         self.settings = dict(DEFAULT_AUDIO_SPLITTER_SETTINGS)
         self.dialog = None
         self.worker = None
+        self._background_handles = {}
         self.worker_origin = ""
 
     def register(self, context):
@@ -589,7 +625,23 @@ class AudioSplitterPlugin:
         return self.start_paths(paths, origin=f"所选 {len(paths)} 个任务")
 
     def start_paths(self, paths, origin=""):
-        if self.worker is not None and self.worker.isRunning():
+        if callable(getattr(self.context, "submit_background_task", None)):
+            paths = [str(path) for path in paths or () if str(path).strip()]
+            if not paths:
+                return False
+            resources = [directory_resource(Path(path).parent) if Path(path).is_file() else directory_tree_resource(path)
+                         for path in paths]
+            handle = self.context.submit_background_task(title=f"切分音频 · {origin or len(paths)}", runner=run_audio_split_job,
+                payload={"paths": paths, "settings": dict(self.settings), "origin": str(origin or "切分音频")},
+                kind="media", resources=resources)
+            self._background_handles[handle.task_id] = handle
+            handle.completed.connect(lambda result, current=handle: self._background_completed(current, result))
+            handle.failed.connect(lambda message: self.context.log("切分音频：" + message))
+            handle.finished.connect(lambda current=handle: self._background_finished(current))
+            if self.dialog is not None:
+                self.dialog.set_busy(True, "已提交后台，可关闭此窗口；目录扫描也在后台执行。")
+            return True
+        if self.worker is not None and thread_is_active(self.worker):
             QtWidgets.QMessageBox.information(
                 self.context.parent_widget,
                 "切分音频",
@@ -611,7 +663,7 @@ class AudioSplitterPlugin:
         worker.progress.connect(self.context.log)
         worker.file_status.connect(self._on_file_status)
         worker.completed.connect(self._on_completed)
-        worker.finished.connect(self._on_finished)
+        connect_thread_finished(worker, self, 'worker', self._on_finished)
         self.worker = worker
         if self.dialog is not None:
             self.dialog.set_busy(True, f"准备处理 {len(candidates)} 个音频文件……")
@@ -630,7 +682,7 @@ class AudioSplitterPlugin:
             f"跳过 {result.get('skipped_count', 0)} 个，"
             f"失败 {result.get('failed_count', 0)} 个。"
         )
-        self.context.log(f"{self.worker_origin}：{summary}")
+        self.context.log(f"{result.get('origin', self.worker_origin)}：{summary}")
         if self.dialog is not None:
             self.dialog.set_busy(False, summary)
         self.context.notify(
@@ -638,6 +690,19 @@ class AudioSplitterPlugin:
             summary,
             critical=bool(result.get("failed_count")),
         )
+
+    def _background_completed(self, handle, result):
+        for item in result.get("files", []):
+            self._on_file_status(item["path"], {"split": "已切分", "skipped": "正常跳过", "failed": "失败"}[item["status"]])
+        self._on_completed(result)
+        handle.set_result_handler(lambda: QtWidgets.QMessageBox.information(self.context.parent_widget,
+            "音频切分结果", "\n".join(f"{item['path']}：{item['status']} {item.get('reason', '')}"
+                for item in result["files"])), pending=bool(result.get("failed_count")))
+
+    def _background_finished(self, handle):
+        self._background_handles.pop(handle.task_id, None)
+        if self.dialog is not None:
+            self.dialog.set_busy(bool(self._background_handles))
 
     def _on_finished(self):
         worker = self.worker
@@ -648,16 +713,23 @@ class AudioSplitterPlugin:
             worker.deleteLater()
 
     def can_close(self):
-        if self.worker is not None and self.worker.isRunning():
+        if self.worker is not None and thread_is_active(self.worker):
             return False, "切分音频插件仍在处理文件，请等待完成后再退出。"
         return True, ""
 
     def stop(self):
-        if self.worker is not None and self.worker.isRunning():
+        if self._background_handles:
+            for handle in list(self._background_handles.values()):
+                handle.requestInterruption()
+            return False
+        if self.worker is not None and thread_is_active(self.worker):
             self.worker.requestInterruption()
-            self.worker.wait(5000)
+            if not self.worker.wait(5000):
+                self.context.log('切分音频仍在安全停止，保留线程和窗口。', logging.WARNING)
+                return False
         self.worker = None
         if self.dialog is not None:
             self.dialog.shutdown()
             self.dialog.deleteLater()
             self.dialog = None
+        return True

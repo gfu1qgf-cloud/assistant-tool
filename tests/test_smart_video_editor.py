@@ -638,7 +638,8 @@ class SmartVideoEditorTests(unittest.TestCase):
         legacy = normalize_smart_video_editor_settings({
             "compress_internal_pauses": True,
         })
-        self.assertFalse(legacy["compress_internal_pauses"])
+        self.assertTrue(legacy["compress_internal_pauses"])
+        self.assertEqual(legacy["internal_pause_mode"], "enabled")
         self.assertEqual(
             find_pause_removals(words, 0.0, 2.5, settings), []
         )
@@ -2527,7 +2528,17 @@ class SmartVideoEditorTests(unittest.TestCase):
                     segment.get("is_removed")
                     for segment in review_dialog.timeline_review.segments
                 ))
-                self.assertEqual(len(review_dialog.timeline_review.markers), 1)
+                self.assertEqual(sum(
+                    marker["kind"] == "issue"
+                    for marker in review_dialog.timeline_review.markers
+                ), 1)
+                extra_markers = [
+                    marker for marker in review_dialog.timeline_review.markers
+                    if marker["kind"] == "extra_clip"
+                ]
+                self.assertEqual(len(extra_markers), 1)
+                self.assertEqual(extra_markers[0]["clip_index"], 0)
+                self.assertTrue(extra_markers[0]["export_blocker"])
                 self.assertFalse(review_dialog.table.isColumnHidden(
                     review_dialog.COL_ISSUES
                 ))

@@ -4,6 +4,7 @@ from datetime import date, datetime, timezone
 import json
 import math
 from pathlib import Path
+from model.AppDataStorage import data_file
 import sqlite3
 import threading
 import uuid
@@ -72,8 +73,7 @@ class FoodStore:
 
     @contextmanager
     def connection(self, write=False):
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        connection = sqlite3.connect(str(self.path), timeout=10)
+        connection = data_file(self.path).connect(timeout=10)
         try:
             with self._init_lock:
                 if not self._initialized:

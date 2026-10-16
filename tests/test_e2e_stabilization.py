@@ -119,12 +119,13 @@ class FakeButton:
         return self._enabled
 
 
-class FakeVideoAssignmentWorker:
+class FakeVideoAssignmentWorker(QtCore.QThread):
     def __init__(self, *args, **kwargs):
+        # GUI branching fixture: use a real Qt signal/receiver, but no native work.
+        super().__init__()
         self.log = FakeSignal()
         self.completed = FakeSignal()
         self.failed = FakeSignal()
-        self.finished = FakeSignal()
         self.running = False
         self.finished_state = False
         self.interrupted = False
@@ -137,6 +138,9 @@ class FakeVideoAssignmentWorker:
 
     def isFinished(self):
         return self.finished_state
+
+    def wait(self, timeout=0):
+        return not self.running
 
     def requestInterruption(self):
         self.interrupted = True
@@ -406,6 +410,8 @@ class Tier1FeatureCoverageTests(unittest.TestCase):
             self.assertTrue(btn.isEnabled(), "Button must remain enabled for cancellation while thread runs")
             self.assertEqual(btn.text(), "停止分拣")
             self.assertIs(win.assign_video_thread, returned_thread)
+            returned_thread.finish()
+            self.app.processEvents()
 
     def test_tier1_r1_04_thread_emits_log_signals_instead_of_direct_ui_call(self):
         """Verify VideoAssignmentThread communicates through log signals."""
@@ -1121,7 +1127,7 @@ class Tier2BoundaryAndCornerCaseTests(unittest.TestCase):
         log_file = self.tmp_path / "fail.jsonl"
         config = {"task_submission_log_file": str(log_file)}
 
-        with patch.object(Path, "open", side_effect=OSError("Disk full")):
+        with patch('model.AppDataStorage.builtins.open', side_effect=OSError("Disk full")):
             with self.assertRaises(OSError):
                 append_audit_events(config, [{"key": "val"}])
 
@@ -1520,6 +1526,7 @@ class Tier4RealWorldApplicationScenarioTests(unittest.TestCase):
             self.assertTrue(thread.isRunning())
 
             thread.finish()
+            self.app.processEvents()
 
             self.assertTrue(win.assign_video_btn.isEnabled())
             self.assertEqual(win.assign_video_btn.text(), "分拣视频")

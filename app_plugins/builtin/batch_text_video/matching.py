@@ -8,7 +8,8 @@ from .store import file_identity
 
 AUDIO_EXTENSIONS = {".mp3", ".wav", ".flac", ".aac", ".m4a", ".ogg", ".opus", ".wma"}
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".mkv", ".avi", ".webm", ".m4v", ".mts"}
-SKIP_DIRECTORIES = {"静态文字版", ".git", ".venv", "music-cache", "video-cache", "__pycache__"}
+SKIP_DIRECTORIES = {"静态文字版", ".git", ".venv", "music-cache", "video-cache", "__pycache__",
+                    ".辅助工具媒体缓存", ".整理上传临时"}
 
 
 def is_link(path):
@@ -29,22 +30,28 @@ def folder_entry(folder, metadata=None, explicit_voice=None):
     files = sorted((p for p in folder.iterdir() if p.is_file()), key=natural_key) if folder.is_dir() else []
     candidates = [p for p in files if p.suffix.casefold() in AUDIO_EXTENSIONS
                   and p.stem.casefold() == "task_audio"]
-    if not candidates and metadata.get("task_name"):
+    audio_name = metadata.get("audio_name") or metadata.get("task_name")
+    if not candidates and audio_name:
         candidates = [p for p in files if p.suffix.casefold() in AUDIO_EXTENSIONS
-                      and p.stem.casefold() == str(metadata["task_name"]).casefold()]
+                      and p.stem.casefold() == str(audio_name).casefold()]
     if explicit_voice:
         candidates = [Path(explicit_voice)]
     voice = str(candidates[0].resolve()) if len(candidates) == 1 else ""
     error = "" if voice else ("找到多个人声音频，请确认使用哪一个。" if candidates else "没有找到任务人声。")
     if metadata.get("text_only") and not candidates:
         error = ""
+    subtitle_stem = Path(voice).stem.casefold() if voice else "task_audio"
+    subtitles = [p for p in files if p.suffix.casefold() == ".srt" and p.stem.casefold() == subtitle_stem]
+    subtitle = str(subtitles[0].resolve()) if len(subtitles) == 1 else ""
+    from .task_naming import is_task_video
     videos = [p for p in files if p.suffix.casefold() in VIDEO_EXTENSIONS
-              and not p.stem.endswith("_文字版")]
+              and not re.search(r"_文字版(?:_\d+)?$", p.stem) and not is_task_video(p)]
     background = str(videos[0].resolve()) if len(videos) == 1 else ""
     label = str(metadata.get("label") or (Path(explicit_voice).stem if explicit_voice
                 and Path(explicit_voice).stem.casefold() != "task_audio" else folder.name))
     stem = (folder.name + "_" + Path(voice).stem) if voice else folder.name
     return {"id": uuid.uuid4().hex, "path": background, "voice_path": voice,
+            "task_voice_path": voice, "task_subtitle_path": subtitle,
             "task_dir": str(folder.resolve()), "label": label,
             "title": str(metadata.get("title") or ""), "body": str(metadata.get("body") or ""),
             "name": stem + "_文字版", "status": "待生成" if (voice or metadata.get("text_only")) and background else "需配置",
@@ -106,7 +113,7 @@ def merge_entries(state, entries):
                     and not job.get("voice_path") and not job.get("task_dir")]
         if len(existing) == 1:
             job = existing[0]
-            for field in ("voice_path", "task_dir", "label", "match_error", "status", "error"):
+            for field in ("voice_path", "task_voice_path", "task_subtitle_path", "task_dir", "label", "match_error", "status", "error"):
                 job[field] = entry[field]
             for field in ("title", "body"):
                 if not job.get(field):

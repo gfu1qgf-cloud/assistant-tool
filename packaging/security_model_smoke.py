@@ -34,7 +34,7 @@ if mode == 'clip':
             images=[Image.new('RGB', (64, 96), 'red')], return_tensors='pt')))
         result['image'] = values.detach().cpu().numpy()
 elif mode == 'image':
-    from app_plugins.builtin.smart_image_search.encoder import ChineseImageEncoder
+    from model.image_retrieval.encoder import ChineseImageEncoder
     from PIL import Image
     encoder = ChineseImageEncoder('base')
     result['text'] = encoder.text('教堂中的人')

@@ -1,6 +1,9 @@
 # Local runtime configuration and API keys
 /config.json
 /config[0-9]*.json
+/storage_bootstrap.json
+/AssistantToolData/
+/.AssistantToolData-migration-*/
 .~lock.*#
 .env
 .env.*
@@ -16,6 +19,7 @@
 /GoogleSheetsToken.json
 
 # Private operational records and personal data
+/PluginData/
 /TaskSubmissionLog.jsonl
 /TaskResultPendingFiles.json
 /GoogleSheetMonitorState.json
@@ -34,12 +38,15 @@
 /SmartImageSearch/
 /SmartImageAssignment/
 /SmartMusicSearch/
+/SmartVideoSearch/
 /VideoPromptAssistant/
 /BatchTextVideo/
+/NodeWorkflows/
 
 # Standard FFmpeg runtime is downloaded and checksum-verified at build time.
 /runtime/ffmpeg/
 /CookingAssistant/
+/AIModelClient/
 /DailyQuantityCategories.json
 /DailyQuantityCategories.json.bak
 /config/

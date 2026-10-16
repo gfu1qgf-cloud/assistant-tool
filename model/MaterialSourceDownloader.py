@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from model.AppDataStorage import data_directory, data_file, data_io
+
 import os
 import json
 import hashlib
@@ -178,7 +180,7 @@ def _valid_remote_file(path, metadata):
         return False
     # Required to compare Drive's checksum; not a security trust decision.
     digest = hashlib.md5(usedforsecurity=False)
-    with path.open("rb") as stream:
+    with data_io.open(path, "rb") as stream:
         for block in iter(lambda: stream.read(4 * 1024 * 1024), b""):
             digest.update(block)
     return digest.hexdigest() == expected_md5
@@ -300,7 +302,7 @@ def _download_api_file(
     complete_meta = preferred.with_name(preferred.name + ".complete.json")
     if reuse_existing and preferred.is_file():
         try:
-            recorded = json.loads(complete_meta.read_text(encoding="utf-8"))
+            recorded = json.loads(data_file(complete_meta).read_text(encoding="utf-8"))
         except (OSError, ValueError):
             recorded = None
         if recorded == _remote_signature(metadata) and (
@@ -309,8 +311,8 @@ def _download_api_file(
             _report(progress_callback, f"复用已完成的文件：{preferred.name}")
             return preferred
         if isinstance(recorded, dict) and recorded.get("id") == str(metadata.get("id")):
-            preferred.unlink()
-            complete_meta.unlink(missing_ok=True)
+            data_file(preferred).unlink()
+            data_file(complete_meta).unlink(missing_ok=True)
     target = _unique_target(output_dir, name)
     part = target.with_name(target.name + ".part")
     resume_meta = part.with_name(part.name + ".resume.json")
@@ -320,15 +322,15 @@ def _download_api_file(
     offset = 0
     if can_resume and part.is_file():
         try:
-            recorded = json.loads(resume_meta.read_text(encoding="utf-8"))
+            recorded = json.loads(data_file(resume_meta).read_text(encoding="utf-8"))
             if recorded == signature:
                 offset = part.stat().st_size
         except (OSError, ValueError):
             pass
     if not offset and part.exists():
-        part.unlink()
+        data_file(part).unlink()
     if can_resume:
-        resume_meta.write_text(json.dumps(signature), encoding="utf-8")
+        data_file(resume_meta).write_text_direct(json.dumps(signature), encoding="utf-8")
     _report(progress_callback, f"正在下载：{target.name}")
     try:
         if offset and _valid_remote_file(part, metadata):
@@ -336,7 +338,7 @@ def _download_api_file(
         else:
             if offset >= int(metadata.get("size") or 0) > 0:
                 offset = 0
-                part.unlink()
+                data_file(part).unlink()
             while True:
                 original_http = getattr(request, "http", None)
                 try:
@@ -363,18 +365,18 @@ def _download_api_file(
                     if not offset:
                         raise
                     offset = 0
-                    part.unlink(missing_ok=True)
+                    data_file(part).unlink(missing_ok=True)
                 finally:
                     if original_http is not None:
                         request.http = original_http
         if can_resume and not _valid_remote_file(part, metadata):
-            part.unlink(missing_ok=True)
+            data_file(part).unlink(missing_ok=True)
             raise DownloadError(f"下载校验未通过：{target.name}，请重试")
         if duplicate_index is not None:
             duplicate = duplicate_index.find_same_content(part)
             if duplicate is not None:
-                part.unlink()
-                resume_meta.unlink(missing_ok=True)
+                data_file(part).unlink()
+                data_file(resume_meta).unlink(missing_ok=True)
                 _report(progress_callback, f"跳过重复素材：{name}（已存在：{duplicate.name}）")
                 return None
         final_target = target
@@ -382,14 +384,14 @@ def _download_api_file(
             desired = target.with_suffix(jfif_content_extension(part))
             if desired != target:
                 final_target = _unique_target(output_dir, desired.name)
-        os.replace(str(part), str(final_target))
-        resume_meta.unlink(missing_ok=True)
+        data_io.replace(str(part), str(final_target))
+        data_file(resume_meta).unlink(missing_ok=True)
         if reuse_existing and final_target == preferred:
-            complete_meta.write_text(json.dumps(_remote_signature(metadata)), encoding="utf-8")
+            data_file(complete_meta).write_text_direct(json.dumps(_remote_signature(metadata)), encoding="utf-8")
     except BaseException:
         if not can_resume:
-            part.unlink(missing_ok=True)
-            resume_meta.unlink(missing_ok=True)
+            data_file(part).unlink(missing_ok=True)
+            data_file(resume_meta).unlink(missing_ok=True)
         raise
     if duplicate_index is not None:
         duplicate_index.register(final_target)
@@ -453,7 +455,7 @@ def _download_api_item(
     target_dir = _safe_target(output_dir, folder_name) if reuse_existing else _unique_target(output_dir, folder_name)
     if target_dir.is_symlink():
         raise DownloadError("网盘缓存目录异常（符号链接），已停止下载")
-    target_dir.mkdir(parents=True, exist_ok=reuse_existing)
+    data_directory(target_dir).ensure(parents=True, exist_ok=reuse_existing)
     _report(progress_callback, f"正在读取网盘文件夹：{folder_name}")
     downloaded = []
     skipped = 0
@@ -491,7 +493,7 @@ def download_google_drive_source(
     """
     link = parse_material_drive_link(url)
     output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
+    data_directory(output_dir).ensure(parents=True, exist_ok=True)
     public_error = None
 
     if not link.is_folder:
@@ -508,7 +510,7 @@ def download_google_drive_source(
             if status == "downloaded" and duplicate_index is not None:
                 duplicate = duplicate_index.find_same_content(target)
                 if duplicate is not None:
-                    target.unlink()
+                    data_file(target).unlink()
                     _report(progress_callback, f"跳过重复素材：{target.name}（已存在：{duplicate.name}）")
                     return MaterialDownloadResult((), 0, 1, False)
                 duplicate_index.register(target)

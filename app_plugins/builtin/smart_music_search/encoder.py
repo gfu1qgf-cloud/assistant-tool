@@ -121,6 +121,12 @@ class MusicEncoder:
     def label(self):
         return self.spec["label"]
 
+    def release(self):
+        """Only call after the owning worker has been fully joined."""
+        self._text_cache.clear()
+        self._translation = None
+        self._music = None
+
     def segment_starts(self, duration):
         from .audio import segment_starts
         return segment_starts(duration, self.coverage)

@@ -1,3 +1,4 @@
+from model.AppDataStorage import data_io, data_file, data_directory
 import json
 from pathlib import Path
 
@@ -23,7 +24,7 @@ def normalize_ui_theme(value):
 
 def load_configured_ui_theme(config_path):
     try:
-        config = json.loads(Path(config_path).read_text(encoding="utf-8-sig"))
+        config = json.loads(data_file(Path(config_path)).read_text(encoding="utf-8-sig"))
     except (FileNotFoundError, OSError, TypeError, ValueError):
         return DEFAULT_UI_THEME
     if not isinstance(config, dict):

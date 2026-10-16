@@ -1,3 +1,5 @@
+
+from model.AppDataStorage import data_io, data_file, data_directory
 import random
 import asyncio
 import logging
@@ -5,7 +7,11 @@ import os
 import random
 import re
 import time
+import shutil
+import subprocess
+import tempfile
 from pathlib import Path
+from bisect import bisect_right
 
 import edge_tts
 from dotenv import load_dotenv
@@ -24,6 +30,10 @@ from elevenlabs import VoiceSettings
 # ElevenLabs API key 将由调用方传入，符合单一职责原则
 
 logger = logging.getLogger("assistant_tool.audio")
+LATEST_ELEVENLABS_MODEL_ID = "eleven_v4"
+# Official models / text-to-dialogue docs verified 2026-10-07. Keep individual
+# dialogue requests <= 2000 characters to avoid silently truncated long audio.
+LATEST_ELEVENLABS_REQUEST_CHARS = 2000
 
 
 def _emit_progress(progress_callback, message):
@@ -157,12 +167,14 @@ def _save_audio_with_api_keys(api_keys, filename, convert_audio,
                               api_key_status_config='config.json',
                               progress_callback=None):
     """依次尝试 Key，并仅在音频完整生成后替换目标文件。"""
+    from model.OfflineMode import require_online
+    require_online("ElevenLabs 音频生成")
     temp_filename = f"{filename}.part"
 
     for index, api_key in enumerate(api_keys, 1):
         try:
             if os.path.exists(temp_filename):
-                os.remove(temp_filename)
+                data_io.remove(temp_filename)
 
             _emit_progress(
                 progress_callback,
@@ -173,7 +185,7 @@ def _save_audio_with_api_keys(api_keys, filename, convert_audio,
             audio = convert_audio(elevenlabs_client)
 
             has_audio = False
-            with open(temp_filename, "wb") as f:
+            with data_io.open(temp_filename, "wb") as f:
                 for chunk in audio:
                     if chunk:
                         f.write(chunk)
@@ -182,7 +194,21 @@ def _save_audio_with_api_keys(api_keys, filename, convert_audio,
             if not has_audio:
                 raise RuntimeError("ElevenLabs 返回了空音频")
 
-            os.replace(temp_filename, filename)
+            data_io.replace(temp_filename, filename)
+            from model.ElevenLabsTimings import TimedAudio, save_timings
+            if isinstance(audio, TimedAudio):
+                if audio.words:
+                    try:
+                        from model.ElevenLabsSpeech import duration
+                        seconds = duration(filename, _speech_ffmpeg())
+                        dynamic = save_timings(filename, audio.words, seconds, source=audio.source)
+                        _emit_progress(progress_callback, '逐词时间戳已保存：'+dynamic.name+'；原 SRT 未修改。')
+                    except Exception as error:
+                        # Audio has already succeeded. Never bill a second
+                        # generation because metadata/FFmpeg/disk writing failed.
+                        _emit_progress(progress_callback, '音频已保存，逐词信息未保存（'+type(error).__name__+'）；原 SRT 未修改，不重复生成。')
+                elif audio.warning:
+                    _emit_progress(progress_callback, audio.warning)
             _record_status(
                 api_key_status_config,
                 api_key,
@@ -199,7 +225,7 @@ def _save_audio_with_api_keys(api_keys, filename, convert_audio,
             return True
         except Exception as e:
             if os.path.exists(temp_filename):
-                os.remove(temp_filename)
+                data_io.remove(temp_filename)
 
             error_type, details = _classify_api_error(e)
             logger.warning(
@@ -288,9 +314,16 @@ def _save_audio_with_api_keys(api_keys, filename, convert_audio,
     return False
 
 
+def _credentials(api_keys, api_key, config_path, session):
+    if session:
+        from model.ElevenLabsService import credentials_for_tts
+        return credentials_for_tts(session)
+    return normalize_api_keys(api_keys) or normalize_api_keys(api_key), config_path
+
+
 def CreateAudio(text, filename, voice_id=None, model_id=None, speed=1.0,
                 pitch=1.0, api_key=None, api_keys=None,
-                api_key_status_config='config.json', progress_callback=None):
+                api_key_status_config='config.json', progress_callback=None, api_session=None):
     """
     创建 ElevenLabs 语音文件
 
@@ -304,9 +337,7 @@ def CreateAudio(text, filename, voice_id=None, model_id=None, speed=1.0,
         api_key: 兼容旧调用方式的单个 ElevenLabs API key
         api_keys: 按顺序尝试的 ElevenLabs API key 列表
     """
-    keys = normalize_api_keys(api_keys)
-    if not keys:
-        keys = normalize_api_keys(api_key)
+    keys, api_key_status_config = _credentials(api_keys, api_key, api_key_status_config, api_session)
     if not keys:
         _emit_progress(progress_callback, "错误: 未提供 ElevenLabs API key")
         return False
@@ -332,13 +363,14 @@ def CreateAudio(text, filename, voice_id=None, model_id=None, speed=1.0,
     )
 
     def convert_audio(elevenlabs_client):
-        return elevenlabs_client.text_to_speech.convert(
+        from model.ElevenLabsSpeech import timed_response
+        return timed_response(elevenlabs_client.text_to_speech.convert_with_timestamps(
             text=text,
             voice_id=voice_id,
             model_id=model_id,
             output_format="mp3_44100_128",
-            voice_settings=voice_settings
-        )
+            voice_settings=voice_settings, request_options={'max_retries':0,'timeout_in_seconds':180}
+        ))
 
     return _save_audio_with_api_keys(
         keys,
@@ -347,6 +379,70 @@ def CreateAudio(text, filename, voice_id=None, model_id=None, speed=1.0,
         api_key_status_config=api_key_status_config,
         progress_callback=progress_callback,
     )
+
+
+def _split_latest_audio_text(text):
+    limit = LATEST_ELEVENLABS_REQUEST_CHARS
+    boundaries, natural = [], set()
+    for match in re.finditer(r"\s+", text):
+        boundaries.append(match.end())
+        preceding = text[max(0, match.start() - 5):match.start()].rstrip('"”’»)]')
+        if preceding.endswith(tuple(".!?。！？;；…")):
+            natural.add(match.end())
+    chunks, start = [], 0
+    while len(text) - start > limit:
+        left = bisect_right(boundaries, start)
+        right = bisect_right(boundaries, start + limit)
+        candidates = boundaries[left:right]
+        if not candidates:
+            raise ValueError("文案包含超过2000字符的连续无空格文本；请补充词间空格或分段，未发送生成请求。")
+        preferred = [point for point in candidates if point in natural and point - start >= limit * .7]
+        end = preferred[-1] if preferred else candidates[-1]
+        chunks.append(text[start:end])
+        start = end
+    chunks.append(text[start:])
+    return chunks
+
+
+def _speech_ffmpeg():
+    from app_paths import APP_ROOT
+    for path in (APP_ROOT / "runtime/ffmpeg/ffmpeg.exe", APP_ROOT / "runtime/ffmpeg/ffmpeg"):
+        if path.is_file():
+            return str(path)
+    found = shutil.which("ffmpeg")
+    if not found:
+        raise FileNotFoundError("长文音频合并需要FFmpeg；请恢复程序的runtime/ffmpeg目录。尚未发送生成请求。")
+    return found
+
+
+def CreateAudioLatest(text, filename, voice_id=None, api_key=None, api_keys=None,
+                      api_key_status_config='config.json', progress_callback=None, api_session=None):
+    """Use the current latest model for an explicit task-table Voice ID.
+
+    Existing profile-based v2/v3 calls remain unchanged. Long texts are sent in
+    whole-word chunks and combined through FFmpeg before atomic replacement.
+    No silent downgrade or random voice substitution is allowed.
+    """
+    text, voice_id = str(text or "").strip(), str(voice_id or "").strip()
+    if not text:
+        raise ValueError("任务语音文案为空")
+    if not voice_id or re.search(r"\s", voice_id):
+        raise ValueError("语音ID应只填写一个ElevenLabs Voice ID，不要附加声音名称或其他文字。")
+    keys, api_key_status_config = _credentials(api_keys, api_key, api_key_status_config, api_session)
+    if not keys:
+        _emit_progress(progress_callback, "错误: 未提供 ElevenLabs API key")
+        return False
+    chunks = _split_latest_audio_text(text)
+    ffmpeg = _speech_ffmpeg() if len(chunks) > 1 else None
+    _emit_progress(progress_callback, f"[任务语音ID] 模型={LATEST_ELEVENLABS_MODEL_ID}，Voice ID={voice_id}，请求分段={len(chunks)}")
+
+    def convert_audio(client):
+        from model.ElevenLabsSpeech import dialogue_audio
+        return dialogue_audio(client, chunks, filename, voice_id, LATEST_ELEVENLABS_MODEL_ID, ffmpeg,
+            lambda message: _emit_progress(progress_callback, message))
+
+    return _save_audio_with_api_keys(keys, filename, convert_audio,
+        api_key_status_config=api_key_status_config, progress_callback=progress_callback)
 
 
 def CreateAudio3(
@@ -358,6 +454,7 @@ def CreateAudio3(
         api_keys=None,
         api_key_status_config='config.json',
         progress_callback=None,
+        api_session=None,
 ):
     """
     使用 ElevenLabs eleven_v3 模型，自动注入 Audio Tags 实现情感表演。
@@ -369,9 +466,7 @@ def CreateAudio3(
       0.70+     → Robust   (稳定但表现力弱)
     """
 
-    keys = normalize_api_keys(api_keys)
-    if not keys:
-        keys = normalize_api_keys(api_key)
+    keys, api_key_status_config = _credentials(api_keys, api_key, api_key_status_config, api_session)
     if not keys:
         _emit_progress(progress_callback, "错误: 未提供 ElevenLabs API key")
         return False
@@ -389,13 +484,14 @@ def CreateAudio3(
     )
 
     def convert_audio(elevenlabs_client):
-        return elevenlabs_client.text_to_speech.convert(
+        from model.ElevenLabsSpeech import timed_response
+        return timed_response(elevenlabs_client.text_to_speech.convert_with_timestamps(
             text=text,
             voice_id=voice_id,
-            model_id="eleven_v3",  # 最新模型，固定
+            model_id="eleven_v3",  # 保留既有v3配置，不随任务语音ID的默认模型改变
             output_format="mp3_44100_128",
-            voice_settings=voice_settings,
-        )
+            voice_settings=voice_settings, request_options={'max_retries':0,'timeout_in_seconds':180},
+        ))
 
     return _save_audio_with_api_keys(
         keys,
@@ -408,6 +504,8 @@ def CreateAudio3(
 
 def CreateTTSAudio(text, voice_type, filename, rate="+0%", pitch="+0Hz",
                    progress_callback=None):
+    from model.OfflineMode import require_online
+    require_online("Edge TTS 音频生成")
     # --- 新增步骤：简单的自动断行 ---
     # 逻辑：找到 . ! ? 以及中文的 。 ！？，在它们后面强制加一个换行符 \n
     # 这样 TTS 读到这里会有一个自然的停顿

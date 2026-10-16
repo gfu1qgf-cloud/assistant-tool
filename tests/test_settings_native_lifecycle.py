@@ -42,7 +42,8 @@ class SettingsNativeLifecycleTests(unittest.TestCase):
                 assert window.task_delivery_plugin.context.gemini_keys is window.gemini_keys
                 assert window.video_prompt_assistant_plugin.context.gemini_keys is window.gemini_keys
                 assert window.cooking_assistant_plugin.context.gemini_keys is window.gemini_keys
-                assert any('做饭小助手' in action.text() for action in window.plugin_host.menu.actions())
+                assert any('生活助手' in action.text() for action in window.plugin_host.menu.actions())
+                assert window.cooking_assistant_plugin is window.waste_reminder_plugin.cooking
                 window.gemini_keys.apply_config({'gemini_api_keys': ['test-key']})
                 worker = threading.Thread(target=lambda: window.gemini_keys.report_failure('test-key', 'test-model', 429))
                 worker.start()
@@ -68,7 +69,7 @@ class SettingsNativeLifecycleTests(unittest.TestCase):
                             assert isinstance(dialog, MainSettingDialog)
                             assert dialog.settingTabWidget.indexOf(dialog.gemini_keys_editor) >= 0
                             assert not hasattr(dialog, 'task_result_gemini_keys_edit')
-                            assert '做饭小助手' in [dialog.settingTabWidget.tabText(i) for i in range(dialog.settingTabWidget.count())]
+                            assert '生活助手' in [dialog.settingTabWidget.tabText(i) for i in range(dialog.settingTabWidget.count())]
                             dialog.done(QtWidgets.QDialog.DialogCode.Accepted)
                         QtCore.QTimer.singleShot(0, close_settings)
                         window.openSettings()

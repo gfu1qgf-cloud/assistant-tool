@@ -1,10 +1,12 @@
+
+from model.AppDataStorage import data_io, data_file, data_directory
 import copy
 import json
 import os
 import re
 from pathlib import Path
 
-from app_paths import APP_ROOT
+from app_paths import DATA_ROOT as APP_ROOT
 
 DEFAULT_CONFIG_FILE = APP_ROOT / "config.json"
 LEGACY_TASK_TABLE_SCHEMA_FILE = APP_ROOT / "TaskTableSchema.json"
@@ -25,12 +27,22 @@ FIELD_ORDER = (
     "subcategory",
     "daily_stat_sheet",
     "daily_stat_category",
+    "task_audio_voice_id",
+    "task_requirements",
+    "task_notes",
+    "task_video_prompt",
+    "task_resolve_requirement",
 )
 
 # User-facing labels and real spreadsheet aliases belong in the ignored local
 # config.  Canonical field names are deliberately neutral and safe to publish.
 FIELD_LABELS = {field_name: field_name for field_name in FIELD_ORDER}
 FIELD_LABELS.update({
+    "task_requirements": "任务需求",
+    "task_notes": "备注",
+    "task_video_prompt": "视频生成提示词（sora2等）",
+    "task_resolve_requirement": "达芬奇需求（原文）",
+    "task_audio_voice_id": "语音ID",
     "daily_stat_sheet": "每日统计分页",
     "daily_stat_category": "每日统计类别",
 })
@@ -79,6 +91,19 @@ DEFAULT_TASK_TABLE_SCHEMA = {
         "task_reference_link": {"aliases": [], "default": ""},
         "task_audio_text": {"aliases": [], "default": ""},
         "task_audio_type": {"aliases": [], "default": ""},
+        "task_audio_voice_id": {
+            "aliases": ["语音ID", "声音ID", "配音ID", "voice_id", "task_audio_voice_id"], "default": ""
+        },
+        "task_requirements": {
+            "aliases": ["任务需求", "任务要求", "制作要求", "需求说明", "task_requirements"], "default": ""
+        },
+        "task_notes": {"aliases": ["备注", "任务备注", "task_notes"], "default": ""},
+        "task_video_prompt": {
+            "aliases": ["sora2提示词", "sora提示词", "视频生成提示词", "task_video_prompt"], "default": ""
+        },
+        "task_resolve_requirement": {
+            "aliases": ["需要达芬奇吗？", "需要达芬奇吗?", "需要达芬奇吗", "是否需要达芬奇", "达芬奇需求", "task_resolve_requirement"], "default": ""
+        },
         "review_required": {"aliases": [], "default": ""},
         "subcategory": {"aliases": [], "default": ""},
         "daily_stat_sheet": {"aliases": ["每日统计分页"], "default": ""},
@@ -218,7 +243,7 @@ def normalize_task_table_schema(value):
 
 def _read_json_object(path, description):
     try:
-        raw = json.loads(path.read_text(encoding="utf-8-sig"))
+        raw = json.loads(data_file(path).read_text(encoding="utf-8-sig"))
     except OSError as error:
         raise TaskTableSchemaError("无法读取{}：{}".format(description, error)) from error
     except json.JSONDecodeError as error:
@@ -232,7 +257,7 @@ def _read_json_object(path, description):
     return raw
 
 
-def load_task_table_schema(path=None):
+def load_task_table_schema(path=None, migrate_legacy=True):
     config_path = Path(path or DEFAULT_CONFIG_FILE)
     config = {}
     if config_path.exists():
@@ -244,7 +269,8 @@ def load_task_table_schema(path=None):
             LEGACY_TASK_TABLE_SCHEMA_FILE,
             "旧任务表格结构配置",
         )
-        save_task_table_schema(raw_schema, config_path)
+        if migrate_legacy:
+            save_task_table_schema(raw_schema, config_path)
 
     if raw_schema is not None and not isinstance(raw_schema, dict):
         raise TaskTableSchemaError(
@@ -262,17 +288,17 @@ def save_task_table_schema(schema, path=None):
     if config_path.exists():
         config = _read_json_object(config_path, "主配置")
     config[TASK_TABLE_SCHEMA_CONFIG_KEY] = normalized
-    config_path.parent.mkdir(parents=True, exist_ok=True)
+    data_directory(config_path.parent).ensure(parents=True, exist_ok=True)
     temp_path = config_path.with_name(config_path.name + ".tmp")
     try:
-        temp_path.write_text(
+        data_file(temp_path).write_text_direct(
             json.dumps(config, ensure_ascii=False, indent=4),
             encoding="utf-8",
         )
-        os.replace(str(temp_path), str(config_path))
+        data_io.replace(str(temp_path), str(config_path))
     except OSError:
         try:
-            temp_path.unlink()
+            data_file(temp_path).unlink()
         except OSError:
             pass
         raise

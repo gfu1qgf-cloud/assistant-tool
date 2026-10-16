@@ -1,4 +1,5 @@
 """Bounded video adaptation; crossfade loops reuse one short cached cycle."""
+from model.AppDataStorage import data_directory, data_file, data_io
 from fractions import Fraction
 import hashlib
 import json
@@ -16,6 +17,23 @@ def source_fps(media):
     except (ValueError, ZeroDivisionError):
         pass
     return Fraction(30)
+
+
+def normalize_duration(settings):
+    settings.setdefault("unvoiced_duration_mode", "source")
+    settings.setdefault("unvoiced_duration_seconds", 15.0)
+    if settings["unvoiced_duration_mode"] not in {"source", "fixed"}:
+        raise ValueError("无人声时的成品时长模式无效。")
+    value = settings["unvoiced_duration_seconds"]
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or not .1 <= value <= 86400:
+        raise ValueError("固定成品时长须为0.1秒至24小时。")
+
+
+def target_duration(source_duration, settings, voice_duration=None):
+    normalize_duration(settings)
+    if voice_duration is not None:
+        return voice_duration  # Never silently cut narration to the fixed target.
+    return settings["unvoiced_duration_seconds"] if settings["unvoiced_duration_mode"] == "fixed" else source_duration
 
 
 def adaptation_plan(source_duration, target_duration, settings, fps=30):
@@ -47,10 +65,8 @@ def adaptation_plan(source_duration, target_duration, settings, fps=30):
 
 
 def base_filter(width, height, settings, plan, fps):
-    if settings["fit"] == "cover":
-        fit = f"scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height}"
-    else:
-        fit = f"scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black"
+    from .background_framing import framing_filter
+    fit = framing_filter(width, height, settings)
     rate = f"{fps.numerator}/{fps.denominator}"
     method = settings["slow_interpolation"]
     retiming = f"setpts=(PTS-STARTPTS)/{plan['speed']:.12f},{fit},setsar=1,fps={rate}"
@@ -63,20 +79,33 @@ def base_filter(width, height, settings, plan, fps):
                     f"minterpolate=fps={rate}:mi_mode={'mci' if method == 'motion' else 'blend'},"
                     f"trim=start={padding:.9f},setpts=PTS-STARTPTS")
     # Cover only final-frame rounding, after the interpolation context is handled.
-    return (f"{retiming},format=yuv420p,settb=AVTB,tpad=stop_mode=clone:stop_duration={3/float(fps):.9f},"
+    color = settings.get('_source_color_filter', '')
+    return (f"{color + ',' if color else ''}{retiming},format=yuv420p,settb=AVTB,tpad=stop_mode=clone:stop_duration={3/float(fps):.9f},"
             f"trim=duration={plan['clip_duration']:.9f},setpts=PTS-STARTPTS")
 
 
 def prepare_cycle(source, directory, ffmpeg, ffprobe, width, height, settings, plan, fps, cancel, report):
     from .engine import _run, filter_file_option, probe
     info = Path(source).stat()
-    values = ["cycle-v2", str(Path(source).resolve()), info.st_size, info.st_mtime_ns,
+    values = ["cycle-v4-sdr709", str(Path(source).resolve()), info.st_size, info.st_mtime_ns,
               width, height, settings["fit"], settings["slow_interpolation"],
+              settings.get("_background_crop"), settings.get('_source_color_filter', ''),
               {key: plan[key] for key in ("speed", "clip_duration", "fade")}, str(fps)]
     key = hashlib.sha256(json.dumps(values, sort_keys=True).encode("utf-8")).hexdigest()
     cache = Path(directory)/"video-cache"
-    cache.mkdir(parents=True, exist_ok=True)
+    data_directory(cache).ensure(parents=True, exist_ok=True)
     target = cache/(key + ".mp4")
+    from model.MediaCacheLeases import media_cache_build
+    try:
+        with media_cache_build(target, cancel):
+            return _prepare_cycle_cached(source, cache, target, ffmpeg, ffprobe, width, height, settings, plan, fps, cancel, report)
+    except InterruptedError as error:
+        from .engine import Cancelled
+        raise Cancelled(str(error)) from error
+
+
+def _prepare_cycle_cached(source, cache, target, ffmpeg, ffprobe, width, height, settings, plan, fps, cancel, report):
+    from .engine import _run, filter_file_option, probe
     if target.is_file():
         try:
             duration = probe(target, ffprobe)["duration"]
@@ -87,29 +116,23 @@ def prepare_cycle(source, directory, ffmpeg, ffprobe, width, height, settings, p
             pass
     report("准备可复用的叠化循环；不会为每次重复创建一个大型视频。")
     fade, end = plan["fade"], plan["clip_duration"]
+    from model.MediaColor import sdr_output_filter, sdr_output_args
     graph = [f"[0:v]{base_filter(width,height,settings,plan,fps)},split=3[head][tail][middle]",
              f"[head]trim=start=0:end={fade:.9f},setpts=PTS-STARTPTS[h]",
              f"[tail]trim=start={end-fade:.9f}:end={end:.9f},setpts=PTS-STARTPTS[t]",
              f"[t][h]xfade=transition=fade:duration={fade:.9f}:offset=0,trim=duration={fade:.9f}[join]",
              f"[middle]trim=start={fade:.9f}:end={end-fade:.9f},setpts=PTS-STARTPTS[m]",
-             "[join][m]concat=n=2:v=1:a=0,format=yuv420p[out]"]
-    with tempfile.TemporaryDirectory(dir=cache, prefix="cycle-") as folder:
+             f"[join][m]concat=n=2:v=1:a=0,{sdr_output_filter()}[out]"]
+    with data_io.TemporaryDirectory(dir=cache, prefix="cycle-") as folder:
         script, output = Path(folder)/"cycle.filter", Path(folder)/"cycle.mp4"
-        script.write_text(";\n".join(graph), "utf-8")
+        data_file(script).write_text(";\n".join(graph), "utf-8")
         _run([ffmpeg, "-y", "-nostdin", "-hide_banner", "-loglevel", "error", "-i", str(source),
               filter_file_option(ffmpeg), str(script), "-map", "[out]", "-an", "-c:v", "libx264",
-              "-preset", "veryfast", "-crf", "16", "-pix_fmt", "yuv420p", str(output)], cancel,
+              "-preset", "veryfast", "-crf", "16", "-pix_fmt", "yuv420p", *sdr_output_args(), str(output)], cancel,
              timeout=max(600, end*60))
         duration = probe(output, ffprobe)["duration"]
         if abs(duration - (end-fade)) > 2/float(fps):
             raise RuntimeError("叠化循环时长异常，未继续导出。")
-        os.replace(output, target)
-    files = sorted(cache.glob("*.mp4"), key=lambda p: p.stat().st_mtime)
-    total = sum(p.stat().st_size for p in files)
-    for old in files:
-        if total <= 512 * 1024**2:
-            break
-        if old != target:
-            total -= old.stat().st_size
-            old.unlink()
+        data_io.replace(output, target)
+    # Cleanup runs when the export releases its media-cache lease.
     return target, duration

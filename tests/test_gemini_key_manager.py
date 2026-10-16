@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 import tempfile
 import threading
-from types import SimpleNamespace
+from types import SimpleNamespace, MethodType
 import unittest
 import urllib.error
 from unittest.mock import Mock, patch
@@ -142,7 +142,8 @@ class GeminiKeyManagerTests(unittest.TestCase):
         self.manager.report_failure("key-two", "m", 401)
         with patch.object(detector, "read_cached_detection", return_value={"cached": True}), \
              patch.object(detector, "read_gemini_api_keys", side_effect=AssertionError("must not prompt")):
-            self.assertEqual(detector.detect_video_element(Path("video.mp4"), gemini_keys=self.manager),
+            self.assertEqual(detector.detect_video_element(Path("video.mp4"), gemini_keys=self.manager,
+                                                          detection_mode="ai"),
                              {"cached": True})
 
     def test_detector_uses_shared_state_and_redacts_error(self):
@@ -166,6 +167,7 @@ class GeminiKeyManagerTests(unittest.TestCase):
             path = Path(folder) / "config.json"
             path.write_text(json.dumps({KEYS_CONFIG_KEY: ["key-one", "key-two"], "unrelated": "keep"}))
             fake = SimpleNamespace(config_name=str(path), gemini_keys=self.manager, appendLog=Mock())
+            fake._save_current_config_locked = MethodType(MainDialog._save_current_config_locked, fake)
             fake.dump = lambda: self.manager.update_config(json.loads(path.read_text()))
             with patch("PYUI.main_pyui.os.replace", side_effect=OSError("test failure")), \
                  patch("PYUI.main_pyui.QMessageBox.critical") as alert:
@@ -187,6 +189,7 @@ class GeminiKeyManagerTests(unittest.TestCase):
             path = Path(folder) / "config.json"
             path.write_text(json.dumps(self.manager.snapshot()))
             fake = SimpleNamespace(config_name=str(path), gemini_keys=self.manager, appendLog=Mock())
+            fake._save_current_config_locked = MethodType(MainDialog._save_current_config_locked, fake)
             fake.dump = lambda: self.manager.update_config(json.loads(path.read_text()))
             monitor = ConfigHotReload(path, fake.dump, Mock(), Mock())
             monitor.timer.stop()

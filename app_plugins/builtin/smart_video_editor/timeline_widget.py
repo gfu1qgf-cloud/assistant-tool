@@ -25,6 +25,7 @@ class SmartTimelineWidget(QtWidgets.QWidget):
     clipActivated = QtCore.pyqtSignal(int)
     clipReorderRequested = QtCore.pyqtSignal(int, int)
     clipInclusionRequested = QtCore.pyqtSignal(int, bool)
+    clipLocationRequested = QtCore.pyqtSignal(int)
     removedSegmentRestoreRequested = QtCore.pyqtSignal(object)
     markerActivated = QtCore.pyqtSignal(object)
     subtitleActivated = QtCore.pyqtSignal(object)
@@ -530,9 +531,14 @@ class SmartTimelineWidget(QtWidgets.QWidget):
             if included else "恢复此片段到成片"
         )
         action.setToolTip("只改变智能剪辑导出，不会删除硬盘上的源视频。")
+        menu.addSeparator()
+        location = menu.addAction("打开文件位置")
+        location.setToolTip("打开该片段的文件夹，并选中源视频；不改变当前播放位置。")
         selected = menu.exec(event.globalPos())
         if selected is action:
             self.clipInclusionRequested.emit(clip_index, not included)
+        elif selected is location:
+            self.clipLocationRequested.emit(clip_index)
         event.accept()
 
     def mouseReleaseEvent(self, event):

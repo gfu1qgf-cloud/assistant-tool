@@ -21,11 +21,15 @@ class ImageClassifierPlugin:
         self.settings = normalize_image_classifier_settings({})
         self.dialog = None
 
-    def register(self, context):
+    def bind_context(self, context):
         self.context = context
         self.settings = normalize_image_classifier_settings(
             context.load_config().get(IMAGE_CLASSIFIER_CONFIG_KEY)
         )
+
+    def register(self, context):
+        # Compatibility for callers outside the merged inventory installation.
+        self.bind_context(context)
         context.register_command(PluginCommand(
             command_id="open",
             title="图片/视频素材分类…",
@@ -94,3 +98,5 @@ class ImageClassifierPlugin:
     def stop(self):
         if self.dialog is not None:
             self.dialog.stop_current_work()
+            return self.dialog.can_close()
+        return True

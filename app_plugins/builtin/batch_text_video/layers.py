@@ -1,4 +1,5 @@
 """Static layer schema and bounded image assets; never alter source pictures."""
+from model.AppDataStorage import data_directory, data_file, data_io
 from collections import OrderedDict
 import copy
 import hashlib
@@ -13,31 +14,37 @@ from .components import normalize_source
 
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".jfif", ".webp", ".bmp", ".tif", ".tiff"}
 MAX_IMAGES = 32
+MAX_VISUAL_SIZE_PERCENT = 400
 MAX_TEXT_BOXES = 32
-TEXT_KINDS = {"title", "body", "text"}
+TEXT_KINDS = {"title", "body", "text", "caption"}
 TEXT_STYLE_DEFAULTS = {
+    "writing_mode":"horizontal",
     "font_weight":400,"italic":False,"underline":False,"strikeout":False,
     "capitalization":"normal","letter_spacing":0,"word_spacing":0,"paragraph_spacing":0,
     # Migration fallback: pre-style configurations rendered with a black edge.
-    "outline_width":2,"outline_color":"#000000","outline_opacity":84.31,
-    "shadow_enabled":False,"shadow_color":"#000000","shadow_opacity":65,"shadow_x":5,"shadow_y":5,
+    "outline_width":2,"outline_color":"#000000","outline_opacity":84.31,"outline_blur":0,
+    "shadow_enabled":False,"shadow_color":"#000000","shadow_opacity":65,"shadow_x":5,"shadow_y":5,"shadow_blur":0,
     "background_enabled":False,"background_color":"#000000","background_opacity":35,
     "background_radius":12,"padding":4,
 }
 # Stored bottom-to-top; the UI displays the reverse, like ordinary layer panels.
 DEFAULT_LAYERS = [
-    {"id": "body", "kind": "body", "name": "正文", "enabled": True, "opacity": 100, "outline_color": "#8b0000"},
-    {"id": "title", "kind": "title", "name": "标题", "enabled": True, "opacity": 100, "outline_color": "#8b0000"},
+    {"id": "body", "kind": "body", "name": "正文", "enabled": True, "opacity": 100, "outline_color": "#8b0000", "word_spacing":20},
+    {"id": "title", "kind": "title", "name": "标题", "enabled": True, "opacity": 100, "outline_color": "#8b0000", "word_spacing":20},
 ]
 
 
 def normalize_layers(value=None):
     layers = copy.deepcopy(DEFAULT_LAYERS if value is None else value)
-    if not isinstance(layers, list) or len(layers) > MAX_IMAGES + MAX_TEXT_BOXES + 2:
+    from model.PrivateDataPaths import remap_path_fields
+    remap_path_fields(layers,{'path','thumbnail','source_file','caption_file','key_mask_path'})
+    from .watermarks import migrate_watermarks, normalize_watermark
+    layers = migrate_watermarks(layers)
+    if not isinstance(layers, list) or len(layers) > MAX_IMAGES + MAX_TEXT_BOXES + 15:
         raise ValueError(f"图层格式不正确，最多允许{MAX_IMAGES}个图片图层。")
     ids, kinds = set(), set()
     for layer in layers:
-        if not isinstance(layer, dict) or layer.get("kind") not in {"title", "body", "image", "text"}:
+        if not isinstance(layer, dict) or layer.get("kind") not in {"title", "body", "image", "text", "watermark", "caption", "node_effect"}:
             raise ValueError("图层类型不支持，请检查插件记录。")
         kind = layer["kind"]
         if kind in {"title", "body"}:
@@ -50,32 +57,49 @@ def normalize_layers(value=None):
         if layer["id"] in ids:
             raise ValueError("图层编号重复。")
         ids.add(layer["id"])
-        layer.setdefault("name", {"title": "标题", "body": "正文", "image": "图片", "text": "文本框"}[kind])
+        layer.setdefault("name", {"title": "标题", "body": "正文", "image": "图片", "text": "文本框", "watermark": "四角水印", "caption": "动态字幕", "node_effect": "节点效果"}[kind])
         normalize_source(layer)
+        if kind == "node_effect":
+            from .node_effects import normalize_effect
+            normalize_effect(layer)
+        if kind == "image":
+            from .visual_media import normalize_visual
+            normalize_visual(layer)
         layer.setdefault("enabled", True)
         if not isinstance(layer["enabled"], bool):
             raise ValueError("图层显示开关必须为true或false。")
         layer.setdefault("opacity", 100)
         layer["name"] = str(layer["name"])[:120]
         fields = [("opacity", 0, 100)]
-        positioned = kind in {"image", "text"} or kind in TEXT_KINDS and "font_min" in layer
+        positioned = kind in {"image", "text", "caption"} or kind in TEXT_KINDS and "font_min" in layer
         if positioned:
-            if kind == "image" and layer["source"] not in {"sequence", "pool"} and not layer.get("path"):
+            from .geometry_anchors import normalize_anchors
+            normalize_anchors(layer)
+            if kind == "image" and layer["source"] not in {"file", "sequence", "pool"} and not layer.get("path"):
                 raise ValueError("图片图层缺少文件路径。")
             for field, default in (("x", 50), ("y", 50), ("width", 30), ("height", 30)):
                 layer.setdefault(field, default)
-            fields += [("x", 0, 100), ("y", 0, 100), ("width", 1, 100), ("height", 1, 100)]
+            maximum = MAX_VISUAL_SIZE_PERCENT if kind == 'image' else 100
+            fields += [("x", 0, 100), ("y", 0, 100), ("width", 1, maximum), ("height", 1, maximum)]
         if kind in TEXT_KINDS and positioned:
             for key, default in (("font", "Segoe UI"), ("font_min", 26), ("font_max", 42),
                                  ("color", "#ffffff"), ("align", "center"),
                                  ("vertical", "center"), ("line_spacing", 1.15)):
                 layer.setdefault(key, default)
+            if kind == 'caption' and 'shadow_blur' not in layer:
+                from .caption_styles import is_catalog, effects
+                if is_catalog(layer):
+                    layer['shadow_blur'] = effects(layer)['shadow_blur']
             for key,default in TEXT_STYLE_DEFAULTS.items():
                 layer.setdefault(key,default)
+            from .text_background import normalize_background
+            normalize_background(layer)
+            from .text_colors import normalize_color
+            normalize_color(layer)
             fields += [("font_min", 8, 200), ("font_max", 8, 200), ("line_spacing", .8, 3)]
             fields += [("letter_spacing",-5,30),("word_spacing",-5,60),("paragraph_spacing",0,120),
-                ("outline_width",0,15),("outline_opacity",0,100),("shadow_opacity",0,100),
-                ("shadow_x",-80,80),("shadow_y",-80,80),("background_opacity",0,100),
+                ("outline_width",0,15),("outline_opacity",0,100),("outline_blur",0,150),("shadow_opacity",0,100),
+                ("shadow_x",-80,80),("shadow_y",-80,80),("shadow_blur",0,150),("background_opacity",0,100),
                 ("background_radius",0,150),("padding",0,100)]
             if (not isinstance(layer["font"], str) or len(layer["font"]) > 200
                     or not QtGui.QColor(str(layer["color"])).isValid()
@@ -85,6 +109,11 @@ def normalize_layers(value=None):
             if (type(layer["font_weight"]) is not int or not 1 <= layer["font_weight"] <= 1000
                     or layer["capitalization"] not in {"normal","uppercase","lowercase","smallcaps"}):
                 raise ValueError("文本框字重或大小写样式无效。")
+            from .vertical_text import WRITING_MODES
+            if layer["writing_mode"] not in WRITING_MODES:
+                raise ValueError("文本框文字方向无效。")
+            if kind == "caption" and layer["writing_mode"] != "horizontal":
+                raise ValueError("逐词字幕暂不支持竖排，请使用普通文本框。")
             for key in ("italic","underline","strikeout","shadow_enabled","background_enabled"):
                 if not isinstance(layer[key],bool):
                     raise ValueError("文本框样式开关必须为true或false。")
@@ -101,13 +130,30 @@ def normalize_layers(value=None):
             layer[field] = number
         if kind in TEXT_KINDS and positioned and layer["font_min"] > layer["font_max"]:
             raise ValueError("文本框最小字号不能超过最大字号。")
+        if kind == "watermark":
+            normalize_watermark(layer)
+        if kind == "caption":
+            from .captions import normalize_caption
+            normalize_caption(layer)
+        elif kind in TEXT_KINDS and positioned:
+            from .scrolling_text import normalize_scroll
+            normalize_scroll(layer)
     for default in DEFAULT_LAYERS:
-        if default["kind"] not in kinds:
+        # A converted title/body owns that original slot; do not resurrect a
+        # second drawing of the same text. Removing the effect restores defaults.
+        converted = any(item['kind'] == 'node_effect' and item['id'] == default['id'] for item in layers)
+        if default["kind"] not in kinds and not converted:
             layers.append(copy.deepcopy(default))
     if sum(layer["kind"] == "image" for layer in layers) > MAX_IMAGES:
         raise ValueError(f"最多允许{MAX_IMAGES}个图片图层。")
     if sum(layer["kind"] == "text" for layer in layers) > MAX_TEXT_BOXES:
         raise ValueError(f"最多允许{MAX_TEXT_BOXES}个文本框。")
+    if sum(layer["kind"] == "watermark" for layer in layers) > 1:
+        raise ValueError("每个配置只需一个四角水印组件。")
+    if sum(layer["kind"] == "caption" for layer in layers) > 4:
+        raise ValueError("每个配置最多允许4个动态字幕组件。")
+    if sum(layer["kind"] == "node_effect" for layer in layers) > 8:
+        raise ValueError("每个配置最多允许8个节点效果组件。")
     return layers
 
 
@@ -147,6 +193,9 @@ def read_image(path, bounds=None):
     path = Path(path)
     if not path.is_file():
         raise FileNotFoundError("图层图片不存在：" + path.name)
+    from .visual_media import is_animated, frame
+    if is_animated(path):
+        return frame(path, bounds or QtCore.QSize(4096, 4096))
     if path.stat().st_size > 200 * 1024**2:
         raise ValueError("图层图片文件过大：" + path.name)
     reader = QtGui.QImageReader(str(path))
@@ -209,11 +258,22 @@ def compose_layers(text_images, layers, width, height, darkness, cache=None,tint
         for layer in layers:
             if not layer["enabled"] or layer["opacity"] == 0:
                 continue
+            if layer["kind"] == "node_effect":
+                continue  # Computed by the shared FFmpeg operation compiler.
             painter.setOpacity(layer["opacity"]/100)
             if layer["kind"] == "image":
                 bounds = QtCore.QSize(max(1, math.ceil(width*layer["width"]/100)),
                                      max(1, math.ceil(height*layer["height"]/100)))
-                source = cache.get(layer["path"], bounds) if cache else read_image(layer["path"], bounds)
+                # Native composition keys before resizing. Do the same for the
+                # poster, otherwise downsampling can erase a small green prop
+                # or open its contour before region protection is calculated.
+                decode_bounds = QtCore.QSize(4096, 4096) if layer.get("key_mode", "none") != "none" else bounds
+                source = cache.get(layer["path"], decode_bounds) if cache else read_image(layer["path"], decode_bounds)
+                from .visual_media import keyed_image
+                source = keyed_image(source, layer)
+                if source.width() > bounds.width() or source.height() > bounds.height():
+                    source = source.scaled(bounds, QtCore.Qt.AspectRatioMode.KeepAspectRatio,
+                                           QtCore.Qt.TransformationMode.SmoothTransformation)
                 painter.drawImage(image_rect(layer, source, width, height), source)
             else:
                 painter.drawImage(0, 0, text_images[layer["id"]])
@@ -225,7 +285,7 @@ def compose_layers(text_images, layers, width, height, darkness, cache=None,tint
 def import_images(paths, directory, cancel=None):
     """Decode off the GUI thread and save immutable, orientation-correct PNG copies."""
     directory = Path(directory)/"layer-assets"
-    directory.mkdir(parents=True, exist_ok=True)
+    data_directory(directory).ensure(parents=True, exist_ok=True)
     layers, errors, created = [], [], []
     for raw in paths:
         if cancel and cancel.is_set():
@@ -240,14 +300,20 @@ def import_images(paths, directory, cancel=None):
             if max(image.width(), image.height()) > 4096:
                 image = image.scaled(4096, 4096, QtCore.Qt.AspectRatioMode.KeepAspectRatio,
                                      QtCore.Qt.TransformationMode.SmoothTransformation)
-            handle, temporary = tempfile.mkstemp(prefix="import-", suffix=".png", dir=directory)
+            from model.AppDataStorage import application_storage
+            storage = application_storage()
+            if storage.protected:
+                # QImage.save writes through Qt, not the Python handle broker.
+                # Reserve worst-case pixel bytes plus PNG/thumbnail overhead.
+                storage.check_capacity(directory, image.sizeInBytes() + 1024**2)
+            handle, temporary = data_io.mkstemp(prefix="import-", suffix=".png", dir=directory)
             os.close(handle)
             if not image.save(temporary, "PNG"):
                 raise OSError("保存图片副本失败：" + path.name)
-            digest = hashlib.sha256(Path(temporary).read_bytes()).hexdigest()
+            digest = hashlib.sha256(data_file(Path(temporary)).read_bytes()).hexdigest()
             asset = directory/("asset-" + digest + ".png")
             if not asset.exists():
-                os.replace(temporary, asset)
+                data_io.replace(temporary, asset)
                 created.append(asset)
             thumbnail = asset.with_suffix(".thumb.png")
             if not thumbnail.exists():
@@ -263,10 +329,10 @@ def import_images(paths, directory, cancel=None):
             errors.append(f"{path.name}：{error}")
         finally:
             if temporary and Path(temporary).exists():
-                Path(temporary).unlink()
+                data_file(Path(temporary)).remove()
     cancelled = bool(cancel and cancel.is_set())
     if cancelled:
         for asset in created:
-            asset.unlink(missing_ok=True)
+            data_file(asset).remove(missing_ok=True)
         layers = []
     return {"layers": layers, "errors": errors, "cancelled": cancelled}

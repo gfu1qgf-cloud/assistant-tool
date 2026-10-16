@@ -1,3 +1,4 @@
+from model.QtThreadLifecycle import connect_thread_finished, thread_is_active
 from pathlib import Path
 
 from qt_compat import QtCore, QtGui, QtWidgets
@@ -245,7 +246,7 @@ class VideoPromptDialog(QtWidgets.QDialog):
             self.prompt_editor.setPlainText(item.data(QtCore.Qt.ItemDataRole.UserRole))
 
     def is_busy(self):
-        return self.worker is not None and self.worker.isRunning()
+        return self.worker is not None and thread_is_active(self.worker)
 
     def _api_keys(self):
         # Also allow offline-only hosts that do not offer cloud services.
@@ -278,7 +279,7 @@ class VideoPromptDialog(QtWidgets.QDialog):
         self.worker = AnalyzeThread(self.image_jpeg, keys, model, self, gemini_keys=manager)
         self.worker.succeeded.connect(self._analysis_done)
         self.worker.failed.connect(self._analysis_failed)
-        self.worker.finished.connect(self._analysis_finished)
+        connect_thread_finished(self.worker, self, 'worker', self._analysis_finished)
         self.worker.start()
 
     def _analysis_done(self, result):

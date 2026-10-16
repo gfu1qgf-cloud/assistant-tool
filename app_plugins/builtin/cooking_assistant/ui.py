@@ -1,3 +1,4 @@
+from model.QtThreadLifecycle import connect_thread_finished, thread_is_active
 from datetime import timedelta
 import logging
 import traceback
@@ -415,7 +416,7 @@ class CookingDialog(QtWidgets.QDialog):
         self.worker.progress.connect(self.generation_progress)
         self.worker.succeeded.connect(self.generated)
         self.worker.failed.connect(self.generation_failed)
-        self.worker.finished.connect(self.generation_finished)
+        connect_thread_finished(self.worker, self, 'worker', self.generation_finished)
         self.worker.start()
 
     def generated(self, result):

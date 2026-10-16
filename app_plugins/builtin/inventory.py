@@ -1,8 +1,13 @@
+from model.AppDataStorage import data_directory
+from model.QtThreadLifecycle import connect_thread_finished, thread_is_active
 import logging
 import os
 import pathlib
+from model.BackgroundTasks import BackgroundTaskHandle, directory_tree_resource
+from model.InventoryBackground import inventory_resources, run_material_sync_job
 
 from qt_compat import QtCore, QtGui, QtWidgets
+from model.OfflineMode import is_offline
 
 from app_plugins.api import MAIN_MENU, TASK_CONTEXT_MENU, PluginCommand, PluginSettingsPage
 from model.ClipboardHelper import is_internal_clipboard_content
@@ -31,6 +36,7 @@ from model.MaterialDriveSync import (
 )
 from model.MaterialSourceDownloader import parse_material_drive_link
 from .smart_image_assignment.settings import SmartAssignmentSettingsPage
+from .inventory_material_tools import InventoryMaterialTools
 from PYUI.utility_managers_pyui import (
     InventoryManagerDialog,
     MaterialGroupAssignmentDialog,
@@ -152,7 +158,7 @@ class InventorySettingsPage:
 class InventoryPlugin:
     plugin_id = "inventory"
     display_name = "库存与素材管理"
-    version = "1.1"
+    version = "1.3"
     required_api_version = 1
 
     def __init__(self):
@@ -176,9 +182,11 @@ class InventoryPlugin:
         self.material_sync_status_label = None
         self._smart_assignment_dialog = None
         self._smart_assignment_picker = None
+        self.material_tools = InventoryMaterialTools()
 
     def register(self, context):
         self.context = context
+        self.material_tools.bind_context(context)
         context.register_command(
             PluginCommand(
                 command_id="open",
@@ -275,7 +283,7 @@ class InventoryPlugin:
         )
         if self.clipboard_monitor_enabled:
             QtCore.QTimer.singleShot(350, self.inspect_clipboard)
-        if self.material_sync_settings["enabled"]:
+        if self.material_sync_settings["enabled"] and not is_offline():
             QtCore.QTimer.singleShot(1200, self.trigger_material_sync)
         QtCore.QTimer.singleShot(500, self.refresh_status)
 
@@ -325,6 +333,7 @@ class InventoryPlugin:
         )
         self.material_sync_settings = normalize_material_sync_settings(config)
         self._configure_material_sync_timer()
+        self.material_tools.apply_settings(config)
         return hotkey_registered
 
     def update_config(self, config):
@@ -333,6 +342,7 @@ class InventoryPlugin:
             self.clipboard_monitor_enabled
         )
         update_material_sync_config(config, self.material_sync_settings)
+        self.material_tools.update_config(config)
 
     def _configure_material_sync_timer(self):
         if self.material_sync_timer is None:
@@ -341,7 +351,7 @@ class InventoryPlugin:
         self.material_sync_timer.setInterval(
             int(self.material_sync_settings["interval_minutes"]) * 60_000
         )
-        if self.material_sync_settings["enabled"]:
+        if self.material_sync_settings["enabled"] and not is_offline():
             self.material_sync_timer.start()
 
     def _ensure_material_sync_tab(self, dialog):
@@ -435,7 +445,12 @@ class InventoryPlugin:
         force_ids=None,
         adopt_existing=False,
     ):
-        if self.material_sync_thread is not None and self.material_sync_thread.isRunning():
+        if is_offline():
+            self.context.log('离线模式：网盘素材同步已暂停，原有设置与下载记录保留。')
+            if self.material_sync_status_label is not None:
+                self.material_sync_status_label.setText('离线暂停')
+            return False
+        if self.material_sync_thread is not None and thread_is_active(self.material_sync_thread):
             if self.material_sync_status_label is not None:
                 self.material_sync_status_label.setText("同步正在进行，请稍候。")
             return False
@@ -445,6 +460,20 @@ class InventoryPlugin:
                 self.material_sync_status_label.setText("请先在程序设置 → 库存插件中配置网盘文件夹。")
             return False
         self.material_sync_settings = settings
+        if callable(getattr(self.context, "submit_background_task", None)):
+            payload = {"settings": settings, "state_path": str(self.material_sync_state_store.path.resolve()),
+                "material_root": str(self.store.material_root.resolve()), "force_ids": list(force_ids or ()),
+                "adopt_existing": bool(adopt_existing)}
+            handle = self.context.submit_background_task(title="网盘素材持续同步", runner=run_material_sync_job, payload=payload,
+                kind="network", resources=(*inventory_resources(self.store), directory_tree_resource(settings["local_dir"]),
+                    "material-sync-state:" + str(self.material_sync_state_store.path.resolve()).casefold()))
+            self.material_sync_thread = handle
+            handle.progressChanged.connect(lambda message, _percent: self._material_sync_progress(message))
+            handle.completed.connect(self._material_sync_completed)
+            handle.failed.connect(self._material_sync_failed)
+            handle.finished.connect(self._material_sync_finished)
+            self._material_sync_progress("同步检查已提交后台，等待共用素材库空闲。")
+            return True
         thread = MaterialSyncThread(
             settings,
             self.material_sync_state_store,
@@ -457,7 +486,7 @@ class InventoryPlugin:
         thread.progress.connect(self._material_sync_progress)
         thread.completed.connect(self._material_sync_completed)
         thread.failed.connect(self._material_sync_failed)
-        thread.finished.connect(self._material_sync_finished)
+        connect_thread_finished(thread, self, 'material_sync_thread', self._material_sync_finished)
         if self.material_sync_status_label is not None:
             self.material_sync_status_label.setText("正在检查网盘素材…")
         self.context.log("开始检查持续同步素材文件夹。")
@@ -484,7 +513,7 @@ class InventoryPlugin:
     def open_material_sync_directory(self):
         target = pathlib.Path(self.material_sync_settings["local_dir"])
         try:
-            target.mkdir(parents=True, exist_ok=True)
+            data_directory(target).ensure(parents=True, exist_ok=True)
         except OSError as error:
             QtWidgets.QMessageBox.warning(self.dialog, "打开同步目录", str(error))
             return
@@ -498,7 +527,7 @@ class InventoryPlugin:
     def _material_sync_completed(self, result):
         count = int(result.get("downloaded_count", 0))
         errors = list(result.get("errors", []))
-        material_id = str(self.material_sync_settings.get("material_id") or "")
+        material_id = str(result.get("material_id", self.material_sync_settings.get("material_id")) or "")
         if count and material_id and self.store is not None:
             try:
                 self.store.touch_material(material_id)
@@ -532,7 +561,7 @@ class InventoryPlugin:
     def _material_sync_finished(self):
         thread = self.material_sync_thread
         self.material_sync_thread = None
-        if thread is not None:
+        if thread is not None and not isinstance(thread, BackgroundTaskHandle):
             thread.deleteLater()
 
     def enable_material_monitor(self, request):
@@ -696,6 +725,7 @@ class InventoryPlugin:
             dialog = InventoryManagerDialog(
                 self.store,
                 material_sync_settings=self.material_sync_settings,
+                context=self.context,
             )
             dialog.setWindowIcon(self.context.parent_widget.windowIcon())
             dialog.setModal(False)
@@ -712,6 +742,7 @@ class InventoryPlugin:
                 self.trigger_material_sync
             )
             self.dialog = dialog
+            self.material_tools.mount_menu(dialog)
         else:
             dialog.set_material_sync_settings(self.material_sync_settings)
             dialog.refresh()
@@ -894,23 +925,44 @@ class InventoryPlugin:
         )
 
     def can_close(self):
+        allowed, message = self.material_tools.can_close()
+        if not allowed:
+            return allowed, message
         for dialog in (self._smart_assignment_picker, self._smart_assignment_dialog):
             if dialog is not None and dialog.is_busy():
                 return False, "智能图片分配正在读取／核对或移动文件；请取消并等待后台任务安全结束。"
         thread = self.dialog.material_copy_thread if self.dialog is not None else None
-        if thread is not None and thread.isRunning():
+        if not isinstance(thread, BackgroundTaskHandle) and thread_is_active(thread):
             self.open_manager()
             return (
                 False,
                 "素材正在复制或下载。可以隐藏管理窗口并继续使用主界面，"
                 "但请等待处理完成后再退出主程序。",
             )
-        if self.material_sync_thread is not None and self.material_sync_thread.isRunning():
+        if (not isinstance(self.material_sync_thread, BackgroundTaskHandle)
+                and thread_is_active(self.material_sync_thread)):
             self.open_manager()
             return False, "网盘素材正在同步，请等待完成后再退出主程序。"
         return True, ""
 
     def stop(self):
+        handles = [self.material_sync_thread]
+        if self.dialog is not None:
+            self.dialog._stats_timer.stop()
+            self.dialog._stats_pending.clear()
+            handles += self.dialog.material_job_handles() + [self.dialog._stats_handle]
+        running = [handle for handle in handles if isinstance(handle, BackgroundTaskHandle) and handle.isRunning()]
+        if running:
+            for handle in running:
+                handle.requestInterruption()
+            return False  # Keep widgets alive until all host callbacks finish.
+        if not self.material_tools.stop():
+            self.context.log("素材整理/智能分类正在安全停止，请稍后再退出。", logging.WARNING)
+            return False
+        allowed, message = self.can_close()
+        if not allowed:
+            self.context.log(message, logging.WARNING)
+            return False
         for dialog in (self._smart_assignment_picker, self._smart_assignment_dialog):
             if dialog is not None:
                 dialog.close()

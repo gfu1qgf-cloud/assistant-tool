@@ -6,6 +6,7 @@ the worker, preserving the startup/import order required by this project.
 """
 
 from __future__ import annotations
+from model.AppDataStorage import data_directory, data_file, data_io
 
 import copy
 import difflib
@@ -25,6 +26,7 @@ from pathlib import Path
 from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from qt_compat import QtCore
+from model.WhisperInference import whisper_inference
 
 
 SMART_VIDEO_EDITOR_CONFIG_KEY = "smart_video_editor"
@@ -41,6 +43,16 @@ BREATH_DETECTION_MODES = (
     "union",
     "intersection",
     "voice_refined",
+)
+
+# Only user-editable breath controls may be saved from the timeline.  Model,
+# subtitle and output settings belong to their own settings pages.
+BREATH_SETTINGS_KEYS = (
+    "breath_detection_mode", "silence_detection_enabled", "silence_threshold_db",
+    "voice_detection_enabled", "vad_threshold", "vad_neg_threshold",
+    "vad_min_speech_ms", "vad_speech_pad_ms", "min_silence_ms",
+    "compress_internal_pauses", "internal_pause_mode", "pause_threshold_ms",
+    "pause_keep_before_ms", "pause_keep_after_ms", "retained_pause_ms",
 )
 
 _ANALYSIS_SETTING_KEYS = (
@@ -91,9 +103,8 @@ DEFAULT_SMART_VIDEO_EDITOR_SETTINGS = {
     # overlapping dB interval may only refine the already proven no-voice edge.
     "breath_detection_mode": "voice_refined",
     "boundary_search_ms": 1800,
-    # Normal operation only removes dead air at clip boundaries.  Cutting a
-    # silence inside a sentence is inherently unsafe when ASR misses a word,
-    # so the experimental mode is opt-in and versioned separately.
+    # Internal pause cutting is opt-in; review the proposed deletions on the
+    # timeline, since speech detectors can still miss quiet words.
     "compress_internal_pauses": False,
     "internal_pause_mode": "off",
     "pause_threshold_ms": 1000,
@@ -112,6 +123,7 @@ DEFAULT_SMART_VIDEO_EDITOR_SETTINGS = {
     "ffmpeg_path": "",
     "existing_output": "version",
     "auto_export_clean": True,
+    "export_mode": "joined",
 }
 
 
@@ -179,13 +191,12 @@ def normalize_smart_video_editor_settings(value=None):
     result["boundary_search_ms"] = _int_value(
         source.get("boundary_search_ms"), 1800, 100, 10000
     )
-    pause_mode = str(source.get("internal_pause_mode") or "off").lower()
-    result["internal_pause_mode"] = (
-        "experimental" if pause_mode == "experimental" else "off"
-    )
     result["compress_internal_pauses"] = bool(
         source.get("compress_internal_pauses", False)
-        and result["internal_pause_mode"] == "experimental"
+    )
+    # The visible switch is authoritative, including old experimental configs.
+    result["internal_pause_mode"] = (
+        "enabled" if result["compress_internal_pauses"] else "off"
     )
     result["pause_threshold_ms"] = _int_value(
         source.get("pause_threshold_ms"), 1000, 300, 10000
@@ -268,6 +279,7 @@ def normalize_smart_video_editor_settings(value=None):
     result["auto_export_clean"] = bool(
         source.get("auto_export_clean", True)
     )
+    result["export_mode"] = "segments" if source.get("export_mode") == "segments" else "joined"
     return result
 
 
@@ -325,7 +337,10 @@ def discover_task_videos(task_dir, settings=None):
         return []
     output_name = settings["output_folder_name"].casefold()
     result = []
+    from model.MediaStorage import generated_media_path
     for path in root.rglob("*"):
+        if generated_media_path(path):
+            continue
         if not path.is_file() or path.suffix.lower() not in VIDEO_SUFFIXES:
             continue
         relative_parts = [part.casefold() for part in path.relative_to(root).parts[:-1]]
@@ -2557,7 +2572,7 @@ def _build_clip_plan(
             "title": "句内静音压缩",
             "detail": (
                 "此区间同时满足词间隔和无人声/低音量证据，"
-                "将按实验设置压缩。"
+                "将按气口设置压缩。"
             ),
         }
         for start, end in removals
@@ -2693,7 +2708,7 @@ def _fingerprint(path):
     digest = hashlib.sha256()
     sample_size = min(64 * 1024, stat.st_size)
     if sample_size:
-        with path.open("rb") as handle:
+        with data_file(path).open("rb") as handle:
             digest.update(handle.read(sample_size))
             if stat.st_size > sample_size:
                 handle.seek(max(0, stat.st_size - sample_size))
@@ -2758,7 +2773,7 @@ def _source_cache_candidates(cache_path, source, suffix, fingerprint=None):
         ):
             continue
         try:
-            value = json.loads(candidate.read_text(encoding="utf-8"))
+            value = json.loads(data_file(candidate).read_text(encoding="utf-8"))
         except (FileNotFoundError, OSError, ValueError, TypeError):
             continue
         if isinstance(value, dict) and _fingerprints_match(
@@ -2903,12 +2918,12 @@ def _read_transcription_cache(
 
 def _write_json_atomic(path, value):
     path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
+    data_directory(path.parent).ensure(parents=True, exist_ok=True)
     temp_path = path.with_name(path.name + ".tmp")
-    temp_path.write_text(
+    data_file(temp_path).write_text(
         json.dumps(value, ensure_ascii=False, indent=2), encoding="utf-8"
     )
-    os.replace(temp_path, path)
+    data_io.replace(temp_path, path)
 
 
 def _task_analysis_signature(job, sources, settings):
@@ -2963,7 +2978,7 @@ def _task_report_path(job, settings):
 def _load_cached_task_analysis(job, sources, settings, signature=None):
     report_path = _task_report_path(job, settings)
     try:
-        report = json.loads(report_path.read_text(encoding="utf-8"))
+        report = json.loads(data_file(report_path).read_text(encoding="utf-8"))
     except (FileNotFoundError, OSError, ValueError, TypeError):
         return None
     task = report.get("task") if isinstance(report, dict) else None
@@ -3008,7 +3023,7 @@ def smart_video_jobs_require_model(jobs, settings=None):
             task_dir = Path(job["task_dir"])
             sources = [Path(path) for path in job.get("sources", [])]
             signature = _task_analysis_signature(job, sources, settings)
-            if _load_cached_task_analysis(
+            if not job.get("force_task_reanalysis") and _load_cached_task_analysis(
                 job, sources, settings, signature=signature
             ) is not None:
                 continue
@@ -3025,7 +3040,7 @@ def smart_video_jobs_require_model(jobs, settings=None):
     return False
 
 
-def transcribe_source(model, source, language, task_dir, settings, progress=None):
+def transcribe_source(model, source, language, task_dir, settings, progress=None, cancelled=None):
     progress = progress or (lambda _message: None)
     cache_path = _cache_path(task_dir, source, settings)
     cached = _read_transcription_cache(
@@ -3052,25 +3067,33 @@ def transcribe_source(model, source, language, task_dir, settings, progress=None
     normalized_language = str(language or "").strip().lower()
     if normalized_language and normalized_language not in {"unknown", "auto"}:
         kwargs["language"] = normalized_language.split("-")[0]
-    segments, info = model.transcribe(str(source), **kwargs)
     words = []
     transcript_parts = []
-    for segment in segments:
-        segment_text = str(getattr(segment, "text", "") or "").strip()
-        if segment_text:
-            transcript_parts.append(segment_text)
-        for word in getattr(segment, "words", None) or []:
-            word_text = str(getattr(word, "word", "") or "").strip()
-            if not word_text:
-                continue
-            words.append({
-                "text": word_text,
-                "start": round(float(getattr(word, "start", 0.0) or 0.0), 3),
-                "end": round(float(getattr(word, "end", 0.0) or 0.0), 3),
-                "probability": round(
-                    float(getattr(word, "probability", 0.0) or 0.0), 4
-                ),
-            })
+    # Native recognition happens while iterating, not just in transcribe().
+    # Keep that iterator in the model guard; cache/report writes stay outside.
+    with whisper_inference(progress=progress, cancelled=cancelled):
+        segments, info = model.transcribe(str(source), **kwargs)
+        try:
+            for segment in segments:
+                if cancelled and cancelled():
+                    raise InterruptedError("已取消视频语音识别。")
+                segment_text = str(getattr(segment, "text", "") or "").strip()
+                if segment_text:
+                    transcript_parts.append(segment_text)
+                for word in getattr(segment, "words", None) or []:
+                    word_text = str(getattr(word, "word", "") or "").strip()
+                    if not word_text:
+                        continue
+                    words.append({
+                        "text": word_text,
+                        "start": round(float(getattr(word, "start", 0.0) or 0.0), 3),
+                        "end": round(float(getattr(word, "end", 0.0) or 0.0), 3),
+                        "probability": round(float(getattr(word, "probability", 0.0) or 0.0), 4),
+                    })
+        finally:
+            close = getattr(segments, "close", None)
+            if callable(close):
+                close()
     value = {
         "source": str(source),
         "source_fingerprint": _fingerprint(source),
@@ -3212,8 +3235,8 @@ def save_analysis_reports(bundle):
         text_report_path = task.get("text_report_path")
         if text_report_path:
             path = Path(text_report_path)
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(
+            data_directory(path.parent).ensure(parents=True, exist_ok=True)
+            data_file(path).write_text(
                 render_task_problem_report(task, bundle.get("settings")),
                 encoding="utf-8-sig",
             )
@@ -3337,7 +3360,7 @@ def _refresh_clip_after_script_range(
             "title": "句内静音压缩",
             "detail": (
                 "此区间同时满足词间隔和无人声/低音量证据，"
-                "将按实验设置压缩。"
+                "将按气口设置压缩。"
             ),
         }
         for left, right in clip["pause_removals"]
@@ -4259,7 +4282,7 @@ def analyze_smart_video_jobs(jobs, model, settings=None, progress=None, cancelle
         progress(
             f"[智能剪辑] 分析任务 {task_index}/{len(jobs)}：{job.get('label', job.get('task_id', ''))}"
         )
-        cached_task = _load_cached_task_analysis(
+        cached_task = None if job.get("force_task_reanalysis") else _load_cached_task_analysis(
             job, sources, settings, signature=analysis_signature
         )
         if cached_task is not None:
@@ -4287,6 +4310,7 @@ def analyze_smart_video_jobs(jobs, model, settings=None, progress=None, cancelle
                 task_dir,
                 settings,
                 progress,
+                cancelled=cancelled,
             )
             transcriptions.append(transcription)
             transcription_cache_count += int(
@@ -4525,47 +4549,8 @@ def analyze_smart_video_jobs(jobs, model, settings=None, progress=None, cancelle
         }
         bundle["tasks"].append(task_result)
     save_analysis_reports(bundle)
-    clips = [clip for task in bundle["tasks"] for clip in task["clips"]]
-    missing_count = sum(
-        len(task.get("missing_blocks", [])) for task in bundle["tasks"]
-    )
-    unverified_count = sum(
-        len(task.get("unverified_blocks", [])) for task in bundle["tasks"]
-    )
-    problem_count = sum(
-        issue.get("severity") != "info"
-        for clip in clips
-        for issue in clip.get("issues", [])
-    )
-    cut_decision_count = sum(
-        issue.get("severity") == "info"
-        for clip in clips
-        for issue in clip.get("issues", [])
-    )
-    duplicate_count = sum(
-        int(task.get("duplicate_count") or 0) for task in bundle["tasks"]
-    )
-    bundle["summary"] = {
-        "task_count": len(bundle["tasks"]),
-        "clip_count": len(clips),
-        "green_count": sum(clip["status"] == "green" for clip in clips),
-        "orange_count": sum(clip["status"] == "orange" for clip in clips),
-        "pink_count": sum(clip["status"] == "pink" for clip in clips),
-        "missing_count": missing_count,
-        "unverified_count": unverified_count,
-        "export_blocked": missing_count > 0,
-        "problem_count": problem_count,
-        "cut_decision_count": cut_decision_count,
-        "duplicate_count": duplicate_count,
-        "task_cache_count": task_cache_count,
-        "transcription_cache_count": transcription_cache_count,
-        "needs_review": (
-            any(clip["status"] != "green" for clip in clips)
-            or missing_count > 0
-            or unverified_count > 0
-            or cut_decision_count > 0
-        ),
-    }
+    from .review_reanalysis import analysis_summary
+    bundle["summary"] = analysis_summary(bundle, task_cache_count, transcription_cache_count)
     save_analysis_reports(bundle)
     return bundle
 
@@ -4618,6 +4603,10 @@ def _resolve_ffmpeg(settings):
 
 
 def _run_process(args, progress, cancelled):
+    from model.AppDataStorage import application_storage
+    from model.MediaStorage import require_media_output
+    output = Path(args[-1]) if args and str(args[-1]).lower().endswith(('.mp4','.mkv','.mov','.webm','.wav','.flac')) else None
+    if output is not None: require_media_output(output)
     creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     stderr = ""
     # FFmpeg writes continuously to stderr. A PIPE can fill up and deadlock on
@@ -4629,17 +4618,24 @@ def _run_process(args, progress, cancelled):
             stderr=error_file,
             creationflags=creationflags,
         )
-        while process.poll() is None:
-            if cancelled():
+        try:
+            while process.poll() is None:
+                if cancelled():
+                    raise InterruptedError("用户已请求停止智能剪辑导出")
+                if os.fstat(error_file.fileno()).st_size > 4 * 1024**2:
+                    raise RuntimeError('智能剪辑编码日志超过4 MB，已停止。')
+                storage = application_storage()
+                if storage.protected: storage.check(write=True)
+                if output is not None: require_media_output(output)
+                time.sleep(0.1)
+            error_file.seek(0)
+            stderr = error_file.read(4 * 1024**2)
+        finally:
+            if process.poll() is None:
                 process.terminate()
-                try:
-                    process.wait(timeout=5)
+                try: process.wait(timeout=5)
                 except subprocess.TimeoutExpired:
-                    process.kill()
-                raise InterruptedError("用户已请求停止智能剪辑导出")
-            time.sleep(0.1)
-        error_file.seek(0)
-        stderr = error_file.read()
+                    process.kill(); process.wait(timeout=5)
     if process.returncode != 0:
         tail = "\n".join(stderr.strip().splitlines()[-12:])
         progress(f"[智能剪辑] 编码器返回错误：{tail}")
@@ -4925,7 +4921,7 @@ def _write_srt(path, cues):
             str(cue["text"]).strip(),
             "",
         ])
-    Path(path).write_text("\n".join(lines), encoding="utf-8-sig")
+    data_file(Path(path)).write_text("\n".join(lines), encoding="utf-8-sig")
 
 
 def subtitle_text_for_export(task):
@@ -5131,7 +5127,8 @@ def analyze_breath_cut_files(
 
 
 def _generate_final_aligned_srt(
-    output_video, output_srt, task, settings, progress, alignment_model=None
+    output_video, output_srt, task, settings, progress, alignment_model=None, cancelled=None,
+    alignment_model_loader=None,
 ):
     """Generate SRT from the finished edit through the proven subtitle path.
 
@@ -5155,7 +5152,7 @@ def _generate_final_aligned_srt(
     temporary_srt = output_srt.with_name(
         f".{output_srt.stem}.aligning{output_srt.suffix}"
     )
-    temporary_srt.unlink(missing_ok=True)
+    data_file(temporary_srt).remove(missing_ok=True)
     progress(
         f"[智能剪辑] 正在用原字幕功能重新对齐最终成片：{output_video.name}"
     )
@@ -5174,17 +5171,21 @@ def _generate_final_aligned_srt(
                 else int(settings["srt_block_gap_ms"])
             ),
             model=alignment_model,
+            model_loader=alignment_model_loader,
+            cancelled=cancelled,
+            progress=progress,
         )
         if not temporary_srt.is_file() or temporary_srt.stat().st_size <= 0:
             raise RuntimeError("原字幕功能没有生成有效的 SRT 文件")
-        os.replace(temporary_srt, output_srt)
+        data_io.replace(temporary_srt, output_srt)
     finally:
-        temporary_srt.unlink(missing_ok=True)
+        data_file(temporary_srt).remove(missing_ok=True)
     progress(f"[智能剪辑] 最终成片字幕对齐完成：{output_srt.name}")
 
 
 def _export_task(
-    task, settings, ffmpeg, progress, cancelled, alignment_model=None
+    task, settings, ffmpeg, progress, cancelled, alignment_model=None,
+    output_basename=None, generate_srt=True, alignment_model_loader=None,
 ):
     clips = sorted(
         (
@@ -5206,10 +5207,12 @@ def _export_task(
         raise ValueError("没有勾选可导出的有效视频片段")
 
     output_dir = Path(task["output_dir"])
-    output_dir.mkdir(parents=True, exist_ok=True)
+    data_directory(output_dir).ensure(parents=True, exist_ok=True)
     base_name = _safe_child_name(
         task.get("task_id") or task.get("task_name"), "智能剪辑"
     ) + "_智能剪辑"
+    if output_basename is not None:
+        base_name = _safe_child_name(output_basename, base_name)
     output_video = _versioned_output(
         output_dir / f"{base_name}.mp4", settings["existing_output"]
     )
@@ -5222,7 +5225,7 @@ def _export_task(
     output_srt = output_video.with_suffix(".srt")
     width, height, fps = _media_shape(ranges[0][0]["source"])
 
-    with tempfile.TemporaryDirectory(prefix="smart_edit_", dir=str(output_dir)) as temp:
+    with data_io.TemporaryDirectory(prefix="smart_edit_", dir=str(output_dir)) as temp:
         temp_dir = Path(temp)
         segment_paths = []
         for index, (clip, (start, end)) in enumerate(ranges, 1):
@@ -5263,7 +5266,7 @@ def _export_task(
             segment_paths.append(segment_path)
 
         concat_path = temp_dir / "concat.txt"
-        concat_path.write_text(
+        data_file(concat_path).write_text(
             "\n".join(
                 "file '{}'".format(str(path).replace("'", "'\\''"))
                 for path in segment_paths
@@ -5278,26 +5281,111 @@ def _export_task(
             "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2",
             "-movflags", "+faststart", str(partial),
         ], progress, cancelled)
-        shutil.move(str(partial), str(output_video))
+        data_io.move(str(partial), str(output_video))
 
-    _generate_final_aligned_srt(
-        output_video,
-        output_srt,
-        task,
-        settings,
-        progress,
-        alignment_model=alignment_model,
-    )
+    if generate_srt:
+        _generate_final_aligned_srt(
+            output_video, output_srt, task, settings, progress,
+            alignment_model=alignment_model,
+            cancelled=cancelled,
+            alignment_model_loader=alignment_model_loader,
+        )
     return {
         "task_id": task.get("task_id", ""),
         "status": "completed",
         "video": str(output_video),
-        "srt": str(output_srt),
-        "subtitle_alignment": "final_media_stable_whisper",
+        "srt": str(output_srt) if generate_srt else "",
+        "subtitle_alignment": "final_media_stable_whisper" if generate_srt else "not_requested",
         "removed_seconds": round(sum(
             float(clip.get("removed_seconds") or 0.0) for clip in clips
         ), 3),
     }
+
+
+def _validate_segment_output_directory(destination):
+    try:
+        if destination.is_symlink():
+            raise ValueError("符号链接目录不能覆盖")
+        previous = json.loads(data_file(destination / "分段清单.json").read_text(encoding="utf-8"))
+        names = {entry["file"] for entry in previous["segments"]}
+        if (previous.get("format") != "smart-video-segments-v1"
+                or not names or any(not re.fullmatch(r"\d{3,}\.mp4", item) for item in names)
+                or any(not path.is_file() or path.is_symlink()
+                       or path.name not in names | {"分段清单.json"} for path in destination.iterdir())):
+            raise ValueError("目录含未登记文件")
+    except (OSError, ValueError, TypeError, KeyError):
+        raise ValueError("旧分段目录包含其他文件或清单无效，未覆盖；请选择保留旧文件并生成新版本。") from None
+
+
+def _export_segmented_task(task, settings, ffmpeg, progress, cancelled):
+    """One ordered file per included source clip, with all reviewed cuts applied.
+
+    Gaps within one source clip are joined after trimming; different source
+    clips are never joined. Publish the complete directory only after success.
+    """
+    clips = sorted((clip for clip in task.get("clips", []) if clip.get("included", True)),
+                   key=lambda clip: (int(clip.get("export_order", 10**9)),
+                                     int(clip.get("source_index", 10**9))))
+    if not clips:
+        raise ValueError("没有勾选可导出的有效视频片段")
+    output_dir = Path(task["output_dir"]).resolve()
+    data_directory(output_dir).ensure(parents=True, exist_ok=True)
+    name = _safe_child_name(task.get("task_id") or task.get("task_name"), "任务") + "_智能剪辑_分段"
+    destination = _versioned_output(output_dir / name, settings["existing_output"])
+    if destination is None:
+        return {"task_id": task.get("task_id", ""), "status": "skipped",
+                "message": "分段目录已存在，按设置跳过"}
+    manifest_name = "分段清单.json"
+    if destination.exists():
+        # Never delete user-added files when replacing a generated directory.
+        _validate_segment_output_directory(destination)
+    digits = max(3, len(str(len(clips))))
+    manifest = {"format": "smart-video-segments-v1", "task_id": task.get("task_id", ""), "segments": []}
+    with data_io.TemporaryDirectory(prefix="smart_segments_", dir=str(output_dir)) as temporary:
+        prepared = Path(temporary) / "ready"
+        data_directory(prepared).ensure(parents=False, exist_ok=False)
+        for index, clip in enumerate(clips, 1):
+            if cancelled():
+                raise InterruptedError("用户已请求停止智能剪辑导出")
+            progress(f"[智能剪辑] 导出分段 {index}/{len(clips)}：{clip.get('file_name', '')}")
+            single = dict(task, clips=[clip], output_dir=str(prepared))
+            item = _export_task(single, dict(settings, existing_output="overwrite"), ffmpeg,
+                                progress, cancelled, output_basename=f"{index:0{digits}d}", generate_srt=False)
+            manifest["segments"].append({
+                "sequence": index, "file": Path(item["video"]).name,
+                "source": clip.get("source", ""), "source_name": clip.get("file_name", ""),
+                "export_order": clip.get("export_order"), "kept_ranges": clip.get("kept_ranges", []),
+            })
+        data_file(prepared / manifest_name).write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+        if cancelled():
+            raise InterruptedError("用户已请求停止智能剪辑导出")
+        # Keep a failed rollback's backup outside temporary-directory cleanup.
+        backup = output_dir / f".{Path(temporary).name}.previous"
+        existed = destination.exists()
+        if existed:
+            _validate_segment_output_directory(destination)
+            data_io.replace(destination, backup)
+        try:
+            data_io.replace(prepared, destination)
+        except BaseException:
+            if existed:
+                data_io.replace(backup, destination)
+            raise
+        if existed:
+            # Absolute target stays directly inside the chosen output directory.
+            if backup.resolve().parent != output_dir or backup.is_symlink():
+                raise ValueError("旧输出备份路径异常，已保留备份。")
+            try:
+                _validate_segment_output_directory(backup)
+            except ValueError:
+                progress(f"[智能剪辑] 旧目录有新增内容，已保留备份：{backup}")
+            else:
+                data_io.rmtree(backup)
+    return {"task_id": task.get("task_id", ""), "status": "completed",
+            "export_mode": "segments", "segment_count": len(clips),
+            "video": str(destination), "output_dir": str(destination), "srt": "",
+            "segments": [dict(entry, video=str(destination / entry["file"])) for entry in manifest["segments"]],
+            "removed_seconds": round(sum(float(clip.get("removed_seconds") or 0) for clip in clips), 3)}
 
 
 def _export_breath_cut_task(task, settings, ffmpeg, progress, cancelled):
@@ -5323,7 +5411,7 @@ def _export_breath_cut_task(task, settings, ffmpeg, progress, cancelled):
         raise ValueError("没有可导出的保留区间")
     source = Path(clip["source"])
     output_dir = Path(task["output_dir"])
-    output_dir.mkdir(parents=True, exist_ok=True)
+    data_directory(output_dir).ensure(parents=True, exist_ok=True)
     base_name = _safe_child_name(source.stem, "视频") + "_气口剪辑"
     output_video = _versioned_output(
         output_dir / f"{base_name}.mp4", settings["existing_output"]
@@ -5335,7 +5423,7 @@ def _export_breath_cut_task(task, settings, ffmpeg, progress, cancelled):
             "message": "输出已存在，按设置跳过",
         }
     width, height, fps = _media_shape(source)
-    with tempfile.TemporaryDirectory(prefix="breath_cut_", dir=str(output_dir)) as temp:
+    with data_io.TemporaryDirectory(prefix="breath_cut_", dir=str(output_dir)) as temp:
         temp_dir = Path(temp)
         segment_paths = []
         for index, (start, end) in enumerate(ranges, 1):
@@ -5369,7 +5457,7 @@ def _export_breath_cut_task(task, settings, ffmpeg, progress, cancelled):
             ], progress, cancelled)
             segment_paths.append(segment_path)
         concat_path = temp_dir / "concat.txt"
-        concat_path.write_text(
+        data_file(concat_path).write_text(
             "\n".join(
                 "file '{}'".format(str(path).replace("'", "'\\''"))
                 for path in segment_paths
@@ -5384,7 +5472,7 @@ def _export_breath_cut_task(task, settings, ffmpeg, progress, cancelled):
             "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-ar",
             "48000", "-ac", "2", "-movflags", "+faststart", str(partial),
         ], progress, cancelled)
-        shutil.move(str(partial), str(output_video))
+        data_io.move(str(partial), str(output_video))
     return {
         "task_id": task.get("task_id", ""),
         "status": "completed",
@@ -5437,6 +5525,7 @@ def export_smart_video_bundle(
     progress=None,
     cancelled=None,
     alignment_model=None,
+    alignment_model_loader=None,
 ):
     validate_smart_video_bundle_for_export(bundle)
     settings = normalize_smart_video_editor_settings(
@@ -5469,14 +5558,14 @@ def export_smart_video_bundle(
             f"[智能剪辑] 导出任务 {index}/{len(tasks)}：{task.get('label', '')}"
         )
         try:
-            item = _export_task(
-                task,
-                settings,
-                ffmpeg,
-                progress,
-                cancelled,
-                alignment_model=alignment_model,
-            )
+            if settings["export_mode"] == "segments":
+                item = _export_segmented_task(task, settings, ffmpeg, progress, cancelled)
+            else:
+                item = _export_task(
+                    task, settings, ffmpeg, progress, cancelled,
+                    alignment_model=alignment_model,
+                    alignment_model_loader=alignment_model_loader,
+                )
         except InterruptedError:
             raise
         except Exception as error:
@@ -5540,7 +5629,8 @@ class SmartVideoEditorThread(QtCore.QThread):
             elif self.mode == "export":
                 if not isinstance(self.bundle, dict):
                     raise ValueError("没有可导出的智能剪辑分析结果")
-                self._load_requested_model()
+                if self.settings["export_mode"] != "segments":
+                    self._load_requested_model()
                 result = export_smart_video_bundle(
                     self.bundle,
                     self.settings,

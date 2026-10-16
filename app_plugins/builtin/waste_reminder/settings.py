@@ -2,6 +2,7 @@ from pathlib import Path
 from qt_compat import QtCore, QtWidgets
 from .calendar import clock, CalendarError
 from .update import DEFAULT_PAGE, allowed_url
+from .weather import options as weather_options
 
 CONFIG_KEY = "waste_reminder"
 
@@ -37,7 +38,8 @@ def normalize_settings(value=None):
             "sound_file": str(value.get("sound_file") or ""), "sound_volume": volume,
             "translate_news": bool(value.get("translate_news", True)),
             "auto_update": bool(value.get("auto_update", True)),
-            "official_page": str(value.get("official_page") or DEFAULT_PAGE)}
+            "official_page": str(value.get("official_page") or DEFAULT_PAGE),
+            "weather": weather_options(value.get("weather"), str(value.get("commune") or "Valle Lomellina (PV)"))}
 
 
 class WasteSettingsPage:
@@ -100,6 +102,23 @@ class WasteSettingsPage:
         self.translate = QtWidgets.QCheckBox("自动把官方最新消息翻译成中文（仅发送公开公告；译文缓存到本地）")
         for widget in (self.empty, self.sound, self.auto, self.translate):
             layout.addWidget(widget)
+        weather = QtWidgets.QGroupBox("生活助手 · 天气（与垃圾提醒共用入口）")
+        weather_form = QtWidgets.QFormLayout(weather)
+        self.weather_enabled = QtWidgets.QCheckBox("同意启用联网天气（仅发送城市级信息，不上传素材）")
+        self.weather_auto = QtWidgets.QCheckBox("自动刷新天气")
+        self.weather_minutes = QtWidgets.QSpinBox()
+        self.weather_minutes.setRange(30, 720)
+        self.weather_minutes.setSuffix(" 分钟")
+        self.weather_city = QtWidgets.QLabel()
+        self.weather_city.setWordWrap(True)
+        weather_form.addRow(self.weather_enabled)
+        weather_form.addRow(self.weather_auto)
+        weather_form.addRow("刷新间隔", self.weather_minutes)
+        weather_form.addRow("城市（在助手的“天气”分页更换）", self.weather_city)
+        privacy = QtWidgets.QLabel("不开启则不请求天气；离线模式禁止查询。服务可看到IP及查询坐标，不自动定位。无需API Key，免费接口仅限个人/非商业使用。")
+        privacy.setWordWrap(True)
+        weather_form.addRow(privacy)
+        layout.addWidget(weather)
         self.note = QtWidgets.QLabel(
             "默认晚上 22:00 提醒，确定按钮至少等待 30 秒。程序需保持运行；睡眠/重启后在 06:00 前补提醒。"
             "弹窗只阻止本软件，不锁整个电脑。尿布专项默认不提醒，可在插件面板启用。"
@@ -144,6 +163,10 @@ class WasteSettingsPage:
         self.translate.setChecked(value["translate_news"])
         self.sound_file.setText(value["sound_file"])
         self.volume.setValue(value["sound_volume"])
+        self.weather_enabled.setChecked(value["weather"]["enabled"])
+        self.weather_auto.setChecked(value["weather"]["auto_refresh"])
+        self.weather_minutes.setValue(value["weather"]["refresh_minutes"])
+        self.weather_city.setText((value["weather"].get("location") or {}).get("name", "尚未选择"))
 
     def update_config(self, config):
         pattern = self.pattern.text().strip()
@@ -160,6 +183,8 @@ class WasteSettingsPage:
                      official_page=self.page.text().strip(), snooze_minutes=self.snooze.value(),
                      notify_empty=self.empty.isChecked(), sound=self.sound.isChecked(), auto_update=self.auto.isChecked(),
                      sound_file=self.sound_file.text().strip(), sound_volume=self.volume.value(),
-                     translate_news=self.translate.isChecked())
+                     translate_news=self.translate.isChecked(),
+                     weather=dict(self.original.get("weather") or {}, enabled=self.weather_enabled.isChecked(),
+                                  auto_refresh=self.weather_auto.isChecked(), refresh_minutes=self.weather_minutes.value()))
         config[CONFIG_KEY] = normalize_settings(value)
         return config

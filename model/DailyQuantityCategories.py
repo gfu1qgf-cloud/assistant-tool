@@ -1,4 +1,6 @@
 """Local, user-owned quantity categories. Never infer choices from Sheets."""
+
+from model.AppDataStorage import data_io, data_file, data_directory
 import copy
 import hashlib
 import json
@@ -8,7 +10,7 @@ import shutil
 import tempfile
 import threading
 
-from app_paths import APP_ROOT
+from app_paths import DATA_ROOT as APP_ROOT
 
 # One-time seed recovered from the local template, not refreshed online.
 DEFAULT_CATEGORIES = {
@@ -74,7 +76,7 @@ class CategoryStore:
         """Return editable choices and a revision; explicit empty stays empty."""
         with _LOCK:
             try:
-                raw = self.path.read_bytes()
+                raw = data_file(self.path).read_bytes()
             except FileNotFoundError:
                 return copy.deepcopy(DEFAULT_CATEGORIES), None
             try:
@@ -93,8 +95,8 @@ class CategoryStore:
             _, revision = self.load()
             if revision != expected_revision:
                 raise ValueError("类别文件已被其他窗口或程序修改，请取消后重新打开再编辑。")
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            descriptor, temporary = tempfile.mkstemp(prefix=self.path.name + ".", suffix=".tmp",
+            data_directory(self.path.parent).ensure(parents=True, exist_ok=True)
+            descriptor, temporary = data_io.mkstemp(prefix=self.path.name + ".", suffix=".tmp",
                                                       dir=self.path.parent)
             try:
                 with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
@@ -103,11 +105,11 @@ class CategoryStore:
                     handle.flush()
                     os.fsync(handle.fileno())
                 if self.path.exists():
-                    shutil.copy2(self.path, self.path.with_name(self.path.name + ".bak"))
-                os.replace(temporary, self.path)
+                    data_io.copy2(self.path, self.path.with_name(self.path.name + ".bak"))
+                data_io.replace(temporary, self.path)
             finally:
                 if os.path.exists(temporary):
-                    os.unlink(temporary)
+                    data_io.unlink(temporary)
             return self.load()[1]
 
     def initialize(self):

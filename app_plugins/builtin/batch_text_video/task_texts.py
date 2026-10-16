@@ -18,8 +18,10 @@ def record_from_task(task, target_dir, source_sheet=""):
     return {"task_id":str(getattr(task,"task_id","") or ""),
             "task_type":str(getattr(task,"task_type","") or ""),
             "task_name":str(getattr(task,"_full_task_name","") or ""),
+            "audio_name":str(getattr(task,"task_name","") or ""),
             "task_audio_text":str(getattr(task,"task_audio_text","") or ""),
             "target_dir":str(target_dir),"source_sheet":str(source_sheet),
+            "task_date": getattr(task, "task_date", "") if isinstance(getattr(task, "task_date", ""), str) else "",
             "source_row":getattr(task,"source_row",None)}
 
 
@@ -67,10 +69,16 @@ def read_sheet_records(path):
 def entry_from_record(record, source="task_audio_text"):
     title,body = split_title_body(record.get(source,""))
     entry = folder_entry(record["target_dir"],{"text_only":True,"title":title,"body":body,
-        "label":record["task_id"],"task_name":record.get("task_name","")})
+        "label":record["task_id"],"task_name":record.get("task_name",""),"audio_name":record.get("audio_name","")})
     entry.update(task_id=record["task_id"],task_type=record["task_type"],
                  source_sheet=record.get("source_sheet",""),source_row=record.get("source_row"),
-                 text_source=source,requires_title=True,name=record["task_id"]+"_文字版")
+                 text_source=source,requires_title=True,task_voice_optional=True,name=record["task_id"]+"_文字版")
+    entry["task_date"] = record.get("task_date", "")
+    if record.get("task_year"): entry["task_year"] = record["task_year"]
+    from .task_naming import output_stem
+    name = output_stem(entry)
+    if name != entry["name"]:
+        entry.update(name=name, task_filename_auto=True)
     return entry
 
 
@@ -84,19 +92,29 @@ def merge_sheet_entries(state, entries):
         existing = next((job for job in state["jobs"] if job.get("task_dir")
                          and file_identity(job["task_dir"]) == key),None)
         if existing:
-            changed = (existing.get("title"),existing.get("body")) != (entry["title"],entry["body"])
-            for field in ("title","body","task_id","task_type","source_sheet","source_row","text_source","requires_title"):
-                existing[field] = entry[field]
+            fields = {field: entry.get(field, "") for field in (
+                "title","body","task_id","task_type","source_sheet","source_row","text_source","requires_title",
+                "task_voice_path","task_subtitle_path","task_voice_optional","match_error")}
+            for field in ("task_date", "task_year", "task_filename_auto"):
+                if field in entry and not (field == "task_filename_auto" and existing.get(field) is False):
+                    fields[field] = entry[field]
+            # Keep an explicit user-selected narration; refresh the task source
+            # separately so switching back to it uses the newly generated audio.
+            if not existing.get("voice_override"):
+                fields["voice_path"] = entry.get("voice_path", "")
+            changed = any(existing.get(field, "") != value for field, value in fields.items())
+            existing.update(fields)
             if changed:
-                existing.update(status="待生成" if existing.get("path") else "需配置",error="")
+                existing.update(status="待生成" if existing.get("path") and not existing.get("match_error") else "需配置",
+                                error=existing.get("match_error", ""))
                 updated += 1
         else:
             job = dict(entry)
             pool = state.get("backgrounds",[])
             if not job["path"] and pool:
                 job["path"] = pool[(len(state["jobs"])) % len(pool)]
-            job.update(status="待生成" if job["path"] else "需配置",match_error="",
-                       error="" if job["path"] else "请批量分配背景视频。")
+            job.update(status="待生成" if job["path"] and not job.get("match_error") else "需配置",
+                       error=job.get("match_error") or ("" if job["path"] else "请批量分配背景视频。"))
             state["jobs"].append(job)
             added += 1
     return added,updated

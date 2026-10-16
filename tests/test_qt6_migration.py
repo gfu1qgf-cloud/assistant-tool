@@ -36,10 +36,8 @@ class Qt6MigrationTests(unittest.TestCase):
     def test_smart_player_uses_qt6_multimedia_api(self):
         source = (
             PROJECT_ROOT
-            / "app_plugins"
-            / "builtin"
-            / "smart_video_editor"
-            / "player.py"
+            / "model"
+            / "MediaPlayback.py"
         ).read_text(encoding="utf-8-sig")
         self.assertIn("QAudioOutput", source)
         self.assertIn("videoSink()", source)

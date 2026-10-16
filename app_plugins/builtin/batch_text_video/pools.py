@@ -1,14 +1,19 @@
 """Resource libraries and explicit batch pairing. Never deletes source files."""
+from model.AppDataStorage import data_file
 import copy
 from pathlib import Path
 import uuid
 
 from .store import file_identity
 
-RESOURCE_KEYS = ("settings", "jobs", "music", "next_music_id", "backgrounds", "copy_pool", "image_pool")
+RESOURCE_KEYS = ("settings", "jobs", "music", "next_music_id", "backgrounds", "copy_pool", "image_pool", "resource_pools")
 
 
 def migrate_pools(state):
+    from .custom_pools import normalize_pools
+    normalize_pools(state)
+    from .task_naming import refresh_task_names
+    refresh_task_names(state)
     # Run once: removing a library item must not resurrect it from an old job.
     if "copy_pool" not in state:
         state["copy_pool"] = [copy.deepcopy(job) for job in state["jobs"]
@@ -85,6 +90,8 @@ def apply_pairs(state, pairs):
     for pair in pairs:
         if not Path(pair["path"]).is_file():
             raise ValueError("背景视频不存在：" + Path(pair["path"]).name)
+        if pair.get("voice_path") and not Path(pair["voice_path"]).is_file():
+            raise ValueError("人声文件不存在：" + Path(pair["voice_path"]).name)
     added = updated = 0
     for pair, key in zip(pairs, keys):
         source = pair["copy"] or {"title": "", "body": "", "name": Path(pair["path"]).stem + "_文字版"}
@@ -93,11 +100,22 @@ def apply_pairs(state, pairs):
             existing = next((job for job in state["jobs"] if job.get("id") == source["id"]
                              and file_identity(job.get("path", "")) == key[1]), None)
         fields = {field: copy.deepcopy(source.get(field, "")) for field in
-                  ("title", "body", "voice_path", "task_dir", "task_id", "task_type", "label")}
+                  ("title", "body", "voice_path", "task_subtitle_path", "task_dir", "task_id", "task_type", "label")}
         fields.update(path=pair["path"], copy_id=key[0], pair_key=list(key),
-                      requires_title=bool(source.get("requires_title")), match_error="")
+                      requires_title=bool(source.get("requires_title")),
+                      task_voice_optional=bool(source.get("task_voice_optional")), match_error=source.get("match_error", ""))
+        for field in ("task_date", "task_year", "task_filename_auto"):
+            if field in source: fields[field] = copy.deepcopy(source[field])
+        # Keep the task's original narration when a row is temporarily replaced
+        # by a pool/file, so returning to the task source is meaningful.
+        fields["task_voice_path"] = source.get("task_voice_path", source.get("voice_path", ""))
+        if "voice_override" in pair or "voice_override" in source or existing and "voice_override" in existing:
+            fields["voice_override"] = bool(pair.get("voice_override", source.get("voice_override", False)))
+        if "voice_path" in pair:
+            fields["voice_path"] = pair["voice_path"]
         if existing:
-            changed = any(existing.get(field, "") != value for field, value in fields.items())
+            changed = any(existing.get(field, existing.get("voice_path", "") if field == "task_voice_path" else "") != value
+                          for field, value in fields.items())
             existing.update(fields)
             if changed:
                 existing.update(status="待生成", error="")
@@ -119,18 +137,43 @@ def bind_pool_layers(layers, state):
     """Keep the next item by stable ID across edits/reordering of a pool."""
     result = copy.deepcopy(layers)
     for layer in result:
+        if layer["kind"] == "watermark":
+            layer["corners"] = dict(zip(layer["corners"], bind_pool_layers(list(layer["corners"].values()), state)))
+            continue
         if layer.get("source") != "pool":
             continue
         old = layer.get("sequence_items", [])
         cursor = layer.get("sequence_cursor", 0)
         next_id = old[cursor % len(old)]["id"] if old else None
-        if layer["kind"] == "image":
+        if layer["kind"] in {"image", "caption"}:
+            from .custom_pools import get_pool
+            pool_id = layer.get("pool_id", "")
+            image_pool = get_pool(state, pool_id) if pool_id else None
+            allowed = {"image", "video", "visual"} if layer["kind"] == "image" else {"subtitle"}
+            if image_pool and image_pool["kind"] not in allowed:
+                raise ValueError("控件与来源池的类型不匹配，请在来源中重新选择。")
+            image_items = image_pool["items"] if image_pool else state["image_pool"]
+            layer["pool_name"] = image_pool["name"] if image_pool else "默认图片池"
             items = [{key: item[key] for key in ("id", "path", "name", "thumbnail") if key in item}
-                     for item in state["image_pool"]]
+                     for item in image_items]
+            if layer["kind"] == "caption":
+                items = [{**item, "caption_file": item["path"]} for item in items]
         else:
             field = layer.get("pool_field", "full")
             items = []
-            for item in state["copy_pool"]:
+            pool_id = layer.get("pool_id", "")
+            from .custom_pools import get_pool
+            text_pool = get_pool(state, pool_id, "text") if pool_id else None
+            source_items = text_pool["items"] if text_pool else state["copy_pool"]
+            layer["pool_name"] = text_pool["name"] if text_pool else "默认文案池"
+            for item in source_items:
+                if text_pool:
+                    path = Path(item["path"])
+                    if not path.is_file() or path.stat().st_size > 160000:
+                        raise ValueError("文案池文件不存在或过大：" + path.name)
+                    content = data_file(path).read_text("utf-8-sig")
+                    lines = content.splitlines()
+                    item = {**item, "title": lines[0] if lines else "", "body": "\n".join(lines[1:])}
                 value = item.get(field, "") if field in {"title", "body"} else "\n".join(
                     text for text in (item.get("title", ""), item.get("body", "")) if text)
                 if value.strip():

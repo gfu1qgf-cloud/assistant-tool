@@ -4,7 +4,7 @@ from app_plugins.api import MAIN_MENU, TASK_CONTEXT_MENU, PluginCommand
 class BatchTextVideoPlugin:
     plugin_id = "batch_text_video"
     display_name = "批量文案视频"
-    version = "1.7"
+    version = "1.12"
     required_api_version = 1
 
     def __init__(self):
@@ -13,10 +13,19 @@ class BatchTextVideoPlugin:
 
     def register(self, context):
         self.context = context
+        # Optional host capability; compatible with legacy external hosts.
+        register_node = getattr(context, "register_node", None)
+        if callable(register_node):
+            from .workflow_nodes import canvas_nodes
+            for definition in canvas_nodes():
+                register_node(definition)
+            if callable(getattr(context, 'register_workflow_type', None)):
+                from .node_effects import register_type
+                register_type(context)
         context.register_command(PluginCommand(
             command_id="open", title="批量文案视频…",
             callback=lambda _rows: self.open_dialog(), locations=frozenset({MAIN_MENU}),
-            order=17, tooltip="静态文字版：自动排版、批量生成、音乐轮换与断点记忆",
+            order=17, tooltip="批量搭配视频与文案；控件来源绑定资源池，支持动态元素、抠像和字幕样式图库",
         ))
         context.register_command(PluginCommand(
             command_id="tasks", title="批量文案视频（表格文案）…", callback=self.import_tasks,
@@ -26,6 +35,14 @@ class BatchTextVideoPlugin:
 
     def start(self):
         pass
+
+    def workflow_runtime_context(self):
+        from .project_runtime import project_payload
+        from .store import Store
+        # The running owner decides the project. Nodes cannot choose a saved
+        # state file or switch this editor to another configuration.
+        state = self.dialog.state if self.dialog is not None else Store().load()
+        return project_payload(state)
 
     def open_dialog(self):
         if self.dialog is None:
@@ -58,11 +75,17 @@ class BatchTextVideoPlugin:
                 self.open_dialog().import_task_copy(records=records)
 
     def can_close(self):
-        if self.dialog is not None and self.dialog.is_busy():
-            self.dialog.cancel_work()
+        if self.dialog is not None and self.dialog.has_local_work():
+            # The host owns final rendering, but not our local preview/import
+            # threads. Cancel those without canceling a manager-owned export.
+            self.dialog.cancel_work(cancel_host=False)
             return False, "批量文案视频正在停止，请稍候再退出；已完成的视频和音乐进度会保留。"
         return True, ""
 
     def stop(self):
         if self.dialog is not None:
+            if not self.can_close()[0]:
+                return False
             self.dialog.close()
+            return not getattr(self.dialog, '_close_save_failed', False)
+        return True

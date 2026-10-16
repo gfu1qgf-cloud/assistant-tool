@@ -135,7 +135,7 @@ class EditorUndoTests(unittest.TestCase):
             identifier = layer["id"]
             original = copy.deepcopy(layer)
             layer.update(font_weight=650, source="fixed", text="Fixed new text")
-            dialog.layer_panel._text_properties_changed({"font_weight":650})
+            dialog.layer_panel._inspector_edited(identifier,{"font_weight":650})
             dialog.persist()
             self.assertTrue(dialog.undo_edit())
             layer = next(item for item in dialog.layer_panel.values() if item["id"] == identifier)

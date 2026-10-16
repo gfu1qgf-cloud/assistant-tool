@@ -1,9 +1,12 @@
+
+from model.AppDataStorage import data_io, data_file, data_directory
 import re
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from app_paths import APP_ROOT
+from app_paths import DATA_ROOT as APP_ROOT
+from model.OfflineMode import require_online
 from model.ReviewSubmissionHistory import (
     canonical_review_link,
     read_review_history,
@@ -62,6 +65,7 @@ def column_to_letter(col_idx: int) -> str:
 
 
 def load_sheets_service(config: Dict, config_prefix: str = "review_sheet"):
+    require_online("Google Sheets 请求")
     try:
         from google.auth.transport.requests import Request
         from google.oauth2.credentials import Credentials
@@ -75,29 +79,29 @@ def load_sheets_service(config: Dict, config_prefix: str = "review_sheet"):
             f"当前缺少：{missing_name}"
         )
 
-    credentials_default = config_str(config, "review_sheet_credentials_file", str(DEFAULT_CREDENTIALS_FILE))
-    token_default = config_str(config, "review_sheet_token_file", str(DEFAULT_TOKEN_FILE))
-    credentials_file = Path(config_str(config, f"{config_prefix}_credentials_file", credentials_default))
-    token_file = Path(config_str(config, f"{config_prefix}_token_file", token_default))
-    if not credentials_file.is_absolute():
-        credentials_file = APP_ROOT / credentials_file
-    if not token_file.is_absolute():
-        token_file = APP_ROOT / token_file
+    from model.PrivateDataPaths import private_path
+    credentials_default = config_str(config, "review_sheet_credentials_file") or 'GoogleSheetsCredentials.json'
+    token_default = config_str(config, "review_sheet_token_file") or 'GoogleSheetsToken.json'
+    credentials_file = private_path(config_str(config,f"{config_prefix}_credentials_file",credentials_default) or credentials_default,base=APP_ROOT)
+    token_file = private_path(config_str(config,f"{config_prefix}_token_file",token_default) or token_default,base=APP_ROOT)
+    # Third-party OAuth loaders require paths; supply only broker-approved ones.
+    credentials_file = data_file(credentials_file).path
+    token_file = data_file(token_file).path
 
     credentials = None
-    if token_file.exists():
+    if data_file(token_file).exists():
         credentials = Credentials.from_authorized_user_file(str(token_file), SHEETS_SCOPES)
 
     if not credentials or not credentials.valid:
         if credentials and credentials.expired and credentials.refresh_token:
             credentials.refresh(Request())
         else:
-            if not credentials_file.exists():
+            if not data_file(credentials_file).exists():
                 raise FileNotFoundError(f"没找到表格凭据文件：{credentials_file}")
             flow = InstalledAppFlow.from_client_secrets_file(str(credentials_file), SHEETS_SCOPES)
             credentials = flow.run_local_server(port=0)
 
-        token_file.write_text(credentials.to_json(), encoding="utf-8")
+        data_file(token_file).write_text_direct(credentials.to_json(), encoding="utf-8")
 
     return build("sheets", "v4", credentials=credentials)
 
