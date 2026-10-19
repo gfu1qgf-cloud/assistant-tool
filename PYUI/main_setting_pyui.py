@@ -80,10 +80,14 @@ from model.TaskTableSchema import (
 from model.ConfigTransactions import config_file_lock, merge_latest_api_statuses
 
 
-def _write_config_with_rolling_backups(config_path, config, retain=10):
+def _write_config_with_rolling_backups(config_path, config, retain=10, *, reset_api_key_ids=(), permission_updates=None):
     with config_file_lock(config_path):
         # Merge only worker-owned usage status, never keys or business fields.
-        config = merge_latest_api_statuses(config_path, dict(config))
+        config = merge_latest_api_statuses(config_path, dict(config), reset_key_ids=reset_api_key_ids,
+                                           permission_updates=permission_updates)
+        if 'elevenlabs_api_keys' in config:
+            config[API_KEY_STATUSES_CONFIG_KEY] = prune_api_key_statuses(
+                config.get(API_KEY_STATUSES_CONFIG_KEY, {}), config['elevenlabs_api_keys'])
         return _write_config_with_rolling_backups_locked(config_path, config, retain)
 
 
@@ -325,6 +329,7 @@ class MainSettingDialog(QtWidgets.QDialog, Ui_MainSettingDialog):
             )
         self._build_settings_navigation()
         self.api_key_statuses = {}
+        self._reset_api_key_ids = set()
         
         # 连接按钮信号
         self.ok_btn.clicked.connect(self.accept)
@@ -1332,13 +1337,14 @@ class MainSettingDialog(QtWidgets.QDialog, Ui_MainSettingDialog):
         return True
 
     def _refresh_api_key_item(self, item):
+        from model.ElevenLabsPermissions import describe_permissions, probe_description
         api_key = item.data(QtCore.Qt.UserRole)
         status_text = describe_api_key_status(self.api_key_statuses, api_key)
-        item.setText(f"{self._masked_api_key(api_key)}    [{status_text}]")
-        status = self.api_key_statuses.get(api_key_id(api_key), {}).get('forced_alignment_status')
-        labels = {'permission_denied':'权限不足（不影响语音生成）','available':'已成功使用','quota':'额度不足',
-            'cooldown':'冷却中','error':'上次请求失败'}
-        item.setToolTip('云端逐词对齐：'+labels.get(status,'未检测；不会自动上传音频检测权限'))
+        state = self.api_key_statuses.get(api_key_id(api_key), {})
+        if not isinstance(state, dict):
+            state = {}
+        item.setText(f"{self._masked_api_key(api_key)}    [{status_text}]\n{describe_permissions(state)}")
+        item.setToolTip(describe_permissions(state) + '\n' + probe_description(state))
 
     def add_api_key(self):
         api_key = self.elevenlabs_api_key_edit.text().strip()
@@ -1347,11 +1353,16 @@ class MainSettingDialog(QtWidgets.QDialog, Ui_MainSettingDialog):
 
         if not self._append_api_key(api_key):
             QMessageBox.information(self, "提示", "这个 API Key 已在列表中。")
+        else:
+            self.elevenlabs_key_probe.enqueue([api_key])
         self.elevenlabs_api_key_edit.clear()
         self._refresh_alignment_keys()
 
     def remove_selected_api_keys(self):
         for item in self.elevenlabs_api_key_list.selectedItems():
+            identifier = api_key_id(item.data(QtCore.Qt.UserRole))
+            self.elevenlabs_key_probe.invalidate([identifier])
+            self._api_permission_updates.pop(identifier, None)
             self.elevenlabs_api_key_list.takeItem(
                 self.elevenlabs_api_key_list.row(item)
             )
@@ -1361,7 +1372,11 @@ class MainSettingDialog(QtWidgets.QDialog, Ui_MainSettingDialog):
         """清除选中 Key 的状态，使它在下一次生成时重新测试。"""
         for item in self.elevenlabs_api_key_list.selectedItems():
             api_key = item.data(QtCore.Qt.UserRole)
-            self.api_key_statuses.pop(api_key_id(api_key), None)
+            key_id = api_key_id(api_key)
+            self.elevenlabs_key_probe.invalidate([key_id])
+            self._api_permission_updates.pop(key_id, None)
+            self._reset_api_key_ids.add(key_id)
+            self.api_key_statuses.pop(key_id, None)
             self._refresh_api_key_item(item)
 
     def get_api_keys(self):
@@ -1374,7 +1389,7 @@ class MainSettingDialog(QtWidgets.QDialog, Ui_MainSettingDialog):
         """获取界面中的配置"""
         config = {
             'elevenlabs_api_keys': self.get_api_keys(),
-            'elevenlabs_alignment_key_id': self.elevenlabs_alignment_key.currentData() or '',
+            'elevenlabs_alignment_key_id': getattr(self, '_legacy_alignment_key_id', ''),
             'audio_settings': copy.deepcopy(self.audio_settings),
             TASK_RESULT_HOTKEY_CONFIG_KEY: normalize_hotkey_sequence(
                 self.task_result_hotkey_edit.keySequence().toString(
@@ -1413,25 +1428,63 @@ class MainSettingDialog(QtWidgets.QDialog, Ui_MainSettingDialog):
         self.settingTabWidget.addTab(self.gemini_keys_editor, 'AI 密钥')
 
     def _build_elevenlabs_alignment_settings(self):
-        group = QtWidgets.QGroupBox('现有音频的云端逐词对齐', self.tab_4)
+        from PYUI.elevenlabs_key_probe import KeyProbeController
+        self._api_permission_updates = {}
+        self._accept_after_probe = False
+        self._legacy_alignment_key_id = ''
+        self.elevenlabs_key_probe = KeyProbeController(self)
+        self.elevenlabs_key_probe.result.connect(self._api_probe_result)
+        self.elevenlabs_key_probe.busyChanged.connect(self._api_probe_busy)
+        group = QtWidgets.QGroupBox('一份 Key 清单 · 按权限自动分配', self.tab_4)
         form = QtWidgets.QFormLayout(group)
-        self.elevenlabs_alignment_key = QtWidgets.QComboBox(group)
-        form.addRow('指定对齐 Key', self.elevenlabs_alignment_key)
-        note = QtWidgets.QLabel('只用这里指定的 Key，不遍历其他 Key。请在 ElevenLabs 为它开启强制对齐权限。'
-            '对齐会上传所选音频和文案并消耗对应额度。\n新生成 ELE 音频直接附带时间戳，不需要强制对齐权限。'
-            '所有结果另存为“音频名[动态].srt”，原 SRT 不修改。', group)
+        self.elevenlabs_probe_button = QtWidgets.QPushButton('只读检测选中 Key（未选则全部）', group)
+        self.elevenlabs_probe_button.clicked.connect(self._probe_selected_api_keys)
+        form.addRow(self.elevenlabs_probe_button)
+        self.elevenlabs_probe_note = QtWidgets.QLabel('添加后自动进行只读检测；语音和逐词对齐共用上方清单，无需指定对齐 Key。', group)
+        self.elevenlabs_probe_note.setWordWrap(True)
+        form.addRow(self.elevenlabs_probe_note)
+        note = QtWidgets.QLabel('普通 Key 的生成／对齐权限无法通过只读接口一次查全，未确认的标为“待确认”；实际使用后自动记录并跳过缺权限的 Key。'
+            '\n检测不会生成样本或上传音频。新 ELE 音频自带时间戳，不额外调用对齐；现有音频对齐需上传并消耗额度。'
+            '动态字幕另存，原 SRT 保持不变。', group)
         note.setWordWrap(True); form.addRow(note)
-        self.tab_4.layout().addWidget(group)
+        layout = self.tab_4.layout()
+        for index in reversed(range(layout.count())):
+            if layout.itemAt(index).spacerItem() is not None:
+                layout.takeAt(index)
+        layout.addWidget(group)
+        layout.setStretch(layout.indexOf(self.elevenlabs_api_key_list), 1)
+        self.help_label.setText('所有 ELE 功能共用这一份 Key 清单，添加时自动只读检测，使用后记住对应权限。'
+            '在 ElevenLabs 后台修改权限或充值后，可选中 Key 并点击“重置选中状态”，让下次使用重新确认。'
+            '<a href="https://elevenlabs.io/app/settings/api-keys">管理 ElevenLabs Key</a>')
         self._refresh_alignment_keys('')
 
     def _refresh_alignment_keys(self, wanted=None):
-        combo = self.elevenlabs_alignment_key
-        wanted = combo.currentData() if wanted is None else wanted
-        combo.blockSignals(True); combo.clear()
-        combo.addItem('未指定（不调用云端对齐）', '')
-        for key in self.get_api_keys(): combo.addItem(self._masked_api_key(key), api_key_id(key))
-        if wanted and combo.findData(wanted) < 0: combo.addItem('原选择的 Key 暂不可用，请重选', wanted)
-        combo.setCurrentIndex(max(0,combo.findData(wanted or ''))); combo.blockSignals(False)
+        if wanted is not None:
+            self._legacy_alignment_key_id = str(wanted or '')
+
+    def _probe_selected_api_keys(self):
+        selected = [item.data(QtCore.Qt.UserRole) for item in self.elevenlabs_api_key_list.selectedItems()]
+        self.elevenlabs_key_probe.enqueue(selected or self.get_api_keys())
+
+    def _api_probe_result(self, identifier, updates):
+        if identifier not in {api_key_id(key) for key in self.get_api_keys()}:
+            return
+        state = self.api_key_statuses.setdefault(identifier, {})
+        if not isinstance(state, dict):
+            state = self.api_key_statuses[identifier] = {}
+        state.update(updates)
+        self._api_permission_updates.setdefault(identifier, {}).update(updates)
+        for index in range(self.elevenlabs_api_key_list.count()):
+            item = self.elevenlabs_api_key_list.item(index)
+            if api_key_id(item.data(QtCore.Qt.UserRole)) == identifier:
+                self._refresh_api_key_item(item)
+
+    def _api_probe_busy(self, busy):
+        self.elevenlabs_probe_note.setText('正在后台只读检测，界面可继续操作；不会生成音频或消耗生成额度。' if busy else
+            '检测结束：已确认的按权限使用；未能查询的仍为待确认，不会误标成全部可用。')
+        if not busy and self._accept_after_probe:
+            self._accept_after_probe = False
+            QtCore.QTimer.singleShot(0, self.accept)
 
     def _build_network_tab(self):
         self.network_tab = QtWidgets.QWidget(self.settingTabWidget)
@@ -1498,22 +1551,33 @@ class MainSettingDialog(QtWidgets.QDialog, Ui_MainSettingDialog):
             
             # 更新API key
             new_config = self.get_config()
-            new_config[API_KEY_STATUSES_CONFIG_KEY] = prune_api_key_statuses(
+            local_statuses = prune_api_key_statuses(
                 self.api_key_statuses,
                 new_config['elevenlabs_api_keys'],
             )
+            # These records belong to the worker transaction, not generic
+            # form merging. Otherwise an explicit reset conflicts with a
+            # concurrent probe or is resurrected by the latest-status merge.
+            memory_base = dict(getattr(self, '_config_form_baseline', {}))
+            disk_base = dict(getattr(self, '_config_disk_baseline', {}))
+            for snapshot in (memory_base, disk_base, config, new_config):
+                snapshot.pop(API_KEY_STATUSES_CONFIG_KEY, None)
             config, conflicts = merge_runtime_changes(
-                getattr(self, '_config_form_baseline', {}), new_config,
-                getattr(self, '_config_disk_baseline', {}), config,
+                memory_base, new_config, disk_base, config,
             )
             if conflicts:
                 QMessageBox.warning(self, '配置同时被修改',
                     '未覆盖任何配置。请重新打开设置再修改这些字段：' + '、'.join(conflicts))
                 return False
             config.pop('elevenlabs_api_key', None)
+            config[API_KEY_STATUSES_CONFIG_KEY] = local_statuses
             
             # 即使某个设置页以后出现回归，也能从最近十次保存中恢复。
-            _write_config_with_rolling_backups(config_path, config)
+            _write_config_with_rolling_backups(config_path, config,
+                reset_api_key_ids=getattr(self, '_reset_api_key_ids', ()),
+                permission_updates=self._api_permission_updates)
+            self._reset_api_key_ids.clear()
+            self._api_permission_updates.clear()
             
             return True
         except Exception as e:
@@ -1604,10 +1668,20 @@ class MainSettingDialog(QtWidgets.QDialog, Ui_MainSettingDialog):
         # 用户输入后直接点“确定”时，也自动加入列表。
         pending_api_key = self.elevenlabs_api_key_edit.text().strip()
         if pending_api_key:
-            self._append_api_key(pending_api_key)
+            if self._append_api_key(pending_api_key):
+                self.elevenlabs_key_probe.enqueue([pending_api_key])
             self.elevenlabs_api_key_edit.clear()
+        if self.elevenlabs_key_probe.busy:
+            self._accept_after_probe = True
+            self.elevenlabs_probe_note.setText('正在完成后台只读检测，结束后自动保存；也可以取消关闭。')
+            return
         if self.save_config():
             super().accept()
+
+    def reject(self):
+        self._accept_after_probe = False
+        self.elevenlabs_key_probe.stop()
+        super().reject()
     
     @staticmethod
     def get_settings(parent=None, plugin_host=None, focus_daily_quantity=False, focus_offline=False):

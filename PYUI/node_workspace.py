@@ -534,8 +534,9 @@ class NodeWorkspace(QtWidgets.QWidget):
             self._preview_button.setEnabled(available)
 
     def can_preview_node(self, node):
-        from model.node_workflow.workflow_types import can_preview_operations
-        return is_preview(node['kind']) or can_preview_operations(self.graph, self.registry, node)
+        from model.node_workflow.workflow_types import can_preview_operations, preview_available
+        return preview_available(self.graph, self.registry) and (
+            is_preview(node['kind']) or can_preview_operations(self.graph, self.registry, node))
 
     def inspect_selection(self):
         self._finish_inspector_edits(release_focus=True)
@@ -1275,6 +1276,8 @@ class NodeWorkspace(QtWidgets.QWidget):
             if self.graph.get('workflow_type'):
                 from model.node_workflow.workflow_types import selected_type
                 provider = selected_type(self.graph, self.registry)
+                if provider.preview_factory is None:
+                    raise ValueError('此插件工作流尚未提供预览模拟；可以保存和执行。')
                 task = provider.preview_task_factory(self.graph) if provider.preview_task_factory else None
             payload, resources = prepare_job(self.graph, self.registry, task, self.host, root_id=node_id,
                                              global_data=self.global_preview_snapshot())

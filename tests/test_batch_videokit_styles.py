@@ -17,7 +17,8 @@ from app_plugins.builtin.batch_text_video.caption_style_render import (
 from app_plugins.builtin.batch_text_video.captions import new_caption, write_caption_ass, design_layers, filter_path
 from app_plugins.builtin.batch_text_video.layers import normalize_layers
 from app_plugins.builtin.batch_text_video.layout import ensure_fonts, render_overlay
-from app_plugins.builtin.batch_text_video.caption_ui import CaptionProperties, EffectDialog
+from app_plugins.builtin.batch_text_video.caption_ui import CaptionProperties
+from app_plugins.builtin.batch_text_video.caption_effect_ui import CaptionEffectEditor
 from app_plugins.builtin.batch_text_video.layer_ui import LayerPanel
 
 WORDS = [{'text':'Božia','start':.25,'end':.8}, {'text':'láska','start':.95,'end':1.5},
@@ -26,7 +27,7 @@ WORDS = [{'text':'Božia','start':.25,'end':.8}, {'text':'láska','start':.95,'e
 
 
 def component(name,**values):
-    layer = apply_style(new_caption(),PREFIX+name)
+    layer = apply_style(new_caption(),PREFIX+name,reset_layout=True)
     layer.update(values)
     return normalize_layers([layer])[0]
 
@@ -67,7 +68,9 @@ class VideoKitStylesTests(unittest.TestCase):
         before = copy.deepcopy(layer)
         result = apply_style(layer,PREFIX+'渐变蓝色框')
         self.assertEqual(layer,before)
-        self.assertEqual(result['caption_effects'],{})
+        self.assertEqual(result['caption_effects_version'],1)
+        self.assertFalse(result['caption_effects']['global_mask_enabled'])
+        self.assertIn('anim_in_type',result['caption_effects'])
         for key in ('id','caption_timing','caption_file','caption_language','caption_source'):
             self.assertEqual(result[key],before[key])
         changed = apply_style(result,PREFIX+'默认白字')
@@ -135,12 +138,12 @@ class VideoKitStylesTests(unittest.TestCase):
             saved=[]; widget.changed.connect(saved.append)
             widget.controls['caption_preset'].setCurrentIndex(widget.controls['caption_preset'].findData(PREFIX+'渐变蓝色框'))
             self.assertTrue(saved[-1]['_caption_style_apply'])
-            self.assertEqual(saved[-1]['caption_words'],8)
+            self.assertEqual(saved[-1]['caption_words'],2)
             widget.controls['caption_timing'].setCurrentIndex(widget.controls['caption_timing'].findData('uniform'))
             self.assertEqual(saved[-1]['caption_timing'],'uniform')
             self.assertNotIn('_caption_style_apply',saved[-1])
-            dialog=EffectDialog(saved[-1])
-            dialog.reject(); dialog.deleteLater()
+            dialog=CaptionEffectEditor(saved[-1])
+            dialog.deleteLater()
             self.assertIn('播放预览',widget.style_note.text())
         finally: widget.deleteLater()
 
@@ -159,8 +162,10 @@ class VideoKitStylesTests(unittest.TestCase):
 
     def test_independent_effect_dicts_no_shared_configuration(self):
         a,b = normalize_layers([new_caption()])[0],normalize_layers([new_caption()])[0]
+        original = copy.deepcopy(b['caption_effects'])
         a['caption_effects']['test']=True
-        self.assertEqual(b['caption_effects'],{})
+        self.assertEqual(b['caption_effects'],original)
+        self.assertNotIn('test',b['caption_effects'])
 
 
 class VideoKitNativeRenderTests(unittest.TestCase):

@@ -3,9 +3,14 @@ from itertools import groupby
 from qt_compat import QtCore, QtGui
 from .caption_styles import effects, colors
 from .caption_appearance import group_colors, active_segments, add_highlight_box, add_foreground
+from .caption_display import display_settings, reveal_events, reveal_start
 
 
 def make_primitives(words, layer, width, height, duration):
+    from .caption_styles import uses_style_renderer
+    if uses_style_renderer(layer):
+        from .caption_style_render import make_primitives as make_style_primitives
+        return make_style_primitives(words,layer,width,height,duration)
     from .captions import caption_events
     events=caption_events(words,layer,width,height,duration,native=True)
     style=effects(layer)
@@ -34,17 +39,33 @@ def make_primitives(words, layer, width, height, duration):
             add(path,bounds.x(),bounds.y(),group[0]['group_start'],group[0]['group_end'],color,
                 layer['background_opacity']/100,z=-5,blur=style['box_blur']*scale,
                 gradient_direction=style['bg_gradient_type'])
-    for event in events:
-        start,stop=event['start'],event['end']; x,y=event['x'],event['y']; path=event['_native_path']
-        pop=min(layer['caption_pop_ms'],round((stop-start)*1000))
-        options={'motion':'pop' if layer['caption_preset']=='pop' and pop>=30 else 'none',
-            'motion_ms':pop,'pop_start':.72,'pop_peak':1.08}
+            if style['bg_gradient_highlight']:
+                highlight=QtGui.QPainterPath(); highlight.addRoundedRect(
+                    QtCore.QRectF(0,0,bounds.width(),bounds.height()/3),
+                    layer['background_radius']*scale,layer['background_radius']*scale)
+                add(highlight,bounds.x(),bounds.y(),group[0]['group_start'],group[0]['group_end'],
+                    '#ffffff',.08,z=-5)
+    for event in reveal_events(events, layer):
+        start,stop=reveal_start(event,layer,events),event['end']; x,y=event['x'],event['y']; path=event['_native_path']
+        pop=min(round(style['anim_in_duration']*1000),round((stop-start)*1000))
+        options={'motion':style['anim_in_type'] if pop>=30 else 'none',
+            'motion_ms':pop,'pop_start':style['pop_start'],'pop_peak':style['pop_peak']}
         if layer['shadow_enabled']:
             add(path,x+layer['shadow_x']*scale,y+layer['shadow_y']*scale,start,stop,layer['shadow_color'],
                 layer['shadow_opacity']/100,z=-2,blur=layer.get('shadow_blur',0)*scale,**options)
-        add_highlight_box(add,event,style,scale,options)
-        for a,b,color in active_segments(start,stop,event,palette[event['group']],style):
+        if not event.get('_character_piece') or event.get('_character_index') == 0:
+            add_highlight_box(add,event,style,scale,options)
+        base_color=(style['color_text'] if style['text_gradient_enabled'] and not layer.get('caption_group_colors')
+                    else palette[event['group']])
+        segments=active_segments(start,stop,event,base_color,style)
+        for a,b,color in segments:
             phase={**options,'motion':options['motion'] if abs(a-start)<.005 else 'none'}
             add_foreground(add,path,x,y,a,b,color,1,layer,scale,
-                {**phase,'gradient_direction':style['high_gradient_direction']})
+                {**phase,'gradient_direction':style['high_gradient_direction']
+                 if color==style['color_high'] else style['text_gradient_direction']})
+        display=display_settings(layer)
+        if event.get('_character_piece') and display['caption_cursor']:
+            cursor=QtGui.QPainterPath(); cursor.addRect(QtCore.QRectF(0,0,max(1,2*scale),event['height']))
+            add(cursor,x+event['_cursor_edge'],y,event['start'],min(stop,event['_cursor_until']),
+                display['caption_cursor_color'])
     return primitives,events

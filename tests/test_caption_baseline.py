@@ -18,7 +18,7 @@ WORDS=[dict(text=t,start=.1+i*.4,end=.4+i*.4) for i,t in enumerate(TEXT.split())
 
 def component(preset=None,**changes):
     layer=new_caption()
-    if preset:layer=apply_style(layer,PREFIX+preset)
+    if preset:layer=apply_style(layer,PREFIX+preset,reset_layout=True)
     layer.update(font='Open Sans',font_min=48,font_max=48,width=98,height=80,caption_words=8,caption_per_line=4,
         **changes)
     return normalize_layers([layer])[0]
@@ -95,7 +95,7 @@ class CaptionBaselineTests(unittest.TestCase):
             return original(value)
         with patch('app_plugins.builtin.batch_text_video.playback.hashlib.sha256',side_effect=sha):
             preview_key(dict(path='',title='',body=''),fresh_state())
-        self.assertEqual(json.loads(captured[-1])[0],'playback-v19-common-caption-appearance')
+        self.assertEqual(json.loads(captured[-1])[0],'playback-v22-caption-parameter-snapshots')
 
 
 if __name__=='__main__':unittest.main()

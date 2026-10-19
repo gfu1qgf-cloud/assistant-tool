@@ -27,8 +27,11 @@ DEFAULTS = {"caption_preset": "pop", "caption_source": "body", "caption_words": 
             "caption_effects": {}}
 DEFAULTS['caption_cloud_consent'] = False
 DEFAULTS['caption_random_size'] = False
+DEFAULTS['caption_effects_version'] = 0
 from .caption_appearance import DEFAULTS as APPEARANCE_DEFAULTS
 DEFAULTS.update(copy.deepcopy(APPEARANCE_DEFAULTS))
+from .caption_display import DEFAULTS as DISPLAY_DEFAULTS
+DEFAULTS.update(copy.deepcopy(DISPLAY_DEFAULTS))
 
 
 def new_caption():
@@ -43,7 +46,10 @@ def new_caption():
 def normalize_caption(layer):
     from .caption_appearance import normalize_appearance
     for key, value in DEFAULTS.items():
-        layer.setdefault(key, copy.deepcopy(value))
+        if key not in DISPLAY_DEFAULTS:
+            layer.setdefault(key, copy.deepcopy(value))
+    from .caption_display import normalize_display
+    normalize_display(layer)
     normalize_appearance(layer)
     from .caption_random import contrast_unit
     contrast_unit(.5, layer['caption_size_contrast'])
@@ -59,6 +65,8 @@ def normalize_caption(layer):
             or layer["caption_source"] not in {"body", "full", "asr"}):
         raise ValueError("动态字幕预设或文案来源无效。")
     effects(layer)
+    from .caption_styles import freeze_effect_parameters
+    freeze_effect_parameters(layer)
     if not isinstance(layer["caption_language"], str) or not re.fullmatch(r"[a-z]{2,3}", layer["caption_language"]):
         raise ValueError("字幕语言请填写语言代码，例如 sk / en / it。")
     if layer["caption_timing"] not in {"auto", "task", "file", "model", "uniform", "elevenlabs"}:
@@ -91,7 +99,11 @@ def design_layers(layers, title, body):
     for layer in values:
         if layer["kind"] == "caption":
             text = caption_text(layer, title, body) or "字幕 预览"
-            tokens = re.findall(r"\S+", text)[:layer["caption_words"]]
+            from .caption_display import display_settings
+            tokens = re.findall(r"\S+", text)
+            from .caption_follow import enabled as follow_enabled
+            if not display_settings(layer)['caption_accumulate'] and not follow_enabled(layer):
+                tokens = tokens[:layer["caption_words"]]
             per_line = layer["caption_per_line"]
             text = "\n".join(" ".join(tokens[i:i+per_line]) for i in range(0, len(tokens), per_line))
             layer.update(kind="text", source="fixed", text=text)
@@ -217,11 +229,21 @@ def task_word_timings(job, voice, layer, title, body, duration, directory, cance
             if report:
                 report(f"动态字幕：匀速动画，按 {path.name} 每个字幕块均分词时间；不调用模型，时刻为近似值。")
             return uniform_word_timings(words,duration)
+        from .caption_follow import requires_word_times, has_word_times, check_word_times
+        if requires_word_times(layer) and not has_word_times(words):
+            if layer['caption_timing'] == 'auto':
+                if report:
+                    report('朗读跟随：现有 SRT 是整句时间，自动继续精确逐词对齐；不修改原 SRT，不估算词时刻。')
+                return load_word_timings(voice,caption_text(layer,title,body),duration,directory,cancel,report,layer['caption_language'])
+            check_word_times(words, layer)
         if report:
             count = len({word["cue"] for word in words})
             report(f"动态字幕：直接使用任务字幕 {path.name}（{count}块）；不加载模型、不修改原字幕。")
             if count < len(words):
-                report("已有 SRT 含多词字幕块，按原块时间一起出现；如需精确逐词弹入，请改用本地对齐。")
+                if layer.get('caption_display_mode') == 'char':
+                    report('逐字显示：在每个 SRT 字幕块内按阅读顺序连续打字；字时刻是显示动画，不是逐字语音对齐，原 SRT 不变。')
+                else:
+                    report("已有 SRT 含多词字幕块，按原块时间一起出现；如需精确逐词弹入，请改用本地对齐。")
         return word_srt_timings(words)
     text = caption_text(layer,title,body)
     if layer["caption_timing"] == "uniform":
@@ -266,7 +288,7 @@ def _audio_hash(path, check):
     return digest.hexdigest()
 
 
-def load_word_timings(voice, text, duration, directory, cancel=None, report=None, language="sk"):
+def load_word_timings(voice, text, duration, directory, cancel=None, report=None, language="sk", *, cache_only=False):
     """Cache word timings independent of component geometry/animation/profile.
 
     A changed audio or task text cannot reuse stale alignment. The cached model
@@ -286,7 +308,7 @@ def load_word_timings(voice, text, duration, directory, cancel=None, report=None
                  "model": name, "duration": round(duration, 6), "language": language}
     key = hashlib.sha256(json.dumps(signature, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
     cache = Path(directory) / "caption-cache"
-    data_directory(cache).ensure(parents=True, exist_ok=True)
+    if not cache_only: data_directory(cache).ensure(parents=True, exist_ok=True)
     path = cache / (key + ".json")
     try:
         value = json.loads(data_file(path).read_text("utf8"))
@@ -304,6 +326,7 @@ def load_word_timings(voice, text, duration, directory, cancel=None, report=None
             return words
     except (OSError, ValueError, TypeError, KeyError):
         pass
+    if cache_only: return None  # Animation scrubbing must never launch a model.
     report(f"动态字幕：使用 {name} 本地模型{'对齐任务文案' if text else '识别人声'}，首次需要等待。")
     timing_notes = []
     def timing_report(message):
@@ -438,8 +461,8 @@ def glyph_line_metrics(glyphs):
 
 def caption_events(words, layer, width, height, duration, *, native=False):
     """Stable layout for each group; a future word is NEVER shown early."""
-    from .caption_styles import is_catalog
-    if is_catalog(layer):
+    from .caption_styles import uses_style_renderer
+    if uses_style_renderer(layer):
         from .caption_style_render import groups_and_events
         return groups_and_events(words,layer,width,height,duration)[0]
     from .layout import TextDoesNotFit
@@ -458,19 +481,23 @@ def caption_events(words, layer, width, height, duration, *, native=False):
     events = []
     count, per_line = layer["caption_words"], layer["caption_per_line"]
     # Leave room for the 108% pop peak; positions do not jump when another word enters.
-    peak = 1.08 if layer["caption_preset"] == "pop" and layer["caption_pop_ms"] else 1
+    from .caption_styles import effects
+    style = effects(layer)
+    peak = max(1,style['pop_start'],style['pop_peak']) if style['anim_in_type'] == 'pop' else 1
     trusted_cues = all("cue" in word for word in words)
-    groups = [list(items) for _cue,items in groupby(words,key=lambda word:word["cue"])] if trusted_cues else [words[i:i+count] for i in range(0,len(words),count)]
+    from .caption_display import display_settings, layout_glyphs
+    groups = ([words] if display_settings(layer)['caption_accumulate'] else
+              [list(items) for _cue,items in groupby(words,key=lambda word:word["cue"])] if trusted_cues else
+              [words[i:i+count] for i in range(0,len(words),count)])
     start_index = 0
     for group_index, group in enumerate(groups):
         next_start = groups[group_index+1][0]["start"] if group_index+1 < len(groups) else duration
         end = min(duration,max(word["end"] for word in group)) if trusted_cues else min(
             duration,next_start,max(word["end"] for word in group)+layer["caption_hold_ms"]/1000)
         def layout(fraction):
-            glyphs = [_glyph(word["text"], layer, (layer["font_min"] + fraction *
-                       (sizes[start_index+i]-layer["font_min"])) * scale,native=native) for i, word in enumerate(group)]
-            gap = max(0, 8 + layer["word_spacing"]) * scale
-            lines = glyph_rows(glyphs,per_line,box.width(),gap,peak)
+            glyphs, lines, gap = layout_glyphs(group, layer, sizes[start_index:start_index+len(group)],
+                scale, fraction, available_width=box.width(), per_line=per_line,
+                gap_for=lambda _glyphs: max(0, 8+layer['word_spacing'])*scale, peak=peak, native=native)
             widths = [sum(glyphs[i]['width']*peak for i in line) + gap*(len(line)-1) for line in lines]
             metrics = [glyph_line_metrics([glyphs[i] for i in line]) for line in lines]
             heights = [height*peak*layer["line_spacing"] for height,_baseline in metrics]
@@ -505,7 +532,8 @@ def caption_events(words, layer, width, height, duration, *, native=False):
                 events.append({**word, **glyph, "end": word_end, "spoken_end":word['end'],
                                "group_start":min(w['start'] for w in group),'group_end':end,
                                "x": x+glyph['width']*(peak-1)/2,
-                               "y": baseline-glyph['_baseline'], 'group':group_index, 'line':line_index})
+                               "y": baseline-glyph['_baseline'], 'group':group_index, 'line':line_index,
+                               'context':False})
                 x += glyph["width"]*peak + gap
             y += heights[line_index]
         start_index += len(group)
@@ -523,8 +551,8 @@ def _ass_color(value):
 
 
 def write_caption_ass(path, words, layer, width, height, duration):
-    from .caption_styles import is_catalog
-    if is_catalog(layer):
+    from .caption_styles import uses_style_renderer
+    if uses_style_renderer(layer):
         from .caption_style_render import write_style_ass
         return write_style_ass(path,words,layer,width,height,duration)
     from .caption_basic_render import make_primitives

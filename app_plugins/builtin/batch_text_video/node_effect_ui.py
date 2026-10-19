@@ -9,6 +9,7 @@ class NodeEffectProperties(QtWidgets.QWidget):
 
     def __init__(self, services=None, parent=None):
         super().__init__(parent)
+        self.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored,QtWidgets.QSizePolicy.Policy.Maximum)
         self.services, self.layer, self.loading = services, None, False
         layout = QtWidgets.QVBoxLayout(self)
         self.workflow = QtWidgets.QComboBox()
@@ -16,8 +17,12 @@ class NodeEffectProperties(QtWidgets.QWidget):
         self.workflow.setSizeAdjustPolicy(self.workflow.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
         self.workflow.setMinimumContentsLength(12)
         self.workflow.currentIndexChanged.connect(self.edit)
-        layout.addWidget(QtWidgets.QLabel('来源：程序工作流库 · 文案视频节点效果'))
-        layout.addWidget(self.workflow)
+        layout.setContentsMargins(0,0,0,0)
+        form=QtWidgets.QFormLayout()
+        form.setRowWrapPolicy(form.RowWrapPolicy.WrapLongRows)
+        form.setFieldGrowthPolicy(form.FieldGrowthPolicy.AllNonFixedFieldsGrow)
+        form.addRow('来源工作流',self.workflow); layout.addLayout(form)
+        self.workflow.setToolTip('程序工作流库中的“文案视频节点效果”；不读取任意其他类型工作流。')
         row = QtWidgets.QHBoxLayout()
         self.refresh = QtWidgets.QPushButton('刷新列表')
         self.open = QtWidgets.QPushButton('编辑工作流…')
@@ -42,7 +47,9 @@ class NodeEffectProperties(QtWidgets.QWidget):
             '手工新建后，在节点面板“文件 → 保存”填写名称，再回到这里刷新并选择。')
         note.setWordWrap(True)
         note.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored, QtWidgets.QSizePolicy.Policy.Preferred)
-        layout.addWidget(note); layout.addStretch()
+        from .property_sections import PropertySection
+        self.help_section=PropertySection('节点效果说明',note)
+        layout.addWidget(self.help_section)
         self.setEnabled(False)
 
     def library(self):
@@ -93,7 +100,10 @@ class NodeEffectProperties(QtWidgets.QWidget):
 def node_property_panel(services=None, *, mode='batch'):
     from .component_inspector import ComponentPropertyPanel
     panel = ComponentPropertyPanel(mode=mode)
-    panel.node_effect_properties = panel.add_bound('node', '节点效果工作流', NodeEffectProperties(services),
-        fields={'workflow_id'}, expanded=True)
+    from .inspector_layout_contract import require_flat_layout
+    require_flat_layout(panel)
+    panel.node_effect_properties = panel.add_bound('node', '', NodeEffectProperties(services),
+        fields={'workflow_id'}, section=False)
+    panel.targets['node']=panel.node_effect_properties
     panel.node_effect_properties.message.connect(panel.message)
     return panel

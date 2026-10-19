@@ -102,6 +102,8 @@ class GraphEvaluator:
             return outputs
         except Exception as error:
             self.context.check_canceled()
+            if getattr(error, 'workflow_skipped', False):
+                self.context.skipped_reason = str(error)
             if isinstance(error, GraphError):
                 raise
             definition = self.registry.definitions[self.nodes[node_id]["kind"]]
@@ -214,12 +216,23 @@ class GraphEvaluator:
             raise ValueError("执行次数必须是 0～10000 的整数。")
         if mode == "foreach" and type(items) is not list:
             raise ValueError("逐项遍历的列表输入没有提供有效列表。")
+        if mode == "foreach" and not items and params.get("empty", "error") != "skip":
+            raise ValueError("逐项遍历的列表为空，循环没有处理任何项目；如需允许空结果，请在 End 选择“允许 0 次”。")
         iterations = len(items) if mode == "foreach" else limit if mode == "while" else int(count)
         if iterations > limit:
             raise ValueError(f"需要 {iterations} 次迭代，超过安全上限 {limit}；请调整 End 上限。")
         result_type = self.types.get((end_id, True, "last"))
         initial_type = self.types.get((begin_id, False, "initial"))
-        last = initial if result_type == initial_type else None
+        numeric_initial_matches = (initial_type in {"number", "integer", "float"}
+            and (result_type == "number" and type(initial) in (int, float) and math.isfinite(initial)
+                 or result_type == "integer" and type(initial) is int
+                 or result_type == "float" and type(initial) is float and math.isfinite(initial)))
+        if iterations == 0 and self.incoming.get((begin_id, "initial")):
+            if initial is None:
+                raise ValueError("循环执行 0 次，已连接的初始数据没有提供值。")
+            if result_type != initial_type and not numeric_initial_matches:
+                raise ValueError("循环执行 0 次，初始数据与 End 最终结果类型不兼容；请连接类型转换节点。")
+        last = initial if result_type == initial_type or iterations == 0 and numeric_initial_matches else None
         state, collected, byte_count, completed = initial, [], 0, 0
         stop_port = next(p for p in edefinition.inputs if p.key == "stop")
         result_port = next(p for p in edefinition.inputs if p.key == "result")

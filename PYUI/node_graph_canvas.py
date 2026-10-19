@@ -230,9 +230,10 @@ class NodeItem(QtWidgets.QGraphicsObject):
                          "需修正 · 详见右侧" if self.errors else loop_caption or "拖动节点 · 点击端口连线")
 
     def can_preview(self):
-        from model.node_workflow.workflow_types import can_preview_operations
+        from model.node_workflow.workflow_types import can_preview_operations, preview_available
         scene = self.scene()
-        return is_preview(self.data['kind']) or bool(scene and can_preview_operations(scene.graph, scene.registry, self.data))
+        return bool(scene and preview_available(scene.graph, scene.registry) and
+                    (is_preview(self.data['kind']) or can_preview_operations(scene.graph, scene.registry, self.data)))
 
     def mouseDoubleClickEvent(self, event):
         if event.button() == QtCore.Qt.MouseButton.LeftButton and self.data['kind'] == 'core.subgraph':

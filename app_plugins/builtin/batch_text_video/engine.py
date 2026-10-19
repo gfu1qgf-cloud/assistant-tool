@@ -2,7 +2,6 @@
 from model.AppDataStorage import data_directory, data_file, data_io
 from contextlib import contextmanager, ExitStack
 import copy
-import hashlib
 from functools import lru_cache
 import json
 import math
@@ -172,31 +171,47 @@ def audible_ranges(text, duration):
 
 def clean_music(path, settings, cache, ffmpeg, ffprobe, cancel=None):
     path = Path(path)
-    info = path.stat()
-    signature = json.dumps([file_identity(path), info.st_size, info.st_mtime_ns,
-                            settings["skip_silence"], settings["silence_db"], settings["silence_seconds"]])
-    key = hashlib.sha256(signature.encode("utf-8")).hexdigest()
+    from .music_preparation import music_key
+    key = music_key(path, settings)
     cache = Path(cache)
     data_directory(cache).ensure(parents=True, exist_ok=True)
     cleaned, metadata = cache / (key + ".flac"), cache / (key + ".json")
     from model.MediaCacheLeases import media_cache_build
     try:
         with media_cache_build(cleaned, cancel):
-            return _clean_music_cached(path, settings, cache, ffmpeg, ffprobe, cancel, cleaned, metadata, key)
+            result = _clean_music_cached(path, settings, cache, ffmpeg, ffprobe, cancel, cleaned, metadata, key)
+            if music_key(path, settings) != key:
+                raise ValueError('音乐准备期间原文件发生变化，请重新提交：' + path.name)
+            return result
     except InterruptedError as error:
         raise Cancelled(str(error)) from error
 
 
 def _clean_music_cached(path, settings, cache, ffmpeg, ffprobe, cancel, cleaned, metadata, key):
-    if cleaned.is_file() and metadata.is_file():
+    if cancel and cancel.is_set():
+        raise Cancelled('已取消音乐准备。')
+    if metadata.is_file():
         try:
-            cached_duration = float(json.loads(data_file(metadata).read_text("utf-8"))["duration"])
-            if math.isfinite(cached_duration) and 0.5 <= cached_duration <= 24 * 3600 and cleaned.stat().st_size > 0:
-                os.utime(cleaned, None)
-                return cleaned, cached_duration, key
+            cached = json.loads(data_file(metadata).read_text("utf-8"))
+            cached_duration = float(cached["duration"])
+            if math.isfinite(cached_duration) and 0.5 <= cached_duration <= 24 * 3600:
+                if cached.get('direct') is True:
+                    return path, cached_duration, key
+                if settings['skip_silence'] and cleaned.is_file() and cleaned.stat().st_size > 0:
+                    os.utime(cleaned, None)
+                    return cleaned, cached_duration, key
         except (OSError, ValueError, KeyError, TypeError):
             pass  # Rebuild a damaged generated cache; never discard the source music.
-    duration = probe(path, ffprobe)["duration"]
+    from .music_preparation import processing_slot
+    with processing_slot(cancel):
+        return _build_music_cache(path, settings, cache, ffmpeg, ffprobe, cancel, cleaned, metadata, key)
+
+
+def _build_music_cache(path, settings, cache, ffmpeg, ffprobe, cancel, cleaned, metadata, key):
+    info = probe(path, ffprobe, audio_only=True)
+    if not info['audio']:
+        raise ValueError('音乐文件没有音轨：' + path.name)
+    duration = info['duration']
     if settings["skip_silence"]:
         text = _run([ffmpeg, "-nostdin", "-hide_banner", "-nostats", "-i", str(path), "-vn", "-af",
                      f"silencedetect=noise={float(settings['silence_db'])}dB:d={float(settings['silence_seconds'])}",
@@ -207,6 +222,11 @@ def _clean_music_cached(path, settings, cache, ffmpeg, ffprobe, cancel, cleaned,
     audible = sum(end - start for start, end in ranges)
     if audible < 0.5:
         raise ValueError("音乐没有足够的非静音内容：" + path.name)
+    if ranges == [(0, duration)]:
+        # FFmpeg can mix MP3/AAC/WAV/FLAC directly. Do not decode and rewrite
+        # an entire track unless silence actually needs to be cut out.
+        data_file(metadata).write_text(json.dumps({'duration': duration, 'direct': True}), 'utf-8')
+        return path, duration, key
     with data_io.TemporaryDirectory(dir=cache, prefix="prepare-") as folder:
         folder = Path(folder)
         graph = []
@@ -224,7 +244,7 @@ def _clean_music_cached(path, settings, cache, ffmpeg, ffprobe, cancel, cleaned,
               "-c:a", "flac", str(temporary)], cancel, timeout=900)
         actual = probe(temporary, ffprobe)["duration"]
         data_io.replace(temporary, cleaned)
-        data_file(metadata).write_text(json.dumps({"duration": actual}), "utf-8")
+        data_file(metadata).write_text(json.dumps({"duration": actual, 'direct': False}), "utf-8")
     # The export's lease trims generated cache after all readers release it.
     return cleaned, actual, key
 
@@ -241,11 +261,18 @@ def choose_music(state, duration, cache, ffmpeg, ffprobe, cancel, report):
         item = items[(start + offset) % len(items)]
         try:
             report("检查音乐：" + Path(item["path"]).name)
-            path, total, key = clean_music(item["path"], state["settings"], cache, ffmpeg, ffprobe, cancel)
+            from .music_preparation import current_music_session
+            session = current_music_session()
+            if session is None:
+                path, total, key = clean_music(item["path"], state["settings"], cache, ffmpeg, ffprobe, cancel)
+            else:
+                path, total, key = session.get(item['path'], state['settings'], cache,
+                                               ffmpeg, ffprobe, cancel, report)
             cursor = float(item.get("cursor") or 0) % total if item.get("audio_key") == key else 0
             return {"id": item["id"], "path": str(path), "start": cursor, "pool_id": pool["id"] if pool else "",
                     "cursor": (cursor + duration) % total, "audio_key": key,
-                    "name": Path(item["path"]).name, "duration": total}
+                    "name": Path(item["path"]).name, "duration": total,
+                    'generated': file_identity(path) != file_identity(item['path'])}
         except Cancelled:
             raise
         except (OSError, ValueError, RuntimeError) as error:
@@ -293,6 +320,9 @@ def prepare_static_text(job, state, directory, cancel=None, progress=None, repor
     from .components import resolve_sources
     settings["layers"], sequence_plan = resolve_sources(settings["layers"], job.get("title", ""), job.get("body", ""), job=job)
     report = report or (lambda _text: None)
+    from .render_progress import stage, observe_report
+    report = observe_report(report, progress)
+    stage(progress, '准备素材')
     ffmpeg, ffprobe = resolve_tools(settings["ffmpeg_path"])
     report("编码器：" + ffmpeg)
     try:
@@ -314,14 +344,6 @@ def prepare_static_text(job, state, directory, cancel=None, progress=None, repor
     width, height = output_size(settings, media)
     from .background_framing import prepare_background_settings, framing_filter, preview_size
     encoded_width, encoded_height = preview_size(width, height) if preview else (width, height)
-    settings = prepare_background_settings(job["path"], media, settings, ffmpeg, directory, cancel)
-    if settings.get("_background_crop"):
-        report("铺满画面：自动去除素材自带的稳定黑边（不修改原文件）。")
-    # Layout, effects and composition ALWAYS use the export canvas. Shrinking
-    # before QFont's integer pixel sizing changes word wrapping and auto size.
-    if not hasattr(_LAYER_CACHE, "images"):
-        _LAYER_CACHE.images = ImageCache()
-    overlay, layout = render_overlay(job["title"], job["body"], width, height, settings, _LAYER_CACHE.images)
     duration = target_duration(media["duration"], settings)
     voice_path, adaptation = resolve_voice(job, state, discover=True), None
     from .captions import active_captions, task_word_timings, static_planes, write_caption_ass, filter_path
@@ -367,13 +389,22 @@ def prepare_static_text(job, state, directory, cancel=None, progress=None, repor
     data_directory(output.parent).ensure(parents=True, exist_ok=True)
     from model.MediaStorage import media_cache_root
     media_directory = media_cache_root(directory, anchors=(output.parent,Path(job['path']).parent), namespace='batch-text-video')
-    music = choose_music(state, duration, media_directory / "music-cache", ffmpeg, ffprobe, cancel, report)
+    from .music_preparation import current_music_session
+    music_session = current_music_session()
+    if music_session is not None:
+        music_session.prime(state, media_directory / 'music-cache', ffmpeg, ffprobe)
+    settings = prepare_background_settings(job["path"], media, settings, ffmpeg, directory, cancel)
+    if settings.get("_background_crop"):
+        report("铺满画面：自动去除素材自带的稳定黑边（不修改原文件）。")
+    # Keep all Qt/font work on its stable preparation thread, while independent
+    # audio read-ahead overlaps background analysis, text layout and alignment.
+    if not hasattr(_LAYER_CACHE, "images"):
+        _LAYER_CACHE.images = ImageCache()
+    stage(progress, '生成文字／图层')
+    overlay, layout = render_overlay(job["title"], job["body"], width, height, settings, _LAYER_CACHE.images)
     with data_io.TemporaryDirectory(prefix=".text-video-", dir=output.parent) as temporary, ExitStack() as leases:
         temporary = Path(temporary)
         from model.MediaCacheLeases import media_cache_lease, trim_generated_cache
-        if music:
-            leases.callback(trim_generated_cache, Path(music['path']).parent, '.flac', 1024**3)
-            leases.enter_context(media_cache_lease(music['path']))
         target = temporary / "video.mp4"
         from .visual_media import needs_plane, add_plane
         from .scrolling_text import is_scrolling, prepare_scroll_plane, add_scroll_plane
@@ -391,11 +422,20 @@ def prepare_static_text(job, state, directory, cancel=None, progress=None, repor
                 continue
             path = temporary / f"layer-{index}.{'ass' if kind == 'caption' else 'png'}"
             if kind == "caption":
+                stage(progress, '准备字幕')
                 words = task_word_timings(job,voice_path,value,job["title"],job["body"],duration,directory,cancel,report)
+                stage(progress, '生成字幕')
                 write_caption_ass(path, words, value, width, height, duration)
             elif not value.save(str(path), "PNG"):
                 raise RuntimeError("文字图层保存失败。")
             prepared.append((kind, path))
+        stage(progress, '准备音乐')
+        music = choose_music(state, duration, media_directory / 'music-cache', ffmpeg, ffprobe, cancel, report)
+        if music and music.get('generated', False):
+            leases.callback(trim_generated_cache, Path(music['path']).parent, '.flac', 1024**3)
+            leases.enter_context(media_cache_lease(music['path']))
+            if music_session is not None:
+                music_session.release(music['path'])
         args = [ffmpeg, "-y", "-nostdin", "-hide_banner", "-loglevel", "error", "-progress", "pipe:1", *filter_thread_args(workers)]
         if adaptation and adaptation["repeating"] and (not adaptation["fade"] or
                 media["audio"] and settings["keep_audio"] and not voice_path):
@@ -485,6 +525,7 @@ def prepare_static_text(job, state, directory, cancel=None, progress=None, repor
         if node_effects is not None:
             sequence_plan.extend(copy.deepcopy(node_effects.sequence_plan))
         from .prepared_export import PreparedExport
+        stage(progress, '等待编码名额')
         yield PreparedExport(args, target, output, ffprobe, encoded_duration, has_audio, music,
             sequence_plan, cancel, progress, report, settings['overwrite'], encoder,
             settings['encoder_fallback'], preview, workers, effects=node_effects if effects else None,
@@ -493,8 +534,15 @@ def prepare_static_text(job, state, directory, cancel=None, progress=None, repor
 
 
 def render_static_text(job, state, directory, cancel=None, progress=None, report=None, preview=False, *, node_effects=None, preview_limit=None):
-    with prepare_static_text(job, state, directory, cancel, progress, report, preview,
-            node_effects=node_effects, preview_limit=preview_limit) as prepared:
+    from .music_preparation import MusicPreparationSession, current_music_session, music_session
+    with ExitStack() as stack:
+        if current_music_session() is None:
+            # This entry point renders one video; do not pre-process music for
+            # unrelated future jobs. Batch read-ahead is owned by its pipeline.
+            session = stack.enter_context(MusicPreparationSession(cancel, 1))
+            stack.enter_context(music_session(session))
+        prepared = stack.enter_context(prepare_static_text(job, state, directory, cancel, progress, report, preview,
+            node_effects=node_effects, preview_limit=preview_limit))
         prepared.encode()
         return prepared.publish(), prepared.music
 

@@ -165,12 +165,15 @@ class EdgeAnchorTests(unittest.TestCase):
             restored=Store(directory).load()
             self.assertEqual(saved['settings']['layers'],restored['settings']['layers'])
 
-    def test_long_style_page_does_not_force_position_panel_to_be_tall(self):
+    def test_flat_watermark_stays_in_one_outer_scroll_without_inner_tabs(self):
         panel=LayerPanel(self.watermarks(),'.',settings=DEFAULTS)
         panel.select_layer_id(OBJECT_ID)
-        panel.watermark_properties.tabs.setCurrentIndex(2)
-        panel.resize(440,780);panel.show();self.app.processEvents()
-        self.assertLessEqual(panel.height(),800)
+        panel.hide_catalog()
+        scroll=QtWidgets.QScrollArea();scroll.setWidgetResizable(True);scroll.setWidget(panel)
+        scroll.resize(440,780);scroll.show();self.app.processEvents()
+        self.assertEqual(scroll.height(),780)
+        self.assertEqual(scroll.horizontalScrollBar().maximum(),0)
+        self.assertEqual(panel.watermark_properties.findChildren(QtWidgets.QTabWidget),[])
         self.assertTrue(panel.inspector.isAncestorOf(panel.watermark_properties))
 
     def test_inset_edit_does_not_quantize_existing_text_box_size(self):

@@ -151,14 +151,18 @@ class WatermarkProperties(QtWidgets.QWidget):
         self.canvas_size = QtCore.QSize(1080, 1920)
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        self.tabs = QtWidgets.QTabWidget()
-        layout.addWidget(self.tabs)
-        content = QtWidgets.QWidget()
-        content_layout = QtWidgets.QVBoxLayout(content)
-        note = QtWidgets.QLabel("一个水印组件，四角独立填写。留空不显示；整体开关、透明度和层级在图层列表中控制。")
-        note.setWordWrap(True)
-        note.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored, QtWidgets.QSizePolicy.Policy.Preferred)
-        content_layout.addWidget(note)
+        self.corner = Combo()
+        for key, label, *_ in CORNERS:
+            self.corner.addItem(label, key)
+        self.corner.currentIndexChanged.connect(self._select_corner)
+        selector = QtWidgets.QFormLayout()
+        selector.addRow("当前调整角落", self.corner)
+        layout.addLayout(selector)
+        self.source_editor = ContentSourceEditor()
+        self.source_editor.allow_copy_pick = False
+        self.source_editor.show_fixed_text = False
+        self.source_editor.changed.connect(self._source_changed)
+        layout.addWidget(self.source_editor)
         form = QtWidgets.QFormLayout()
         form.setRowWrapPolicy(QtWidgets.QFormLayout.RowWrapPolicy.WrapLongRows)
         form.setFieldGrowthPolicy(QtWidgets.QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
@@ -171,28 +175,7 @@ class WatermarkProperties(QtWidgets.QWidget):
             entry.textChanged.connect(self._content_changed)
             form.addRow(label, entry)
             self.inputs[key] = entry
-        content_layout.addLayout(form)
-        content_layout.addStretch()
-        self.tabs.addTab(content, "四角内容")
-        style = QtWidgets.QWidget()
-        style_layout = QtWidgets.QVBoxLayout(style)
-        self.corner = Combo()
-        for key, label, *_ in CORNERS:
-            self.corner.addItem(label, key)
-        self.corner.currentIndexChanged.connect(self._select_corner)
-        selector = QtWidgets.QFormLayout()
-        selector.addRow("调整角落", self.corner)
-        layout.insertLayout(0, selector)
-        self.source_editor = ContentSourceEditor()
-        self.source_editor.allow_copy_pick = False
-        self.source_editor.changed.connect(self._source_changed)
-        style_layout.addWidget(self.source_editor)
-        self.text_style = TextBoxProperties()
-        self.text_style.changed.connect(self._style_changed)
-        style_layout.addWidget(self.text_style)
-        self._add_tab(style, "角落样式")
-        position_page = QtWidgets.QWidget()
-        position_layout = QtWidgets.QVBoxLayout(position_page)
+        layout.addLayout(form)
         position = QtWidgets.QFormLayout()
         position.setRowWrapPolicy(QtWidgets.QFormLayout.RowWrapPolicy.WrapLongRows)
         position.setFieldGrowthPolicy(QtWidgets.QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
@@ -217,18 +200,17 @@ class WatermarkProperties(QtWidgets.QWidget):
         self.canvas_label.setWordWrap(True)
         self.canvas_label.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored, QtWidgets.QSizePolicy.Policy.Preferred)
         position.addRow(self.canvas_label)
-        position_layout.addLayout(position)
+        from .property_pairs import pair_form_fields
+        pair_form_fields(position,'内缩',[('x','X',self.insets['watermark_inset_x']),
+            ('y','Y',self.insets['watermark_inset_y'])])
+        layout.addLayout(position)
         self.apply_positions_button = QtWidgets.QPushButton("将贴边与内缩设置应用到四角")
         self.apply_positions_button.clicked.connect(self._apply_positions)
-        position_layout.addWidget(self.apply_positions_button)
+        layout.addWidget(self.apply_positions_button)
         hint = QtWidgets.QLabel("0 = 可见水印贴边；底色、描边和阴影也计入边界。")
         hint.setWordWrap(True)
         hint.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored, QtWidgets.QSizePolicy.Policy.Preferred)
-        position_layout.addWidget(hint)
-        self.advanced_position_toggle = QtWidgets.QToolButton()
-        self.advanced_position_toggle.setText("文字框尺寸 / 自由坐标 ▸")
-        self.advanced_position_toggle.setCheckable(True)
-        position_layout.addWidget(self.advanced_position_toggle)
+        layout.addWidget(hint)
         self.advanced_positions = QtWidgets.QWidget()
         advanced_form = QtWidgets.QFormLayout(self.advanced_positions)
         advanced_form.setContentsMargins(0, 0, 0, 0)
@@ -243,19 +225,16 @@ class WatermarkProperties(QtWidgets.QWidget):
             spin.valueChanged.connect(lambda _value, field=key: self._position_changed(field))
             self.positions[key] = spin
             advanced_form.addRow(label, spin)
-        position_layout.addWidget(self.advanced_positions)
-        self.advanced_positions.hide()
-        self.advanced_position_toggle.toggled.connect(self.advanced_positions.setVisible)
-        position_layout.addStretch()
-        self._add_tab(position_page, "贴边位置")
-
-    def _add_tab(self, widget, title):
-        scroll = QtWidgets.QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
-        scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        scroll.setWidget(widget)
-        self.tabs.addTab(scroll, title)
+        pair_form_fields(advanced_form,'中心',[('x','X',self.positions['x']),('y','Y',self.positions['y'])])
+        pair_form_fields(advanced_form,'尺寸',[('width','宽',self.positions['width']),('height','高',self.positions['height'])])
+        from .property_sections import PropertySections
+        self.sections=PropertySections(); layout.addWidget(self.sections)
+        frame=self.sections.add_section('watermark_frame','文字框尺寸／自由坐标',self.advanced_positions)
+        self.advanced_position_toggle=frame.toggle
+        self.text_style = TextBoxProperties()
+        self.text_style.changed.connect(self._style_changed)
+        self.text_style.style_sections.sections['font'].set_expanded(False)
+        layout.addWidget(self.text_style)
 
     def set_layer(self, layer):
         self._loading = True
@@ -264,7 +243,7 @@ class WatermarkProperties(QtWidgets.QWidget):
         for key, entry in self.inputs.items():
             entry.setText(layer["corners"][key]["text"] if layer else "")
             entry.setEnabled(not layer or layer["corners"][key]["source"] == "fixed")
-            entry.setToolTip("此角落绑定了其他来源，请在“角落样式”的来源中修改。" if layer and layer["corners"][key]["source"] != "fixed" else "固定水印文字；留空不显示。")
+            entry.setToolTip("此角落绑定了其他来源；在上方选择这个角落后修改来源。" if layer and layer["corners"][key]["source"] != "fixed" else "固定水印文字；留空不显示。")
         self._loading = False
         self._select_corner()
 
@@ -381,5 +360,11 @@ class WatermarkProperties(QtWidgets.QWidget):
 def watermark_property_panel(services=None, *, mode='batch'):
     from .component_inspector import ComponentPropertyPanel
     panel = ComponentPropertyPanel(mode=mode)
-    panel.watermark_properties = panel.add_bound('watermark', '四角水印', WatermarkProperties(), expanded=True)
+    from .inspector_layout_contract import require_flat_layout
+    require_flat_layout(panel)
+    panel.watermark_properties = panel.add_bound('watermark', '', WatermarkProperties(), section=False)
+    panel.targets['watermark']=panel.watermark_properties
+    panel.targets['source']=panel.watermark_properties.source_editor
+    panel.sections.update(panel.watermark_properties.sections.sections)
+    panel.sections.update(panel.watermark_properties.text_style.style_sections.sections)
     return panel

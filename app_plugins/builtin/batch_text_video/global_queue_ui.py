@@ -1,7 +1,8 @@
 """An embedded render queue: global plans above the current project's jobs."""
-from qt_compat import QtCore, QtWidgets
+from qt_compat import QtCore, QtGui, QtWidgets
 from .property_sections import PropertySection
 from .row_progress import install_row_progress, set_row_progress
+from .render_progress import summary
 
 
 STATUS = {'staged': '待开始', 'submitted': '已提交', 'succeeded': '已完成',
@@ -14,6 +15,7 @@ class GlobalRenderQueuePanel(QtWidgets.QWidget):
         super().__init__(owner)
         self.owner = owner
         self.plans = {}
+        self.pending_removals = set()
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(5, 5, 5, 5)
         settings_scroll = QtWidgets.QScrollArea()
@@ -32,28 +34,39 @@ class GlobalRenderQueuePanel(QtWidgets.QWidget):
         self.table.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.SingleSelection)
         self.table.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.horizontalHeader().setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeMode.Stretch)
-        self.table.setColumnWidth(1, 80)
-        self.table.setColumnWidth(2, 55)
+        self.table.setColumnWidth(1, 185)
+        self.table.setColumnWidth(2, 65)
         self.table.setMinimumHeight(95)
         self.table.setMaximumHeight(185)
         self.table.itemActivated.connect(self.open_selected_project)
         self.table.setToolTip('双击计划查看对应项目的任务。')
+        self.table.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.ActionsContextMenu)
+        self.delete_action = QtGui.QAction('删除渲染计划…', self.table)
+        self.delete_action.setShortcut(QtGui.QKeySequence('Delete'))
+        self.delete_action.setShortcutContext(QtCore.Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        self.delete_action.triggered.connect(self.delete_selected)
+        self.table.addAction(self.delete_action)
         install_row_progress(self.table)
         global_layout.addWidget(self.table)
-        self.empty_label = QtWidgets.QLabel('还没有渲染计划。可在下方把当前项目加入队列。')
+        self.empty_label = QtWidgets.QLabel('没有勾选的视频。请在下方生成列表勾选，计划会自动刷新。')
         self.empty_label.setWordWrap(True)
         global_layout.addWidget(self.empty_label)
         row = QtWidgets.QHBoxLayout()
         self.start_button = QtWidgets.QPushButton('开始全部')
         self.start_button.clicked.connect(self.start)
-        remove = QtWidgets.QPushButton('移除计划')
+        remove = QtWidgets.QPushButton('取消该项目勾选')
         remove.clicked.connect(self.remove)
+        self.delete_button = QtWidgets.QPushButton('删除计划…')
+        self.delete_button.setToolTip('从全局列表删除所选计划；保留项目、任务、素材及视频。执行中可先停止，结束后自动移除。')
+        self.delete_button.clicked.connect(self.delete_selected)
+        self.table.currentItemChanged.connect(self.update_delete_enabled)
         refresh = QtWidgets.QToolButton()
         refresh.setText('↻')
         refresh.setToolTip('刷新所有项目的渲染计划')
         refresh.clicked.connect(self.refresh)
         row.addWidget(self.start_button)
         row.addWidget(remove)
+        row.addWidget(self.delete_button)
         row.addStretch()
         row.addWidget(refresh)
         global_layout.addLayout(row)
@@ -78,30 +91,96 @@ class GlobalRenderQueuePanel(QtWidgets.QWidget):
             profile = next((p for p in state['profiles'] if p['id'] == plan['profile_id']), None)
             data = state if state['active_profile'] == plan['profile_id'] else (profile or {}).get('data') or {}
             completed = sum(job['status'] == '已完成' for job in data.get('jobs', []) if job['id'] in plan['ids'])
-            percent = round(100 * completed / max(1, len(plan['ids'])))
+            percent = 100 * completed / max(1, len(plan['ids']))
             status = plan['status']
             handle = self.owner._host_plans.get(plan['profile_id'])
             if handle is not None:
                 record = handle.manager.get(handle.task_id)
                 status = record['status']
                 percent = record.get('percent') or 0
+                values = self.owner._render_progress.get(plan['profile_id'], {})
+                if values:
+                    percent = sum(values.values()) / len(values)
             label = STATUS.get(status, status)
+            if status == 'running':
+                label = summary(getattr(self.owner, '_render_stages', {}).get(plan['profile_id'], {}))
             if status == 'submitted' and handle is None:
                 label = '上次未收尾'
             elif plan.get('error') and status == 'staged':
                 label = '待重试'
+            if plan['id'] in self.pending_removals:
+                label = '正在停止，结束后移除'
             values = [f"{plan['name']} · {len(plan['ids'])} 条", label, '']
             for column, value in enumerate(values):
                 item = QtWidgets.QTableWidgetItem(value)
                 item.setData(QtCore.Qt.ItemDataRole.UserRole, plan['id'])
                 item.setToolTip(f"{plan['name']} · {len(plan['ids'])} 个视频\n{plan.get('error', '')}\n双击查看此项目")
+                if column == 1: item.setToolTip(label)
                 self.table.setItem(row, column, item)
             set_row_progress(self.table, row, None if status == 'staged' else percent)
             if plan['id'] == selected_id:
                 self.table.selectRow(row)
         profile = next(p for p in self.owner.state['profiles'] if p['id'] == self.owner.state['active_profile'])
-        self.current_label.setText(f"当前项目：{profile['name']} · {len(self.owner.state['jobs'])} 条视频")
+        from .render_selection import identifiers
+        self.current_label.setText(f"当前项目：{profile['name']} · {len(self.owner.state['jobs'])} 条视频 · 已勾选 {len(identifiers(self.owner.state))} 条\n勾选才渲染；取消勾选不删除任务或成品。")
         self.start_button.setEnabled(any(plan['status'] == 'staged' for plan in plans))
+        self.update_delete_enabled()
+
+    def update_delete_enabled(self, *_):
+        enabled = bool(self.selected_id()) and self.selected_id() not in self.pending_removals
+        self.delete_action.setEnabled(enabled)
+        self.delete_button.setEnabled(enabled)
+
+    def delete_selected(self):
+        identifier = self.selected_id()
+        if not identifier or identifier in self.pending_removals: return
+        plan = self.plans.get(identifier)
+        if plan is None: return
+        try:
+            if not self.owner.is_batch_busy() and not self.owner.persist(): return
+            handle = self.owner._host_plans.get(plan['profile_id'])
+            active = (handle is not None and handle.task_id == plan.get('task_id') and handle.isRunning())
+            message = ('项目“'+plan['name']+'”正在渲染。是否停止该任务，待结束后自动删除渲染计划？'
+                if active else '确定从全局列表删除“'+plan['name']+'”的渲染计划吗？')
+            answer = QtWidgets.QMessageBox.question(self, '删除渲染计划',
+                message+'\n\n项目配置、任务、素材和已导出的视频均保留。',
+                QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No,
+                QtWidgets.QMessageBox.StandardButton.No)
+            if answer != QtWidgets.QMessageBox.StandardButton.Yes: return
+            if active:
+                self.pending_removals.add(identifier)
+                handle.requestInterruption()
+                if identifier in self.pending_removals:
+                    self.owner.status.setText('正在停止所选渲染任务，结束后自动移除计划。')
+            else:
+                self._delete_saved_plan(identifier)
+                self.owner.state = self.owner.store.load()
+                self.owner.refresh_tables()
+                self.owner.status.setText('已删除渲染计划；项目、任务和视频均保留。')
+            self.refresh()
+        except Exception as error:
+            self.pending_removals.discard(identifier)
+            QtWidgets.QMessageBox.warning(self, '无法删除计划', str(error))
+
+    def _delete_saved_plan(self, identifier, *, finished_task_ids=()):
+        from model.BackgroundTasks import TERMINAL
+        finished = set(finished_task_ids)
+        manager = getattr(self.owner.context, 'background_tasks', None)
+        states = getattr(manager, 'completion_states', None)
+        if callable(states):
+            finished.update(key for key, status in states().items() if status in TERMINAL)
+        active = {handle.task_id for handle in self.owner._host_plans.values() if handle.isRunning()}
+        self.owner.store.remove_render_plan(identifier, active_task_ids=active, finished_task_ids=finished)
+
+    def finish_pending_removal(self, plan, task_id):
+        if not plan or plan['id'] not in self.pending_removals: return
+        try:
+            self._delete_saved_plan(plan['id'], finished_task_ids={task_id})
+            self.owner.status.setText('渲染已停止，计划已移除；项目和已有成品保留。')
+        except Exception as error:
+            self.owner._log('任务已停止，但计划未移除：'+str(error))
+        finally:
+            self.pending_removals.discard(plan['id'])
 
     def update_progress(self, profile_id):
         values = self.owner._render_progress.get(profile_id, {})
@@ -111,7 +190,9 @@ class GlobalRenderQueuePanel(QtWidgets.QWidget):
             identifier = self.table.item(row, 0).data(QtCore.Qt.ItemDataRole.UserRole)
             if self.plans.get(identifier, {}).get('profile_id') == profile_id:
                 set_row_progress(self.table, row, sum(values.values()) / len(values))
-                self.table.item(row, 1).setText('渲染中')
+                text = summary(getattr(self.owner, '_render_stages', {}).get(profile_id, {}))
+                self.table.item(row, 1).setText(text)
+                self.table.item(row, 1).setToolTip(text)
 
     def selected_id(self):
         item = self.table.item(self.table.currentRow(), 0)
@@ -131,8 +212,11 @@ class GlobalRenderQueuePanel(QtWidgets.QWidget):
         identifier = self.selected_id()
         if identifier:
             try:
-                active_ids = [handle.task_id for handle in self.owner._host_plans.values()]
-                self.owner.store.remove_render_plan(identifier, active_task_ids=active_ids)
+                plan=self.plans[identifier]
+                if not self.owner.is_batch_busy() and not self.owner.persist(): return
+                self.owner.store.clear_render_selection(plan['profile_id'])
+                self.owner.state=self.owner.store.load()
+                self.owner.refresh_tables()
             except Exception as error:
                 QtWidgets.QMessageBox.warning(self, '无法移除', str(error))
             self.refresh()

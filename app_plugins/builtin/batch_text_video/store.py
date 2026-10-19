@@ -241,14 +241,79 @@ class Store:
             state['revision'] += 1
             data_file(self.path).write_json(state, indent=2)
 
-    def remove_render_plan(self, plan_id, *, active_task_ids=()):
+    def sync_render_selection(self, identifier, ids, *, expected_profile_revision=None):
+        """Upsert only an unsubmitted plan; never alter an executing snapshot."""
+        with _LOCK:
+            state=Store.load(self)
+            profile=next((p for p in state['profiles'] if p['id']==identifier),None)
+            if profile is None: raise ValueError('当前项目已不存在。')
+            if expected_profile_revision is not None and profile.get('revision',0)!=expected_profile_revision:
+                raise ValueError('项目任务已被其他窗口修改，未覆盖渲染勾选。')
+            if any(p['profile_id']==identifier and p['status']=='submitted' for p in state['render_plans']):
+                return False
+            jobs=state['jobs'] if state['active_profile']==identifier else (profile.get('data') or {}).get('jobs',[])
+            if len(ids)!=len(set(ids)) or not set(ids).issubset({job['id'] for job in jobs}):
+                raise ValueError('渲染勾选包含已变化的任务。')
+            plan=next((p for p in state['render_plans'] if p['profile_id']==identifier and p['status']=='staged'),None)
+            known_ids=[job['id'] for job in jobs]
+            if plan and plan['ids']==list(ids) and plan.get('known_ids')==known_ids: return False
+            if not ids:
+                if plan is None: return False
+                state['render_plans'].remove(plan)  # Only the pending plan, never a job or file.
+            elif plan:
+                plan.update(ids=list(ids),known_ids=known_ids,selection_managed=True,error='')
+            else:
+                state['render_plans'].append({'id':uuid.uuid4().hex,'profile_id':identifier,'name':profile['name'],
+                    'ids':list(ids),'known_ids':known_ids,'status':'staged','task_id':'','error':'','selection_managed':True})
+            state['revision']+=1
+            data_file(self.path).write_json(state,indent=2)
+            return True
+
+    def clear_render_selection(self, identifier):
+        with _LOCK:
+            state=Store.load(self)
+            if any(p['profile_id']==identifier and p['status']=='submitted' for p in state['render_plans']):
+                raise ValueError('执行中的项目不可取消勾选；请使用停止／取消任务。')
+            profile=next((p for p in state['profiles'] if p['id']==identifier),None)
+            if profile is None: return
+            data=state if state['active_profile']==identifier else profile.get('data') or {}
+            for job in data.get('jobs',[]): job['render_checked']=False
+            from .pools import snapshot
+            profile['data']=snapshot(data)
+            profile['revision']=profile.get('revision',0)+1
+            state['render_plans']=[p for p in state['render_plans'] if not (
+                p['profile_id']==identifier and p['status']=='staged')]
+            state['revision']+=1
+            data_file(self.path).write_json(state,indent=2)
+
+    def remove_render_plan(self, plan_id, *, active_task_ids=(), finished_task_ids=()):
         with _LOCK:
             state = self.load()
             plan = next((p for p in state['render_plans'] if p['id'] == plan_id), None)
             if plan is None:
                 return
-            if plan['status'] == 'submitted' and plan.get('task_id') in active_task_ids:
+            if (plan.get('task_id') in active_task_ids or
+                    plan['status'] in {'submitted', 'queued', 'running', 'canceling'}
+                    and plan.get('task_id') not in finished_task_ids):
                 raise ValueError('渲染计划已提交，请先在后台任务中取消。')
+            # Removing a plan must also clear its render intent, otherwise the
+            # next table refresh immediately recreates it. Keep selections
+            # owned by another pending/executing plan of the same project.
+            protected = {identifier for other in state['render_plans']
+                if other['id'] != plan_id and other['profile_id'] == plan['profile_id']
+                and other['status'] in {'staged', 'submitted'} for identifier in other['ids']}
+            profile = next((p for p in state['profiles'] if p['id'] == plan['profile_id']), None)
+            if profile is not None:
+                data = state if state['active_profile'] == plan['profile_id'] else profile.get('data') or {}
+                changed = False
+                for job in data.get('jobs', []):
+                    if job['id'] in plan['ids'] and job['id'] not in protected and job.get('render_checked') is not False:
+                        job['render_checked'] = False
+                        changed = True
+                if changed:
+                    from .pools import snapshot
+                    profile['data'] = snapshot(data)
+                    profile['revision'] = profile.get('revision', 0) + 1
             state['render_plans'] = [p for p in state['render_plans'] if p['id'] != plan_id]
             state['revision'] += 1
             data_file(self.path).write_json(state, indent=2)
@@ -297,6 +362,39 @@ class Store:
         state["profiles"].append({"id": identifier, "name": name, "data": data})
         return self.select_profile(state, identifier)
 
+    def delete_profile(self, identifier, *, expected_profile_revision, finished_task_ids=()):
+        """Delete project records only; never touch referenced media files."""
+        from .pools import snapshot
+        from .render_settings import apply_global
+        with _LOCK:
+            state = Store.load(self)
+            selected = next((p for p in state['profiles'] if p['id'] == identifier), None)
+            if selected is None:
+                raise ValueError('项目已不存在，请刷新后再操作。')
+            if selected.get('revision', 0) != expected_profile_revision:
+                raise ValueError('项目已被其他窗口或后台任务修改，未删除；请重新载入。')
+            if any(p['profile_id'] == identifier and p['status'] == 'submitted'
+                   and p.get('task_id') not in finished_task_ids
+                   for p in state['render_plans']):
+                raise ValueError('项目已提交渲染，请先在后台任务中停止或取消，待结束后再删除。')
+            state['profiles'] = [p for p in state['profiles'] if p['id'] != identifier]
+            state['render_plans'] = [p for p in state['render_plans'] if p['profile_id'] != identifier]
+            if not state['profiles']:
+                # A fresh identity prevents a stale worker/editor from targeting
+                # the replacement via a reused default project identifier.
+                fresh = snapshot(fresh_state())
+                replacement = {'id': uuid.uuid4().hex, 'name': '默认配置', 'revision': 0, 'data': fresh}
+                state['profiles'].append(replacement)
+            if state['active_profile'] == identifier:
+                replacement = state['profiles'][0]
+                if not isinstance(replacement.get('data'), dict):
+                    raise ValueError('其他项目的保存内容异常，未删除当前项目。')
+                state.update(copy.deepcopy(replacement['data']), active_profile=replacement['id'])
+            apply_global(state, DEFAULTS)
+            state['revision'] += 1
+            data_file(self.path).write_json(state, indent=2)
+            return state
+
     def completed(self, state, job_id, output, music_plan, sequence_plan=None):
         """Advance the rotation/playhead only after a verified output exists."""
         if not Path(output).is_file():
@@ -311,7 +409,7 @@ class Store:
             from .components import commit_sequences
             state["settings"]["layers"] = commit_sequences(state["settings"]["layers"],sequence_plan)
         job = next(item for item in state["jobs"] if item["id"] == job_id)
-        job.update(status="已完成", output=str(output), error="")
+        job.update(status="已完成", output=str(output), error="", render_checked=False)
         if music_plan:
             from .custom_pools import get_pool
             pool_id = music_plan.get("pool_id", "")

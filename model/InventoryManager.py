@@ -778,6 +778,17 @@ class InventoryStore:
         return self.material_root / "人物素材"
 
     @staticmethod
+    def _person_avatar_directory(person_id, external_directory):
+        """Shared by create/update; only the program-owned avatar is private."""
+        from model.AppDataStorage import application_storage
+        storage = application_storage()
+        if not storage.protected:
+            return Path(external_directory)
+        storage.check(write=True)
+        identity = hashlib.sha256(str(person_id).encode()).hexdigest()[:20]
+        return storage.for_plugin('inventory').directory('avatars').directory(identity).ensure()
+
+    @staticmethod
     def _normalize_google_sheet_links(values, strict=True):
         if isinstance(values, str):
             values = re.split(r"[\s,，;；]+", values)
@@ -1115,6 +1126,9 @@ class InventoryStore:
         final_dir = self.people_root / (
             f"{self._safe_material_directory_name(name)}-{person_id[:8]}"
         )
+        private_avatar = None
+        directory_installed = False
+        record_committed = False
         try:
             data_directory(staging_dir).ensure()
             staging_material_dir = staging_dir / "素材"
@@ -1122,7 +1136,11 @@ class InventoryStore:
             avatar_name = ""
             if avatar_source is not None:
                 avatar_name = f"人物图片{avatar_source.suffix.lower()}"
-                data_io.copy2(str(avatar_source), str(staging_dir / avatar_name))
+                avatar_dir = self._person_avatar_directory(person_id, staging_dir)
+                avatar_target = avatar_dir / avatar_name
+                if avatar_dir != staging_dir:
+                    private_avatar = avatar_target
+                data_io.copy2(str(avatar_source), str(avatar_target))
             if sources:
                 self._copy_material_sources(
                     sources,
@@ -1139,6 +1157,7 @@ class InventoryStore:
                     raise ValueError(f"已经有同名人物：{name}")
 
                 data_io.replace(str(staging_dir), str(final_dir))
+                directory_installed = True
                 now_text = datetime.now().astimezone().isoformat(timespec="seconds")
                 person = {
                     "id": person_id,
@@ -1146,7 +1165,7 @@ class InventoryStore:
                     "path": str(final_dir.resolve()),
                     "material_path": str((final_dir / "素材").resolve()),
                     "avatar_path": (
-                        str((final_dir / avatar_name).resolve()) if avatar_name else ""
+                        str((private_avatar or final_dir / avatar_name).resolve()) if avatar_name else ""
                     ),
                     "bindings": person_bindings,
                     "metadata": person_metadata,
@@ -1159,15 +1178,19 @@ class InventoryStore:
                 state["people"].append(person)
                 state["version"] = 4
                 state["material_library_root"] = str(self.material_root.resolve())
-                try:
-                    self._write(state)
-                except OSError:
-                    data_io.rmtree(final_dir, ignore_errors=True)
-                    raise
+                self._write(state)
+                record_committed = True
                 self._clear_download_checkpoint(checkpoint)
                 return person
         except Exception:
-            data_io.rmtree(staging_dir, ignore_errors=True)
+            # Once the record is committed, a later checkpoint-cleanup error
+            # must not remove files that the saved person now references.
+            if not record_committed:
+                data_io.rmtree(staging_dir, ignore_errors=True)
+                if directory_installed:
+                    data_io.rmtree(final_dir, ignore_errors=True)
+                if private_avatar is not None:
+                    self._remove_material_path(private_avatar)
             raise
 
     def append_person_material(self, person_id, source_paths, progress_callback=None):
@@ -1458,13 +1481,7 @@ class InventoryStore:
 
             # Large task/material media stays external. New private avatar
             # copies and their rollback files belong in the encrypted namespace.
-            from model.AppDataStorage import application_storage
-            storage = application_storage()
-            avatar_dir = person_dir
-            if storage.protected:
-                storage.check(write=True)
-                identity = hashlib.sha256(str(person_id).encode()).hexdigest()[:20]
-                avatar_dir = storage.for_plugin('inventory').directory('avatars').directory(identity).ensure()
+            avatar_dir = self._person_avatar_directory(person_id, person_dir)
 
             try:
                 if avatar_source is not None:

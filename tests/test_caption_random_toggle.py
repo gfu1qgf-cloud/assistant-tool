@@ -42,7 +42,7 @@ class CaptionRandomToggleTests(unittest.TestCase):
             self.assertEqual(switch.accessibleName(),'启用随机字号')
             switch.setChecked(False)
             self.assertFalse(changes[-1]['caption_random_size'])
-            self.assertFalse(contrast.isEnabled())
+            self.assertTrue(contrast.isEnabled())
             self.assertEqual(changes[-1]['caption_size_contrast'],2.75)
             editor.set_layer(changes[-1])
             switch.setChecked(True)

@@ -144,6 +144,8 @@ def frame_preview(plan, at, context, directory, max_edge=1080):
     # Keep filter timestamps on the full edited timeline, while seeking to a single source frame.
     from .filter_graph import wrap_filters, file_filter_options
     compiled = compile_filters(plan, directory, context, video_info=info)
+    from .encoding import output_filters
+    compiled = output_filters(compiled, plan.encoding)
     chain = wrap_filters(compiled, f"setpts=PTS-STARTPTS+{at:.9f}/TB",
                          "setpts=PTS-STARTPTS," + scale)
     from .filter_graph import VideoFilterChain
@@ -248,6 +250,8 @@ def run_preview(payload, context, *, registry):
     value = selected_type(payload['graph'], registry)
     if value is None:
         return _run_preview(payload, context, registry=registry)
+    if value.preview_factory is None:
+        raise ValueError('此插件工作流尚未提供预览模拟；可以保存和执行，不能把真实任务当作预览输入。')
     context.ffmpeg = payload.get('ffmpeg', '')
     previous = getattr(context, 'workflow_input', None)
     try:

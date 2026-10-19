@@ -1,0 +1,76 @@
+{
+  "manifest_version": 3,
+  "name": "FlowCue 插件",
+  "version": "1.1.4",
+  "description": "针对 Google Labs Flow 与 Google Vids 平台的批量视频生成、自动化状态监测与原生拖拽上传工具 (FlowCue 配套扩展)。",
+  "permissions": [
+    "storage",
+    "downloads",
+    "tabs",
+    "debugger"
+  ],
+  "host_permissions": [
+    "https://flow.google.com/*",
+    "https://labs.google/*",
+    "https://docs.google.com/*",
+    "https://*.usercontent.google.com/*",
+    "https://*.googleusercontent.com/*",
+    "https://*.googleapis.com/*",
+    "https://*.googlevideo.com/*",
+    "https://flow-content.google/*"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "*://flow.google.com/*",
+        "*://*.flow.google.com/*",
+        "*://labs.google/*",
+        "*://*.labs.google/*",
+        "*://docs.google.com/videos/*"
+      ],
+      "css": [
+        "injects/ui.css"
+      ],
+      "run_at": "document_start",
+      "all_frames": true
+    },
+    {
+      "matches": [
+        "*://flow.google.com/*",
+        "*://*.flow.google.com/*",
+        "*://labs.google/*",
+        "*://*.labs.google/*",
+        "*://docs.google.com/videos/*"
+      ],
+      "js": [
+        "injects/flow-proxy.js",
+        "injects/ui.js"
+      ],
+      "run_at": "document_start",
+      "world": "MAIN",
+      "all_frames": true
+    },
+    {
+      "matches": [
+        "*://flow.google.com/*",
+        "*://*.flow.google.com/*",
+        "*://labs.google/*",
+        "*://*.labs.google/*",
+        "*://docs.google.com/videos/*"
+      ],
+      "js": [
+        "content-isolated.js"
+      ],
+      "run_at": "document_start",
+      "world": "ISOLATED",
+      "all_frames": true
+    }
+  ],
+  "action": {
+    "default_title": "FlowCue 插件 (Flow & Vids)"
+  }
+}

@@ -51,7 +51,8 @@ class EffectColorEditor(QtWidgets.QWidget):
         try:
             values = colors(self.text())
         except ValueError:
-            self.error.setText('颜色无效，请展开色值修正，或取消本次修改。')
+            self.advanced.setChecked(True)
+            self.error.setText('颜色无效，请在上方色值框修正，或取消本次修改。')
             self.error.show()
             self.add_button.setEnabled(False)
             return

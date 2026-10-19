@@ -9,7 +9,8 @@ import re
 
 from .contracts import ResourceRef, RenderPlan, VideoTimeline, VideoComposition
 from .filter_graph import append_chain
-from .video_stream import VideoStream, video_encoder_args, audio_encoder_args
+from .video_stream import VideoStream
+from .encoding import mux_args, video_encoder_args, audio_encoder_args
 
 
 @dataclass(frozen=True)
@@ -141,4 +142,4 @@ def composition_command(video, ffmpeg, ffprobe, chain, target, context, encoding
         command += ['-map', '['+stage.audio+']'] + audio_encoder_args(encoding, timeline=True)
     else:
         command += ['-an']
-    return command + ['-t', f"{stage.info['duration']:.9f}", '-movflags', '+faststart', str(target)]
+    return command + ['-t', f"{stage.info['duration']:.9f}"] + mux_args(encoding) + [str(target)]

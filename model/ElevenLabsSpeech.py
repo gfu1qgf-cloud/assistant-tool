@@ -45,12 +45,14 @@ def dialogue_audio(client, chunks, filename, voice_id, model_id, ffmpeg, report)
             output_format='mp3_44100_128',request_options={'max_retries':0,'timeout_in_seconds':180}))
     if len(chunks)==1: return request(chunks[0])
     result=TimedAudio(None)
+    result.completed_requests=0
     def generate():
         with data_io.TemporaryDirectory(prefix='.ele-audio-',dir=str(Path(filename).parent)) as temporary:
             folder=Path(temporary); names=[]; words=[]; offset=0.; complete=True
             for index,text in enumerate(chunks,1):
                 report(f'ELE 长文音频与时间戳 {index}/{len(chunks)}')
                 speech=request(text)
+                result.completed_requests+=1
                 mp3=folder/f'part-{index:04}.mp3'; wav=mp3.with_suffix('.wav')
                 data_file(mp3).write_bytes(b''.join(speech))
                 _run([ffmpeg,'-hide_banner','-nostdin','-loglevel','error','-y','-i',str(mp3),

@@ -270,8 +270,10 @@ def validate(graph, registry, *, root_id=None):
                 errors.append((node_id, f"节点“{definition.title}”仅适用于 {definition.execution_scope.title()} 模式；当前为 {mode.title()}。"))
             if node["kind"] == "core.export" and node["params"].get("destination") == "task" and mode != "line":
                 errors.append((node_id, "导出到当前任务目录需要 Line 模式；Detail 模式请使用指定路径。"))
-            if node["kind"] == "core.export" and node["params"].get("destination") == "file" and not str(node["params"].get("output") or "").strip():
+            if node["kind"] == "core.export" and node["params"].get("destination") == "file" and not str(node["params"].get("output") or "").strip() and not incoming.get((node_id, 'output')):
                 errors.append((node_id, "请填写导出文件路径。"))
+            if node['kind'] == 'core.render' and not str(node['params'].get('output') or '').strip() and not incoming.get((node_id, 'output')):
+                errors.append((node_id, '请填写或连接导出文件路径。'))
             for port in definition.input_ports(node['params']):
                 connections = incoming.get((node_id, port.key), [])
                 if port.required and not connections:
@@ -404,7 +406,8 @@ def _render(inputs, params, context):
     operations = bind_operations(video, inputs["operations"], context)
     if not operations:
         raise GraphError("操作集合为空。")
-    output = str(Path(params["output"]).expanduser().resolve())
+    target = inputs.get('output') if inputs.get('output') is not None else params['output']
+    output = str(Path(target).expanduser().resolve())
     if Path(output).suffix.lower() != ".mp4":
         raise GraphError("第一版成品请选择 MP4。")
     task = getattr(context, "task", None)
@@ -474,6 +477,12 @@ def register_core(registry):
     register_reroute(registry)
     from .filesystem import register_filesystem
     register_filesystem(registry)
+    from .video_probe_nodes import register_video_probe
+    register_video_probe(registry)
+    from .subtitle_nodes import register_subtitle_nodes
+    register_subtitle_nodes(registry)
+    from .flow_nodes import register_flow_nodes
+    register_flow_nodes(registry)
     from .basic import register_basic
     register_basic(registry)
     from .value_nodes import register_value_nodes
@@ -531,9 +540,10 @@ def register_core(registry):
         outputs=(NodePort("operations", "操作集合", "operations"),), build=_merge,
         description="可连接多个操作节点；连接顺序就是执行顺序，右键连接可调整。"))
     registry.register("core", NodeDefinition("core.render", "结算并导出 · 指定路径（兼容）",
-        inputs=(NodePort("video", "视频", "video"), NodePort("operations", "操作集合", "operations")),
+        inputs=(NodePort("video", "视频", "video"), NodePort("operations", "操作集合", "operations"),
+                NodePort('output', '输出路径 · 可覆盖参数', 'text', required=False)),
         terminal_result=NodePort("result", "内部导出计划", "render_plan"),
-        parameters=(NodeParameter("output", "成品路径", "output_file"),), build=_render,
+        parameters=(NodeParameter("output", "成品路径", "output_file", required=False),), build=_render,
         description="一次 FFmpeg 渲染；保持原视频尺寸、时长和音频。不会覆盖现有成品。"))
 
 
@@ -560,9 +570,10 @@ def example_graph(registry, transport=""):
             for existing in graph["nodes"]:
                 if existing["id"] not in {a, node["id"]}:
                     existing["position"][0] += 275
-            for edge in graph["connections"]:
-                if edge[0] == a and edge[1] == "video":
-                    edge[0] = node["id"]
+            graph["connections"] = [
+                [node["id"], edge[1], edge[2], edge[3]]
+                if edge[0] == a and edge[1] == "video" else edge[:]
+                for edge in graph["connections"]]
             graph["connections"].insert(0, [a, "video", node["id"], "video"])
     return graph
 
@@ -587,16 +598,15 @@ def task_example_graph(registry):
 
 def export_example_graph(registry, task_mode=False):
     """Explicit settlement/export split, preserving legacy example files unchanged."""
-    graph = task_example_graph(registry) if task_mode else example_graph(registry)
+    graph = copy.deepcopy(task_example_graph(registry) if task_mode else example_graph(registry))
     old = next(node for node in graph["nodes"] if node["id"] == graph["output_node"])
     settling = new_node(registry.definitions["core.settle"], tuple(old["position"]))
     exporting = new_node(registry.definitions["core.export"], (old["position"][0] + 300, old["position"][1]))
     exporting["params"]["destination"] = "task" if task_mode else "file"
-    for edge in graph["connections"]:
-        if edge[2] == old["id"]:
-            edge[2] = settling["id"]
-    graph["nodes"].remove(old)
-    graph["nodes"].extend([settling, exporting])
+    graph["connections"] = [
+        [edge[0], edge[1], settling["id"], edge[3]] if edge[2] == old["id"] else edge[:]
+        for edge in graph["connections"]]
+    graph["nodes"] = [node for node in graph["nodes"] if node["id"] != old["id"]] + [settling, exporting]
     graph["connections"].append([settling["id"], "plan", exporting["id"], "plan"])
     graph["output_node"] = exporting["id"]
     return graph
@@ -617,21 +627,24 @@ def migrate_task_ports(graph, registry):
             if len(links) != 1 or links[0][0] not in task_ids:
                 continue  # Unknown provider: report incompatible version, do not guess.
             source = links[0][0]
-            position = tuple(node["position"])
-            listing = new_node(registry.definitions["core.listdir"], position)
-            # Reserve a column instead of overlapping the expanded task outputs.
-            for existing in result["nodes"]:
-                if existing["position"][0] >= position[0]:
-                    existing["position"][0] += 300
-            # Old discovery recursed; preserve it, but make the rule explicit now.
-            listing["params"]["recursive"] = "yes"
-            result["nodes"].append(listing)
             result["connections"].remove(links[0])
-            result["connections"] += [[source, "task_path", listing["id"], "directory"],
-                [listing["id"], "files", node["id"], "files"]]
+            if not any(edge[2:] == [node["id"], "files"] for edge in result["connections"]):
+                position = tuple(node["position"])
+                listing = new_node(registry.definitions["core.listdir"], position)
+                # Reserve a column only when a new discovery node is needed.
+                for existing in result["nodes"]:
+                    if existing["position"][0] >= position[0]:
+                        existing["position"][0] += 300
+                # Old discovery recursed; preserve it, but make the rule explicit now.
+                listing["params"]["recursive"] = "yes"
+                result["nodes"].append(listing)
+                result["connections"] += [[source, "task_path", listing["id"], "directory"],
+                    [listing["id"], "files", node["id"], "files"]]
             if not any(edge[2:] == [node["id"], "script"] for edge in result["connections"]):
                 result["connections"].append([source, "task_audio_text", node["id"], "script"])
-            result["connections"] += [[source, field, node["id"], field] for field in ("language", "task_id", "task_name")]
+            for field in ("language", "task_id", "task_name"):
+                if not any(edge[2:] == [node["id"], field] for edge in result["connections"]):
+                    result["connections"].append([source, field, node["id"], field])
             node["version"] = registry.definitions[node["kind"]].version
             changed = True
         elif node["kind"] == "core.task_field" and node.get("version") == 1:

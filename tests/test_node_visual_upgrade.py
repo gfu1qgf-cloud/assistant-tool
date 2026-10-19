@@ -69,6 +69,14 @@ class VisualUpgradeTests(unittest.TestCase):
                 operation = build_lut({'file': str(valid)}, params, self.c)['operations'][0]
                 self.assertEqual(dict(operation.assets)['lut'].path, str(valid.resolve()))
 
+        params = self.params('lut', style='file', file=str(valid))
+        self.c.node_prepared = prepare_lut(None, params, None)
+        for connected in ('', '   '):
+            with self.subTest(connected=connected), self.assertRaisesRegex(ValueError, '路径为空'):
+                build_lut({'file': connected}, params, self.c)
+        self.assertEqual(dict(build_lut({}, params, self.c)['operations'][0].assets)['lut'].path,
+                         str(valid.resolve()))
+
     def test_static_lut_file_keeps_submission_stamp(self):
         file = self.root / 'static.cube'
         file.write_text('LUT_3D_SIZE 2\n' + '\n'.join(' '.join(map(str, row)) for row in lut_rows('mono', 2)), encoding='utf8')
@@ -101,6 +109,18 @@ class VisualUpgradeTests(unittest.TestCase):
         result = render_plan(RenderPlan(rotated, (), str(self.root/'odd.mp4')), self.c, FFMPEG)
         info = probe(result['video'], str(Path(FFMPEG).with_name('ffprobe.exe')))
         self.assertEqual((info['video']['width'], info['video']['height']), (101, 91))
+
+    @unittest.skipUnless(FFMPEG and Path(FFMPEG).is_file(), '需要正式FFmpeg')
+    def test_flipping_keeps_displayed_left_and_top_anchor_in_place(self):
+        source = self.background(color='#ff0000')
+        for flip in ('flip_x', 'flip_y'):
+            with self.subTest(flip=flip):
+                params = self.params('transform', x=0, y=0, unit='pixels', anchor_x=0, anchor_y=0,
+                                     edge='solid', color='#0000ff', **{flip: 'yes'})
+                image = self.frame(build_transform({'video': source}, params, self.c)['video'])
+                center = image.pixelColor(80, 45)
+                self.assertGreater(center.red(), 230)
+                self.assertLess(center.blue(), 25)
 
     @unittest.skipUnless(FFMPEG and Path(FFMPEG).is_file(), '需要正式FFmpeg')
     def test_real_lut_pixels_and_alpha_preserved_during_composition(self):

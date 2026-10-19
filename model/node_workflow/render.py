@@ -17,7 +17,8 @@ from app_paths import APP_ROOT
 from .contracts import RenderPlan, VideoTimeline, VideoComposition, SubtitleTrack, TaskSnapshot
 from .operations import bind_operations
 from .scope import initialize_execution
-from .video_stream import VideoStream, normalize_plan, video_encoder_args, audio_encoder_args
+from .video_stream import VideoStream, normalize_plan
+from .encoding import output_filters, mux_args, video_encoder_args, audio_encoder_args, summary as encoding_summary
 
 
 def resolve_tools(configured=""):
@@ -214,7 +215,7 @@ def timeline_command(video, ffmpeg, ffprobe, chain, target, encoding=None):
                 '-threads', '2'] + video_encoder_args(encoding)
     if video.has_audio:
         command += ['-map', '[audio]'] + audio_encoder_args(encoding, timeline=True)
-    return command + ["-movflags", "+faststart", str(target)]
+    return command + mux_args(encoding) + [str(target)]
 
 
 def _publish(files, context):
@@ -280,6 +281,7 @@ def render_plan(plan, context, configured=""):
     # Keep temporary media on the output disk, not the user's possibly full C:.
     with render_directory(destination.parent, context) as directory:
         chain = compile_filters(plan, directory, context, video_info=info)
+        chain = output_filters(chain, plan.encoding)
         target = Path(directory) / "result.mp4"
         if isinstance(plan.video, VideoComposition):
             from .source_composition import composition_command
@@ -292,7 +294,11 @@ def render_plan(plan, context, configured=""):
                        "-progress", "pipe:1", "-i", plan.video.path if plan.video.storage == "file" else "pipe:0"]
             options = file_filter_options(chain, command, directory)
             command += options + ['-map', '0:a?'] + video_encoder_args(plan.encoding) + audio_encoder_args(plan.encoding)
-            command += ['-movflags', '+faststart', str(target)]
+            command += mux_args(plan.encoding) + [str(target)]
+        if plan.encoding is not None:
+            context.log('实际编码设置：' + encoding_summary(plan.encoding))
+            if plan.encoding.audio == 'copy' and isinstance(plan.video, (VideoTimeline, VideoComposition)) and info['audio']:
+                context.log('拼接／混合音轨经过滤镜，不能直接复制编码；本次使用AAC重新编码音频。')
         context.log("节点渲染：" + " → ".join(op.title for op in plan.operations) + "；一次视频编码。")
         log_path = Path(directory) / "render.log"
         feeder, feed_errors = None, []
@@ -361,6 +367,17 @@ def render_plan(plan, context, configured=""):
             raise ValueError("成品时长与源视频不符，未落地成品。")
         if info["audio"] and not final["audio"]:
             raise ValueError("成品缺失原有音频，未落地成品。")
+        output_bytes = target.stat().st_size
+        input_bytes = plan.video.size if getattr(plan.video, 'storage', '') in {'file','memory','stream'} else None
+        size_change = (100*(1-output_bytes/input_bytes) if input_bytes else None)
+        if plan.encoding is not None:
+            if size_change is None:
+                context.log(f'编码完成：输出 {output_bytes/1024**2:.2f} MB；多视频合成不以原文件总大小冒充压缩率。')
+            else:
+                change = f'减少 {size_change:.1f}%' if size_change >= 0 else f'增大 {-size_change:.1f}%'
+                context.log(f'压缩结果：{input_bytes/1024**2:.2f} MB → {output_bytes/1024**2:.2f} MB，体积{change}。')
+                if size_change < 0:
+                    context.log('本次输出比源文件大。恒定质量不保证变小；如需控制体积，请在压缩节点选择目标码率。')
         context.check_canceled()
         publications = [(target, destination)]
         srt, report = "", ""
@@ -388,6 +405,8 @@ def render_plan(plan, context, configured=""):
     return {"paths": [str(destination)], "video": str(destination), "subtitles": srt, "report": report,
             "notes": list(getattr(context, "notes", [])), "seconds": round(seconds, 3),
             "duration": final["duration"], "video_encodings": 1, "intermediate_videos": 0,
+            "encoding": encoding_summary(plan.encoding) if plan.encoding is not None else '',
+            "input_bytes": input_bytes, "output_bytes": output_bytes, "size_reduction_percent": size_change,
             "input_storage": plan.video.storage,
             "compressed_memory_peak": getattr(getattr(context, "media", None), "peak_bytes", 0)}
 

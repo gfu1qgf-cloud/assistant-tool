@@ -206,7 +206,12 @@ class VisualProperties(QtWidgets.QWidget):
         from .property_sections import PropertySections
         self.sections = PropertySections()
         root.addWidget(self.sections)
-        form = self._page("叠加与抠像")
+        basic = QtWidgets.QWidget(); self.basic_form = QtWidgets.QFormLayout(basic)
+        self.basic_form.setContentsMargins(0,0,0,0)
+        self.basic_form.setRowWrapPolicy(self.basic_form.RowWrapPolicy.WrapLongRows)
+        self.basic_form.setFieldGrowthPolicy(self.basic_form.FieldGrowthPolicy.AllNonFixedFieldsGrow)
+        root.insertWidget(0,basic)
+        form = self._page("抠像")
         animation = self._page("动画")
         self.controls = {}
         for key, label, choices in (("blend_mode", "叠加模式", (("普通", "normal"), ("添加", "add"), ("滤色", "screen"))),
@@ -217,7 +222,7 @@ class VisualProperties(QtWidgets.QWidget):
                 control.addItem(name, value)
             control.currentIndexChanged.connect(self.edit)
             self.controls[key] = control
-            form.addRow(label, control)
+            (self.basic_form if key == 'blend_mode' else form).addRow(label, control)
         protect = QtWidgets.QCheckBox("保护轮廓内封闭的同色装饰")
         protect.toggled.connect(self.edit)
         self.controls["key_protect_inside"] = protect
@@ -236,7 +241,7 @@ class VisualProperties(QtWidgets.QWidget):
             control = QtWidgets.QCheckBox(label)
             control.toggled.connect(self.edit)
             self.controls[key] = control
-            form.addRow(control)
+            (self.basic_form if key == 'media_loop' else form).addRow(control)
         self.matte_levels = MatteLevels()
         self.controls.update(self.matte_levels.controls)
         self.matte_levels.changed.connect(self.edit)
@@ -247,8 +252,7 @@ class VisualProperties(QtWidgets.QWidget):
         note.setWordWrap(True)
         note.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored, QtWidgets.QSizePolicy.Policy.Preferred)
         form.addRow(note)
-        note = QtWidgets.QLabel("支持图片、视频和GIF；保留原比例，不加入素材自身音轨。播放预览与成品使用相同抠像和叠加。")
-        note.setWordWrap(True); form.addRow(note)
+        basic.setToolTip("支持图片、视频和GIF；保留原比例，不加入素材自身音轨。播放预览与成品使用相同抠像和叠加。")
         from .component_ui import Combo, Spin
         from .visual_animation import CHOICES
         mode = Combo()
@@ -277,6 +281,9 @@ class VisualProperties(QtWidgets.QWidget):
         self.controls["animation_period"].setToolTip("律动、呼吸和浮动的周期；不是音乐自动踩点。周期越短动作越快。")
         self.controls["animation_start_delay"].setToolTip("开始前保持起点。按最终成品时长计算，启用人声时跟随人声时长。")
         self.controls["animation_end_early"].setToolTip("提前结束动作，余下时间保持结束姿态。与开始延迟之和必须小于最终视频时长。")
+        from .property_pairs import pair_form_fields
+        pair_form_fields(animation,'动画时间',[
+            ('start','延迟',self.controls['animation_start_delay']),('end','提前结束',self.controls['animation_end_early'])])
         note = QtWidgets.QLabel("律动：短促放大后恢复，循环重复；呼吸：平滑放大缩小。\n"
             "推近／拉远覆盖最终成品时长；动态画面请点击“播放预览”。\n"
             "设计视图显示原尺寸。放大可能超出蓝色元素框，画布之外会裁切；同样适用于图片池、GIF和视频。")
@@ -293,8 +300,7 @@ class VisualProperties(QtWidgets.QWidget):
         form.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop)
         form.setRowWrapPolicy(form.RowWrapPolicy.WrapLongRows)
         form.setFieldGrowthPolicy(form.FieldGrowthPolicy.AllNonFixedFieldsGrow)
-        self.sections.add_section('visual' if title == '叠加与抠像' else 'animation', title, page,
-                                  expanded=title == '叠加与抠像')
+        self.sections.add_section('visual' if title == '抠像' else 'animation', title, page)
         return form
 
     def _update_motion_controls(self):
@@ -367,6 +373,8 @@ class VisualProperties(QtWidgets.QWidget):
 def visual_property_panel(services=None, *, mode='batch'):
     from .component_inspector import ComponentPropertyPanel
     panel = ComponentPropertyPanel(mode=mode)
+    from .inspector_layout_contract import require_flat_layout
+    require_flat_layout(panel)
     panel.add_source()
     panel.add_geometry()
     panel.visual_properties = panel.add_bound('visual', '', VisualProperties(), fields=set(DEFAULTS), section=False)

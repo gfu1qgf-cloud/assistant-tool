@@ -315,7 +315,7 @@ class DailyQuantityTests(unittest.TestCase):
         self.assertFalse(groups)
         self.assertFalse(warnings)
 
-    def test_review_staging_counts_once_and_legacy_exclusion_is_migrated(self):
+    def test_review_staging_requires_approval_and_legacy_exclusion_opt_in(self):
         key = ("统计", "2026-09-25", "02", "短口播", "本人")
         review = {
             "id": "review-entry", "drive_file_id": "review-id", "file_name": "a.mp4",
@@ -329,8 +329,15 @@ class DailyQuantityTests(unittest.TestCase):
             "items": {"google:review-id": {"status": "passed"}}
         }):
             groups, warnings = _external_assignments(scope, "本人", {})
-        self.assertEqual(len(groups[key]), 1)
+        self.assertFalse(groups)
         self.assertFalse(warnings)
+        review["included"] = True
+        review["manual_included"] = True
+        with patch("model.DailyQuantityStats.read_review_history", return_value={
+            "items": {"google:review-id": {"status": "passed"}}
+        }):
+            groups, warnings = _external_assignments(scope, "本人", {})
+        self.assertEqual(len(groups[key]), 1)
         # Once the final version exists, the staged copy no longer adds a second unit.
         scope["external_videos"].append({
             **review, "id": "final-entry", "drive_file_id": "final-id",
@@ -342,9 +349,49 @@ class DailyQuantityTests(unittest.TestCase):
             groups, warnings = _external_assignments(scope, "本人", {})
         self.assertEqual(len(groups[key]), 1)
         self.assertEqual(groups[key][0]["drive_file_id"], "review-id")
-        review["manual_included"] = True
+        review["included"] = False
         groups, warnings = _external_assignments({**scope, "external_videos": [review]}, "本人", {})
         self.assertFalse(groups)
+
+    def test_review_preview_never_counts_pending_video(self):
+        item = {"id": "pending", "drive_file_id": "pending-id", "file_name": "pending.mp4",
+                "batch_date": "2026-09-25", "batch_slot": "02", "included": True,
+                "review_path": True, "sheet": "统计", "category": "短口播"}
+        with patch("model.DailyQuantityStats.read_review_history", return_value={"items": {}}):
+            self.assertEqual(preview_external_day([item], "2026-09-25")["counted"], 0)
+        with patch("model.DailyQuantityStats.read_review_history", return_value={
+            "items": {"google:pending-id": {"status": "passed"}}
+        }):
+            self.assertEqual(preview_external_day([item], "2026-09-25")["counted"], 1)
+
+    def test_rescan_does_not_reinclude_ambiguous_legacy_review_exclusion(self):
+        day = "2026-09-25"
+        config = {"daily_quantity_sheet_url": "fake-id", "task_submission_creator": "本人",
+                  "drive_parent_folder_id": "parentFolderId12345", "review_folder_name": "review"}
+        video = {"id": "review-id", "name": "review.mp4", "mimeType": "video/mp4",
+                 "relative_parts": ("02", "review", "review.mp4")}
+        def children(_service, folder_id):
+            if folder_id == "parentFolderId12345":
+                return [{"id": "dateFolderId123456", "name": "0925",
+                         "mimeType": "application/vnd.google-apps.folder"}]
+            if folder_id == "dateFolderId123456":
+                return [{"id": "slotFolderId123456", "name": "02",
+                         "mimeType": "application/vnd.google-apps.folder"}]
+            return []
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "state.json"
+            scope = f"fake-id|{Path(directory).resolve()}"
+            old = {"id": "legacy", "drive_file_id": "review-id", "file_name": "review.mp4",
+                   "batch_date": day, "daily_scan_date": day, "batch_slot": "02",
+                   "included": False, "review_path": True, "sheet": "统计", "category": "短口播"}
+            path.write_text(json.dumps({scope: {"external_videos": [old]}}), encoding="utf-8")
+            with patch("model.MaterialDriveSync._folder_children", side_effect=children), patch(
+                "model.MaterialDriveSync._collect_remote_files", return_value=[video]
+            ), patch("model.DailyQuantityStats.collect_assignments", return_value=({}, [])):
+                scanned = scan_daily_drive_date(config, directory, day, service=MagicMock(),
+                                               state_path=path, records=[])
+            self.assertEqual(scanned["found"], 1)
+            self.assertFalse(scanned["records"][0]["included"])
 
     def test_review_sheet_rework_link_prevents_counting_original_and_rework(self):
         key = ("统计", "2026-09-25", "02", "短口播", "本人")

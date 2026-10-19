@@ -121,8 +121,7 @@ def transform_fragment(video, values, info, output_size):
     rw, rh = max(1, math.ceil(abs(sw*math.cos(angle))+abs(sh*math.sin(angle)))), max(1, math.ceil(abs(sh*math.cos(angle))+abs(sw*math.sin(angle))))
     if max(sw, sh, rw, rh) > 16384 or rw*rh > 64*1024*1024: raise ValueError('变换后画面过大，请降低缩放。')
     ax, ay = (values['anchor_x']/100-.5)*sw, (values['anchor_y']/100-.5)*sh
-    if values.get('flip_x') == 'yes': ax = -ax
-    if values.get('flip_y') == 'yes': ay = -ay
+    # Anchor coordinates describe the displayed element after mirroring.
     anchor_x, anchor_y = rw/2 + ax*math.cos(angle)-ay*math.sin(angle), rh/2 + ax*math.sin(angle)+ay*math.cos(angle)
     x = values['x']*out_w/100 if values['unit'] == 'percent' else values['x']
     y = values['y']*out_h/100 if values['unit'] == 'percent' else values['y']
@@ -217,7 +216,9 @@ def build_lut(inputs, params, context):
     if strength == 0: return {'operations': (FilterOperation('LUT 已关闭', None, 'null'),)}
     values = dict(params, strength=strength); assets = ()
     if values['style'] == 'file':
-        path = inputs.get('file') or values['file']
+        path = values['file'] if inputs.get('file') is None else inputs['file']
+        if not isinstance(path, str) or not path.strip():
+            raise ValueError('LUT文件路径为空；连接的文件端口不会回退到面板中的旧文件。')
         record = getattr(context, 'node_prepared', {}).get('file')
         ref = ResourceRef(**record) if record and str(Path(path).resolve()) == record['path'] else ResourceRef.capture(path, 'lut')
         ref.verify(); read_cube(ref.path); assets = (('lut', ref),)

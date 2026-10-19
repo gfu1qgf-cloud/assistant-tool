@@ -149,6 +149,25 @@ class FileNodeTests(unittest.TestCase):
         upgraded, _ = migrate_task_ports(graph, registry)
         self.assertEqual(sum(edge[2:] == [edit["id"], "script"] for edge in upgraded["connections"]), 1)
 
+    def test_migration_does_not_duplicate_partly_upgraded_task_fields(self):
+        registry = self.registry()
+        graph = task_example_graph(registry)
+        task, listing, edit, caption, render = graph["nodes"]
+        task["version"] = edit["version"] = 1
+        graph["connections"].append([task["id"], "task", edit["id"], "task"])
+        graph["connections"] = [edge for edge in graph["connections"]
+                                if edge[2:] != [edit["id"], "task_id"]]
+        before = copy.deepcopy(graph)
+        upgraded, changed = migrate_task_ports(graph, registry)
+        self.assertTrue(changed)
+        self.assertEqual(graph, before)
+        for field in ("script", "language", "task_id", "task_name"):
+            self.assertEqual(sum(edge[2:] == [edit["id"], field] for edge in upgraded["connections"]), 1)
+        self.assertFalse(validate(upgraded, registry)[0])
+        again, changed = migrate_task_ports(upgraded, registry)
+        self.assertFalse(changed)
+        self.assertEqual(again, upgraded)
+
     def test_preparing_manual_directory_works_without_a_bound_task(self):
         registry = self.registry()
         graph = task_example_graph(registry)

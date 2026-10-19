@@ -10,8 +10,9 @@ DEFAULTS = {'caption_group_colors':False, 'caption_group_palette':PALETTE, 'capt
 COMMON_EFFECT_KEYS = {
     'karaoke_highlight','color_high','high_gradient_direction','dynamic_box','color_high_bg','opacity_high_bg',
     'dynamic_radius','dynamic_box_stroke','dynamic_box_stroke_width','high_padding','high_offset_y',
-    'use_box','opacity_bg','box_padding_x','box_padding_y','box_radius','box_blur','box_adaptive_width',
+    'use_box','opacity_bg','box_padding_x','box_padding_y','box_radius','box_blur','box_adaptive_width','box_follow_motion',
     'bg_gradient_enabled','bg_gradient_colors','bg_gradient_type','shadow_blur',
+    'bg_gradient_highlight','text_gradient_enabled','color_text','text_gradient_direction',
 }
 
 

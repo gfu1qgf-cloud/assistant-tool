@@ -79,15 +79,16 @@ class InspectorTests(unittest.TestCase):
         panel=LayerPanel(layers,'.',settings=DEFAULTS)
         for layer in panel.values():
             panel.select_layer_id(layer['id'])
-            self.assertTrue(panel.editor.sections)
+            self.assertTrue(panel.editor.sections or panel.editor.targets)
             self.assertEqual(panel.editor.layer['id'],layer['id'])
         self.assertEqual(set(panel.inspector.editors),{item['kind'] for item in panel.values()})
 
-    def test_collapsed_groups_remember_their_state_across_selection(self):
+    def test_flat_geometry_is_revealable_across_selection(self):
         panel=self.panel(); panel.select_layer_id('title')
         panel.reveal_property('position')
         panel.select_layer_id('body'); panel.select_layer_id('title')
-        self.assertTrue(panel.editor.sections['position'].toggle.isChecked())
+        self.assertIs(panel.editor.targets['position'],panel.editor.geometry_editor)
+        self.assertNotIn('position',panel.editor.sections)
 
     def test_geometry_unit_switch_does_not_move_or_change_anchors(self):
         panel=self.panel(); panel.select_layer_id('title'); before=copy.deepcopy(panel.current())

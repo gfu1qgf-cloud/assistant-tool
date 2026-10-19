@@ -508,6 +508,16 @@ class PoolController(CustomPoolController):
         self.profile_menu.addAction("保存配置", self.persist).setShortcut("Ctrl+S")
         self.profile_menu.addAction("另存为…", lambda: self.create_named_profile(True)).setShortcut("Ctrl+Shift+S")
         self.profile_menu.addAction("重命名当前配置…", self.rename_profile)
+        delete = self.profile_menu.addAction("删除当前项目…", self.delete_current_profile)
+        delete.setToolTip('只删除项目配置、资源引用和该项目渲染记录；不删除素材、音频或已导出的视频。')
+        finished = self.finished_render_task_ids()
+        submitted = any(p['profile_id'] == self.state['active_profile'] and p['status'] == 'submitted'
+                        and p.get('task_id') not in finished
+                        for p in self.state.get('render_plans', []))
+        current_api = callable(getattr(self.store, 'delete_profile', None))
+        delete.setEnabled(current_api and not self.is_batch_busy() and not submitted)
+        if not current_api:
+            delete.setToolTip('删除功能已更新；当前运行仍是旧模块，下次正常重启后可用。')
         self.profile_menu.addSeparator()
         self.profile_menu.addAction("打开当前成品目录", self.open_output_directory)
         self.profile_menu.addAction("关闭窗口", self.close).setShortcut("Ctrl+W")
@@ -568,6 +578,51 @@ class PoolController(CustomPoolController):
     def apply_profile_title(self):
         profile = next(item for item in self.state["profiles"] if item["id"] == self.state["active_profile"])
         self.setWindowTitle("批量文案视频 · "+profile["name"])
+
+    def finished_render_task_ids(self):
+        """Accept terminal host evidence, not absence of a local render handle."""
+        if not any(p['profile_id'] == self.state['active_profile'] and p['status'] == 'submitted'
+                   for p in self.state.get('render_plans', [])):
+            return set()
+        manager = getattr(self.context, 'background_tasks', None)
+        states = getattr(manager, 'completion_states', None)
+        if not callable(states): return set()
+        from model.BackgroundTasks import TERMINAL
+        return {identifier for identifier, status in states().items() if status in TERMINAL}
+
+    def delete_current_profile(self):
+        if not callable(getattr(self.store, 'delete_profile', None)):
+            self.status.setText('删除功能已更新；当前运行仍是旧模块，下次正常重启后可用。')
+            return
+        if self.is_batch_busy():
+            self.status.setText('当前项目正在处理，请停止或等待任务结束后再删除。')
+            return
+        profile = next(p for p in self.state['profiles'] if p['id'] == self.state['active_profile'])
+        answer = QtWidgets.QMessageBox.question(self, '删除文案视频项目',
+            '确定删除项目“'+profile['name']+'”吗？\n\n'
+            '将删除该项目的配置、资源引用和渲染记录（含未开始的计划）。\n'
+            '不会删除原素材、任务音频、字幕或任何已导出的视频。\n'
+            '删除最后一个项目时，会创建一个空白项目。',
+            QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No,
+            QtWidgets.QMessageBox.StandardButton.No)
+        if answer != QtWidgets.QMessageBox.StandardButton.Yes:
+            return
+        identifier = profile['id']
+        self.preview.cancel_drag()
+        if not self.persist():
+            return
+        profile = next(p for p in self.state['profiles'] if p['id'] == identifier)
+        try:
+            self.state = self.store.delete_profile(identifier, expected_profile_revision=profile.get('revision', 0),
+                                                  finished_task_ids=self.finished_render_task_ids())
+            for values in (self._render_progress, self._render_stages, self._quick_export_ids):
+                values.pop(identifier, None)
+            self.apply_profile_widgets()
+            self.rebuild_profile_menu()
+            self.render_queue_panel.refresh()
+            self.status.setText('已删除项目记录；素材、音频、字幕和视频成品均保留。')
+        except (ValueError, OSError) as error:
+            self.status.setText('项目未删除：'+str(error))
 
     def apply_profile_widgets(self):
         self._batch_after_preview = None

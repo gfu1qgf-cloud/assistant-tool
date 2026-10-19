@@ -105,7 +105,8 @@ class ParallelExportTests(unittest.TestCase):
         result,state=self.run_batch()
         self.assertEqual((result['completed'],result['failed']),(4,0),result)
         self.assertEqual(self.peak,3)
-        self.assertTrue(all(t==main for t in self.preparing_threads))
+        self.assertEqual(len(set(self.preparing_threads)), 1)
+        self.assertTrue(all(t!=main for t in self.preparing_threads))
         self.assertTrue(all(t!=main for t in self.encoding_threads))
         self.assertEqual(self.published,['job-0','job-1','job-2','job-3'])
         self.assertEqual([row[1] for row in self.prepared],[0,10,20,30])
@@ -221,6 +222,61 @@ class ParallelExportTests(unittest.TestCase):
         self.assertEqual(planned['music'][0]['cursor'],10)
         self.assertEqual(self.store.path.read_bytes(),before)
         self.assertEqual(self.state['music'][0]['cursor'],0)
+
+    def test_finished_encode_is_published_while_next_model_preparation_waits(self):
+        renderer = self.renderer()
+        original = renderer.prepare_export
+        first_saved = threading.Event()
+        preparation_waited = threading.Event()
+        @contextmanager
+        def prepare(job, *args, **kwargs):
+            if job['id'] == 'job-1':
+                preparation_waited.set()
+                if not first_saved.wait(3):
+                    raise TimeoutError('前一条已编码结果被下一条的模型等待阻塞')
+            with original(job, *args, **kwargs) as value:
+                yield value
+        renderer.prepare_export = prepare
+        def done(job_id, _status):
+            if job_id == 'job-0': first_saved.set()
+        result, state = execute_batch(self.store, self.state, [j['id'] for j in self.state['jobs']],
+            self.cancel, lambda *_:None, self.messages.append, done, {'static_text':renderer})
+        self.assertTrue(preparation_waited.is_set())
+        self.assertTrue(first_saved.is_set())
+        self.assertEqual((result['completed'], result['failed']), (4, 0), result)
+        self.assertEqual(state['music'][0]['cursor'], 40)
+
+    def test_preparation_context_enters_and_exits_on_same_stable_thread(self):
+        renderer = self.renderer(); original = renderer.prepare_export
+        threads = []
+        @contextmanager
+        def prepare(*args, **kwargs):
+            owner = threading.get_ident()
+            try:
+                with original(*args, **kwargs) as value:
+                    yield value
+            finally:
+                threads.append((owner, threading.get_ident()))
+        renderer.prepare_export = prepare
+        result, _ = execute_batch(self.store, self.state, [j['id'] for j in self.state['jobs']],
+            self.cancel, lambda *_:None, self.messages.append, lambda *_:None, {'static_text':renderer})
+        self.assertEqual(result['completed'], 4, result)
+        self.assertEqual(len(threads), 4)
+        self.assertTrue(all(a == b for a, b in threads))
+
+    def test_one_video_project_keeps_global_budget_and_thread_policy(self):
+        renderer = self.renderer(); original = renderer.prepare_export
+        policies = []
+        @contextmanager
+        def prepare(job, state, *args, **kwargs):
+            policies.append(state['settings']['export_workers'])
+            with original(job, state, *args, **kwargs) as value:
+                yield value
+        renderer.prepare_export = prepare
+        result, _ = execute_batch(self.store, self.state, ['job-0'], self.cancel, lambda *_:None,
+            self.messages.append, lambda *_:None, {'static_text':renderer})
+        self.assertEqual(result['completed'], 1, result)
+        self.assertEqual(policies, [3])
 
     def test_invalid_config_returns_a_result_instead_of_escaping_a_qthread(self):
         self.state['settings']['export_workers']=99

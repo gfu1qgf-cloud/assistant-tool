@@ -100,11 +100,41 @@ class LoopBlockTests(unittest.TestCase):
         self.wire(begin, "value", end, "result")
         self.assertEqual(self.result(end)["last"], "原文")
 
+    def test_zero_iterations_accepts_compatible_numeric_initial_value(self):
+        begin, end = self.pair(count=0)
+        initial = self.source("number", 7)
+        integer = self.source("integer", 100)
+        self.wire(initial, "value", begin, "initial")
+        self.wire(integer, "value", end, "result")
+        self.assertEqual(self.result(end)["last"], 7)
+
+    def test_zero_iterations_reports_incompatible_initial_result(self):
+        begin, end = self.pair(count=0)
+        initial = self.source("number", 7.5)
+        integer = self.source("integer", 100)
+        self.wire(initial, "value", begin, "initial")
+        self.wire(integer, "value", end, "result")
+        with self.assertRaisesRegex(GraphError, "初始数据与 End 最终结果类型不兼容"):
+            self.result(end)
+
+    def test_foreach_empty_list_fails_unless_explicitly_allowed(self):
+        begin, end = self.pair("foreach")
+        items = self.source("list", [])
+        self.wire(items, "value", begin, "items")
+        self.wire(begin, "item", end, "result")
+        with self.assertRaisesRegex(GraphError, "列表为空"):
+            self.result(end)
+        end["params"]["empty"] = "skip"
+        output = self.result(end)
+        self.assertEqual((output["iterations"], output["results"].to_list()), (0, []))
+
     def test_foreach_empty_nested_null(self):
         for items in ([], [None, {"a": [1, 2]}, "中文"]):
             with self.subTest(items=items):
                 self.graph = empty_graph()
                 begin, end = self.pair("foreach")
+                if not items:
+                    end["params"]["empty"] = "skip"
                 initial = self.source("list", items)
                 self.wire(initial, "value", begin, "items")
                 self.wire(begin, "item", end, "result")

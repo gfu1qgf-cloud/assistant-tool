@@ -1,4 +1,5 @@
 """Workflow scope is persisted, explicit, and independent of node guessing."""
+import copy
 from dataclasses import asdict, replace
 from pathlib import Path
 import tempfile
@@ -47,6 +48,18 @@ class ExecutionModeTests(unittest.TestCase):
             self.assertEqual(graph["execution_mode"], "detail")
         for graph in (task_example_graph(self.registry), export_example_graph(self.registry, True)):
             self.assertEqual(graph["execution_mode"], "line")
+
+    def test_export_example_does_not_modify_reused_source_graph(self):
+        for task_mode, factory in ((False, example_graph), (True, task_example_graph)):
+            with self.subTest(task_mode=task_mode):
+                original = factory(self.registry)
+                snapshot = copy.deepcopy(original)
+                name = 'task_example_graph' if task_mode else 'example_graph'
+                with mock.patch('model.node_workflow.graph.' + name, return_value=original):
+                    exported = export_example_graph(self.registry, task_mode)
+                self.assertEqual(original, snapshot)
+                self.assertIsNot(exported['connections'], original['connections'])
+                self.assertFalse(any(edge[2] == snapshot['output_node'] for edge in exported['connections']))
 
     def test_invalid_mode_is_rejected_not_guessed(self):
         for value in (None, [], 1, "batch", "Detail", ""):

@@ -18,6 +18,7 @@ class PropertySection(QtWidgets.QWidget):
         self.header_layout.setContentsMargins(0, 0, 6, 0)
         self.header_layout.setSpacing(6)
         self.enable_control = None
+        self.disable_content_when_off = True
         self.toggle = QtWidgets.QToolButton()
         self.toggle.setText(title)
         self.toggle.setCheckable(True)
@@ -38,26 +39,28 @@ class PropertySection(QtWidgets.QWidget):
         self.toggle.setChecked(opened)
         self._expanded(opened)
 
-    def set_enable_control(self, control):
+    def set_enable_control(self, control, *, disable_content=True):
         """Use the feature's existing checkbox; the title only folds details."""
         self.enable_control = control
+        self.disable_content_when_off = disable_content
         label = control.text()
         control.setText('')
         control.setAccessibleName(label or '启用' + self.toggle.text())
         control.setToolTip(label or '启用' + self.toggle.text())
         self.header_layout.addWidget(control)
-        control.toggled.connect(self.content.setEnabled)
+        control.toggled.connect(self.sync_enabled)
         self.sync_enabled()
 
-    def sync_enabled(self):
+    def sync_enabled(self, *_args):
         if self.enable_control is not None:
-            self.content.setEnabled(self.enable_control.isChecked())
+            self.content.setEnabled(not self.disable_content_when_off or self.enable_control.isChecked())
 
 
 class PropertySections(QtWidgets.QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.sections = {}
+        self.targets = {}  # Flat fields remain revealable without fake sections.
         self.body = QtWidgets.QVBoxLayout(self)
         self.body.setContentsMargins(0, 0, 0, 0)
         self.body.setSpacing(7)
@@ -76,19 +79,19 @@ class PropertySections(QtWidgets.QWidget):
         return section
 
     def reveal(self, key):
-        section = self.sections.get(key)
+        section = self.sections.get(key) or self.targets.get(key)
         if section:
             parent = section.parentWidget()
             while parent is not None:
                 if isinstance(parent, PropertySection):
                     parent.set_expanded(True)
                 parent = parent.parentWidget()
-            section.set_expanded(True)
+            if isinstance(section, PropertySection): section.set_expanded(True)
             self._pending_reveal = key
             self._scroll_timer.start(0)
 
     def _ensure_revealed(self):
-        section = self.sections.get(self._pending_reveal)
+        section = self.sections.get(self._pending_reveal) or self.targets.get(self._pending_reveal)
         if not section or not section.isVisible(): return
         parent = self.parentWidget()
         while parent and not isinstance(parent, QtWidgets.QScrollArea): parent = parent.parentWidget()

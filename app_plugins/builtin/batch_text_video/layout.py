@@ -20,10 +20,26 @@ class TextDoesNotFit(ValueError):
     pass
 
 
+class CaptionPreviewError(ValueError):
+    """Timing/source failure must not masquerade as a text-box fit error."""
+    pass
+
+
 def _render_component(layer, width, height, settings):
     from .text_components import render_text_box
     from .scrolling_text import is_scrolling, render_scroll_preview
     timing = settings.get('_editor_timing')
+    from .caption_follow import enabled as follow_enabled
+    if timing is not None and layer.get('_caption_style_design') and follow_enabled(layer):
+        from .caption_style_render import render_design
+        try:
+            return render_design(layer,width,height,
+                words=settings.get('_caption_preview_words',{}).get(layer['id']),
+                duration=timing['duration'],time=timing['time'])
+        except TextDoesNotFit:
+            raise
+        except ValueError as error:
+            raise CaptionPreviewError(str(error)) from error
     if timing is not None and is_scrolling(layer):
         return render_scroll_preview(layer, width, height, duration=timing['duration'], time=timing['time'])
     return render_text_box(layer, width, height)
@@ -33,7 +49,7 @@ def render_preview_overlay(title, body, width, height, settings, image_cache=Non
     """Keep valid components visible; never relax the strict export validation."""
     try:
         return render_overlay(title, body, width, height, settings, image_cache)
-    except TextDoesNotFit as error:
+    except (TextDoesNotFit, CaptionPreviewError) as error:
         from .layers import normalize_layers, compose_layers
         from .components import resolve_sources
         from .text_components import render_text_box
@@ -51,7 +67,7 @@ def render_preview_overlay(title, body, width, height, settings, image_cache=Non
                 images[layer["id"]], size = _render_component(layer, width, height, settings)
                 if size:
                     sizes[layer["id"]] = size
-            except TextDoesNotFit as layer_error:
+            except (TextDoesNotFit, CaptionPreviewError) as layer_error:
                 warnings.append(str(layer_error))
                 image = QtGui.QImage(width, height, QtGui.QImage.Format.Format_ARGB32_Premultiplied)
                 image.fill(QtCore.Qt.GlobalColor.transparent)
@@ -67,8 +83,11 @@ def render_preview_overlay(title, body, width, height, settings, image_cache=Non
                     font.setPixelSize(max(10,round(26*width/1080)))
                     painter.setFont(font)
                     painter.setPen(QtGui.QColor("#ffffff"))
+                    message = (layer['name']+'：时间戳不可用\n'+str(layer_error)
+                               if isinstance(layer_error, CaptionPreviewError) else
+                               layer['name']+'放不下\n'+str(layer_error))
                     painter.drawText(box.adjusted(8,4,-8,-4),QtCore.Qt.AlignmentFlag.AlignCenter |
-                        QtCore.Qt.TextFlag.TextWordWrap,layer["name"]+"放不下\n请扩大文本框或减小字号")
+                        QtCore.Qt.TextFlag.TextWordWrap,message)
                 finally:
                     painter.end()
                 images[layer["id"]] = image

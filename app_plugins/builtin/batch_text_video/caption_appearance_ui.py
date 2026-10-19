@@ -18,13 +18,18 @@ class CaptionAppearanceEditor(QtWidgets.QWidget):
         if background:
             form=self.section('caption_background','字幕底框细节')
             self.check(form,'box_adaptive_width','随本组文字宽度')
+            self.check(form,'box_follow_motion','底框跟随文字动画')
             self.number(form,'box_padding_x','左右内边距 px',0,150)
             self.number(form,'box_padding_y','上下内边距 px',0,150)
             self.number(form,'box_blur','底框模糊 px',0,150)
             self.check(form,'bg_gradient_enabled','使用渐变底色')
             self.color(form,'bg_gradient_colors','渐变颜色')
             self.combo(form,'bg_gradient_type','渐变方向',[('横向','linear_h'),('纵向','linear_v')])
+            self.check(form,'bg_gradient_highlight','底框顶部柔光')
         else:
+            form=self.section('caption_text_gradient','正文渐变','text_gradient_enabled')
+            self.color(form,'color_text','正文渐变颜色')
+            self.combo(form,'text_gradient_direction','渐变方向',[('横向','horizontal'),('纵向','vertical')])
             form=self.section('word_highlight','当前词文字变色','karaoke_highlight')
             self.color(form,'color_high','读到的词颜色')
             self.combo(form,'high_gradient_direction','渐变方向',[('横向','horizontal'),('纵向','vertical')])
@@ -43,6 +48,8 @@ class CaptionAppearanceEditor(QtWidgets.QWidget):
             self.number(form,'caption_color_seed','配色种子',0,2147483647,decimals=0)
             note=QtWidgets.QLabel('同一色板、种子和文案会得到相同结果；预览、导出与重试一致。')
             note.setWordWrap(True); form.addRow(note)
+            section=self.sections.sections['word_highlight_box']
+            self.sections.body.removeWidget(section); self.sections.body.addWidget(section)
         self.error=QtWidgets.QLabel(); self.error.setWordWrap(True); self.error.setStyleSheet('color:#c33442;')
         root.addWidget(self.error); self.error.hide()
 
@@ -53,7 +60,15 @@ class CaptionAppearanceEditor(QtWidgets.QWidget):
         section=self.sections.add_section(key,title,widget)
         if enable:
             control=QtWidgets.QCheckBox('启用'+title); self.controls[enable]=control
-            control.toggled.connect(self.edit); section.set_enable_control(control)
+            control.toggled.connect(self.edit); section.set_enable_control(control,disable_content=False)
+        if key != 'word_highlight_box':
+            # A few fields belong in the continuous font form, not another bar.
+            section.header.hide(); section.set_expanded(True)
+            section.layout().setSpacing(0)
+            form.setContentsMargins(0,0,0,0)
+            if enable:
+                section.header_layout.removeWidget(control)
+                control.setText(title); form.insertRow(0,control)
         return form
 
     def check(self,form,key,title):
@@ -86,7 +101,7 @@ class CaptionAppearanceEditor(QtWidgets.QWidget):
                 elif isinstance(control,QtWidgets.QComboBox): control.setCurrentIndex(control.findData(value))
                 elif isinstance(control,QtWidgets.QCheckBox): control.setChecked(value)
                 else: control.setValue(value)
-            self.setEnabled(not self.background or layer['background_enabled'])
+            self.setEnabled(True)
             for section in self.sections.sections.values(): section.sync_enabled()
             self.error.hide()
         finally: self.loading=False

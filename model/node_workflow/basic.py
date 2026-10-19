@@ -98,6 +98,32 @@ def number_text(inputs, _params, _context):
     return {"text": str(int(value)) if type(value) is float and value.is_integer() else str(value)}
 
 
+def number_format(inputs, params, _context):
+    value = finite_number(inputs['number'])
+    mode, digits = params['format'], params['digits']
+    if mode == 'zero_pad':
+        if value != int(value):
+            raise ValueError('补零格式需要整数，不会截掉小数部分。')
+        result = f'{int(value):0{digits}d}'
+    elif mode == 'fixed':
+        result = f'{value:.{digits}f}'
+    elif mode == 'percent':
+        result = f'{value * 100:.{digits}f}%'
+    elif mode in {'mmss', 'hhmmss'}:
+        if value < 0:
+            raise ValueError('时长格式需要非负秒数。')
+        total = round(value)
+        minutes, seconds = divmod(total, 60)
+        if mode == 'mmss':
+            result = f'{minutes}:{seconds:02d}'
+        else:
+            hours, minutes = divmod(minutes, 60)
+            result = f'{hours}:{minutes:02d}:{seconds:02d}'
+    else:
+        raise ValueError('未知数值格式。')
+    return {'text': result}
+
+
 def settle(inputs, _params, context):
     from .video_stream import compose
     video = compose(inputs['video'], inputs.get('operations'), context)
@@ -107,6 +133,8 @@ def settle(inputs, _params, context):
 def export(inputs, params, context):
     plan = inputs["plan"]
     if params["destination"] == "task":
+        if inputs.get('output') is not None:
+            raise ValueError('已连接输出路径时，请把导出位置改成“指定路径”。')
         from .graph import _task_render
         if getattr(context, "task", None) is None:
             raise ValueError("导出到任务目录需要先载入任务；独立文件流程请选择“指定路径”。")
@@ -114,7 +142,7 @@ def export(inputs, params, context):
         result = _task_render({"video": plan.video, "operations": plan.operations}, params, context)
         result['result'] = replace(result['result'], encoding=plan.encoding)
         return result
-    output = str(params.get("output") or "").strip()
+    output = str(inputs.get('output') if inputs.get('output') is not None else params.get('output') or '').strip()
     if not output:
         raise ValueError("请填写导出文件路径。")
     path = Path(output).expanduser().resolve()
@@ -133,7 +161,7 @@ def export(inputs, params, context):
 def register_basic(registry):
     from .selection import select_boolean
     categories = {
-        **{kind: "数据与转换" for kind in ("number", "boolean", "text_number", "number_text")},
+        **{kind: "数据与转换" for kind in ("number", "boolean", "text_number", "number_text", "number_format")},
         **{kind: "逻辑与判断" for kind in ("compare", "boolean_math", "not")},
         **{kind: "字符串" for kind in ("text_join", "text_replace")},
         "arithmetic": "数学", "switch": "流程控制/条件分支",
@@ -173,6 +201,15 @@ def register_basic(registry):
         description="严格转换完整数值；不会丢掉夹杂在任务编号中的字母，不会把错误值当成零。")
     add("number_text", "数值转文本", inputs=number, outputs=(NodePort("text", "文本", "text"),),
         build=number_text)
+    add('number_format', '数值格式化', inputs=number, outputs=(NodePort('text', '格式化文字', 'text'),),
+        parameters=(NodeParameter('format', '显示格式', 'choice', 'zero_pad', choices=(
+            ('zero_pad', '整数补零 · 01'), ('fixed', '固定小数位 · 1.2'),
+            ('percent', '比例转百分比 · 87.3%'), ('mmss', '时长 · 分:秒'),
+            ('hhmmss', '时长 · 时:分:秒'))),
+            NodeParameter('digits', '补零宽度／小数位数', 'integer', 2, 0, 8)),
+        build=number_format,
+        description='补零要求整数；百分比输入是 0～1 的比例，例如 0.873 → 87.3%（小数位设为 1）。'
+                    '时长按秒四舍五入；格式化仅改变显示文本，不改变数值。')
     add("text_join", "文本拼接", inputs=(NodePort("texts", "文本（按接线顺序）", "text", multiple=True),),
         outputs=(NodePort("text", "文本", "text"),), parameters=(NodeParameter("separator", "间隔符", default="\n", required=False),),
         build=lambda i, p, _c: {"text": str(p["separator"]).join(i["texts"])})
@@ -208,9 +245,10 @@ def register_basic(registry):
         NodePort("operations", "处理操作（可接多个）", "operations", required=False, multiple=True)),
         outputs=(NodePort("plan", "视频计划", "render_plan"), NodePort('video', '视频流', 'video')), build=settle,
         description="视频只接这里；可直接连接多个操作节点，按接线顺序应用（右键连线可调整）。检查字幕与视频的时长／任务归属，不编码、不创建中间视频。接预览查看画面，接导出生成成品。")
-    add("export", "导出成品", inputs=(NodePort("plan", "视频计划", "render_plan"),),
+    add("export", "导出成品", inputs=(NodePort("plan", "视频计划", "render_plan"),
+        NodePort('output', '输出路径 · 可覆盖参数', 'text', required=False)),
         terminal_result=NodePort("result", "内部导出计划", "render_plan"), parameters=(
             NodeParameter("destination", "导出位置", "choice", "task", choices=(("task", "当前任务目录 · 自动命名"), ("file", "指定路径"))),
             NodeParameter("output", "指定路径（仅指定路径模式）", "output_file", required=False),
             NodeParameter("suffix", "任务模式成品名称后缀", default="字幕成品")), build=export,
-        description="工作流终点，无可连线输出端；最终编码一次。任务模式自动命名并避免覆盖，独立流程可指定路径。成品发布成功后，由执行器向Python调用方返回文件路径、字幕路径、报告和时长，不把渲染计划当成已生成文件。")
+        description="工作流终点，无可连线输出端；最终编码一次。任务模式自动命名并避免覆盖，独立流程可连接“输出路径模板”或在参数中指定路径。成品发布成功后，由执行器向Python调用方返回文件路径、字幕路径、报告和时长，不把渲染计划当成已生成文件。")

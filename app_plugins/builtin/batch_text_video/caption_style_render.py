@@ -16,6 +16,7 @@ from .caption_random import size_between, contrast_unit, size_contrast
 from .shadow_render import shadow_extent, paint_blurred
 from .word_spacing import glyph_rows, glyph_row_width, glyph_row_inset, natural_space
 from .caption_appearance import group_colors, active_segments, add_highlight_box, add_foreground
+from .caption_display import display_settings, layout_glyphs, reveal_events, reveal_start
 
 REVEAL = {'word_pop_random', 'word_pop_random_pulse', 'word_random_position',
           'scatter_pop', 'typewriter', 'char_bounce', 'letter_jump', 'metronome', 'lzx_word_pop'}
@@ -33,6 +34,9 @@ def groups_and_events(words, layer, width, height, duration):
     from .layout import TextDoesNotFit
     words = validate_words(words,duration)
     style = effects(layer)
+    display = display_settings(layer)
+    from .caption_follow import enabled as follow_enabled
+    following = follow_enabled(layer)
     scale = width/1080
     box = QtCore.QRectF(width*(layer['x']-layer['width']/2)/100,
         height*(layer['y']-layer['height']/2)/100,width*layer['width']/100,height*layer['height']/100)
@@ -46,7 +50,7 @@ def groups_and_events(words, layer, width, height, duration):
         ensure_ascii=False,sort_keys=True).encode()).digest())
     mode = style['anim_in_type']
     trusted = all('cue' in word for word in words)
-    if style['fullpage_typewriter']:
+    if following or display['caption_accumulate']:
         grouped = [words]
     elif trusted:
         grouped = [list(values) for _,values in groupby(words,key=lambda word:word['cue'])]
@@ -58,10 +62,12 @@ def groups_and_events(words, layer, width, height, duration):
     else:
         count = layer['caption_words']
         grouped = [words[index:index+count] for index in range(0,len(words),count)]
-    peak = {'pop':1.15, 'scatter_pop':1.15, 'letter_jump':style['letter_jump_scale'],
-        'word_pop_random_pulse':style['word_pop_random_pulse_max_scale'],
+    pop_peak=max(1,style['pop_start'],style['pop_peak'])
+    peak = {'pop':pop_peak, 'scatter_pop':pop_peak, 'word_pop_random':pop_peak,
+        'word_random_position':pop_peak, 'letter_jump':max(1,style['pop_start'],style['letter_jump_scale']),
+        'word_pop_random_pulse':max(1,style['pop_start'],style['word_pop_random_pulse_max_scale']),
         'lzx_word_pop':style['lzx_pop_scale']}.get(mode,1)
-    if style['dyn_box_anim']:
+    if style['dyn_box_anim'] and style['dynamic_box']:
         peak = max(peak,style['dyn_box_anim_overshoot'])
     # The Fusion-style pop scales an active word around its own centre. Do
     # not reserve 128% width for EVERY settled word: long words would create
@@ -83,37 +89,22 @@ def groups_and_events(words, layer, width, height, duration):
                 (style['scatter_min_scale'],style['scatter_max_scale']))
             random_sizes = [layer['font_max']*size_between(rng,lo,hi,contrast) for word in group]
         per_line = layer['caption_per_line']
-        if style['fullpage_typewriter']:
-            per_line = max(1,layer['caption_per_line'])
         def measure(fraction):
-            glyphs = []
-            for wi,word in enumerate(group):
-                actual = {**layer}
-                if style['fullpage_typewriter'] and wi < per_line and style['fullpage_typewriter_first_line_bold']:
-                    actual['font_weight'] = 900
-                size = (layer['font_min']+fraction*(random_sizes[wi]-layer['font_min']))*scale
-                if style['fullpage_typewriter'] and wi < per_line:
-                    size *= style['fullpage_typewriter_first_line_scale']
-                glyph = _glyph(word['text'],actual,size,native=True)
-                # Source installation does not hot-reload an already imported
-                # timing module; its earlier glyphs have no space metric yet.
-                if mode == 'lzx_word_pop' and '_space_advance' not in glyph:
-                    glyph['_space_advance'] = natural_space(actual,size)
-                glyphs.append(glyph)
-            gap = (max(0,max(glyph['_space_advance'] for glyph in glyphs)+layer['word_spacing']*scale)
-                   if mode == 'lzx_word_pop' else max(0,8+layer['word_spacing'])*scale)
-            lines = glyph_rows(glyphs,per_line,box.width(),gap,layout_peak,peak)
+            glyphs, lines, gap = layout_glyphs(group, layer, random_sizes, scale, fraction,
+                available_width=box.width(), per_line=per_line, peak=layout_peak, edge_peak=peak, native=True,
+                gap_for=lambda glyphs: (max(0,max(glyph['_space_advance'] for glyph in glyphs)+layer['word_spacing']*scale)
+                    if mode == 'lzx_word_pop' else max(0,8+layer['word_spacing'])*scale))
             widths = [glyph_row_width(glyphs,line,gap,layout_peak,peak) for line in lines]
             metrics = [glyph_line_metrics([glyphs[i] for i in line]) for line in lines]
             heights = [line_height*peak*layer['line_spacing'] for line_height,_baseline in metrics]
             return glyphs,lines,widths,heights,gap,metrics
-        room = box.height()/int(style['scrolling_visible_lines']) if style['scrolling_mode'] else box.height()
-        fits = lambda value: max(value[2]) <= box.width() and sum(value[3]) <= room
+        room = box.height()/int(style['scrolling_visible_lines']) if style['scrolling_mode'] and not following else box.height()
+        fits = lambda value: max(value[2]) <= box.width() and (max(value[3]) if following else sum(value[3])) <= room
         chosen = measure(1)
         if not fits(chosen):
             chosen = measure(0)
             if not fits(chosen):
-                raise TextDoesNotFit(layer['name']+'：最小字号仍放不下'+('完整文案' if style['fullpage_typewriter'] else '本组字幕')+
+                raise TextDoesNotFit(layer['name']+'：最小字号仍放不下'+('完整文案' if display['caption_accumulate'] else '本组字幕')+
                     '；请扩大字幕框、降低最小字号或减少每组词数。未裁掉文字。')
             low,high = 0.,1.
             for _ in range(10):
@@ -122,7 +113,7 @@ def groups_and_events(words, layer, width, height, duration):
                 if fits(value): low,chosen = middle,value
                 else: high = middle
         glyphs,lines,widths,heights,gap,metrics = chosen
-        y = box.top()+(box.height()-sum(heights))*{'top':0,'center':.5,'bottom':1}[layer['vertical']]
+        y = box.top() if following else box.top()+(box.height()-sum(heights))*{'top':0,'center':.5,'bottom':1}[layer['vertical']]
         group_events = []
         occupied = []
         for li,line in enumerate(lines):
@@ -133,10 +124,10 @@ def groups_and_events(words, layer, width, height, duration):
             for wi in line:
                 word,glyph = group[wi],glyphs[wi]
                 px,py = x+glyph['width']*(layout_peak-1)/2,baseline-glyph['_baseline']
-                if style['only_show_active_word']:
+                if style['only_show_active_word'] and not following:
                     px = box.center().x()-glyph['width']/2
                     py = box.center().y()-glyph['height']/2
-                if mode in {'scatter_pop','word_random_position'}:
+                if mode in {'scatter_pop','word_random_position'} and not following:
                     # Reserved diagonal bounds keep rotated bubbles inside the component.
                     radius = math.hypot(glyph['width'],glyph['height'])*peak/2
                     if radius*2 > min(box.width(),box.height()):
@@ -153,14 +144,18 @@ def groups_and_events(words, layer, width, height, duration):
                 event = {**word,**glyph,'spoken_end':word['end'],'end':end,'x':px,'y':py,
                     'group':gi,'line':li,'index':wi,'group_start':start,'group_end':end,
                     'rotation':rotations[wi], 'context':False}
+                if following:
+                    event.update(end=duration, group_start=0., group_end=duration,
+                                 _follow_line_center=y+heights[li]/2)
                 group_events.append(event); output.append(event)
                 x += glyph['width']*layout_peak+gap
             y += heights[li]
         bounds = QtCore.QRectF()
         for item in group_events:
             bounds = bounds.united(QtCore.QRectF(item['x'],item['y'],item['width'],item['height']))
-        groups.append({'events':group_events,'bounds':bounds,'start':start,'end':end})
-    if style['scrolling_mode']:
+        groups.append({'events':group_events,'bounds':box if following else bounds,
+                       'start':0. if following else start,'end':duration if following else end})
+    if style['scrolling_mode'] and not following:
         context = []
         visible = int(style['scrolling_visible_lines'])
         half = (visible-1)//2
@@ -181,8 +176,15 @@ def groups_and_events(words, layer, width, height, duration):
 def make_primitives(words, layer, width, height, duration):
     events,groups,style = groups_and_events(words,layer,width,height,duration)
     scale = width/1080
+    from .caption_follow import enabled as follow_enabled, track_for
+    following = follow_enabled(layer)
+    viewport = QtCore.QRectF(width*(layer['x']-layer['width']/2)/100,
+        height*(layer['y']-layer['height']/2)/100,width*layer['width']/100,height*layer['height']/100).intersected(
+            QtCore.QRectF(0,0,width,height))
+    track = track_for(events,layer,viewport,duration) if following else None
+    clip = (viewport.left(),viewport.top(),viewport.right(),viewport.bottom())
     primitives = []
-    group_palette=group_colors(layer,len(groups),words)
+    group_palette=group_colors(layer,math.ceil(len(events)/layer['caption_words']) if following else len(groups),words)
     def add(path,x,y,start,end,color,opacity=1,**options):
         if end-start < .005 or opacity <= 0: return
         bounds = path.boundingRect()
@@ -193,10 +195,12 @@ def make_primitives(words, layer, width, height, duration):
     def background(path,x,y,start,end,color,opacity,blur=0,**options):
         add(path,x,y,start,end,color,opacity,**{'z':-5,'blur':blur,**options})
     begin,end = min(event['start'] for event in events),max(event['end'] for event in events)
-    if style['global_mask_enabled'] or style['ambient_lighting_enabled']:
+    if style['global_mask_enabled']:
         background(rectangle(width,height),0,0,begin,end,
-            style['global_mask_color'] if style['global_mask_enabled'] else style['ambient_dark_color'],
-            style['global_mask_opacity'] if style['global_mask_enabled'] else style['ambient_dark_opacity'],z=-20)
+            style['global_mask_color'],style['global_mask_opacity'],z=-20)
+    if style['ambient_lighting_enabled']:
+        background(rectangle(width,height),0,0,begin,end,
+            style['ambient_dark_color'],style['ambient_dark_opacity'],z=-19)
     if style['ambient_glow_enabled']:
         radius = min(max(width,height),style['ambient_glow_radius']*scale)
         for band in range(48,0,-1):
@@ -217,6 +221,7 @@ def make_primitives(words, layer, width, height, duration):
                 style['word_pop_random_pulse_min_scale'])*contrast_unit(
                     (event['index']*.61803398875+layer['caption_seed']*.13)%1, size_contrast(layer)),
             'jump':style['letter_jump_scale'], 'lzx_peak':style['lzx_pop_scale'], 'floating_amplitude':style['floating_amplitude']*scale,
+            'pop_start':style['pop_start'], 'pop_peak':style['pop_peak'],
             'floating_period':style['floating_period'],'bounce':style['char_bounce_height']*scale,
             'max_blur':style['blur_sharp_max']*scale,'rotation':event['rotation']}
     if style['use_box'] and mode not in {'scatter_pop','word_random_position'}:
@@ -231,35 +236,26 @@ def make_primitives(words, layer, width, height, duration):
             background(rectangle(bounds.width(),bounds.height(),style['box_radius']*scale),
                 bounds.x(),bounds.y(),group['start'],group['end'],color,style['opacity_bg']/255,
                 blur=style['box_blur']*scale,gradient_direction=style['bg_gradient_type'],
-                **animation(group['events'][0],entry=mode not in REVEAL))
+                **(animation(group['events'][0],entry=mode not in REVEAL) if style['box_follow_motion'] else {}))
             if style['bg_gradient_highlight']:
                 background(rectangle(bounds.width(),bounds.height()/3,style['box_radius']*scale),
                     bounds.x(),bounds.y(),group['start'],group['end'],'#ffffff',.08)
-    draw_events = []
-    for event in events:
-        if (style['fullpage_typewriter'] or mode=='typewriter' and style['typewriter_reveal_type']=='char') and not event['context']:
-            edges = event['_cluster_edges']
-            count = len(edges)-1
-            for ci,(left,right) in enumerate(zip(edges,edges[1:])):
-                when = event['start']+(event['spoken_end']-event['start'])*ci/count
-                until = event['start']+(event['spoken_end']-event['start'])*(ci+1)/count
-                part = event['_native_path'].intersected(rectangle(right-left+.5,event['height']+2).translated(left,0))
-                draw_events.append({**event,'start':when,'_native_path':part,
-                    '_character_piece':True,'_cursor_edge':right,'_cursor_until':until})
-        else:
-            draw_events.append(event)
+    draw_events = reveal_events(events, layer)
     for event in draw_events:
         context = event['context']
-        start = event['start'] if mode in REVEAL or style['ambient_glow_enabled'] or style['fullpage_typewriter'] else event['group_start']
+        start = reveal_start(event, layer, events)
         stop = event['end']
         if context:
             start,stop = event['group_start'],event['group_end']
         if style['only_show_active_word'] and not context:
+            start=max(start,event['start'])
             stop = min(stop,event['spoken_end'])
-        if mode == 'bullet_reveal' and not context:
-            start = max(event['group_start'], min(item['start'] for item in groups[event['group']]['events'] if item['line']==event['line']))
         # BPM can affect visual pulse, never shift authoritative spoken timestamps.
         options = animation(event)
+        if following:
+            options.update(follow_track=track, screen_clip=clip,
+                           follow_spoken=(event['start'], event['spoken_end']),
+                           context_opacity=layer.get('caption_context_opacity',40)/100)
         if mode == 'metronome':
             options.update(motion='word_pop_random_pulse',motion_ms=min(60/style['metronome_bpm']*1000,250))
         if context: options.update(motion='none',out='none')
@@ -269,7 +265,8 @@ def make_primitives(words, layer, width, height, duration):
         if style['use_box'] and mode in {'scatter_pop','word_random_position'} and not context:
             px,py = style['box_padding_x']*scale,style['box_padding_y']*scale
             background(rectangle(event['width']+2*px,event['height']+2*py,style['box_radius']*scale),
-                x-px,y-py,start,stop,layer['background_color'],style['opacity_bg']/255,**options)
+                x-px,y-py,start,stop,layer['background_color'],style['opacity_bg']/255,
+                **(options if style['box_follow_motion'] else {}))
         if layer['shadow_enabled']:
             add(path,x+layer['shadow_x']*scale,y+layer['shadow_y']*scale,start,stop,
                 layer['shadow_color'],layer['shadow_opacity']/100*base_opacity,
@@ -292,19 +289,29 @@ def make_primitives(words, layer, width, height, duration):
         if style['dyn_box_anim']:
             bg_options.update(motion='word_pop_random_pulse',pulse=style['dyn_box_anim_overshoot'],
                 motion_ms=style['dyn_box_anim_duration']*1000)
-        add_highlight_box(background,event,style,scale,bg_options)
-        segments=active_segments(start,stop,event,group_palette[event['group']],style,context=context)
-        if not style['karaoke_highlight'] and not layer.get('caption_group_colors') and len(colors(style['color_text'])) > 1:
-            segments = [(start,stop,style['color_text'])]
+        if not event.get('_character_piece') or event.get('_character_index') == 0:
+            add_highlight_box(background,event,style,scale,bg_options)
+        base_color=(style['color_text'] if style['text_gradient_enabled'] and not layer.get('caption_group_colors')
+                    else group_palette[event['index']//layer['caption_words'] if following else event['group']])
+        segments=active_segments(start,stop,event,base_color,style,context=context)
+        if following:
+            # Constant-alpha ASS rows and Qt preview use exactly the same
+            # spoken boundaries, including when colour highlighting is off.
+            split = []
+            for a,b,color in segments:
+                points=sorted({a,b}|{t for t in (event['start'],event['spoken_end']) if a<t<b})
+                split.extend((c,d,color) for c,d in zip(points,points[1:]))
+            segments=split
         for a,b,color in segments:
             phase = {**options,'motion':options['motion'] if abs(a-start)<.005 else 'none',
                      'out':options['out'] if abs(b-stop)<.005 else 'none'}
             add_foreground(add,path,x,y,a,b,color,base_opacity,layer,scale,
                 {**phase,'gradient_direction':style['high_gradient_direction']
                  if color==style['color_high'] else style['text_gradient_direction']})
-        if event.get('_character_piece') and style['fullpage_typewriter_cursor']:
+        display = display_settings(layer)
+        if event.get('_character_piece') and display['caption_cursor']:
             add(rectangle(max(1,2*scale),event['height']),x+event['_cursor_edge'],y,
-                event['start'],min(stop,event['_cursor_until']),style['fullpage_typewriter_cursor_color'])
+                event['start'],min(stop,event['_cursor_until']),display['caption_cursor_color'])
         if style['use_underline'] and not context:
             add(rectangle(event['width'],max(1,3*scale)),x,y+event['height']+2*scale,
                 start,stop,style['color_underline'],**options)
@@ -395,6 +402,13 @@ def motion_at(primitive, time):
         elif primitive['out'].startswith('slide_'):
             dx += 80*progress if primitive['out']=='slide_right' else -80*progress if primitive['out']=='slide_left' else 0
             dy += 80*progress if primitive['out']=='slide_down' else -80*progress if primitive['out']=='slide_up' else 0
+    if primitive.get('follow_track'):
+        from .caption_follow import offset_at
+        fx,fy=offset_at(primitive['follow_track'],time)
+        dx+=fx;dy+=fy
+        spoken=primitive.get('follow_spoken')
+        if spoken and not spoken[0] <= time < spoken[1]:
+            alpha*=primitive.get('context_opacity',1)
     return size,dx,dy,alpha,blur
 
 
@@ -445,14 +459,23 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                 points.add(primitive['end']-leave)
             times = sorted(point for point in points if primitive['start']<=point<=primitive['end'])
         positional = motion=='floating' or motion=='char_bounce' or motion.startswith('slide_') or primitive['out'].startswith('slide_')
+        if primitive.get('follow_track'):
+            positional=True
+            times=sorted(set(times)|{t for t,_x,_y in primitive['follow_track']
+                                      if primitive['start']<t<primitive['end']})
+            times=sorted(set(times)|{t for t in primitive.get('follow_spoken',())
+                                      if primitive['start']<t<primitive['end']})
         if not positional:
             times=[primitive['start'],primitive['end']]
         commands=_path_commands(primitive['native'])
         pieces=ass_gradient_pieces(primitive)
         for start,end in zip(times,times[1:]):
             if round(start*100) >= round(end*100): continue
+            if primitive.get('follow_track'):
+                from .caption_follow import visible_segment
+                if not visible_segment(primitive,start,end): continue
             sa,xa,ya,aa,ba = motion_at(primitive,start)
-            _sb,xb,yb,_ab,_bb = motion_at(primitive,end)
+            _sb,xb,yb,_ab,_bb = motion_at(primitive,max(start,end-1e-7) if primitive.get('follow_track') else end)
             ms = max(1,round((end-start)*1000))
             opacity = primitive['opacity']*layer['opacity']/100
             alpha = lambda value:f'&H{round(255*(1-opacity*value)):02X}&'
@@ -465,11 +488,17 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             checkpoints=sorted({start,end}|{time for time in keyframes if start<time<end})
             for color,clip in pieces:
                 def clip_at(time):
-                    if clip is None:return ''
+                    fixed=primitive.get('screen_clip')
+                    if clip is None:
+                        return '\\clip('+','.join(str(round(v)) for v in fixed)+')' if fixed else ''
                     factor,dx,dy,_alpha,_blur=motion_at(primitive,time)
                     cx,cy=primitive['width']/2,primitive['height']/2
                     values=(x+dx+cx+(clip[0]-cx)*factor,y+dy+cy+(clip[1]-cy)*factor,
                             x+dx+cx+(clip[2]-cx)*factor,y+dy+cy+(clip[3]-cy)*factor)
+                    if fixed:
+                        values=(max(values[0],fixed[0]),max(values[1],fixed[1]),
+                                min(values[2],fixed[2]),min(values[3],fixed[3]))
+                        values=(values[0],values[1],max(values[0],values[2]),max(values[1],values[3]))
                     rounded=[round(v) for v in values]
                     return '\\clip('+','.join(map(str,rounded))+')'
                 color_alpha = QtGui.QColor(color).alphaF()
@@ -477,6 +506,9 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                 previous=start
                 for checkpoint in checkpoints[1:]:
                     size,_dx,_dy,fade,blur=motion_at(primitive,checkpoint)
+                    if primitive.get('follow_spoken') and checkpoint==end:
+                        # Do not interpolate the next word's opacity backwards.
+                        fade=motion_at(primitive,max(start,end-1e-7))[3]
                     old_size,old_dx,old_dy,old_fade,old_blur=motion_at(primitive,previous)
                     if (size,_dx,_dy,fade,blur)==(old_size,old_dx,old_dy,old_fade,old_blur):
                         previous=checkpoint
@@ -494,28 +526,42 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     return events
 
 
-def render_design(layer, width, height):
+def render_design(layer, width, height, *, words=None, duration=None, time=None):
     """Same geometry/effects as export, sampled at an active-word moment."""
     from .captions import validate_words
     text = str(layer.get('text','')).split()
-    words = validate_words([{'text':word,'start':.2+i*.35,'end':.55+i*.35} for i,word in enumerate(text)],
-                           .6+len(text)*.35)
-    from .caption_styles import is_catalog
-    if is_catalog(layer):
-        primitives,_events = make_primitives(words,layer,width,height,.6+len(text)*.35)
+    if words is None:
+        duration = duration or .6+len(text)*.35
+        # Layout-only illustration, not an audio alignment. A fixed 1 ms floor
+        # made long transcripts overflow short preview durations and produced
+        # zero-length words. Keep every illustrative word inside the clock.
+        span = duration * .98
+        words = validate_words([{'text':word,'start':span*i/max(1,len(text)),
+            'end':span*(i+1)/max(1,len(text))} for i,word in enumerate(text)],duration)
+    else:
+        words=validate_words(words,duration)
+    from .caption_styles import uses_style_renderer
+    if uses_style_renderer(layer):
+        primitives,_events = make_primitives(words,layer,width,height,duration)
     else:
         from .caption_basic_render import make_primitives as make_basic
-        primitives,_events = make_basic(words,layer,width,height,.6+len(text)*.35)
+        primitives,_events = make_basic(words,layer,width,height,duration)
     image = QtGui.QImage(width,height,QtGui.QImage.Format.Format_ARGB32_Premultiplied)
     image.fill(QtCore.Qt.GlobalColor.transparent)
     painter = QtGui.QPainter(image)
     painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
-    time = .2+max(0,len(text)//2)*.35+.15
+    time = duration*.5 if time is None else min(max(0.,time),max(0.,duration-1e-7))
     try:
         for primitive in sorted(primitives,key=lambda item:item['z']):
             if not primitive['start']<=time<primitive['end']: continue
+            if primitive.get('follow_track'):
+                from .caption_follow import visible_segment
+                if not visible_segment(primitive,time,time): continue
             size,dx,dy,alpha,blur = motion_at(primitive,time)
             painter.save()
+            if primitive.get('screen_clip'):
+                a,b,c,d=primitive['screen_clip']
+                painter.setClipRect(QtCore.QRectF(a,b,c-a,d-b))
             painter.setOpacity(alpha*primitive['opacity'])  # Layer opacity applied by compose_layers.
             painter.translate(primitive['x']+dx,primitive['y']+dy)
             ox,oy=primitive.get('origin_x',primitive['width']/2),primitive.get('origin_y',primitive['height']/2)

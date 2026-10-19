@@ -6,6 +6,7 @@ from pathlib import Path, PureWindowsPath, PurePosixPath
 import posixpath
 import re
 import unicodedata
+from datetime import date
 
 from .contracts import DirectoryRef, ResourceRef, VideoTimeline, NodeDefinition, NodeParameter, NodePort
 from .text_nodes import literal_test, text_value, TEST_CHOICES
@@ -125,6 +126,46 @@ def build_exists(inputs, _params, context):
     return {"exists": exists, "is_file": exists and path.is_file(), "is_directory": exists and path.is_dir()}
 
 
+_OUTPUT_FIELD = re.compile(r'\{(stem|name|ext|parent|date|iteration|index(?::0[1-6]d)?)\}')
+
+
+def build_output_path(inputs, params, context):
+    """Resolve a bounded filename template; no Python attribute access or writes."""
+    source = build_path_text({'value': inputs['source']}, {}, context)['path']
+    directory = inputs.get('directory')
+    directory = path_value(directory) if directory is not None else ''
+    cls = path_class([source, directory], params['style'])
+    path = cls(source)
+    globals_value = getattr(context, 'workflow_globals', None)
+    values = globals_value.values() if globals_value is not None else {}
+    index = values.get('iteration', 1)
+    if type(index) is not int or index < 1:
+        raise ValueError('当前循环序号无效。')
+    fields = {'stem': path.stem, 'name': path.name, 'ext': path.suffix,
+              'parent': path.parent.name, 'date': values.get('run_date') or date.today().isoformat(),
+              'iteration': str(index)}
+    template = str(params['template'])
+    if not 1 <= len(template) <= 180:
+        raise ValueError('输出文件名模板长度须为 1～180 字符。')
+    if '{' in _OUTPUT_FIELD.sub('', template) or '}' in _OUTPUT_FIELD.sub('', template):
+        raise ValueError('输出文件名模板包含未知变量。')
+
+    def replace(match):
+        field = match.group(1)
+        if field.startswith('index:'):
+            return f'{index:0{int(field[7])}d}'
+        if field == 'index':
+            return str(index)
+        return fields[field]
+
+    filename = _OUTPUT_FIELD.sub(replace, template)
+    if (not re.fullmatch(r'[^\\/:*?"<>|\x00-\x1f]{1,180}', filename) or
+            filename.endswith((' ', '.')) or filename in {'.', '..'}):
+        raise ValueError('输出文件名模板包含未知变量或无效文件名；仅能生成单个文件名。')
+    base = cls(directory) if directory else path.parent
+    return {'path': str(base / filename)}
+
+
 def register_path_nodes(registry):
     path_in = (NodePort("path", "路径文本", "text"),)
     path_out = (NodePort("path", "路径文本", "text"),)
@@ -172,3 +213,12 @@ def register_path_nodes(registry):
     add("path_directory", "路径文本转目录", outputs=(NodePort("directory", "目录", "directory"),), parameters=(),
         build=lambda i, _p, _c: {"directory": DirectoryRef(str(Path(path_value(i["path"])).expanduser().resolve())).verify()},
         execution="compute", description="把路径文字变成目录引用，可接 listdir。目录不存在则报错，不偷偷创建目录。")
+    add('output_path', '输出路径模板',
+        inputs=(NodePort('source', '源文件路径／媒体', 'any', type_group='source'),
+                NodePort('directory', '输出目录 · 可留空', 'text', required=False)),
+        outputs=path_out,
+        parameters=(NodeParameter('template', '文件名模板', default='{stem}_字幕{ext}'), STYLE),
+        build=build_output_path,
+        description='例如 {stem}_字幕{ext}；可用 {name}、{parent}（父目录名）、{date}、'
+                    '{iteration}、{index:02d}。只生成路径文字，不创建目录或文件；'
+                    '未知变量、路径分隔符和非法文件名直接报错。')

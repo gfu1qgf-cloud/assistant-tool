@@ -48,17 +48,26 @@ class OralCountTests(unittest.TestCase):
             self.assertIsNone(_valid_video_duration(value))
         self.assertEqual(_valid_video_duration("60001"), 60001)
 
-    def test_threshold_space_aliases_and_only_fl_short_promoted(self):
+    def test_threshold_space_aliases_and_fl_categories_corrected_both_ways(self):
         groups = {SHORT: [video("a", 59999), video("b", 60000), video("c", 60001)],
                   ("统计", DAY, "02", "FL短口播", "本人"): [video("d", 70000)],
                   ("统计", DAY, "02", "其他类别", "本人"): [video("e", 90000)],
                   LONG: [video("f", 50000)]}
         result, warnings, changes = _adjust_fl_oral_counts(groups, OPTIONS)
-        self.assertEqual(len(result[SHORT]), 2)
-        self.assertEqual(len(result[LONG]), 3)
-        self.assertEqual(len(changes), 2)
+        self.assertEqual(len(result[SHORT]), 3)
+        self.assertEqual(len(result[LONG]), 2)
+        self.assertEqual(len(changes), 3)
         self.assertFalse(warnings)
         self.assertEqual(groups[SHORT][-1]["duration_millis"], 60001)
+
+    def test_fl_long_at_or_below_one_minute_moves_to_short(self):
+        groups = {LONG: [video("a", 59999), video("b", 60000), video("c", 60001)]}
+        result, warnings, changes = _adjust_fl_oral_counts(groups, OPTIONS)
+        self.assertEqual([item["drive_file_id"] for item in result[SHORT]], ["a", "b"])
+        self.assertEqual([item["drive_file_id"] for item in result[LONG]], ["c"])
+        self.assertEqual([(item["from"], item["to"]) for item in changes],
+                         [("FL 长口播", "FL 短口播")] * 2)
+        self.assertFalse(warnings)
 
     def test_metadata_lookup_cached_for_unchanged_version_not_new_revision(self):
         service = MagicMock()
@@ -107,6 +116,15 @@ class OralCountTests(unittest.TestCase):
             self.assertTrue(warnings)
             self.assertFalse(changes)
 
+    def test_missing_short_category_preserves_original_count_and_warns(self):
+        for labels in (["FL 长口播"], ["FL 短口播", "FL短口播"]):
+            result, warnings, changes = _adjust_fl_oral_counts(
+                {LONG: [video(duration=59000)]}, {"统计": labels})
+            self.assertIn(LONG, result)
+            self.assertNotIn(SHORT, result)
+            self.assertTrue(warnings)
+            self.assertFalse(changes)
+
     def test_saved_external_preview_uses_duration_without_network(self):
         item = dict(video(duration=61000), id="entry", batch_date=DAY,
                     batch_slot="02", sheet="统计", category="FL 短口播", included=True)
@@ -115,6 +133,15 @@ class OralCountTests(unittest.TestCase):
         self.assertEqual(preview["counted"], 1)
         self.assertEqual(preview["daily_counts"][0]["category"], "FL 长口播")
         self.assertEqual(item["category"], "FL 短口播")
+
+    def test_saved_external_preview_moves_short_fl_long_to_short_without_network(self):
+        item = dict(video(duration=59999), id="entry", batch_date=DAY,
+                    batch_slot="02", sheet="统计", category="FL 长口播", included=True)
+        with patch("model.GoogleDriveHelper.load_drive_service", side_effect=AssertionError("preview must be offline")):
+            preview = preview_external_day([item], DAY)
+        self.assertEqual(preview["counted"], 1)
+        self.assertEqual(preview["daily_counts"][0]["category"], "FL 短口播")
+        self.assertEqual(item["category"], "FL 长口播")
 
     def test_reopened_list_reuses_duration_cache_for_offline_summary(self):
         item = dict(video(version="v1"), id="entry", batch_date=DAY,
@@ -190,6 +217,11 @@ class OralCountTests(unittest.TestCase):
             self.assertEqual(len(second["automatic_classifications"]), 1)
             third = reconcile_daily_quantity(config, directory, service=service, records=[], state_path=state_path)
             self.assertFalse(third["updated"])
+            current = {LONG: [video(duration=60000)]}
+            fourth = reconcile_daily_quantity(config, directory, service=service, records=[], state_path=state_path)
+            self.assertEqual((grid[4][6], grid[5][6]), (1, 0))
+            self.assertEqual([(item["from"], item["to"]) for item in fourth["automatic_classifications"]],
+                             [("FL 长口播", "FL 短口播")])
             self.assertEqual(grid[4][3:5], [10, "=SUM(F5:H5)"])
             self.assertEqual(grid[5][3:5], [5, "=SUM(F6:H6)"])
 

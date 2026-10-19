@@ -6,7 +6,7 @@ def sample(preset, width=440, height=248):
     from .captions import new_caption
     from .layers import normalize_layers
     from .text_components import render_text_box
-    layer = apply_style(new_caption(), preset)
+    layer = apply_style(new_caption(), preset, reset_layout=True)
     layer.update(text="Božia láska dáva nádej", x=50, y=50, width=94, height=90)
     layer = normalize_layers([layer])[0]
     from .caption_style_render import render_design

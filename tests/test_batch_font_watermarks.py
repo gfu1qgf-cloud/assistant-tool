@@ -194,9 +194,9 @@ class FontAndCornerWatermarkTests(unittest.TestCase):
         self.assertEqual(changed, [True])
         self.assertEqual(panel.current()['kind'], 'watermark')
         self.assertEqual(panel.list.count(), 3)
-        self.assertTrue(panel.editor.sections['watermark'].toggle.isChecked())
-        self.assertTrue(('watermark' in panel.editor.sections))
-        self.assertEqual(set(panel.editor.sections),{'watermark'})
+        self.assertIs(panel.editor.targets['watermark'],panel.watermark_properties)
+        self.assertNotIn('watermark',panel.editor.sections)
+        self.assertEqual(panel.watermark_properties.findChildren(QtWidgets.QTabWidget),[])
         panel.watermark_properties.inputs['top_right'].setText('LZX')
         self.assertEqual(corner_texts(panel.values())['top_right'], 'LZX')
 

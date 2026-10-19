@@ -421,12 +421,16 @@ class _FlowUiaController:
 
     def _activate(self, element):
         """Activate a Chrome option regardless of its exposed UIA pattern."""
+        if getattr(self, 'bridge_pause_requested', lambda: False)():
+            return False
         for action in (self._select, self._invoke, self._legacy_action):
             if action(element):
                 return True
         return False
 
     def _open_popup(self, element):
+        if getattr(self, 'bridge_pause_requested', lambda: False)():
+            return False
         return bool(
             self._invoke(element)
             or self._expand(element)
@@ -434,6 +438,8 @@ class _FlowUiaController:
         )
 
     def _close_popup(self, element):
+        if getattr(self, 'bridge_pause_requested', lambda: False)():
+            return False
         return bool(
             self._collapse(element)
             or self._invoke(element)
@@ -715,6 +721,8 @@ class _FlowUiaController:
             raise RuntimeError("Flow 控件扫描不能跨线程执行。")
         results = []
         for hwnd, title in _enum_flow_windows():
+            if getattr(self, 'bridge_pause_requested', lambda: False)():
+                break
             page_key = (hwnd, title)
             try:
                 panel_found, changes = self._correct_open_panel(hwnd)
@@ -752,6 +760,7 @@ class FlowParameterGuardThread(QtCore.QThread):
         super().__init__(parent)
         self.settings = normalize_flow_guard_settings(settings)
         self._wake_event = threading.Event()
+        self._bridge_busy = threading.Event()
         self._last_error_signature = ""
         self._last_error_time = 0.0
         self._comtypes = None
@@ -768,6 +777,11 @@ class FlowParameterGuardThread(QtCore.QThread):
 
     def stop(self):
         self.requestInterruption()
+        self._wake_event.set()
+
+    def set_bridge_busy(self, busy):
+        """Yield UI control while the Flow extension prepares or submits jobs."""
+        self._bridge_busy.set() if busy else self._bridge_busy.clear()
         self._wake_event.set()
 
     def _wait(self):
@@ -810,11 +824,15 @@ class FlowParameterGuardThread(QtCore.QThread):
 
     def _run_controller(self):
         controller = _FlowUiaController(self.settings)
+        controller.bridge_pause_requested = self._bridge_busy.is_set
         try:
             self.status.emit(
                 "运行中：{}".format(format_flow_guard_targets(self.settings))
             )
             while not self.isInterruptionRequested():
+                if self._bridge_busy.is_set():
+                    self._wait()
+                    continue
                 try:
                     for result in controller.scan():
                         if result.get("error"):

@@ -49,6 +49,9 @@ class OverlayWorker(QtCore.QThread):
             from .design_preview import design_layers
             settings, notices = design_layers(settings, self.design_job, self.design_bundle,
                 self.design_registry, width, height, self.directory, self.cancel)
+            from .caption_follow_preview import prepare as prepare_follow_preview
+            settings,follow_notices=prepare_follow_preview(settings,self.design_job,self.directory,self.cancel)
+            notices=list(notices)+follow_notices
             image, info = render_preview_overlay(title, body, width, height, settings, self.cache)
             from .visual_media import needs_plane, preview_planes
             layers, _ = resolve_sources(settings["layers"], title, body)
@@ -179,6 +182,8 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
         super().__init__(parent)
         ensure_fonts()
         self.context, self.store = context, store or Store()
+        if not callable(getattr(self.store,'sync_render_selection',None)):
+            raise RuntimeError('文案视频源码已更新，当前运行仍是旧存储模块；请方便时正常重启后使用新面板，现有任务未修改。')
         self.state = self.store.load()
         from .render_slots import configure
         configure(file_identity(self.store.path), self.state['render_settings']['export_workers'])
@@ -193,6 +198,7 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
         self.worker = self.preview_worker = self.import_worker = None
         self._host_plans = {}  # profile id -> host-owned task handle
         self._render_progress = {}  # profile id -> {job id: percent}
+        self._render_stages = {}  # phase is not an encoding percentage
         self._quick_export_ids = {}
         self.text_import_dialog = None
         self.overlay_worker = None
@@ -223,11 +229,12 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
         self.splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
         self.tabs = QtWidgets.QTabWidget()
         self.jobs = ResourceTable(["任务／成品", "状态", "进度"])
+        self.jobs.itemChanged.connect(self._render_check_changed)
         self.jobs.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
         self.jobs.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.ExtendedSelection)
         self.jobs.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
         self.jobs.horizontalHeader().setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeMode.Stretch)
-        for column, width in ((1, 75), (2, 58)):
+        for column, width in ((1, 108), (2, 60)):
             self.jobs.setColumnWidth(column, width)
         from .row_progress import install_row_progress
         install_row_progress(self.jobs)
@@ -509,17 +516,13 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
         output_row.addWidget(self.open_directory_button)
         layout.addLayout(output_row)
         footer = QtWidgets.QHBoxLayout()
-        self.generate = QtWidgets.QPushButton("加入队列 · 待完成")
-        self.selected = QtWidgets.QPushButton("加入队列 · 所选")
+        footer.addWidget(QtWidgets.QLabel('在渲染队列中勾选要导出的视频，再点击“开始全部”。'))
         self.global_queue_button = QtWidgets.QPushButton("渲染队列")
         self.stop_button = QtWidgets.QPushButton("停止")
         self.stop_button.setEnabled(False)
-        self.generate.clicked.connect(lambda: self.start_batch(False))
-        self.selected.clicked.connect(lambda: self.start_batch(True))
         self.stop_button.clicked.connect(self.cancel_work)
         self.global_queue_button.clicked.connect(self.open_global_queue)
-        for button in (self.generate, self.selected, self.stop_button):
-            footer.addWidget(button)
+        footer.addWidget(self.stop_button)
         footer.addWidget(self.global_queue_button)
         self.progress_bar = QtWidgets.QProgressBar()
         footer.addWidget(self.progress_bar, 1)
@@ -1148,11 +1151,18 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
         active = profile_id in self._host_plans
         from .row_progress import set_row_progress
         for row, job in enumerate(self.state['jobs']):
+            from .render_selection import checked
+            item=self.jobs.item(row,0)
+            item.setFlags(item.flags()|QtCore.Qt.ItemFlag.ItemIsUserCheckable)
+            item.setCheckState(QtCore.Qt.CheckState.Checked if checked(job,self.state.get('render_plans',()),profile_id)
+                               else QtCore.Qt.CheckState.Unchecked)
             value = progress.get(job['id'], 100 if job['status'] == '已完成' else 0)
             in_batch = active and job['id'] in progress
             set_row_progress(self.jobs, row, value if in_batch or job['status'] == '已完成' else None)
             if in_batch:
-                self.jobs.item(row, 1).setText('已结束' if value == 100 else '渲染中' if value else '排队中')
+                self.jobs.item(row, 1).setText('已结束' if value == 100 else
+                    self._render_stages.get(profile_id, {}).get(job['id'], '渲染中' if value else '排队中'))
+        self.sync_render_selection()
         self.render_queue_panel.refresh()
         music_rows = []
         for row, item in enumerate(self.state["music"]):
@@ -1377,15 +1387,18 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
             self.open_global_queue()
             self.status.setText("请在生成队列中多选任务后生成；资源池本身不是生成队列。")
             return
-        ids = self.selected_ids() if selected else [job["id"] for job in self.state["jobs"] if job["status"] != "已完成"]
+        from .render_selection import identifiers
+        checked=identifiers(self.state)
+        ids = [identifier for identifier in self.selected_ids() if identifier in checked] if selected else checked
         if not ids:
             self.status.setText("没有待生成任务；导入资源后请先用“批量→搭配资源”加入队列。")
             return
         try:
             from .background import validate_batch_outputs
             validate_batch_outputs(self.state, ids)
-            plan = self.store.add_render_plan(self.state['active_profile'], ids)
+            self.store.sync_render_selection(self.state['active_profile'], ids)
             self.state = self.store.load()
+            plan=next(p for p in self.state['render_plans'] if p['profile_id']==self.state['active_profile'] and p['status']=='staged')
         except Exception as error:
             self.status.setText('加入渲染队列失败：' + str(error))
             return
@@ -1396,6 +1409,38 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
         self.render_queue_panel.refresh()
         self.right_tabs.setCurrentWidget(self.render_queue_panel)
 
+    def sync_render_selection(self):
+        if self.is_batch_busy(): return True
+        from .render_selection import identifiers
+        profile=next(p for p in self.state['profiles'] if p['id']==self.state['active_profile'])
+        try:
+            changed=self.store.sync_render_selection(profile['id'],identifiers(self.state),
+                expected_profile_revision=profile.get('revision',0))
+            if changed: self.state=self.store.load()
+            return True
+        except (ValueError,OSError) as error:
+            self.status.setText('渲染列表未更新：'+str(error))
+            return False
+
+    def _render_check_changed(self,item):
+        if getattr(self,'_loading',True) or item.column()!=0: return
+        if self.is_batch_busy(): return
+        identifier=item.data(QtCore.Qt.ItemDataRole.UserRole)
+        job=next((j for j in self.state['jobs'] if j['id']==identifier),None)
+        if job is None: return
+        value=item.checkState()==QtCore.Qt.CheckState.Checked
+        from .render_selection import checked
+        if value==checked(job,self.state.get('render_plans',()),self.state['active_profile']): return
+        previous=copy.deepcopy(job)
+        job['render_checked']=value
+        if not self.persist():
+            job.clear();job.update(previous)
+            with QtCore.QSignalBlocker(self.jobs):
+                item.setCheckState(QtCore.Qt.CheckState.Checked if not value else QtCore.Qt.CheckState.Unchecked)
+            return
+        self.sync_render_selection()
+        self.render_queue_panel.refresh()
+
     def start_staged_plans(self):
         if self.worker is not None or self.import_worker is not None or self.layer_panel.worker is not None or self.image_import_worker is not None:
             self.status.setText('本地导入或渲染准备尚未结束，请稍后开始全局队列。')
@@ -1404,6 +1449,7 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
             return
         if not self.is_batch_busy() and not self.persist():
             return
+        if not self.sync_render_selection(): return
         submitted = 0
         for plan in list(self.store.load().get('render_plans', [])):
             if plan['status'] != 'staged':
@@ -1498,7 +1544,9 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
                     self.store.update_render_plan(plan['id'], 'submitted', handle.task_id)
                 self._host_plans[profile_id] = handle
                 self._render_progress[profile_id] = dict.fromkeys(ids, 0)
+                self._render_stages[profile_id] = dict.fromkeys(ids, '排队中')
                 handle.itemProgress.connect(lambda job_id, value, p=profile_id: self._host_item_progress(p, job_id, value))
+                handle.itemStage.connect(lambda job_id, stage, p=profile_id: self._host_item_stage(p, job_id, stage))
                 handle.progressChanged.connect(lambda message, value, p=profile_id: self._host_batch_progress(p, message, value))
                 handle.completed.connect(lambda result, h=handle, p=profile_id: self._host_batch_result(h, p, result))
                 handle.failed.connect(lambda message, p=profile_id: self._host_batch_failed(p, message))
@@ -1513,6 +1561,7 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
                         pass
                 self._host_plans.pop(profile_id, None)
                 self._render_progress.pop(profile_id, None)
+                self._render_stages.pop(profile_id, None)
                 self._quick_export_ids.pop(profile_id, None)
                 self._set_work_controls(self.is_batch_busy())
                 self._log('提交后台失败：' + traceback.format_exc())
@@ -1577,7 +1626,18 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
             for row, job in enumerate(self.state['jobs']):
                 if job['id'] == job_id:
                     set_row_progress(self.jobs, row, value)
-                    self.jobs.item(row, 1).setText('已结束' if value == 100 else '渲染中' if value else '准备中')
+                    self.jobs.item(row, 1).setText('已结束' if value == 100 else
+                        self._render_stages.get(profile_id, {}).get(job_id, '渲染中' if value else '准备中'))
+                    break
+
+    def _host_item_stage(self, profile_id, job_id, stage):
+        self._render_stages.setdefault(profile_id, {})[job_id] = stage
+        self.render_queue_panel.update_progress(profile_id)
+        if profile_id == self.state['active_profile']:
+            for row, job in enumerate(self.state['jobs']):
+                if job['id'] == job_id:
+                    self.jobs.item(row, 1).setText(stage)
+                    self.jobs.item(row, 1).setToolTip(stage)
                     break
 
     def _host_batch_progress(self, profile_id, message, value):
@@ -1609,6 +1669,8 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
                 self._log('渲染计划状态保存失败：' + str(error))
         self._host_plans.pop(profile_id, None)
         self._render_progress.pop(profile_id, None)
+        self._render_stages.pop(profile_id, None)
+        self.render_queue_panel.finish_pending_removal(plan, handle.task_id)
         try:
             self.render_queue_panel.refresh()
         except Exception as error:
@@ -1676,7 +1738,7 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
         self.task_text_panel.setEnabled(not busy)
         # Project switching stays available while a host-owned render runs.
         self.menu_bar.setEnabled(not busy or self.state['active_profile'] in self._host_plans)
-        for widget in (self.scheme,self.output,self.generate,self.selected):
+        for widget in (self.scheme,self.output):
             widget.setEnabled(not busy)
         self.global_queue_button.setEnabled(True)
         self.stop_button.setEnabled(busy)

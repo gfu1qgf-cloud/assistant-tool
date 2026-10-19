@@ -153,7 +153,7 @@ class CaptionContrastTests(unittest.TestCase):
         words = [{'text': 'Amen', 'start': .1 + i*.3, 'end': .3 + i*.3} for i in range(6)]
         for layer in (new_caption(), apply_style(new_caption(), PREFIX+'逐词弹出(随机大小)')):
             layer = normalize_layers([layer])[0]
-            layer.update(width=96, height=80, caption_per_line=2, caption_words=2)
+            layer.update(width=96, height=80, caption_per_line=2, caption_words=2,caption_random_size=True)
             first = caption_events(words, layer, 1080, 1920, 3)
             stronger = caption_events(words, {**layer, 'caption_size_contrast': 3}, 1080, 1920, 3)
             self.assertEqual([(w['text'], w['start'], w['end']) for w in first], [(w['text'], w['start'], w['end']) for w in stronger])

@@ -1,0 +1,21 @@
+{
+  "repository": "https://github.com/dedeyuyu/FlowCue",
+  "commit": "e4e8f34ea6a0e0d7d9e0e87bbf7218e66d315ec2",
+  "upstream_version": "1.1.4",
+  "bridge_version": "1.1.13",
+  "protocol": 1,
+  "patch_module": "tools/flow_bridge_patches.py",
+  "patches": [
+    "page transport seam; fresh upstream account/credits readers",
+    "strict selected model checks; single paid submission attempt",
+    "durable download notification and exact saved-binding download-only retry",
+    "per-profile project setup; desktop-owned navigation and no extra blank tabs",
+    "generation-response ownership only; no DOM/prompt/polling ownership guesses",
+    "late exact-submission responses and bounded encrypted diagnostics",
+    "JSON/BoQ decoding; distinct equal-length RPC frames are preserved",
+    "no global Object/Webpack hook or automatic post-submit page reload in bridge",
+    "short native-operation debugger cleanup; no persistent lease",
+    "strict ASB URL/path binding and no flat-filename fallback for managed jobs",
+    "upstream signed URL parsing, upload/download idempotency and DOM performance fixes"
+  ]
+}

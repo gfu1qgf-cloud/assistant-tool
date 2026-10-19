@@ -3,23 +3,8 @@ from dataclasses import dataclass, replace
 
 from .contracts import ResourceRef, VideoTimeline, VideoComposition, FilterOperation, RenderPlan
 
-PRESETS = ('ultrafast', 'superfast', 'veryfast', 'faster', 'fast', 'medium', 'slow', 'slower', 'veryslow')
-
-
-@dataclass(frozen=True)
-class EncodingSettings:
-    codec: str = 'libx264'
-    preset: str = 'medium'
-    crf: int = 23
-    audio: str = 'aac'
-    audio_kbps: int = 192
-
-    def __post_init__(self):
-        if (self.codec not in {'libx264', 'libx265'} or self.preset not in PRESETS
-                or type(self.crf) is not int or not 0 <= self.crf <= 51
-                or self.audio not in {'aac', 'copy'} or type(self.audio_kbps) is not int
-                or not 32 <= self.audio_kbps <= 512):
-            raise ValueError('视频编码参数无效；不接受原始命令或表达式。')
+from .encoding import (EncodingSettings, PRESETS, PARAMETERS, from_parameters,
+                       video_encoder_args, audio_encoder_args)
 
 
 @dataclass(frozen=True)
@@ -121,22 +106,9 @@ def normalize_plan(plan):
                    encoding=plan.encoding or value.encoding)
 
 
-def video_encoder_args(settings=None):
-    if settings is None:
-        return ['-c:v', 'libx264', '-preset', 'fast', '-crf', '18', '-pix_fmt', 'yuv420p']
-    if not isinstance(settings, EncodingSettings):
-        raise TypeError('编码设置必须来自压缩节点。')
-    return ['-c:v', settings.codec, '-preset', settings.preset, '-crf', str(settings.crf),
-            '-pix_fmt', 'yuv420p']
-
-
-def audio_encoder_args(settings=None, *, timeline=False):
-    if settings is None:
-        return ['-c:a', 'aac', '-b:a', '192k', '-ar', '48000', '-ac', '2'] if timeline else ['-c:a', 'copy']
-    # Timeline audio has already been filtered and cannot use stream-copy.
-    if settings.audio == 'copy' and not timeline:
-        return ['-c:a', 'copy']
-    return ['-c:a', 'aac', '-b:a', str(settings.audio_kbps) + 'k']
+def compression_inspector(params, changed, parent):
+    from PYUI.node_compression_ui import CompressionInspector
+    return CompressionInspector(params, changed, parent)
 
 
 def register_video_nodes(registry):
@@ -148,15 +120,11 @@ def register_video_nodes(registry):
             raise TypeError('是否压缩输入只接受真／假。')
         if enabled is False:
             return {'video': value}
-        settings = EncodingSettings(params['codec'], params['preset'], params['crf'],
-                                    params['audio'], params['audio_kbps'])
+        settings = from_parameters(params)
         return {'video': replace(value, encoding=settings)}
     registry.register('core', NodeDefinition('core.compress', '视频压缩 · 编码设置',
         inputs=(NodePort('video', '视频', 'video'), NodePort('enabled', '是否压缩（不接时开启）', 'boolean', required=False)),
         outputs=(NodePort('video', '视频', 'video'),),
-        parameters=(NodeParameter('codec', '编码器', 'choice', 'libx264', choices=(('libx264', 'H.264'), ('libx265', 'H.265'))),
-            NodeParameter('preset', '编码速度', 'choice', 'medium', choices=tuple((p, p) for p in PRESETS)),
-            NodeParameter('crf', 'CRF · 越小越清晰', 'integer', 23, 0, 51),
-            NodeParameter('audio', '音频', 'choice', 'aac', choices=(('aac', 'AAC · 兼容 MP4'), ('copy', '保留原编码'))),
-            NodeParameter('audio_kbps', 'AAC 码率 kbps', 'integer', 192, 32, 512)), build=compress,
-        description='可连接路径／文本判断到“是否压缩”：真时应用本节点编码设置，假时原样传递上游视频及已有设置；不接时开启。只记录设置，不产生中间视频；其他效果仍在最终保存时一次编码。多个启用的压缩节点以后面的设置为准。'))
+        parameters=PARAMETERS, build=compress, inspector_factory=compression_inspector,
+        validate_parameters=from_parameters,
+        description='默认：MP4／H.264 质量30／MP3 128kbps／立体声44100Hz。只记录设置，在最终保存时一次编码，不生成中间视频；质量模式不保证文件一定更小，可选目标码率控制体积。后面的启用压缩节点覆盖前面的设置；是否压缩为假则原样传递。'))

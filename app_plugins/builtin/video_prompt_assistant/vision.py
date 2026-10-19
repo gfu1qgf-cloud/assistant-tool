@@ -45,13 +45,16 @@ def analyze_image(jpeg_bytes, api_keys=None, model="gemini-2.5-flash", gemini_ke
     if not api_keys:
         raise ValueError(gemini_keys.unavailable_message(model) if gemini_keys is not None
                          else "未配置 Gemini Key；可先在程序设置中添加，或直接使用通用方案")
-    body = {
+    request_body = {
         "contents": [{"role": "user", "parts": [
             {"text": SYSTEM_PROMPT},
             {"inline_data": {"mime_type": "image/jpeg", "data": base64.b64encode(jpeg_bytes).decode("ascii")}},
         ]}],
         "generationConfig": {"temperature": 0, "response_mime_type": "application/json"},
     }
+    # Serialize once: an HTTP error from one Key must never become the next
+    # Key's request. Every retry uses the same prompt and image bytes.
+    request_data = json.dumps(request_body).encode("utf-8")
     errors = []
     for number, key in enumerate(api_keys, 1):
         if gemini_keys is not None and not gemini_keys.is_available(key, model):
@@ -59,7 +62,7 @@ def analyze_image(jpeg_bytes, api_keys=None, model="gemini-2.5-flash", gemini_ke
         url = ("https://generativelanguage.googleapis.com/v1beta/models/"
                + urllib.parse.quote(model, safe="") + ":generateContent")
         request = urllib.request.Request(
-            url, data=json.dumps(body).encode("utf-8"),
+            url, data=request_data,
             headers={"Content-Type": "application/json", "x-goog-api-key": key}, method="POST",
         )
         try:
@@ -76,13 +79,13 @@ def analyze_image(jpeg_bytes, api_keys=None, model="gemini-2.5-flash", gemini_ke
             code = getattr(error, "code", None)
             if gemini_keys is not None:
                 if isinstance(error, urllib.error.HTTPError):
-                    body = error.read().decode("utf-8", errors="replace")
+                    error_body = error.read().decode("utf-8", errors="replace")
                     retry = error.headers.get("Retry-After") if error.headers else None
                     if not retry:
                         import re
-                        match = re.search(r"retry in\s+([0-9.]+)s", body, re.I)
+                        match = re.search(r"retry in\s+([0-9.]+)s", error_body, re.I)
                         retry = match.group(1) if match else None
-                    gemini_keys.report_failure(key, model, code, retry, body)
+                    gemini_keys.report_failure(key, model, code, retry, error_body)
                 elif isinstance(error, (urllib.error.URLError, TimeoutError, OSError)):
                     gemini_keys.report_failure(key, model)
             errors.append(f"Key {number}: HTTP {code}" if code else f"Key {number}: {type(error).__name__}")

@@ -3,6 +3,7 @@ import copy
 from qt_compat import QtCore, QtWidgets
 from .geometry_anchors import anchor, center, distance, distance_range
 from .layers import MAX_VISUAL_SIZE_PERCENT, normalize_layers
+from .property_pairs import FieldPair
 
 GEOMETRY_KEYS = ('x', 'y', 'width', 'height')
 
@@ -24,29 +25,37 @@ class GeometryEditor(QtWidgets.QWidget):
         self.units.addItem('百分比 %', 'percent'); self.units.addItem('像素 px', 'pixels')
         self.units.setCurrentIndex(max(0, self.units.findData(unit)))
         self.units.currentIndexChanged.connect(self._unit_changed)
-        form.addRow('位置单位', self.units)
         self.canvas_label = QtWidgets.QLabel()
         self.canvas_label.setWordWrap(True)
         self.canvas_label.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored, QtWidgets.QSizePolicy.Policy.Preferred)
-        form.addRow(self.canvas_label)
+        unit_row = QtWidgets.QWidget(); unit_layout = QtWidgets.QHBoxLayout(unit_row)
+        unit_layout.setContentsMargins(0,0,0,0)
+        unit_layout.addWidget(self.units); unit_layout.addWidget(self.canvas_label,1)
+        form.addRow('单位', unit_row)
         self.anchor_controls, self.properties, self.geometry_labels = {}, {}, {}
         for axis, label, choices in (
-                ('x', '横向基准', (('框中心坐标', 'center'), ('距画面左边', 'left'), ('距画面右边', 'right'))),
-                ('y', '纵向基准', (('框中心坐标', 'center'), ('距画面上边', 'top'), ('距画面下边', 'bottom')))):
+                ('x', 'X', (('中心', 'center'), ('左边', 'left'), ('右边', 'right'))),
+                ('y', 'Y', (('中心', 'center'), ('上边', 'top'), ('下边', 'bottom')))):
             combo = QtWidgets.QComboBox()
+            combo.setSizeAdjustPolicy(combo.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+            combo.setMinimumContentsLength(3)
             for text, value in choices: combo.addItem(text, value)
             combo.currentIndexChanged.connect(self._anchor_changed)
             combo.setToolTip('切换基准不移动控件；边距0即贴边，负数表示部分超出画面。')
             self.anchor_controls[axis] = combo
-            form.addRow(label, combo)
+        self.anchor_pair = FieldPair([(axis, axis.upper(), control) for axis,control in self.anchor_controls.items()])
+        form.addRow('基准', self.anchor_pair)
         for key, title in (('x', '横向中心'), ('y', '纵向中心'), ('width', '框宽度'), ('height', '框高度')):
             spin = QtWidgets.QDoubleSpinBox()
             spin.setKeyboardTracking(False)
             spin.setMinimumWidth(0)
             spin.valueChanged.connect(lambda _value, key=key: self._geometry_changed(key))
             self.properties[key] = spin
-            label = QtWidgets.QLabel(title); self.geometry_labels[key] = label
-            form.addRow(label, spin)
+        self.position_pair = FieldPair([(key,key.upper(),self.properties[key]) for key in ('x','y')])
+        self.position_label = QtWidgets.QLabel('中心'); form.addRow(self.position_label,self.position_pair)
+        self.size_pair = FieldPair([('width','宽',self.properties['width']),('height','高',self.properties['height'])])
+        form.addRow('尺寸', self.size_pair)
+        self.geometry_labels.update(self.position_pair.labels); self.geometry_labels.update(self.size_pair.labels)
         self.snap_button = QtWidgets.QToolButton()
         self.snap_button.setText('一键贴边／居中')
         self.snap_button.setPopupMode(self.snap_button.ToolButtonPopupMode.InstantPopup)
@@ -69,8 +78,14 @@ class GeometryEditor(QtWidgets.QWidget):
             pixels = self.units.currentData() == 'pixels'
             for axis, combo in self.anchor_controls.items():
                 combo.setCurrentIndex(combo.findData(anchor(layer, axis)))
-                self.geometry_labels[axis].setText({'left':'距左边', 'right':'距右边', 'top':'距上边',
-                    'bottom':'距下边', 'center':'横向中心' if axis == 'x' else '纵向中心'}[anchor(layer, axis)])
+                name={'left':'距左边', 'right':'距右边', 'top':'距上边',
+                    'bottom':'距下边', 'center':'横向中心' if axis == 'x' else '纵向中心'}[anchor(layer, axis)]
+                self.geometry_labels[axis].setToolTip(name)
+                short={'left':'距左', 'right':'距右', 'top':'距上',
+                    'bottom':'距下', 'center':'中心'}[anchor(layer, axis)]
+                self.geometry_labels[axis].setText(f'{axis.upper()}（{short}）')
+            centers=sum(anchor(layer,axis)=='center' for axis in ('x','y'))
+            self.position_label.setText('中心' if centers==2 else '边距' if centers==0 else '位置')
             for key, spin in self.properties.items():
                 extent = self.canvas_size.width() if key in {'x','width'} else self.canvas_size.height()
                 factor = extent / 100 if pixels else 1

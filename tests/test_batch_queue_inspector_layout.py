@@ -57,6 +57,11 @@ class QueueInspectorLayoutTests(unittest.TestCase):
             left = image.pixelColor(8, y)
             right = image.pixelColor(image.width()-8, y)
             self.assertNotEqual(left, right)
+            dialog._host_item_stage('default', '0', '等待字幕模型')
+            dialog._host_item_stage('default', '1', '编码中')
+            dialog._host_item_stage('default', '2', '字幕对齐中')
+            self.assertEqual(dialog.jobs.item(0, 1).text(), '等待字幕模型')
+            self.assertEqual(dialog.jobs.horizontalScrollBar().maximum(), 0)
             if os.environ.get('LZX_QUEUE_SCREENSHOT'):
                 self.assertTrue(dialog.grab().save(os.environ['LZX_QUEUE_SCREENSHOT']))
             if os.environ.get('LZX_CAPTION_SCREENSHOT'):
@@ -64,11 +69,9 @@ class QueueInspectorLayoutTests(unittest.TestCase):
                 dialog.layer_panel.set_layers([caption])
                 dialog.layer_panel.select_layer_id(caption['id'])
                 editor = dialog.layer_panel.editor
-                for key in ('source','position'):
-                    editor.sections[key].set_expanded(False)
+                editor.sections['basic'].set_expanded(False)
                 editor.sections['font'].set_expanded(True)
                 editor.sections['font_size'].set_expanded(True)
-                editor.sections['random_size'].set_expanded(True)
                 dialog.right_tabs.setCurrentIndex(0)
                 dialog.layer_scroll.verticalScrollBar().setValue(0)
                 self.app.processEvents()
@@ -102,23 +105,23 @@ class QueueInspectorLayoutTests(unittest.TestCase):
         panel = LayerPanel([layer], '.', settings=DEFAULTS)
         panel.select_layer_id(layer['id'])
         editor = panel.editor
-        self.assertIs(editor.body.itemAt(0).widget(), editor.sections['source'])
-        self.assertIs(editor.body.itemAt(1).widget(), editor.sections['position'])
+        self.assertIs(editor.body.itemAt(0).widget(), editor.content_editor)
+        self.assertIs(editor.body.itemAt(1).widget(), editor.sections['basic'])
+        for child in (editor.geometry_editor, panel.caption_properties):
+            self.assertTrue(editor.sections['basic'].content.isAncestorOf(child))
         text = panel.text_properties
         font = editor.sections['font']
         for key in ('outline', 'shadow', 'background'):
             self.assertTrue(font.content.isAncestorOf(editor.sections[key]))
-        random = editor.sections['random_size']
-        self.assertFalse(text.font_size_section.content.isAncestorOf(random))
-        self.assertIs(random.enable_control, panel.caption_properties.controls['caption_random_size'])
-        self.assertFalse(random.content.isAncestorOf(random.enable_control))
+        self.assertNotIn('random_size',editor.sections)
+        self.assertIs(text.font_size_section,font)
+        self.assertTrue(font.content.isAncestorOf(panel.caption_properties.controls['caption_random_size']))
+        self.assertTrue(font.content.isAncestorOf(text.controls['font_min']))
+        self.assertTrue(font.content.isAncestorOf(text.controls['font_max']))
         self.assertNotIn('caption_help', editor.sections)
         font.set_expanded(False)
-        text.font_size_section.set_expanded(False)
-        panel.reveal_property('random_size')
-        self.assertFalse(font.toggle.isChecked())
-        self.assertFalse(text.font_size_section.toggle.isChecked())
-        self.assertTrue(random.toggle.isChecked())
+        panel.reveal_property('font')
+        self.assertTrue(font.toggle.isChecked())
 
     def test_header_toggles_change_existing_features_and_preserve_detail_parameters(self):
         panel = LayerPanel(componentize_layers(None, DEFAULTS), '.', settings=DEFAULTS)

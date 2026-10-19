@@ -1197,16 +1197,19 @@ class ChromeRunnerDialog(QtWidgets.QDialog,Ui_ChromeRunnerDialog):
 
         self.update_iterator_status(f'已批量启动 {launched_count} 个 profiles')
 
-    def launch_profile(self, profile):
+    def launch_profile(self, profile, *, urls=None):
         if not self.chrome_path:
             return False, 'Chrome 可执行文件未找到'
         try:
+            targets = self.get_web_list() if urls is None else [str(url).strip() for url in urls if str(url).strip()]
+            if urls is not None and not targets:
+                return False, '没有可打开的网址，未启动空白标签页。'
             cmd = [
                 self.chrome_path,
                 f"--profile-directory={profile['directory']}",
                 '--new-window',
                 '--start-maximized',
-                *self.get_web_list(),
+                *targets,
             ]
             subprocess.Popen(cmd)
             return True, None

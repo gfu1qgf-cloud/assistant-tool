@@ -345,6 +345,13 @@ class PluginContext:
             require_loaded=require_loaded,
         )
 
+    def current_task_targets(self):
+        """Read all tasks from the loaded project, without changing selection."""
+        window = self._host.main_window
+        if getattr(window, "loaded_project_dir", None) is None:
+            return []
+        return self.task_targets(range(len(window.task_list)))
+
     def current_task_table_path(self):
         """Use the loaded project, never a date selector changed but not loaded."""
         window = self._host.main_window

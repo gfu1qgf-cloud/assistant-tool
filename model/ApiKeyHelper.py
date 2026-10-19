@@ -92,7 +92,12 @@ def describe_api_key_status(api_key_statuses, api_key, now=None):
     """生成适合显示在设置列表中的 Key 状态文字。"""
     now = int(time.time() if now is None else now)
     key_status = get_api_key_status(api_key_statuses, api_key)
+    if key_status.get('permission_authentication') is False:
+        return 'Key 无效｜已停止尝试'
     status = key_status.get('status', 'unknown')
+    if (status == 'invalid' and key_status.get('permission_authentication') is True
+            and _timestamp(key_status.get('permission_authentication_at')) > _timestamp(key_status.get('last_failure_unix'))):
+        return '已重新验证｜等待使用'
 
     if status == 'available':
         return '可用'
@@ -108,11 +113,17 @@ def describe_api_key_status(api_key_statuses, api_key, now=None):
         if retry_after > now:
             return f"暂时不可用｜{format_unix_time(retry_after)} 后重试"
         return '冷却结束｜等待重新测试'
+    if key_status.get('permission_probe_status') == 'partial':
+        return '只读已检测'
+    if key_status.get('permission_probe_status') == 'offline':
+        return '离线｜未检测'
+    if key_status.get('permission_probe_status') in {'network_error', 'rate_limit', 'unconfirmed', 'invalid_response'}:
+        return '检测未完成'
     return '未检测'
 
 
 def select_api_keys_for_attempt(api_keys, api_key_statuses, start_index=0,
-                                now=None):
+                                now=None, *, capability=None):
     """
     按已记录状态筛选 Key。
 
@@ -126,10 +137,26 @@ def select_api_keys_for_attempt(api_keys, api_key_statuses, start_index=0,
     exhausted = []
     cooling_down = []
     invalid = []
+    denied = []
+    from model.ElevenLabsPermissions import permission_value, ALIGNMENT
 
     for api_key in keys:
         key_status = get_api_key_status(api_key_statuses, api_key)
         status = key_status.get('status', 'unknown')
+        if key_status.get('permission_authentication') is False:
+            invalid.append(api_key)
+            continue
+        if capability and permission_value(key_status, capability) is False:
+            denied.append(api_key)
+            continue
+        if (status == 'invalid' and key_status.get('permission_authentication') is True
+                and _timestamp(key_status.get('permission_authentication_at')) > _timestamp(key_status.get('last_failure_unix'))):
+            status = 'unknown'  # A newer authenticated read disproves the old invalid marker.
+        if capability == ALIGNMENT:
+            retry = _timestamp(key_status.get('forced_alignment_retry_after'))
+            if retry > now:
+                cooling_down.append((retry, api_key))
+                continue
 
         if status == 'exhausted':
             reset_unix = _timestamp(key_status.get('reset_unix'))
@@ -154,8 +181,11 @@ def select_api_keys_for_attempt(api_keys, api_key_statuses, start_index=0,
     )
 
     if available:
-        selected = rotate_api_keys(available, start_index)
-        next_index = (start_index + 1) % len(available)
+        confirmed = [key for key in available if capability and
+                     permission_value(get_api_key_status(api_key_statuses, key), capability) is True]
+        uncertain = [key for key in available if key not in confirmed]
+        selected = rotate_api_keys(confirmed, start_index) + rotate_api_keys(uncertain, start_index)
+        next_index = (start_index + 1) % max(1, len(confirmed) or len(uncertain))
         return selected, next_index, {'mode': 'available'}
 
     if exhausted:
@@ -175,8 +205,9 @@ def select_api_keys_for_attempt(api_keys, api_key_statuses, start_index=0,
         }
 
     return [], start_index, {
-        'mode': 'no_keys' if not keys else 'no_usable_keys',
+        'mode': 'no_keys' if not keys else 'no_permission' if denied else 'no_usable_keys',
         'invalid_count': len(invalid),
+        'permission_denied_count': len(denied),
     }
 
 

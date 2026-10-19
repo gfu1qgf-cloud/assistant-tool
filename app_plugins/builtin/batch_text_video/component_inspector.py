@@ -27,6 +27,7 @@ def require_editor_api(panel_type):
 
 
 class ComponentPropertyPanel(PropertySections):
+    flat_sources = True
     edited = QtCore.pyqtSignal(str, object)
     unitChanged = QtCore.pyqtSignal(str)
     addImages = QtCore.pyqtSignal(str)
@@ -36,6 +37,8 @@ class ComponentPropertyPanel(PropertySections):
 
     def __init__(self, *, mode='batch', parent=None):
         super().__init__(parent)
+        if not hasattr(self,'targets'):
+            raise RuntimeError('属性布局源码已更新，当前进程仍使用旧界面；请在下次正常重启后使用，当前参数未修改。')
         self.mode, self.layer, self.loading = mode, None, False
         self.bindings = []
         self.geometry_editor = None
@@ -62,7 +65,9 @@ class ComponentPropertyPanel(PropertySections):
         from .component_ui import ContentSourceEditor
         fields = {'source','source_file','text','path','thumbnail','caption_file','caption_timing',
                   'sequence_items','sequence_cursor','pool_field','pool_id','copy_binding'}
-        editor = self.add_bound('source', '内容与来源', ContentSourceEditor(), fields=fields, expanded=True)
+        editor = self.add_bound('source', '', ContentSourceEditor(), fields=fields, section=False)
+        self.targets['source'] = editor
+        self.body.removeWidget(editor); self.body.insertWidget(0,editor)
         editor.addImages.connect(self.addImages); editor.selectCopy.connect(self.selectCopy)
         editor.selectImagePool.connect(self.selectImagePool)
         self.content_editor = editor
@@ -72,7 +77,8 @@ class ComponentPropertyPanel(PropertySections):
 
     def add_geometry(self):
         from .geometry_ui import GeometryEditor
-        self.geometry_editor = self.add_bound('position', '位置与尺寸', GeometryEditor(), expanded=False)
+        self.geometry_editor = self.add_bound('position', '', GeometryEditor(), section=False)
+        self.targets['position'] = self.geometry_editor
         self.geometry_editor.unitChanged.connect(self.unitChanged)
         self.geometry_editor.message.connect(self.message)
 

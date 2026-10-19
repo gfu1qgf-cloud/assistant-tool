@@ -259,7 +259,12 @@ class VideoPromptDialog(QtWidgets.QDialog):
             self.status.setText("请先加载一张图片。" if not self.image_jpeg else "正在分析，请稍候。")
             return
         config = self.context.load_config()
-        manager = self.context.gemini_keys
+        manager = getattr(self.context, "gemini_keys", None)
+        if manager is None:
+            message = "当前环境未提供 Gemini 密钥服务，无法自动看图；仍可手动选择画面类型并使用通用方案。"
+            self.status.setText(message)
+            QtWidgets.QMessageBox.information(self, "Gemini 服务不可用", message)
+            return
         model = config.get("gemini_model") or "gemini-2.5-flash"
         keys = manager.request_keys(model)
         if not keys:

@@ -2,8 +2,23 @@
 import copy
 from qt_compat import QtCore, QtWidgets
 from .component_ui import Combo
-from .caption_styles import preset_choices, apply_style, description, is_catalog, effects, ANIMATIONS, COLOR_KEYS, preset_values
+from .caption_styles import preset_choices, apply_style, description, effects
 from .color_ui import EffectColorEditor
+from .caption_display import DISPLAY_CHOICES, normalize_display
+from .caption_follow import CHOICES as FOLLOW_CHOICES
+
+DISPLAY_NOTES = {
+    'group': '整组同时显示；切换到下一组时再更新。',
+    'word': '按词依次出现；可与任意入场动画组合。',
+    'char': '按阅读顺序逐字出现，可开启光标。逐词记录沿用词时间；整句 SRT 在每块时间内连续打字，字时刻为动画分配，不是逐字语音对齐。',
+    'line': '按行依次出现；每行词数由“分组与节奏”控制。',
+}
+DURATION_NOTES = {
+    'anim_in_duration': '常规入场',
+    'word_pop_random_duration': '逐词弹入',
+    'word_pop_random_pulse_duration': '逐词回弹',
+    'letter_jump_duration': '逐词放大',
+}
 
 
 class CaptionProperties(QtWidgets.QWidget):
@@ -21,6 +36,8 @@ class CaptionProperties(QtWidgets.QWidget):
         self.controls = {}
         for key, label, choices in (
             ("caption_preset", "动画预设", [("逐词跃动", "pop"), ("逐词出现（无弹跳）", "appear")]+preset_choices()),
+            ('caption_display_mode', '显示方式', DISPLAY_CHOICES),
+            ('caption_follow_mode', '跟随方式', FOLLOW_CHOICES),
             ("caption_timing", "时间戳来源", (("优先 ELE 逐词记录／任务 SRT，否则本地对齐", "auto"),
                 ("仅使用任务已有逐词记录／SRT", "task"), ("手动指定 SRT", "file"), ("本地模型逐词对齐", "model"),
                 ("匀速动画", "uniform"), ("ELE 云端逐词对齐（上传音频与文案）", "elevenlabs"))),
@@ -33,6 +50,7 @@ class CaptionProperties(QtWidgets.QWidget):
                 control.addItem(title, value)
             if key == 'caption_preset':
                 control.setEditable(True)
+                control.setToolTip('切换外观、动画和显示参数；保留已有位置尺寸与分组节奏。需要完整默认排版时点击“还原预设默认值”。')
                 control.setInsertPolicy(control.InsertPolicy.NoInsert)
                 control.completer().setFilterMode(QtCore.Qt.MatchFlag.MatchContains)
                 control.completer().setCompletionMode(QtWidgets.QCompleter.CompletionMode.PopupCompletion)
@@ -41,12 +59,32 @@ class CaptionProperties(QtWidgets.QWidget):
                 control.currentIndexChanged.connect(self.edit)
             self.controls[key] = control
             form.addRow(label, control)
+        for key,title in (('caption_accumulate','全文累积显示（不按字幕组清屏）'),
+                          ('caption_cursor','显示逐字光标'),
+                          ('caption_first_line_emphasis','强调首行'),
+                          ('caption_first_line_bold','首行加粗')):
+            control=QtWidgets.QCheckBox(title,self)
+            control.toggled.connect(self.edit)
+            self.controls[key]=control
+            form.addRow(control)
+        self.controls['caption_accumulate'].setToolTip('保留全文直到最后；每组词数暂不参与分页。整篇放不下会提示，不会删字。')
+        self.controls['caption_first_line_emphasis'].setToolTip('只作用于实际排版后的第一行，不是前几个单词；关闭后恢复基础字号和字重。')
+        first_size=QtWidgets.QDoubleSpinBox(self); first_size.setRange(.5,3); first_size.setDecimals(2)
+        first_size.setSingleStep(.05); first_size.setSuffix(' ×'); first_size.valueChanged.connect(self.edit)
+        self.controls['caption_first_line_scale']=first_size
+        form.addRow('首行字号倍数',first_size)
+        cursor_color=EffectColorEditor('#FFD700',self)
+        cursor_color.add_button.hide()
+        cursor_color.field.textChanged.connect(self.edit)
+        self.controls['caption_cursor_color']=cursor_color
+        form.addRow('光标颜色',cursor_color)
         consent = QtWidgets.QCheckBox('允许上传当前人声和文案并消耗 ELE 对齐额度', self)
         consent.setToolTip('只用主程序指定的对齐 Key；首次播放预览也会对齐，后续复用。原 task_audio.srt 不会改动。')
         consent.toggled.connect(self.edit)
         self.controls['caption_cloud_consent'] = consent
         form.addRow(consent)
         random_size = QtWidgets.QCheckBox('启用随机字号', self)
+        random_size.setAccessibleName('启用随机字号')
         random_size.setToolTip('关闭后字号使用当前范围的中间值，保留弹跳等动画；字幕框自适应仍可能缩小过长的一组。开启后恢复原对比度和种子。')
         random_size.toggled.connect(self.edit)
         self.controls['caption_random_size'] = random_size
@@ -60,13 +98,12 @@ class CaptionProperties(QtWidgets.QWidget):
         action_row = QtWidgets.QHBoxLayout()
         self.gallery_button = QtWidgets.QPushButton("样式图库…")
         self.gallery_button.clicked.connect(self.choose_gallery)
-        form.addRow(self.gallery_button)
-        self.effect_button = QtWidgets.QPushButton('高级效果…')
-        self.effect_button.clicked.connect(self.edit_effects)
-        reset = QtWidgets.QPushButton('重置当前样式')
-        reset.setToolTip('重置这个组件的字体、位置和动画效果；保留人声语言、时间戳与文案来源。')
+        action_row.addWidget(self.gallery_button)
+        reset = QtWidgets.QPushButton('还原预设默认值')
+        self.reset_button=reset
+        reset.setToolTip('明确重置当前预设的外观、位置尺寸和分组节奏；保留任务文字、人声语言、时间戳与来源。普通切换预设不重置位置和分组。')
         reset.clicked.connect(self.reset_style)
-        action_row.addWidget(self.effect_button); action_row.addWidget(reset)
+        action_row.addWidget(reset)
         form.addRow(action_row)
         self.style_note = QtWidgets.QLabel()
         self.style_note.setWordWrap(True)
@@ -84,13 +121,13 @@ class CaptionProperties(QtWidgets.QWidget):
         self.file_button.clicked.connect(self.choose_subtitle)
         file_layout.addWidget(self.file_button)
         form.addRow('SRT 文件',self.file_row)
-        self.source_note = QtWidgets.QLabel('字幕池或固定文件在“内容与来源”选择。')
+        self.source_note = QtWidgets.QLabel('字幕池或固定文件在上方“来源”选择。')
         self.source_note.setWordWrap(True)
         form.addRow(self.source_note)
         for key, label, low, high, suffix in (
             ("caption_words", "每组最多词数", 1, 32, " 个"),
             ("caption_per_line", "每行最多词数", 1, 12, " 个"),
-            ("caption_pop_ms", "原有模式弹入时长", 0, 600, " ms"),
+            ("caption_pop_ms", "入场动画时长", 0, 5000, " ms"),
             ("caption_hold_ms", "组末停留", 0, 1000, " ms"),
             ("caption_seed", "字号随机种子", 0, 999999, "")):
             control = QtWidgets.QSpinBox()
@@ -102,41 +139,131 @@ class CaptionProperties(QtWidgets.QWidget):
             form.addRow(label, control)
         self.controls['caption_timing'].setToolTip(
             '自动模式优先读取与当前人声绑定的 ELE 动态记录。词级记录按词播放；普通句级 SRT 按整块播放。\n'
+            '逐词朗读跟随需要词级时间：自动模式遇到句级 SRT 会继续精确逐词对齐。\n'
             '匀速动画按字幕块或文案长度估算逐词时间；本地模型模式执行精确对齐。')
         self.controls['caption_words'].setToolTip('每组词数上限；逐词字幕按组累积出现，普通句级 SRT 保留原字幕块。')
         self.controls['caption_per_line'].setToolTip('每行词数上限。长词会提前换行，不切开单词；仍受字幕框宽度限制。')
+        for key,label,low,high,suffix in (
+                ('caption_focus_x','聚焦位置 X',0,100,' %'),
+                ('caption_focus_y','聚焦位置 Y',0,100,' %'),
+                ('caption_context_opacity','上下文不透明度',0,100,' %'),
+                ('caption_follow_ms','滚动平滑时间',0,2000,' ms')):
+            control=QtWidgets.QSpinBox() if key=='caption_follow_ms' else QtWidgets.QDoubleSpinBox()
+            control.setRange(low,high);control.setSuffix(suffix)
+            control.valueChanged.connect(self.edit)
+            self.controls[key]=control;form.addRow(label,control)
+        self.controls['caption_focus_x'].setToolTip('相对字幕框宽度；逐词跟随时使用。50% 为字幕框水平中心。')
+        self.controls['caption_focus_y'].setToolTip('相对字幕框高度；50% 为字幕框垂直中心。')
+        self.controls['caption_follow_ms'].setToolTip('在下一个词开始前平滑移到聚焦位置；停顿时停住。0 ms 直接切换，绝不修改原时间戳。')
+        self.controls['caption_context_opacity'].setToolTip('非当前词的不透明度：100% 完全显示，0% 隐藏；当前词保持完整控件透明度。高亮框继续使用独立透明度。')
         self._organize_sections(form)
+        from .caption_effect_ui import CaptionEffectEditor
+        from .property_sections import PropertySection
+        self.effects_editor = CaptionEffectEditor()
+        self.effects_editor.changed.connect(self.apply_effects)
+        self.effect_section = PropertySection('效果细节', self.effects_editor)
+        self.forms['caption'].addRow(self.effect_section)
         draft.deleteLater()
 
     def _organize_sections(self, original):
-        from .property_sections import PropertySections
-        self.sections = PropertySections()
-        root = QtWidgets.QVBoxLayout(self); root.setContentsMargins(0,0,0,0); root.addWidget(self.sections)
-        self.forms = {}
-        for key,title in (('caption','字幕样式与动画'),('timing','字幕时间'),('caption_layout','分组与节奏'),
-                          ('random_size','随机字号（适用动画）')):
-            widget = QtWidgets.QWidget(); form = QtWidgets.QFormLayout(widget)
-            form.setRowWrapPolicy(form.RowWrapPolicy.WrapLongRows)
-            form.setFieldGrowthPolicy(form.FieldGrowthPolicy.AllNonFixedFieldsGrow)
-            self.forms[key] = form
-            self.sections.add_section(key,title,widget,expanded=key == 'caption')
-        timing = {self.controls[key] for key in ('caption_timing','caption_source','caption_language','caption_cloud_consent')}
-        timing.add(self.file_row)
+        from .property_sections import PropertySection, PropertySections
+        root = QtWidgets.QVBoxLayout(self); root.setContentsMargins(0,0,0,0)
+        self.basic_widget=QtWidgets.QWidget()
+        form=QtWidgets.QFormLayout(self.basic_widget); form.setContentsMargins(0,0,0,0)
+        form.setRowWrapPolicy(form.RowWrapPolicy.WrapLongRows)
+        form.setFieldGrowthPolicy(form.FieldGrowthPolicy.AllNonFixedFieldsGrow)
+        self.forms={'timing':form}
+        root.addWidget(self.basic_widget)
+        self.sections=PropertySections(); root.addWidget(self.sections)
+        style_widget=QtWidgets.QWidget(); style_form=QtWidgets.QFormLayout(style_widget)
+        style_form.setRowWrapPolicy(style_form.RowWrapPolicy.WrapLongRows)
+        style_form.setFieldGrowthPolicy(style_form.FieldGrowthPolicy.AllNonFixedFieldsGrow)
+        self.forms['caption']=style_form
+        self.sections.add_section('caption','字幕样式与动画',style_widget,expanded=True)
+        rhythm_widget=QtWidgets.QWidget(); rhythm_form=QtWidgets.QFormLayout(rhythm_widget)
+        rhythm_form.setRowWrapPolicy(rhythm_form.RowWrapPolicy.WrapLongRows)
+        rhythm_form.setFieldGrowthPolicy(rhythm_form.FieldGrowthPolicy.AllNonFixedFieldsGrow)
+        self.forms['caption_layout']=rhythm_form
+        self.rhythm_section=PropertySection('分组与节奏',rhythm_widget)
+        self.sections.sections['caption_layout']=self.rhythm_section
+        follow_widget=QtWidgets.QWidget();follow_form=QtWidgets.QFormLayout(follow_widget)
+        follow_form.setFieldGrowthPolicy(follow_form.FieldGrowthPolicy.AllNonFixedFieldsGrow)
+        self.forms['caption_follow']=follow_form
+        self.follow_section=PropertySection('朗读跟随',follow_widget)
+        self.sections.sections['caption_follow']=self.follow_section
+        self.typography_widget=QtWidgets.QWidget(self)
+        typography=QtWidgets.QFormLayout(self.typography_widget)
+        typography.setContentsMargins(0,0,0,0)
+        typography.setRowWrapPolicy(typography.RowWrapPolicy.WrapLongRows)
+        typography.setFieldGrowthPolicy(typography.FieldGrowthPolicy.AllNonFixedFieldsGrow)
+        self.forms['typography']=typography
+        self.random_widget=QtWidgets.QWidget(self.typography_widget)
+        random_form=QtWidgets.QFormLayout(self.random_widget)
+        random_form.setContentsMargins(0,0,0,0)
+        random_form.setRowWrapPolicy(random_form.RowWrapPolicy.WrapLongRows)
+        random_form.setFieldGrowthPolicy(random_form.FieldGrowthPolicy.AllNonFixedFieldsGrow)
+        self.forms['random_size']=random_form
+        typography.addRow(self.random_widget)
+        root.addWidget(self.typography_widget)
+        timing={self.controls[key] for key in ('caption_timing','caption_source','caption_language','caption_cloud_consent')}
+        timing.update((self.file_row,self.source_note))
+        rhythm={self.controls[key] for key in ('caption_words','caption_per_line','caption_accumulate','caption_hold_ms')}
         random_size = {self.controls[key] for key in ('caption_random_size','caption_size_contrast','caption_seed')}
-        rhythm = {self.controls[key] for key in ('caption_words','caption_per_line','caption_pop_ms','caption_hold_ms')}
+        font_controls={self.controls[key] for key in ('caption_first_line_emphasis','caption_first_line_bold','caption_first_line_scale')}
+        follow_controls={self.controls[key] for key in ('caption_follow_mode','caption_focus_x','caption_focus_y',
+            'caption_context_opacity','caption_follow_ms')}
         while original.rowCount():
             row = original.takeRow(0)
             field = row.fieldItem.widget() if row.fieldItem else None
-            if field is self.controls['caption_random_size']:
-                self.sections.sections['random_size'].set_enable_control(field)
-                continue
-            key = 'timing' if field in timing else 'random_size' if field in random_size else 'caption_layout' if field in rhythm else 'caption'
-            if isinstance(field,QtWidgets.QLabel):
-                if field is self.source_note: key = 'timing'
+            key = ('caption_follow' if field in follow_controls else 'random_size' if field in random_size else 'typography' if field in font_controls else
+                   'timing' if field in timing else 'caption_layout' if field in rhythm else 'caption')
             form = self.forms[key]
             item = field if field is not None else row.fieldItem.layout()
             if row.labelItem: form.addRow(row.labelItem.widget(),item)
             else: form.addRow(item)
+        from .property_pairs import pair_form_fields, order_form_fields
+        base=self.forms['caption']
+        order_form_fields(base,[self.controls[key] for key in ('caption_preset','caption_display_mode',
+            'caption_pop_ms','caption_cursor','caption_cursor_color')])
+        self.display_note = QtWidgets.QLabel()
+        self.display_note.setWordWrap(True)
+        self.display_note.setStyleSheet('color: palette(mid);')
+        base.insertRow(base.getWidgetPosition(self.controls['caption_display_mode'])[0]+1, self.display_note)
+        order_form_fields(self.forms['timing'],[self.controls['caption_timing'],self.file_row]+
+            [self.controls[key] for key in ('caption_source','caption_language','caption_cloud_consent')])
+        order_form_fields(rhythm_form,[self.controls[key] for key in
+            ('caption_words','caption_per_line','caption_accumulate','caption_hold_ms')])
+        self.group_pair=pair_form_fields(rhythm_form,'词数',[
+            ('group','每组',self.controls['caption_words']),('line','每行',self.controls['caption_per_line'])])
+        style_form.addRow(self.rhythm_section)
+        style_form.addRow(self.follow_section)
+        pair_form_fields(follow_form,'聚焦位置',[
+            ('x','X',self.controls['caption_focus_x']),('y','Y',self.controls['caption_focus_y'])])
+        note=QtWidgets.QLabel('按词跟随需要逐词时间戳；句级 SRT 可用按行／字幕块跟随。全文连续排版、超出字幕框裁切，'
+            '不会因文案长而整篇缩小。选择“整组显示”可预先看到上下文。每行词数控制换行，每组词数仍可控制分组配色。'
+            '跟随模式优先连续排版，随机定位和歌词上下文参数保留，关闭跟随后恢复。')
+        note.setWordWrap(True);follow_form.addRow(note)
+        # These values affect glyph SIZE, so they live with the base font size.
+        self.font_effect_controls={}
+        for key,title,low,high in (
+                ('block_typography_enabled','启用字词缩放排版',None,None),
+                ('block_scale_min','排版缩放下限',.1,3),('block_scale_max','排版缩放上限',.1,3),
+                ('word_pop_random_min_scale','随机字词缩放下限',.1,3),
+                ('word_pop_random_max_scale','随机字词缩放上限',.1,3),
+                ('scatter_min_scale','分散字词缩放下限',.1,3),('scatter_max_scale','分散字词缩放上限',.1,3)):
+            if low is None:
+                control=QtWidgets.QCheckBox(title); control.toggled.connect(self.edit_font_effects)
+                typography.addRow(control)
+            else:
+                control=QtWidgets.QDoubleSpinBox(); control.setRange(low,high); control.setDecimals(2)
+                control.setSuffix(' ×'); control.setSingleStep(.05); control.valueChanged.connect(self.edit_font_effects)
+                typography.addRow(title,control)
+            self.font_effect_controls[key]=control
+        for low,high,title in (('block_scale_min','block_scale_max','排版缩放'),
+                ('word_pop_random_min_scale','word_pop_random_max_scale','随机字词缩放'),
+                ('scatter_min_scale','scatter_max_scale','分散字词缩放')):
+            pair_form_fields(typography,title,[('min','最小',self.font_effect_controls[low]),
+                                              ('max','最大',self.font_effect_controls[high])])
 
     def form_for(self,control):
         return next(form for form in self.forms.values() if form.labelForField(control) is not None)
@@ -146,8 +273,12 @@ class CaptionProperties(QtWidgets.QWidget):
         self.layer = copy.deepcopy(layer)
         self.setEnabled(bool(layer))
         if not layer:
+            self.effects_editor.set_layer(None)
             return
+        normalize_display(self.layer)
+        layer=self.layer
         self.loading = True
+        style=effects(layer)
         timing = self.controls["caption_timing"]
         for index in range(timing.count()):
             timing.model().item(index).setEnabled(True)
@@ -158,29 +289,85 @@ class CaptionProperties(QtWidgets.QWidget):
                     control.addItem(layer[key], layer[key])
                     index = control.findData(layer[key])
                 control.setCurrentIndex(index)
-            elif isinstance(control, QtWidgets.QLineEdit):
+            elif isinstance(control, (QtWidgets.QLineEdit,EffectColorEditor)):
                 control.setText(layer[key])
             elif isinstance(control, QtWidgets.QCheckBox):
                 control.setChecked(layer[key])
             else:
-                control.setValue(layer[key])
+                if key == 'caption_pop_ms':
+                    from .caption_styles import entrance_duration_key
+                    control.setValue(round(style[entrance_duration_key(style)]*1000))
+                else:
+                    control.setValue(layer[key])
+        for key,control in self.font_effect_controls.items():
+            if isinstance(control,QtWidgets.QCheckBox): control.setChecked(style[key])
+            else: control.setValue(style[key])
         self.loading = False
-        self.controls['caption_size_contrast'].setEnabled(layer['caption_random_size'])
-        from .caption_random import supports_random_size
-        self.sections.sections['random_size'].setVisible(supports_random_size(layer))
+        self.effects_editor.set_layer(layer)
+        self.controls['caption_size_contrast'].setEnabled(True)
+        self.random_widget.show()
+        self.update_display_controls()
+        self.update_duration_label(style)
         self.update_timing_controls()
-        self.effect_button.setEnabled(is_catalog(layer))
         self.style_note.setText('播放预览可查看逐词动画。')
         self.style_note.setToolTip(description(layer))
         self.controls['caption_preset'].setToolTip(description(layer))
 
+    def update_display_controls(self):
+        if not self.layer: return
+        self.display_note.setText(DISPLAY_NOTES.get(
+            self.controls['caption_display_mode'].currentData(), '选择字幕显示方式。'))
+        self.random_widget.show()
+        self.controls['caption_cursor'].show()
+        color=self.controls['caption_cursor_color']; color.show()
+        self.form_for(color).labelForField(color).show()
+        color.setEnabled(True)
+        color.setToolTip('逐字显示并开启光标时生效；其他模式也可以预先设置，不会清除数值。')
+        self.controls['caption_words'].setEnabled(True)
+        self.controls['caption_size_contrast'].setEnabled(True)
+        for key in ('caption_first_line_bold','caption_first_line_scale'):
+            self.controls[key].setEnabled(True)
+        for key,control in self.font_effect_controls.items():
+            control.show()
+            control.setEnabled(True)
+            label=self.forms['typography'].labelForField(control)
+            if label: label.show()
+            if key.startswith('word_pop_random_'):
+                control.setToolTip('逐词随机大小动画使用；启用字词缩放排版时使用排版范围。数值始终可编辑、保留。')
+            elif key.startswith('scatter_'):
+                control.setToolTip('随机定位动画使用；启用字词缩放排版时使用排版范围。数值始终可编辑、保留。')
+
+    def update_duration_label(self, style):
+        from .caption_styles import entrance_duration_key
+        control = self.controls['caption_pop_ms']
+        key = entrance_duration_key(style)
+        self.form_for(control).labelForField(control).setText(
+            f'入场时长（{DURATION_NOTES[key]}）')
+        control.setToolTip(f'当前控制“{DURATION_NOTES[key]}”的持续时间；切换入场动画会自动对应到该动画。')
+
+    def edit_font_effects(self,*_args):
+        if self.loading or not self.layer: return
+        overrides=copy.deepcopy(self.layer.get('caption_effects',{}))
+        for key,control in self.font_effect_controls.items():
+            overrides[key]=control.isChecked() if isinstance(control,QtWidgets.QCheckBox) else control.value()
+        candidate={**self.layer,'caption_effects':overrides}
+        try: effects(candidate)
+        except ValueError as error:
+            self.style_note.setText(str(error)); return
+        self.layer=candidate; self.update_display_controls()
+        self.effects_editor.set_layer(candidate)
+        self.changed.emit(copy.deepcopy(candidate))
+
     def choose_preset(self):
+        self._apply_preset(reset_layout=False)
+
+    def _apply_preset(self, *, reset_layout):
         if self.loading or not self.layer:
             return
         selected = self.controls['caption_preset'].currentData()
         if not selected:
             return
-        updated = apply_style(self.layer,selected)
+        updated = apply_style(self.layer,selected,reset_layout=reset_layout)
         self.set_layer(updated)
         self.changed.emit({**copy.deepcopy(updated),'_caption_style_apply':True})
 
@@ -196,16 +383,13 @@ class CaptionProperties(QtWidgets.QWidget):
             dialog.deleteLater()
 
     def reset_style(self):
-        self.choose_preset()
+        self._apply_preset(reset_layout=True)
 
-    def edit_effects(self):
-        if not self.layer or not is_catalog(self.layer):
-            return
-        dialog = EffectDialog(self.layer,self)
-        if dialog.exec() == QtWidgets.QDialog.DialogCode.Accepted:
-            self.layer['caption_effects'] = dialog.value()
-            self.set_layer(self.layer)
-            self.changed.emit(copy.deepcopy(self.layer))
+    def apply_effects(self, values):
+        if self.loading or not self.layer: return
+        candidate={**self.layer,'caption_effects':copy.deepcopy(values['caption_effects'])}
+        self.set_layer(candidate)
+        self.changed.emit(copy.deepcopy(candidate))
 
     def choose_subtitle(self):
         if not self.layer or not self.allow_manual_file: return
@@ -226,10 +410,22 @@ class CaptionProperties(QtWidgets.QWidget):
     def edit(self):
         if self.loading or not self.layer:
             return
+        candidate=copy.deepcopy(self.layer)
         for key, control in self.controls.items():
-            self.layer[key] = (control.currentData() if isinstance(control, QtWidgets.QComboBox) else
-                               control.text().strip() if isinstance(control, QtWidgets.QLineEdit) else
+            if key == 'caption_pop_ms':
+                continue  # UI alias for the active animation's single duration.
+            candidate[key] = (control.currentData() if isinstance(control, QtWidgets.QComboBox) else
+                               control.text().strip() if isinstance(control, (QtWidgets.QLineEdit,EffectColorEditor)) else
                                control.isChecked() if isinstance(control, QtWidgets.QCheckBox) else control.value())
+        if self.sender() is self.controls['caption_pop_ms']:
+            from .caption_styles import entrance_duration_key
+            key=entrance_duration_key(effects(candidate))
+            candidate['caption_effects']={**candidate.get('caption_effects',{}),
+                key:self.controls['caption_pop_ms'].value()/1000}
+        try: normalize_display(candidate)
+        except ValueError as error:
+            self.style_note.setText(str(error)); return
+        self.layer=candidate
         source_apply = False
         mode = self.layer['caption_timing']
         if self.allow_manual_file and mode in {'auto','task','model','elevenlabs'}:
@@ -241,135 +437,26 @@ class CaptionProperties(QtWidgets.QWidget):
             self.layer.update(source='file',source_file=self.layer['caption_file'])
             source_apply = True
         self.update_timing_controls()
-        self.controls['caption_size_contrast'].setEnabled(self.layer['caption_random_size'])
+        self.controls['caption_size_contrast'].setEnabled(True)
+        self.update_display_controls()
+        self.effects_editor.set_layer(self.layer)
         values = copy.deepcopy(self.layer)
         if source_apply: values['_caption_source_apply'] = True
         self.changed.emit(values)
 
 
-EFFECT_LABELS = {
-    'lzx_pop_scale':'柔弹峰值倍数（1–2）',
-    'karaoke_highlight':'当前词文字变色',
-    'color_high':'当前词高亮颜色', 'high_gradient_direction':'高亮渐变方向',
-    'dynamic_box':'当前词高亮框', 'color_high_bg':'高亮框颜色', 'opacity_high_bg':'高亮框不透明度（0–255）',
-    'dynamic_radius':'高亮框圆角', 'dynamic_box_stroke':'只显示高亮框边线',
-    'dynamic_box_stroke_width':'高亮框线宽', 'high_padding':'高亮框内边距', 'high_offset_y':'高亮框纵向偏移',
-    'dyn_box_anim':'高亮框回弹', 'dyn_box_anim_overshoot':'高亮框回弹峰值', 'dyn_box_anim_duration':'高亮框回弹秒数',
-    'only_show_active_word':'只显示正在读的词',
-    'anim_in_type':'入场动画', 'anim_out_type':'出场动画', 'anim_in_duration':'入场秒数',
-    'anim_out_duration':'出场秒数', 'word_pop_random_min_scale':'随机字号最小倍数',
-    'word_pop_random_max_scale':'随机字号最大倍数', 'word_pop_random_duration':'逐词弹入秒数',
-    'word_pop_random_pulse_min_scale':'回弹最小峰值', 'word_pop_random_pulse_max_scale':'回弹最大峰值',
-    'word_pop_random_pulse_duration':'逐词回弹秒数', 'letter_jump_scale':'放大峰值',
-    'letter_jump_duration':'放大秒数', 'floating_amplitude':'漂浮振幅', 'floating_period':'漂浮周期（秒）',
-    'char_bounce_height':'跳动高度', 'metronome_bpm':'视觉脉冲节拍（不改变任务时间戳）',
-    'flash_color':'闪光颜色', 'flash_duration':'闪光秒数', 'holy_glow_radius':'圣光半径',
-    'holy_glow_color':'圣光颜色', 'holy_glow_period':'圣光周期', 'blur_sharp_max':'入场模糊强度',
-    'use_box':'整组底框', 'box_adaptive_width':'底框随文字宽度', 'box_padding_x':'底框横向内边距',
-    'box_padding_y':'底框纵向内边距', 'box_radius':'底框圆角', 'box_blur':'底框柔化',
-    'opacity_bg':'底框不透明度（0–255）', 'bg_gradient_enabled':'底框渐变',
-    'bg_gradient_colors':'底框渐变颜色', 'bg_gradient_type':'底框渐变方向',
-    'bg_gradient_highlight':'底框顶部柔光', 'shadow_blur':'阴影柔化',
-    'stroke_expand_enabled':'多层描边', 'stroke_expand_layers':'描边层数', 'stroke_expand_step':'每层外扩',
-    'stroke_expand_feather':'描边柔化', 'stroke_expand_colors':'多层描边颜色',
-    'speed_trail_enabled':'速度幻影', 'speed_trail_layers':'幻影层数', 'speed_trail_step':'幻影间隔',
-    'speed_trail_color':'幻影颜色', 'speed_trail_opacity':'幻影透明度（0–255）',
-    'use_underline':'彩色下划线', 'color_underline':'下划线颜色',
-    'global_mask_enabled':'全画面压暗', 'global_mask_color':'压暗颜色', 'global_mask_opacity':'压暗强度（0–1）',
-    'ambient_glow_enabled':'金色环境柔光', 'ambient_glow_color':'环境光颜色', 'ambient_glow_radius':'环境光范围',
-    'ambient_glow_opacity':'环境光强度（0–1）', 'ambient_lighting_enabled':'环境明暗',
-    'ambient_dark_color':'环境暗部颜色', 'ambient_dark_opacity':'环境暗部强度（0–1）',
-    'scrolling_mode':'歌词上下文', 'scrolling_visible_lines':'歌词上下文行数',
-    'scrolling_opacity_context':'上下文透明度（0–1）', 'scatter_max_words':'随机卡片最多词数',
-    'scatter_accum_prob':'词组累积概率（0–1）', 'scatter_min_scale':'随机定位最小字号倍数',
-    'scatter_max_scale':'随机定位最大字号倍数', 'scatter_min_rotate':'最小旋转角度', 'scatter_max_rotate':'最大旋转角度',
-    'fullpage_typewriter_cursor':'显示打字光标', 'fullpage_typewriter_cursor_color':'光标颜色',
-    'fullpage_typewriter_first_line_bold':'首行加粗', 'fullpage_typewriter_first_line_scale':'首行大小倍数',
-    'typewriter_reveal_type':'打字机出现单位', 'rotation':'整体旋转角度'}
-
-
-class EffectDialog(QtWidgets.QDialog):
-    """Human-editable effect controls; no JSON required, no model/network work."""
-    def __init__(self,layer,parent=None):
-        super().__init__(parent)
-        self.setWindowTitle('字幕样式 · 效果参数')
-        self.resize(560,640)
-        self.layer = copy.deepcopy(layer)
-        style = effects(layer)
-        root = QtWidgets.QVBoxLayout(self)
-        tabs = QtWidgets.QTabWidget(); root.addWidget(tabs,1)
-        forms = []
-        for name in ('动画','发光与装饰','布局特效'):
-            page = QtWidgets.QWidget(); form = QtWidgets.QFormLayout(page)
-            form.setRowWrapPolicy(form.RowWrapPolicy.WrapLongRows)
-            scroll = QtWidgets.QScrollArea(); scroll.setWidgetResizable(True); scroll.setWidget(page)
-            tabs.addTab(scroll,name); forms.append(form)
-        self.controls = {}
-        preset = preset_values(layer)
-        essential = {'color_high','karaoke_highlight','dynamic_box','anim_in_type','anim_out_type',
-            'anim_in_duration','anim_out_duration','use_box','box_padding_x','box_padding_y','box_radius',
-            'opacity_bg','bg_gradient_enabled','bg_gradient_colors'}
-        from .caption_appearance import COMMON_EFFECT_KEYS
-        keys = (set(preset)|set(layer.get('caption_effects',{}))|essential)-COMMON_EFFECT_KEYS
-        if style['dynamic_box']:
-            keys |= {'high_padding','color_high_bg','opacity_high_bg','dynamic_radius','dynamic_box_stroke',
-                'dynamic_box_stroke_width','dyn_box_anim','dyn_box_anim_duration','dyn_box_anim_overshoot'}
-        keys-=COMMON_EFFECT_KEYS
-        for key in EFFECT_LABELS:
-            if key not in keys: continue
-            value = style[key]
-            if key in {'anim_in_type','anim_out_type','typewriter_reveal_type','bg_gradient_type','high_gradient_direction'}:
-                control = Combo()
-                choices = ANIMATIONS if key.startswith('anim_') else ('word','char') if key=='typewriter_reveal_type' else ('horizontal','vertical') if key=='high_gradient_direction' else ('linear_h','linear_v')
-                labels = {'none':'无','fade':'淡入／淡出','pop':'整体回弹','slide_up':'上滑','slide_down':'下滑',
-                    'slide_left':'左滑','slide_right':'右滑','typewriter':'打字机','char_bounce':'跳动',
-                    'letter_jump':'逐词放大','word_pop_random':'逐词随机大小','word_pop_random_pulse':'逐词随机回弹',
-                    'metronome':'节奏脉冲','blur_sharp':'从模糊变清晰','holy_glow':'圣光','floating':'漂浮',
-                    'bullet_reveal':'逐行出现','flash_highlight':'闪光','scatter_pop':'随机气泡卡片',
-                    'word_random_position':'随机单词定位','word':'词','char':'字','horizontal':'横向','vertical':'纵向',
-                    'linear_h':'横向','linear_v':'纵向','lzx_word_pop':'LZX 逐词柔弹（五段曲线）'}
-                for choice in choices: control.addItem(labels.get(choice,choice),choice)
-                index = control.findData(value)
-                if index<0: control.addItem(str(value),value); index=control.findData(value)
-                control.setCurrentIndex(index)
-            elif key in COLOR_KEYS:
-                control = EffectColorEditor(value)
-            elif type(value) is bool:
-                control = QtWidgets.QCheckBox(); control.setChecked(value)
-            elif isinstance(value,(int,float)):
-                control = QtWidgets.QDoubleSpinBox(); control.setDecimals(3); control.setRange(-10000,10000)
-                control.setValue(value); control.setSingleStep(.05 if abs(value)<5 else 1)
-            else:
-                control = QtWidgets.QLineEdit(','.join(map(str,value)) if isinstance(value,list) else value)
-            self.controls[key] = control
-            section = 0 if key.startswith(('anim_','lzx_')) or any(part in key for part in ('word_pop','jump','floating','bounce','metronome','blur_sharp')) else (
-                1 if any(part in key for part in ('ambient','glow','stroke_expand','speed_trail','underline','mask','shadow','flash')) else 2)
-            forms[section].addRow(EFFECT_LABELS[key],control)
-        note = QtWidgets.QLabel('文字变色、当前词高亮框、整组底框与逐组换色统一在“字体”中设置。这里仅调整特殊动画、发光与布局特效；时间戳不变。')
-        note.setWordWrap(True); root.addWidget(note)
-        buttons = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.StandardButton.Ok|QtWidgets.QDialogButtonBox.StandardButton.Cancel)
-        buttons.accepted.connect(self.validate); buttons.rejected.connect(self.reject); root.addWidget(buttons)
-
-    def value(self):
-        result = copy.deepcopy(self.layer.get('caption_effects',{}))
-        for key,control in self.controls.items():
-            result[key] = (control.currentData() if isinstance(control,QtWidgets.QComboBox) else
-                control.isChecked() if isinstance(control,QtWidgets.QCheckBox) else
-                control.value() if isinstance(control,QtWidgets.QDoubleSpinBox) else control.text().strip())
-        return result
-
-    def validate(self):
-        try:
-            effects({**self.layer,'caption_effects':self.value()})
-        except ValueError as error:
-            QtWidgets.QMessageBox.warning(self,'字幕参数无效',str(error)); return
-        self.accept()
 
 
 def caption_property_panel(services=None, *, mode='batch'):
     from .component_inspector import ComponentPropertyPanel
-    from .component_ui import add_text_properties
+    from .component_ui import add_text_properties, TextBoxProperties
     from .captions import DEFAULTS
+    from .caption_display import DEFAULTS as DISPLAY_DEFAULTS
+    from . import caption_styles
+    if (not DISPLAY_DEFAULTS.keys() <= DEFAULTS.keys() or 'caption_effects_version' not in DEFAULTS or
+            not callable(getattr(caption_styles,'freeze_effect_parameters',None)) or
+            not getattr(TextBoxProperties,'paired_font_fields',False)):
+        raise RuntimeError('字幕源码已更新，请在方便时重启程序后使用新的字幕设置；当前参数未修改。')
     from .caption_styles import LAYER_KEYS
     panel = ComponentPropertyPanel(mode=mode)
     def patch(values):
@@ -383,13 +470,19 @@ def caption_property_panel(services=None, *, mode='batch'):
     add_text_properties(panel)
     panel.caption_properties = panel.add_bound('caption', '', CaptionProperties(allow_manual_file=mode != 'node_caption'), patch=patch, section=False)
     panel.sections.update(panel.caption_properties.sections.sections)
+    typography=panel.caption_properties.typography_widget
+    panel.caption_properties.layout().removeWidget(typography)
+    font_form=panel.text_properties.font_size_form
+    font_form.insertRow(font_form.getWidgetPosition(panel.text_properties.font_size_pair)[0]+1,typography)
     from .caption_appearance_ui import CaptionAppearanceEditor
     panel.caption_appearance=panel.add_bound('caption_appearance','',CaptionAppearanceEditor(),section=False)
     panel.body.removeWidget(panel.caption_appearance)
-    panel.text_properties.style_sections.sections['font'].content.layout().addRow(panel.caption_appearance)
+    font_form.insertRow(font_form.getWidgetPosition(panel.text_properties.random_color_section)[0],panel.caption_appearance)
     panel.sections.update(panel.caption_appearance.sections.sections)
     panel.caption_background=panel.add_bound('caption_background','',CaptionAppearanceEditor(background=True),section=False)
     panel.body.removeWidget(panel.caption_background)
     panel.text_properties.style_sections.sections['background'].content.layout().addRow(panel.caption_background)
     panel.sections.update(panel.caption_background.sections.sections)
+    from .caption_basics_ui import compose_basics
+    compose_basics(panel)
     return panel

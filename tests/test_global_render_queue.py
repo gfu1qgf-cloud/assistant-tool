@@ -166,11 +166,13 @@ class GlobalRenderQueueTests(unittest.TestCase):
 
     def test_worker_reports_stable_batch_total_and_individual_items(self):
         state = ProfileStore(self.store.directory, 'default').load()
-        events, items = [], []
+        events, items, stages = [], [], []
         context = SimpleNamespace(is_canceled=lambda: False,
             report=lambda message, value: events.append((message,value)),
             report_item=lambda identifier, value: items.append((identifier,value)), log=lambda *_:None)
+        context.report_item_stage = lambda identifier, stage: stages.append((identifier, stage))
         def fake_batch(_store, _state, ids, _token, progress, _message, done, **_kwargs):
+            progress.stage(ids[0], '等待字幕模型')
             progress(ids[0], 30); progress(ids[0], 80); done(ids[0], '已完成')
             return {'completed':1,'failed':0,'cancelled':False,'paths':[]}, _state
         with patch('app_plugins.builtin.batch_text_video.background.execute_batch', side_effect=fake_batch):
@@ -179,6 +181,7 @@ class GlobalRenderQueueTests(unittest.TestCase):
         self.assertEqual([v for _,v in items], [30,80,100])
         self.assertEqual([v for _,v in events], [30,80,100])
         self.assertTrue(all('第 1/' not in message for message,_ in events))
+        self.assertEqual(stages, [('a','等待字幕模型'), ('a','已完成')])
 
     def test_dialog_can_stage_two_profiles_submit_and_switch_while_queued(self):
         app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
@@ -219,6 +222,11 @@ class GlobalRenderQueueTests(unittest.TestCase):
             self.assertEqual(dialog.jobs.item(0, 0).data(PROGRESS_ROLE), 35)
             self.assertEqual(dialog.jobs.item(0, 2).text(), '35%')
             self.assertIsNone(dialog.jobs.cellWidget(0, 2))
+            manager._on_item_stage(dialog._host_plans['default'].task_id, 'a', '等待字幕模型')
+            self.assertEqual(dialog.jobs.item(0, 1).text(), '等待字幕模型')
+            self.assertIn('等待字幕模型', dialog.render_queue_panel.table.item(0, 1).text())
+            manager._on_item_progress(dialog._host_plans['default'].task_id, 'a', 36)
+            self.assertEqual(dialog.jobs.item(0, 1).text(), '等待字幕模型')
             dialog.switch_profile(third)
             self.assertTrue(dialog.left_column.isEnabled())
             self.assertTrue(dialog.task_text_panel.isEnabled())
@@ -239,7 +247,8 @@ class GlobalRenderQueueTests(unittest.TestCase):
             dialog.start_staged_plans()
             self.assertIn('密盘空间不足', dialog.status.text())
             self.assertFalse(dialog._host_plans)
-            self.assertTrue(dialog.generate.isEnabled())
+            self.assertTrue(dialog.jobs.isEnabled())
+            self.assertFalse(hasattr(dialog,'generate'))
             self.assertEqual(self.store.load()['render_plans'][0]['status'], 'staged')
             dialog.close()
             app.processEvents()

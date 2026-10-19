@@ -178,6 +178,8 @@ class ContentSourceEditor(QtWidgets.QWidget):
 
     def __init__(self,parent=None):
         super().__init__(parent)
+        self.setMinimumWidth(0)
+        self.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored,QtWidgets.QSizePolicy.Policy.Maximum)
         self.layer,self.loading = None,False
         self.pool_state = {"resource_pools": []}
         layout = QtWidgets.QVBoxLayout(self)
@@ -242,7 +244,7 @@ class ContentSourceEditor(QtWidgets.QWidget):
         self.copy_binding.setToolTip('默认文案池与队列已搭配时，标题和正文读取同一条文案；独立轮换会忽略任务对应关系。')
         self.copy_binding.currentIndexChanged.connect(self.copy_binding_changed)
         layout.addWidget(self.copy_binding)
-        layout.addStretch()
+        layout.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop)
 
     def set_layer(self,layer):
         self.loading = True
@@ -285,7 +287,7 @@ class ContentSourceEditor(QtWidgets.QWidget):
         sequence = layer["source"] in {"sequence", "pool"}
         text = layer["kind"] not in {"image", "caption"}
         self.file_row.setVisible(layer["source"] == "file" or not text and layer["kind"] == "image" and layer["source"] == "fixed")
-        self.text.setVisible(text and layer["source"] == "fixed")
+        self.text.setVisible(text and layer["source"] == "fixed" and getattr(self,'show_fixed_text',True))
         self.edit_sequence.setVisible(layer["source"] == "sequence")
         self.reset.setVisible(sequence)
         self.add_images.setVisible(layer["source"] == "sequence" and not text)
@@ -306,7 +308,7 @@ class ContentSourceEditor(QtWidgets.QWidget):
         elif layer["source"] == "job":
             self.note.setText("读取每个任务自己的文案；旧的标题和正文配置保持兼容。")
         elif layer["source"] == "voice":
-            self.note.setText("使用当前任务人声及字幕；精确时间或匀速动画在字幕动画中设置。")
+            self.note.setText("使用当前任务的人声与字幕；时间戳来源在下方设置。")
         else:
             self.note.setText("固定来源用于每个视频；原文件不会被修改。")
 
@@ -400,6 +402,7 @@ class ContentSourceEditor(QtWidgets.QWidget):
 
 class TextBoxProperties(QtWidgets.QWidget):
     changed = QtCore.pyqtSignal(object)
+    paired_font_fields = True
 
     def __init__(self,parent=None):
         super().__init__(parent)
@@ -443,6 +446,10 @@ class TextBoxProperties(QtWidgets.QWidget):
         font.currentFontChanged.connect(self.update_values)
         form.addRow("字体",font)
         self.controls["font"] = font
+        self.font_size_form = form
+        self.font_size_section = self.style_sections.sections['font']
+        self._number(form,'font_min','最小字号',8,200,0)
+        self._number(form,'font_max','最大字号',8,200,0)
         color_form = form
         self._color(color_form,"color","基准文字颜色")
         mode = Combo()
@@ -508,19 +515,12 @@ class TextBoxProperties(QtWidgets.QWidget):
         cases.currentIndexChanged.connect(self.update_values)
         self.controls["capitalization"] = cases
         form.addRow("大小写",cases)
-        size_widget = QtWidgets.QWidget()
-        self.font_size_form = QtWidgets.QFormLayout(size_widget)
-        self.font_size_form.setRowWrapPolicy(self.font_size_form.RowWrapPolicy.WrapLongRows)
-        self.font_size_form.setFieldGrowthPolicy(self.font_size_form.FieldGrowthPolicy.AllNonFixedFieldsGrow)
-        self.font_size_section = PropertySection('字号', size_widget, expanded=True)
-        self.font_size_section.setToolTip('字号与效果像素按1080宽画布计算；自动适配在上下限之间调整。')
-        form.addRow(self.font_size_section)
-        for key,label,low,high in (("font_min","最小字号",8,200),("font_max","最大字号",8,200),
-                                  ("line_spacing","行间距",.8,3),("letter_spacing","字距 px",-5,30),
+        for key,label,low,high in (("line_spacing","行间距",.8,3),("letter_spacing","字距 px",-5,30),
                                   ("word_spacing","附加词距 px",-5,60),("paragraph_spacing","段间距 px",0,120)):
-            self._number(self.font_size_form if key in {'font_min','font_max'} else layout_form,key,label,low,high,
+            self._number(layout_form,key,label,low,high,
                          2 if key == "line_spacing" else 1 if key.endswith("spacing") else 0)
-        form.addRow(PropertySection('排版与间距',layout_widget))
+        self.layout_section=PropertySection('排版与间距',layout_widget)
+        form.addRow(self.layout_section)
         self.controls['word_spacing'].setToolTip('这是在基本空格之外追加的距离，不是空格总宽度。0 不会删除空格；水印和达芬奇逐词柔弹以字体自然空格为基础。数值按1080宽画布缩放。')
         self._number(outline,"outline_width","描边厚度 px",0,15,1)
         self._outline_widths = {}
@@ -564,6 +564,13 @@ class TextBoxProperties(QtWidgets.QWidget):
             section = self.style_sections.sections[key]
             self.style_sections.body.removeWidget(section)
             form.addRow(section)
+        from .property_pairs import order_form_fields, pair_form_fields
+        order_form_fields(form,[font,weight,self.weight_status,flags,cases,
+            self.controls['font_min'],self.controls['font_max'],self.controls['color'],
+            self.controls['color_mode'],self.random_color_section,self.layout_section]+
+            [self.style_sections.sections[key] for key in ('outline','shadow','background')])
+        self.font_size_pair=pair_form_fields(form,'字号',[
+            ('min','最小',self.controls['font_min']),('max','最大',self.controls['font_max'])])
 
     def _page(self,title):
         page = QtWidgets.QWidget()
@@ -621,20 +628,24 @@ class TextBoxProperties(QtWidgets.QWidget):
         self._weight_status_key = None
 
     def _show_effect_controls(self):
+        caption=bool(self.layer and self.layer['kind']=='caption')
+        for section in self.style_sections.sections.values():
+            section.disable_content_when_off = not caption
+            section.sync_enabled()
         width = self.controls['outline_width'].value()
         if self.layer and width > 0:
             self._outline_widths[self.layer['id']] = width
         blocker = QtCore.QSignalBlocker(self.outline_toggle)
         self.outline_toggle.setChecked(width > 0)
         del blocker
-        self.style_sections.sections['outline'].content.setEnabled(width > 0)
+        self.style_sections.sections['outline'].content.setEnabled(caption or width > 0)
         random_allowed = bool(self.layer)
         self.controls["color_mode"].setEnabled(random_allowed)
         family = random_allowed and self.controls["color_mode"].currentData() == "family"
-        self.random_color_section.setVisible(family)
+        self.random_color_section.setVisible(caption or family)
         for key in ("color_hue_variation", "color_saturation_variation", "color_value_variation", "color_seed"):
-            self.controls[key].setEnabled(family)
-        self.new_color_group.setEnabled(family)
+            self.controls[key].setEnabled(caption or family)
+        self.new_color_group.setEnabled(caption or family)
         if self.layer:
             sample_layer = {**self.layer, **{key:self.controls[key].value() for key in (
                 "color_hue_variation", "color_saturation_variation", "color_value_variation")},
@@ -657,7 +668,7 @@ class TextBoxProperties(QtWidgets.QWidget):
         for group,keys in (("shadow_enabled",("shadow_color","shadow_opacity","shadow_blur","shadow_x","shadow_y")),
                             ("background_enabled",("background_color","background_opacity","background_radius"))):
             for key in keys:
-                self.controls[key].setEnabled(self.controls[group].isChecked())
+                self.controls[key].setEnabled(caption or self.controls[group].isChecked())
         enabled = self.controls["background_enabled"].isChecked()
         allowed = bool(self.layer and self.layer["kind"] != "caption")
         self.controls["background_mode"].setEnabled(enabled and allowed)
@@ -675,7 +686,7 @@ class TextBoxProperties(QtWidgets.QWidget):
             control=self.controls[key]; control.setVisible(not caption)
             label=form.labelForField(control)
             if label: label.setVisible(not caption)
-        self.controls['outline_blur'].setEnabled(self.controls['outline_width'].value()>0)
+        self.controls['outline_blur'].setEnabled(caption or self.controls['outline_width'].value()>0)
         self.controls["background_mode"].setToolTip(self._background_mode_tip)
 
     def set_layer(self,layer):
@@ -742,8 +753,12 @@ def text_property_panel(services=None, *, mode='batch'):
     from .component_inspector import ComponentPropertyPanel
     from .scrolling_text_ui import ScrollTextProperties
     panel = ComponentPropertyPanel(mode=mode)
+    from .inspector_layout_contract import require_flat_layout
+    require_flat_layout(panel)
     panel.add_source()
     panel.add_geometry()
     add_text_properties(panel)
     panel.scroll_properties = panel.add_bound('scroll', '文字滚动动画', ScrollTextProperties())
+    scroll=panel.sections['scroll']
+    panel.body.removeWidget(scroll); panel.body.insertWidget(2,scroll)
     return panel

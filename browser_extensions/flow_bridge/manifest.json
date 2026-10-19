@@ -1,0 +1,97 @@
+{
+  "manifest_version": 3,
+  "name": "Flow 视频助手 · 辅助工具桥接",
+  "version": "1.1.13",
+  "description": "基于 FlowCue 1.1.4 的辅助工具桥接：任务调度、自动下载与任务目录归档。",
+  "permissions": [
+    "storage",
+    "downloads",
+    "tabs",
+    "debugger",
+    "alarms"
+  ],
+  "host_permissions": [
+    "https://flow.google.com/*",
+    "https://labs.google/*",
+    "https://docs.google.com/*",
+    "https://*.usercontent.google.com/*",
+    "https://*.googleusercontent.com/*",
+    "https://*.googleapis.com/*",
+    "https://*.googlevideo.com/*",
+    "https://flow-content.google/*",
+    "http://127.0.0.1/*"
+  ],
+  "background": {
+    "service_worker": "lzx-background.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "*://flow.google.com/*",
+        "*://*.flow.google.com/*",
+        "*://labs.google/*",
+        "*://*.labs.google/*",
+        "*://docs.google.com/videos/*"
+      ],
+      "css": [
+        "injects/ui.css"
+      ],
+      "run_at": "document_start",
+      "all_frames": true
+    },
+    {
+      "matches": [
+        "*://flow.google.com/*",
+        "*://*.flow.google.com/*",
+        "*://labs.google/*",
+        "*://*.labs.google/*",
+        "*://docs.google.com/videos/*"
+      ],
+      "js": [
+        "lzx-page.js",
+        "injects/flow-proxy.js",
+        "injects/ui.js"
+      ],
+      "run_at": "document_start",
+      "world": "MAIN",
+      "all_frames": true
+    },
+    {
+      "matches": [
+        "*://flow.google.com/*",
+        "*://*.flow.google.com/*",
+        "*://labs.google/*",
+        "*://*.labs.google/*",
+        "*://docs.google.com/videos/*"
+      ],
+      "js": [
+        "content-isolated.js"
+      ],
+      "run_at": "document_start",
+      "world": "ISOLATED",
+      "all_frames": true
+    },
+    {
+      "matches": [
+        "*://flow.google.com/*",
+        "*://*.flow.google.com/*",
+        "*://labs.google/*",
+        "*://*.labs.google/*",
+        "*://docs.google.com/videos/*"
+      ],
+      "js": [
+        "lzx-content.js"
+      ],
+      "run_at": "document_start",
+      "world": "ISOLATED",
+      "all_frames": true
+    }
+  ],
+  "action": {
+    "default_title": "FlowCue 插件 (Flow & Vids)"
+  },
+  "minimum_chrome_version": "120",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAnvFDGkX5m/XE6cRqK89rmU6CkCtcOue7G3zgttpk45gF21Y9SQi4L6IvLh4SgLIPcU3Gm5MsXjB4UqmC03ssHqI9Q5SG4TqkGpS+LunJanIVy9Q7ak3IevqA1A3QgA28iAbMHsX9a8sEL/qhi13afdr7n42eF6A4XzJs3+9An6pjzAPNjK4AJLF7PytIzY9YxJ4eg7ANPQUPVTC233hvW5OGMXOxdo4QX1/qGe1npm6E8wwnGfp85NkRPLohy9t1cfJreXcqfswkRa1QlyeKsCfTIKQX2vclCDavsoddro3w98YS4SRb4Tz8NRnbJITsOoPqCbMtXyaWP2QIyy/S6QIDAQAB",
+  "options_page": "options.html"
+}

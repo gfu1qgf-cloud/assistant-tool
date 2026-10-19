@@ -60,7 +60,7 @@ class CaptionStyleNodeTests(unittest.TestCase):
         self.info = {"duration": 3.5, "video": {"width": 360, "height": 640}, "audio": True}
 
     def layer(self, preset="pop", **values):
-        layer = apply_style(new_caption(), preset)
+        layer = apply_style(new_caption(), preset,reset_layout=True)
         layer.update(caption_timing="task", **values)
         return normalize_node_caption(layer)
 
@@ -137,9 +137,10 @@ class CaptionStyleNodeTests(unittest.TestCase):
             properties.controls["caption_preset"].setCurrentIndex(
                 properties.controls["caption_preset"].findData("videokit:渐变蓝色框"))
             self.assertEqual(updates[-1]["caption"]["caption_preset"], "videokit:渐变蓝色框")
-            self.assertTrue(properties.effect_button.isEnabled())
+            self.assertTrue(properties.effect_section.isEnabled())
+            self.assertTrue(properties.effect_section.isAncestorOf(properties.effects_editor))
             self.assertTrue(('font' in editor.panel.editor.sections))
-            self.assertTrue(('position' in editor.panel.editor.sections))
+            self.assertIs(editor.panel.editor.targets['position'],editor.panel.editor.geometry_editor)
             self.assertFalse(('source' in editor.panel.editor.sections))
             self.assertIn("font_weight", editor.panel.text_properties.controls)
             self.assertIn("shadow_color", editor.panel.text_properties.controls)

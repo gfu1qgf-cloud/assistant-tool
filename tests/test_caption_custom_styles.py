@@ -9,7 +9,7 @@ from qt_compat import QtCore, QtGui, QtWidgets
 from app_plugins.builtin.batch_text_video.caption_custom_styles import LZX_WORD_POP, pop_curve
 from app_plugins.builtin.batch_text_video.caption_styles import apply_style, effects, preset_choices, description
 from app_plugins.builtin.batch_text_video.caption_style_render import make_primitives, motion_at, render_design
-from app_plugins.builtin.batch_text_video.caption_ui import EffectDialog
+from app_plugins.builtin.batch_text_video.caption_effect_ui import CaptionEffectEditor
 from app_plugins.builtin.batch_text_video.caption_gallery import sample
 from app_plugins.builtin.batch_text_video.captions import new_caption, write_caption_ass, filter_path
 from app_plugins.builtin.batch_text_video.layout import ensure_fonts
@@ -29,11 +29,11 @@ class CustomCaptionStyleTests(unittest.TestCase):
         self.app.sendPostedEvents(None,QtCore.QEvent.Type.DeferredDelete)
 
     def layer(self):
-        return normalize_layers([apply_style(new_caption(),LZX_WORD_POP)])[0]
+        return normalize_layers([apply_style(new_caption(),LZX_WORD_POP,reset_layout=True)])[0]
 
     def test_recipe_kept_separate_from_upstream_and_preserves_timing_selection(self):
         original=new_caption(); original.update(caption_timing='model',caption_language='sk',caption_source='full')
-        value=apply_style(original,LZX_WORD_POP)
+        value=apply_style(original,LZX_WORD_POP,reset_layout=True)
         self.assertIn(('自制达芬奇字幕-逐词柔弹',LZX_WORD_POP),preset_choices())
         for key in ('caption_timing','caption_language','caption_source'): self.assertEqual(value[key],original[key])
         self.assertFalse(value['caption_random_size'])
@@ -61,7 +61,7 @@ class CustomCaptionStyleTests(unittest.TestCase):
         self.assertTrue(all(p['motion']=='lzx_word_pop' for p in glyphs))
 
     def test_effect_dialog_exposes_peak_and_rejects_out_of_range(self):
-        value=self.layer(); editor=EffectDialog(value)
+        value=self.layer(); editor=CaptionEffectEditor(value)
         self.addCleanup(editor.deleteLater)
         self.assertIn('lzx_pop_scale',editor.controls)
         editor.controls['lzx_pop_scale'].setValue(1.75)

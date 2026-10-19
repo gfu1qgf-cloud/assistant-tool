@@ -3,6 +3,7 @@ from model.AppDataStorage import data_directory
 import re
 from datetime import date
 from pathlib import Path
+from string import Formatter
 from typing import Any, Callable, Dict, List, NamedTuple, Optional
 
 from model.TaskResultFileGuard import (
@@ -37,7 +38,7 @@ def folder_name(task_date: date) -> str:
     return f"{task_date.month:02d}{task_date.day:02d}"
 
 
-def render_template(template: str, task, task_date: date, index=None) -> str:
+def render_template(template: str, task, task_date: date, index=None, *, task_name=None) -> str:
     values = _TemplateValues(
         year=task_date.year,
         month=task_date.month,
@@ -49,7 +50,7 @@ def render_template(template: str, task, task_date: date, index=None) -> str:
         admin=task.admin,
         creator=task.creator,
         task_date=task.task_date,
-        task_name=task.task_name,
+        task_name=task.task_name if task_name is None else task_name,
         task_type=task.task_type,
     )
     return str(template or "").format_map(values)
@@ -160,21 +161,54 @@ def limit_output_filename(file_name: str, max_length: int) -> str:
     return limited_name if str(parent) in {"", "."} else str(parent / limited_name)
 
 
-def legacy_output_name(
-    task, task_date: date, config: Dict, profile=None, index=None
-) -> str:
+def _output_template(config, profile=None):
     profile = profile if isinstance(profile, dict) else {}
-    template = (
+    return (
         profile.get("output_name_template")
         or config.get("task_output_name_template")
         or "{task_id}-{task_name}.mp4"
     )
-    return render_template(template, task, task_date, index=index)
+
+
+def legacy_output_name(
+    task, task_date: date, config: Dict, profile=None, index=None
+) -> str:
+    return render_template(_output_template(config, profile), task, task_date, index=index)
 
 
 def output_name(task, task_date: date, config: Dict, profile=None, index=None) -> str:
     original = legacy_output_name(task, task_date, config, profile, index)
-    return limit_output_filename(original, output_filename_max_length(config))
+    maximum = output_filename_max_length(config)
+    if index is None:
+        return limit_output_filename(original, maximum)
+
+    template = _output_template(config, profile)
+    has_index = any(field == 'index' for _, field, _, _ in Formatter().parse(template))
+
+    def numbered(title):
+        name = render_template(template, task, task_date, index=index, task_name=title)
+        if not has_index:
+            path = Path(name)
+            name = str(path.with_name(f'{path.stem}-{index}{path.suffix}'))
+        return name
+
+    title = str(task.task_name)
+    name = numbered(title)
+    if maximum <= 0 or len(Path(name).name) <= maximum:
+        return name
+    # Trim the title *inside* the template, not the rendered tail: task ID,
+    # formatted index and extension must survive, wherever the index appears.
+    if len(Path(numbered('')).name) > maximum:
+        raise ValueError(f'成品命名模板的固定内容超过 {maximum} 字符，无法安全保留视频序号；'
+                         '请增加最大文件名长度或缩短命名模板。')
+    low, high = 0, len(title)
+    while low < high:
+        middle = (low + high + 1) // 2
+        if len(Path(numbered(title[:middle])).name) <= maximum:
+            low = middle
+        else:
+            high = middle - 1
+    return numbered(title[:low])
 
 
 def compatible_output_path(directory: Path, current_name: str, legacy_name: str) -> Path:
@@ -246,7 +280,9 @@ def export_task(
             return []
         updated = []
         from model.MediaStorage import generated_media_path
-        videos = (path for path in task_dir.rglob('*.mp4') if not generated_media_path(path))
+        videos = sorted((path for path in task_dir.rglob('*.mp4') if not generated_media_path(path)),
+                        key=lambda path: str(path.relative_to(task_dir)).casefold())
+        planned, destinations = [], {}
         for index, video_file in enumerate(videos, start=1):
             legacy_name = legacy_output_name(
                 task,
@@ -259,6 +295,14 @@ def export_task(
                 task, task_date, config, profile, index=index
             )
             dst = compatible_output_path(output_dir, current_name, legacy_name)
+            identity = str(dst.absolute()).casefold()
+            if identity in destinations:
+                raise ValueError('不同视频的成品名称冲突，未开始复制：'
+                                 f'{destinations[identity].name} / {video_file.name} → {dst.name}。'
+                                 '请在命名模板中保留有效的 {index} 序号。')
+            destinations[identity] = video_file
+            planned.append((video_file, dst))
+        for video_file, dst in planned:
             if _copy_output(video_file, dst, remember_output, deferred_file_callback):
                 updated.append(dst)
         return updated

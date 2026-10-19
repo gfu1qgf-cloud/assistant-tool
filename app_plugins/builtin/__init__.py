@@ -4,6 +4,14 @@ from .batch_text_video import BatchTextVideoPlugin
 from .video_stitch import VideoStitchPlugin
 from .chrome_launcher import ChromeLauncherPlugin
 from .codex_account_switcher import CodexAccountSwitcherPlugin
+try:
+    from .antigravity_account_switcher.plugin import AntigravityAccountSwitcherPlugin
+except ModuleNotFoundError as exc:
+    if exc.name not in {'app_plugins.builtin.antigravity_account_switcher',
+                        'app_plugins.builtin.antigravity_account_switcher.plugin'}:
+        raise
+    AntigravityAccountSwitcherPlugin = None
+from .flow_assistant import FlowAssistantPlugin
 from .cooking_assistant import CookingAssistantPlugin
 from .daily_tasks import DailyTasksPlugin
 try:
@@ -38,6 +46,8 @@ __all__ = [
     "VideoStitchPlugin",
     "ChromeLauncherPlugin",
     "CodexAccountSwitcherPlugin",
+    "AntigravityAccountSwitcherPlugin",
+    "FlowAssistantPlugin",
     "DailyTasksPlugin",
     "FacebookContactSheetPlugin",
     "DaVinciRemotePlugin",

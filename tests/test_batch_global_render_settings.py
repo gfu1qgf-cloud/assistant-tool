@@ -151,6 +151,51 @@ class GlobalRenderSettingsTests(unittest.TestCase):
 
     @unittest.skipUnless(os.environ.get('NODE_FFMPEG') and Path(os.environ.get('NODE_FFMPEG','')).is_file(),
                          '需要本地FFmpeg短片')
+    def test_four_one_video_projects_enter_real_encoders_together(self):
+        from qt_compat import QtWidgets
+        app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+        ffmpeg = os.environ['NODE_FFMPEG']
+        source = self.root/'background.mp4'
+        subprocess.run([ffmpeg, '-y', '-nostdin', '-loglevel', 'error', '-f', 'lavfi', '-i',
+            'color=c=blue:s=160x240:r=10:d=0.4', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', str(source)],
+            check=True, timeout=15, capture_output=True)
+        profiles = []
+        for number in range(4):
+            state = self.store.load()
+            if number: state = self.store.create_profile(state, f'项目{number}')
+            identifier, job_id = state['active_profile'], f'job-{number}'
+            profiles.append((identifier, job_id))
+            state['jobs'] = [self.job(job_id)]
+            state['settings'].update(layers=[], aspect='source', use_voice=False, music_enabled=False,
+                                      auto_crop_black_bars=False, unvoiced_duration_mode='source')
+            self.store.save(state, state['revision'])
+        self.store.save_render_settings({**self.store.load()['render_settings'], 'export_workers':4,
+                                         'ffmpeg_path':ffmpeg, 'video_encoder':'cpu'})
+        from app_plugins.builtin.batch_text_video.prepared_export import PreparedExport
+        original = PreparedExport._encode
+        barrier = threading.Barrier(4)
+        seen, phases = [], []
+        lock = threading.Lock()
+        def encode(prepared):
+            with lock: seen.append(prepared.workers)
+            barrier.wait(10)
+            return original(prepared)
+        def run(identifier, job_id):
+            state = ProfileStore(self.store.directory, identifier).load()
+            context = SimpleNamespace(is_canceled=lambda:False, report=lambda *_:None, log=lambda *_:None,
+                report_item_stage=lambda item, phase: phases.append((item, phase)))
+            return run_batch_video_job(dict(store_dir=str(self.store.directory), profile_id=identifier,
+                                            state=state, ids=[job_id]), context)
+        with patch.object(PreparedExport, '_encode', encode), ThreadPoolExecutor(max_workers=4) as executor:
+            results = [f.result(30) for f in [executor.submit(run, *profile) for profile in profiles]]
+        self.assertEqual([r['completed'] for r in results], [1,1,1,1])
+        self.assertEqual(seen, [4,4,4,4])
+        self.assertEqual(sum(phase == '编码中' for _, phase in phases), 4)
+        for identifier, _ in profiles:
+            self.assertEqual(ProfileStore(self.store.directory, identifier).load()['jobs'][0]['status'], '已完成')
+
+    @unittest.skipUnless(os.environ.get('NODE_FFMPEG') and Path(os.environ.get('NODE_FFMPEG','')).is_file(),
+                         '需要本地FFmpeg短片')
     def test_two_real_projects_encode_together_and_commit_independent_results(self):
         from qt_compat import QtWidgets
         app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])

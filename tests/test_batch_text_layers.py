@@ -243,7 +243,7 @@ class BatchTextLayerTests(unittest.TestCase):
                 dialog = BatchTextVideoDialog(store=store)
                 try:
                     self.assertTrue(dialog.layer_panel.add_images([source]))
-                    self.assertFalse(dialog.generate.isEnabled())
+                    self.assertFalse(dialog.jobs.isEnabled())
                     wait_until(lambda: dialog.layer_panel.worker is None)
                     dialog.edit_timer.stop()
                     self.assertTrue(dialog.persist())

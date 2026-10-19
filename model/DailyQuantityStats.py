@@ -147,7 +147,7 @@ def _duration_fields(record, cache=None):
 
 def _adjust_fl_oral_counts(groups, category_options=None, duration_cache=None,
                            drive_service=None, read_remote=False):
-    """Promote only FL short oral counts; never rewrite local ODS classifications."""
+    """Classify FL oral counts in both directions without editing task ODS data."""
     from model.TaskSubmissionHelper import ORAL_SHORT_MAX_DURATION_MILLIS
 
     cache = duration_cache if isinstance(duration_cache, dict) else {}
@@ -156,13 +156,15 @@ def _adjust_fl_oral_counts(groups, category_options=None, duration_cache=None,
     remote_failed = False
     for key, videos in groups.items():
         sheet, day, slot, category, creator = key
-        if _key(category) != "fl短口播":
+        is_short = _key(category) == "fl短口播"
+        if not is_short and _key(category) != "fl长口播":
             result[key].extend(videos)
             continue
-        desired_label = re.sub(r"短\s*口\s*播", "长口播", category)
+        target_kind = "长口播" if is_short else "短口播"
+        desired_label = re.sub(r"[短长]\s*口\s*播", target_kind, category)
         labels = (category_options or {}).get(sheet, [])
-        long_labels = [label for label in labels if _key(label) == "fl长口播"]
-        long_label = long_labels[0] if len(long_labels) == 1 else desired_label
+        matching_labels = [label for label in labels if _key(label) == _key(desired_label)]
+        target_label = matching_labels[0] if len(matching_labels) == 1 else desired_label
         for video in videos:
             source = _duration_fields(video)
             file_id = source["duration_drive_file_id"]
@@ -194,12 +196,18 @@ def _adjust_fl_oral_counts(groups, category_options=None, duration_cache=None,
             if duration is not None and cache_key:
                 used_cache[cache_key] = duration
             target = category
-            if duration is not None and duration > ORAL_SHORT_MAX_DURATION_MILLIS:
-                if category_options is not None and len(long_labels) != 1:
-                    warnings.append(f"{video.get('file_name') or file_id}：超过 60 秒，但统计分页 {sheet} "
-                                    f"中的 FL 长口播匹配到 {len(long_labels)} 行；暂按原类别计数，请核对类别")
+            should_switch = duration is not None and (
+                (is_short and duration > ORAL_SHORT_MAX_DURATION_MILLIS)
+                or (not is_short and duration <= ORAL_SHORT_MAX_DURATION_MILLIS)
+            )
+            if should_switch:
+                if category_options is not None and len(matching_labels) != 1:
+                    length_note = "超过" if is_short else "不超过"
+                    warnings.append(f"{video.get('file_name') or file_id}：{length_note} 60 秒，但统计分页 {sheet} "
+                                    f"中的 {target_kind}匹配到 {len(matching_labels)} 行；"
+                                    "暂按原类别计数，请核对类别")
                 else:
-                    target = long_label
+                    target = target_label
                     adjustments.append({"file_name": video.get("file_name", file_id),
                                         "date": day, "from": category, "to": target,
                                         "duration_millis": duration})
@@ -617,19 +625,15 @@ def repair_future_scan_dates(config, root, corrections, state_path=None, dry_run
 
 
 def _included(item):
-    """Honor explicit exclusions, but migrate the old review-folder default."""
+    """Treat saved exclusions as authoritative, including ambiguous legacy ones.
+
+    Old versions did not record whether an ``included=False`` value came from
+    the user or from the scan default.  Inferring intent from a review folder or
+    missing period could silently count a video that the user excluded.
+    """
     if item.get("quantity_ignored"):
         return False
-    if item.get("included", True):
-        return True
-    if item.get("manual_included") or item.get("possible_revision"):
-        return False
-    # Older daily scans excluded files solely because no period folder existed.
-    # Recover those defaults, but never override a user's explicit exclusion.
-    return bool((item.get("review_path")
-                 and effective_batch_slot(item.get("batch_slot")) in _PERIOD_LABELS)
-                or (item.get("daily_scan_date")
-                    and str(item.get("batch_slot") or "").strip() in {"", "00"}))
+    return bool(item.get("included", True))
 
 
 def _with_review_status(items):
@@ -928,7 +932,6 @@ def scan_daily_drive_date(
                               and old.get("drive_file_id") not in remote_ids), None)
                 if entry is not None:
                     replaced += 1
-            was_auto_excluded_review = False
             if entry is None:
                 entry = {
                     "id": uuid.uuid4().hex,
@@ -939,12 +942,8 @@ def scan_daily_drive_date(
                 }
                 videos.append(entry)
                 added += 1
-            else:
-                was_auto_excluded_review = bool(
-                    entry.get("review_path") and not entry.get("included", True)
-                    and not entry.get("manual_included")
-                    and not entry.get("quantity_ignored")
-                )
+            # Legacy exclusions have no reliable provenance.  A rescan must
+            # not turn them into counted records behind the user's back.
             was_included = _included(entry)
             manual_slot = str(entry.get("manual_batch_slot") or "")
             slot = detected_slot or (manual_slot if manual_slot in _PERIOD_LABELS else "03")
@@ -977,9 +976,7 @@ def scan_daily_drive_date(
                 "possible_revision": is_revision,
                 "review_path": is_review,
             })
-            if (was_included and not is_revision) or (is_review and _included(entry)) or (
-                was_auto_excluded_review and slot in _PERIOD_LABELS and not is_revision
-            ):
+            if was_included and not is_revision:
                 entry["included"] = True
             by_id[drive_id] = entry
         for entry in videos:
@@ -1335,6 +1332,27 @@ def reconcile_daily_quantity(
         state = _load_state(state_path)
         previous = state.get(scope, {})
         old_cells = previous.get("cells", {}) if isinstance(previous, dict) else {}
+        # Older records did not distinguish a user exclusion from a scan
+        # default.  If one was previously written, require an explicit choice
+        # before changing that cell on a later refresh.
+        uncertain_ids = {
+            str(item.get("drive_file_id"))
+            for item in previous.get("external_videos", [])
+            if item.get("drive_file_id") and item.get("included") is False
+            and not item.get("manual_included") and not item.get("quantity_ignored")
+        }
+        synced_uncertain = {
+            str(video.get("drive_file_id"))
+            for key, cell in old_cells.items() if selected(json.loads(key))
+            for video in cell.get("videos", [])
+            if str(video.get("drive_file_id")) in uncertain_ids
+        }
+        if synced_uncertain:
+            raise ValueError(
+                f"有 {len(synced_uncertain)} 条旧版视频的计数选择不明确，且曾写入每日数量。"
+                "为避免自动改动表格，请先在每日数量的文件清单里逐条确认是否计数并保存；"
+                "本次未写入。"
+            )
         service = service or load_sheets_service(config, "task_submission_sheet")
         metadata = service.spreadsheets().get(
             spreadsheetId=spreadsheet_id,

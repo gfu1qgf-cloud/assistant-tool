@@ -62,6 +62,7 @@ class LayerPanel(QtWidgets.QWidget):
         self.canvas_size = QtCore.QSize(1920,1080) if self.settings.get("aspect") == "landscape" else QtCore.QSize(1080,1920)
         self._layers = componentize_layers(layers,self.settings)
         self._loading, self.worker = False, None
+        self._catalog_hidden = False
         self.setAcceptDrops(True)
         self.setMinimumWidth(0)
         self.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored,QtWidgets.QSizePolicy.Policy.Preferred)
@@ -78,6 +79,7 @@ class LayerPanel(QtWidgets.QWidget):
         menu.addAction("添加文本框",self.add_text)
         menu.addAction("添加滚动文字框", self.add_scrolling_text)
         menu.addAction("添加动态字幕…",self.add_caption)
+        menu.addAction('添加朗读跟随字幕', self.add_follow_caption)
         menu.addAction("四角水印…",self.edit_corner_watermarks)
         menu.addAction("添加图片／视频／GIF…",self.choose_images)
         menu.addAction("添加节点效果…", self.add_node_effect)
@@ -248,6 +250,15 @@ class LayerPanel(QtWidgets.QWidget):
         self.reveal_property('scroll')
         self.changed.emit()
 
+    def add_follow_caption(self):
+        from .captions import MAX_CAPTIONS
+        from .caption_follow import new_follow_caption
+        if sum(layer['kind']=='caption' for layer in self._layers)>=MAX_CAPTIONS:
+            self.message.emit(f'最多允许{MAX_CAPTIONS}个动态字幕组件。');return
+        layer=new_follow_caption()
+        self._layers.append(layer);self.rebuild(layer['id'])
+        self.reveal_property('caption_follow');self.changed.emit()
+
 
 
     def edit_corner_watermarks(self):
@@ -255,7 +266,7 @@ class LayerPanel(QtWidgets.QWidget):
         existing = next((layer for layer in self._layers if layer["kind"] == "watermark"), None)
         if existing:
             self.select_layer_id(existing["id"])
-            self.editor.watermark_properties.tabs.setCurrentIndex(0)
+            self.reveal_property('watermark')
             return
         if any(layer["id"] == OBJECT_ID for layer in self._layers):
             self.message.emit("水印编号被其他图层占用，请先移除冲突图层。")
@@ -337,9 +348,14 @@ class LayerPanel(QtWidgets.QWidget):
         self._loading = True
         try:
             self.header.setEnabled(bool(layer))
+            self.header.setVisible(not self._catalog_hidden and bool(layer and layer['kind'] != 'caption'))
             self.name.setText(layer['name'] if layer else '')
             self.opacity.setValue(layer['opacity'] if layer else 100)
             self.inspector.show_layer(layer,self.canvas_size,self._pool_state,self.units.currentData())
+            kind=layer['kind'] if layer else ''
+            self.hint.setText('效果顺序由图层位置决定；元素的位置和样式在工作流中调整。' if kind=='node_effect' else
+                '先选择要调整的角落，再设置来源、样式和内缩；四角文字可以直接填写。' if kind=='watermark' else
+                '直接在预览中拖动框内移动，拖边或角缩放；Esc取消本次拖动。位置单位可切换，对齐在框内生效。图片保持原比例。')
             self.remove_button.setEnabled(bool(layer and layer['kind'] in {'image','text','watermark','caption','node_effect'}))
             row = self.list.currentRow()
             self.up_button.setEnabled(row > 0)
@@ -383,6 +399,7 @@ class LayerPanel(QtWidgets.QWidget):
         self.inspector.reveal(key)
 
     def hide_catalog(self):
+        self._catalog_hidden = True
         self.catalog.hide()
         self.header.hide()
 

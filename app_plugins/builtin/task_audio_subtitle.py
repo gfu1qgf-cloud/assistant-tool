@@ -956,6 +956,7 @@ class TaskAudioSubtitlePlugin:
             api_keys,
             config.get(API_KEY_STATUSES_CONFIG_KEY, {}),
             self._key_index,
+            capability='text_to_speech',
         )
         self._key_index = next_index
         if selected:
@@ -974,6 +975,8 @@ class TaskAudioSubtitlePlugin:
                 f"{format_unix_time(selection.get('next_retry_unix'))} 后重试。",
                 logging.ERROR,
             )
+        elif mode == 'no_permission':
+            progress('当前 Key 清单没有可用的语音生成权限，请在 ElevenLabs 开启 Text to Speech 后重置状态。', logging.ERROR)
         else:
             progress("没有可用的 ElevenLabs API Key。", logging.ERROR)
         return []
@@ -1194,8 +1197,9 @@ class _AudioJobService:
             return globalValue.get_whisper_model(payload["model_name"])
         def config_snapshot():
             config = copy.deepcopy(payload["config"])
-            config[API_KEY_STATUSES_CONFIG_KEY] = {**(config.get(API_KEY_STATUSES_CONFIG_KEY) or {}),
-                **read_api_statuses(payload["config_path"])}
+            if payload["config_path"]:
+                # Queued jobs keep settings, not stale worker-owned Key state.
+                config[API_KEY_STATUSES_CONFIG_KEY] = read_api_statuses(payload["config_path"])
             return config
         self.context = SimpleNamespace(load_config=config_snapshot,
             whisper_model=whisper_model, elevenlabs_binding=payload.get('elevenlabs_binding'))

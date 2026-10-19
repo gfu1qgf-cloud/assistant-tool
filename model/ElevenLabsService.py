@@ -13,6 +13,7 @@ from contextlib import contextmanager
 from model.ApiKeyHelper import (normalize_api_keys, api_key_id, select_api_keys_for_attempt,
     API_KEY_STATUSES_CONFIG_KEY, record_api_key_status)
 from model.ConfigTransactions import read_api_statuses
+from model.ElevenLabsPermissions import ALIGNMENT, TTS, permission_updates, missing_permission
 from model.ElevenLabsTimings import (field, fingerprint, load_timings, matching_words, character_words,
     save_timings, validate_words)
 
@@ -76,15 +77,19 @@ class ElevenLabsService:
             if binding not in self._bindings: raise ValueError('ELE 会话不属于当前主程序。')
             row=copy.deepcopy(self._bindings[binding])
         if row['path']:
-            row['statuses'].update(read_api_statuses(row['path']))
+            # Reset is represented by absence, so merging a saved snapshot
+            # would resurrect invalid/quota/permission markers after reset.
+            row['statuses'] = read_api_statuses(row['path'])
         return row
 
     def tts_credentials(self,binding):
         row=self._snapshot(binding)
         with self._lock:
-            keys,next_index,state=select_api_keys_for_attempt(row['keys'],row['statuses'],self._next)
+            keys,next_index,state=select_api_keys_for_attempt(row['keys'],row['statuses'],self._next, capability=TTS)
             self._next=next_index
         if not keys:
+            if state.get('mode') == 'no_permission':
+                raise ValueError('ELE 共用清单没有可用的语音生成权限；请在程序设置查看权限状态。')
             raise ValueError('ELE 没有可用的语音生成密钥，请在“程序设置 → ElevenLabs 密钥”查看额度或冷却状态。')
         return keys,row['path']
 
@@ -95,11 +100,29 @@ class ElevenLabsService:
         storage=application_storage()
         if storage.protected: storage.check()
 
-    @staticmethod
-    def _record(row,key,status,*,retry=0):
+    def _remember(self, row, key, **updates):
         if row['path']:
-            record_api_key_status(row['path'],key,forced_alignment_status=status,
-                forced_alignment_retry_after=retry or None,forced_alignment_checked_at=int(time.time()))
+            record_api_key_status(row['path'], key, **updates)
+        with self._lock:
+            for snapshot in self._bindings.values():
+                if snapshot['signature'] == row['signature']:
+                    state = snapshot['statuses'].setdefault(api_key_id(key), {})
+                    if not isinstance(state, dict):
+                        state = snapshot['statuses'][api_key_id(key)] = {}
+                    for name, value in updates.items():
+                        if value is None:
+                            state.pop(name, None)
+                        else:
+                            state[name] = value
+
+    def _record(self,row,key,status,*,retry=0):
+        updates = dict(forced_alignment_status=status, forced_alignment_retry_after=retry or None,
+                       forced_alignment_checked_at=int(time.time()))
+        if status in {'permission_denied', 'available'}:
+            updates.update(permission_updates(ALIGNMENT, status == 'available'))
+        if status == 'available':
+            updates.update(permission_authentication=True, permission_authentication_at=int(time.time()))
+        self._remember(row, key, **updates)
 
     def forced_align(self,binding,audio,text,duration,*,cancel=None,report=None):
         # Serialize identical inputs only; unrelated files may upload concurrently.
@@ -133,16 +156,13 @@ class ElevenLabsService:
         if not str(text or '').strip(): raise ValueError('ELE 强制对齐需要明确文案，不用于自动识别人声。')
         if len(text)>40000: raise ValueError('ELE 对齐文案过长，请先拆分；未上传。')
         row=self._snapshot(binding)
-        key=next((key for key in row['keys'] if api_key_id(key)==row['alignment']),None)
-        if key is None: raise ValueError('请先在“程序设置 → ElevenLabs 密钥”指定云端对齐用的 Key；不会遍历其他 Key。')
-        state=row['statuses'].get(api_key_id(key),{})
-        if not isinstance(state,dict): state={}
-        status=state.get('forced_alignment_status')
-        if status=='permission_denied':
-            raise ValueError('所选 ELE Key 未开启强制对齐权限；语音生成不受此标记影响。开启权限后，请在主程序密钥页重置该 Key 状态。')
-        retry=state.get('forced_alignment_retry_after')
-        if type(retry) in (int,float) and retry>time.time():
-            raise ValueError('所选 ELE 对齐 Key 尚在冷却；未换 Key 或重复上传。')
+        # Preserve the old explicit choice as a migration preference, not an
+        # extra list or a requirement. Confirmed permissions still rank first.
+        pool=sorted(row['keys'],key=lambda key: api_key_id(key)!=row['alignment'])
+        keys,_next,selection=select_api_keys_for_attempt(pool,row['statuses'],capability=ALIGNMENT)
+        if not keys:
+            reason='权限不足' if selection['mode']=='no_permission' else '额度不足、无效或冷却中'
+            raise ValueError('ELE 共用密钥清单没有可用的逐词对齐 Key（'+reason+'）；请在程序设置查看权限状态。')
         audio=Path(audio)
         if not audio.is_file() or not 0<audio.stat().st_size<100*1024*1024:
             raise ValueError('本程序云端对齐接受小于100MB的本地音频，请拆分过长音频。')
@@ -155,24 +175,39 @@ class ElevenLabsService:
             # Another concurrent request may have completed the identical input.
             cached=load_timings(audio,text,duration,cancel)
             if cached is not None: return cached
-            report('ELE 云端对齐：上传当前人声与文案；仅使用你指定的 Key，原 SRT 保持不变。')
+            report('ELE 云端对齐：从共用清单按权限选取 Key，上传当前人声与文案；原 SRT 保持不变。')
             from elevenlabs.client import ElevenLabs
             from model.AppDataStorage import data_file
-            try:
-                with data_file(audio).open('rb') as stream:
-                    response=ElevenLabs(api_key=key).forced_alignment.create(file=stream,text=text,
-                        request_options={'max_retries':0,'timeout_in_seconds':120})
-            except Exception as error:
-                from model.AudioHelper import _api_error_details
-                detail=_api_error_details(error)
-                permission=detail['status_code']==403 or any('permission' in detail[k] for k in ('code','status','type'))
-                if permission:
-                    self._record(row,key,'permission_denied')
-                    raise ValueError('ELE Key 缺少强制对齐权限；请在 ElevenLabs 开启 Forced Alignment 权限或改选 Key。没有尝试其他 Key，语音生成仍可用。') from None
-                code=detail['status_code']
-                self._record(row,key,'quota' if code==402 else 'cooldown' if code==429 else 'error',
-                    retry=int(time.time())+60 if code in {402,429} else 0)
-                raise ValueError(f'ELE 云端对齐失败（HTTP {code if isinstance(code,int) else "未知"}）；未覆盖字幕、未自动换 Key 或重复扣费重试。') from None
+            accepted=False
+            for key in keys:
+                self._check(cancel)
+                latest=self._snapshot(binding)['statuses']
+                if not select_api_keys_for_attempt([key],latest,capability=ALIGNMENT)[0]:
+                    continue
+                try:
+                    with data_file(audio).open('rb') as stream:
+                        response=ElevenLabs(api_key=key).forced_alignment.create(file=stream,text=text,
+                            request_options={'max_retries':0,'timeout_in_seconds':120})
+                    accepted=True
+                    break
+                except Exception as error:
+                    from model.AudioHelper import _api_error_details
+                    detail=_api_error_details(error)
+                    if missing_permission(detail):
+                        self._record(row,key,'permission_denied')
+                        report('当前 Key 缺少逐词对齐权限，已记录；自动选择共用清单中的其他 Key，语音权限不受影响。')
+                        continue  # A definite rejection, not an ambiguous paid retry.
+                    code=detail['status_code']
+                    if any(marker in detail[name] for marker in ('invalid_api_key','missing_api_key','invalid_token')
+                           for name in ('code','status','type')):
+                        self._remember(row,key,status='invalid',last_failure_unix=int(time.time()),
+                                       permission_authentication=False,permission_authentication_at=int(time.time()))
+                        continue
+                    self._record(row,key,'quota' if code==402 else 'cooldown' if code==429 else 'error',
+                        retry=int(time.time())+60 if code in {402,429} else 0)
+                    raise ValueError(f'ELE 云端对齐失败（HTTP {code if isinstance(code,int) else "未知"}）；未覆盖字幕，结果不明确时不换 Key 重复上传／扣费。') from None
+            if not accepted:
+                raise ValueError('当前共用清单的 ELE Key 均无可用的逐词对齐权限；已记录检测结果，语音生成权限不受影响。')
             self._check(cancel)
             candidates=field(response,'words')
             try:

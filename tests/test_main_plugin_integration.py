@@ -114,6 +114,13 @@ class MainPluginIntegrationTests(unittest.TestCase):
                 self.assertIn("Chrome 启动器", plugin_titles)
                 self.assertNotIn("启动下一个 Chrome", plugin_titles)
                 self.assertIn("Codex 多账号切换…", plugin_titles)
+                self.assertIsNotNone(window.antigravity_account_switcher_plugin,
+                    "已接入的 Antigravity 插件缺失不能作为成功的集成测试")
+                self.assertIn("Antigravity 多账号切换…", plugin_titles)
+                self.assertIn("antigravity_account_switcher", plugin_ids)
+                self.assertIsNone(window.antigravity_account_switcher_plugin.store)
+                self.assertIn("Flow 视频助手…", plugin_titles)
+                self.assertIn("flow_assistant", plugin_ids)
                 self.assertIn("智能剪辑", plugin_titles)
                 self.assertNotIn("智能剪辑并生成 SRT…", plugin_titles)
                 self.assertNotIn("剪辑气口…", plugin_titles)

@@ -31,7 +31,10 @@ class PreparedExport:
 
     def encode(self):
         from .render_slots import render_slot
+        from .render_progress import stage
+        stage(self.progress, '等待编码名额')
         with render_slot(self.render_scope, self.workers, self.cancel, self.report):
+            stage(self.progress, '编码中')
             return self._encode()
 
     def _encode(self):
@@ -58,6 +61,8 @@ class PreparedExport:
             self.encoder = 'cpu'
         self.timings['encode_seconds'] = time.monotonic()-started
         started = time.monotonic()
+        from .render_progress import stage
+        stage(self.progress, '校验成品')
         if self.effects is not None:
             self.effects.verify()
         check = probe(self.target, self.ffprobe)
@@ -69,12 +74,15 @@ class PreparedExport:
             raise Cancelled('已取消，未发布临时成品。')
         self.timings['verify_seconds'] = time.monotonic()-started
         self.encoded = True
+        stage(self.progress, '等待保存')
         return self
 
     def publish(self):
         from model.AppDataStorage import data_io
         from model.MediaEncoding import encoder_label
         from .engine import Cancelled
+        from .render_progress import stage
+        stage(self.progress, '保存成品')
         if not self.encoded:
             raise RuntimeError('视频尚未编码校验，不能提交成品。')
         if self.cancel and self.cancel.is_set():

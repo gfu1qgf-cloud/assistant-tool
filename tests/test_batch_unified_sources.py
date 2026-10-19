@@ -39,7 +39,8 @@ class UnifiedSourcesTests(unittest.TestCase):
         combo.setCurrentIndex(combo.findData("pool:" + pools[4]["id"]))
         self.assertEqual(panel.current()["pool_id"], pools[4]["id"])
         self.assertEqual(panel.editor.sections['font'].toggle.text(), "字体")
-        self.assertEqual(panel.editor.sections['source'].toggle.text(), "内容与来源")
+        self.assertIs(panel.editor.body.itemAt(0).widget(),panel.content_editor)
+        self.assertNotIn('source',panel.editor.sections)
         actions = [action.text() for action in panel.add_button.menu().actions()]
         self.assertFalse(any("轮换" in text for text in actions))
         panel.add_caption()

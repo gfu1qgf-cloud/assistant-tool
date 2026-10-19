@@ -18,7 +18,7 @@ from model.BackgroundTasks import TaskRunContext
 from model.node_workflow.graph import NodeRegistry, register_core, new_node, validate, evaluate_graph
 from model.node_workflow.contracts import ResourceRef, RenderPlan, FilterOperation, VideoTimeline, VideoSection
 from model.node_workflow.video_stream import VideoStream, EncodingSettings, normalize_plan
-from model.node_workflow.workflow_types import WorkflowTypeDefinition
+from model.node_workflow.workflow_types import WorkflowTypeDefinition, preview_available
 from model.node_workflow.library import WorkflowLibrary
 from model.node_workflow.tasks import prepare_job
 from model.node_workflow.preview import run_preview
@@ -69,6 +69,32 @@ class PostprocessTests(unittest.TestCase):
         self.assertTrue(any('提供者不可用' in text for _, text in errors))
         self.assertNotIn(TYPE_ID, disabled.workflow_types)
 
+    def test_plugin_workflow_without_preview_can_register_and_reports_preview_unavailable(self):
+        value = NodeRegistry(); register_core(value)
+        for kind, definition in self.registry.definitions.items():
+            if self.registry.owners[kind] == 'task_delivery':
+                value.register('task_delivery', definition)
+        definition = replace(self.registry.workflow_types[TYPE_ID], preview_factory=None,
+                             preview_plan_factory=None, preview_task_factory=None)
+        value.register_workflow_type('task_delivery', definition)
+        graph = example(value)
+        self.assertEqual(validate(graph, value)[0], [])
+        self.assertFalse(preview_available(graph, value))
+        from PYUI.node_graph_canvas import NodeScene
+        preview_node = new_node(value.definitions['core.preview'])
+        graph['nodes'].append(preview_node)
+        scene = NodeScene(graph, value)
+        try:
+            self.assertFalse(scene.nodes[preview_node['id']].can_preview())
+        finally:
+            scene.refresh_timer.stop()
+            scene.deleteLater()
+        from PYUI.node_workspace import NodeWorkspace
+        owner = SimpleNamespace(graph=graph, registry=value)
+        self.assertFalse(NodeWorkspace.can_preview_node(owner, preview_node))
+        with self.assertRaisesRegex(ValueError, '尚未提供预览模拟'):
+            run_preview({'graph': graph}, self.c, registry=value)
+
     def test_failed_plugin_registration_rolls_back_types_and_can_retry(self):
         from app_plugins.host import PluginHost
         host = PluginHost(SimpleNamespace(load_config=lambda: {}))
@@ -102,7 +128,7 @@ class PostprocessTests(unittest.TestCase):
         self.assertIsInstance(values['video'], VideoStream)
         self.assertEqual(values['video'].source, self.ref)
         self.assertEqual(set(values), {'video'})
-        self.assertEqual(values['video'].encoding.crf, 23)
+        self.assertEqual(values['video'].encoding.crf, 30)
         self.assertEqual(list(self.root.iterdir()), [self.source])
 
     def test_path_condition_controls_only_selected_person_compression(self):
@@ -114,7 +140,7 @@ class PostprocessTests(unittest.TestCase):
                                          [match['id'], 'boolean', compress['id'], 'enabled']])
         self.assertFalse(validate(self.graph, self.registry)[0])
         result = evaluate_graph(self.graph, self.registry, self.c)
-        self.assertEqual(result['video'].encoding.crf, 23)
+        self.assertEqual(result['video'].encoding.crf, 30)
         self.assertEqual(set(result), {'video'})
         match['params']['pattern'] = '其他管理员'
         result = evaluate_graph(self.graph, self.registry, self.c)
@@ -184,7 +210,7 @@ class PostprocessTests(unittest.TestCase):
         for key in ('../config', '', 'abc'):
             with self.assertRaises(ValueError): store.load(key)
         saved['nodes'][1]['params']['crf'] = 40
-        self.assertEqual(store.load(saved['workflow_id'])['nodes'][1]['params']['crf'], 23)
+        self.assertEqual(store.load(saved['workflow_id'])['nodes'][1]['params']['crf'], 30)
 
     def test_queue_preparation_freezes_graph_and_rejects_other_type(self):
         store = WorkflowLibrary(self.root / 'library')
@@ -194,7 +220,7 @@ class PostprocessTests(unittest.TestCase):
         self.assertIs(provider, self.registry)
         saved['nodes'][1]['params']['crf'] = 32
         store.save(saved, '已改', self.registry)
-        self.assertEqual(payload['graph']['nodes'][1]['params']['crf'], 23)
+        self.assertEqual(payload['graph']['nodes'][1]['params']['crf'], 30)
         self.assertEqual(prepare({}, services), (None, None, ()))
 
     def test_settler_and_compression_share_video_port_and_accumulate_operations(self):

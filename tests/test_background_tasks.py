@@ -40,6 +40,25 @@ class BackgroundTasksTests(unittest.TestCase):
     def submit(self, runner, **kwargs):
         return self.manager.submit(owner="test", title="test task", runner=runner, **kwargs)
 
+    def test_item_phase_is_separate_from_batch_percent_and_delivered_on_gui(self):
+        release = threading.Event()
+        def run(_payload, context):
+            context.report('文案视频 · 已结束 0/2', 0)
+            context.report_item_stage('one', '等待字幕模型')
+            release.wait(2)
+            return {}
+        handle = self.submit(run, payload={})
+        phases = []
+        handle.itemStage.connect(lambda identifier, phase: phases.append((identifier, phase, threading.get_ident())))
+        self.wait_until(lambda: bool(phases))
+        try:
+            self.assertEqual(phases, [('one', '等待字幕模型', threading.get_ident())])
+            self.assertEqual(handle.item_stages['one'], '等待字幕模型')
+            row = self.manager.get(handle.task_id)
+            self.assertEqual(row['percent'], 0)
+            self.assertEqual(row['stage'], '文案视频 · 已结束 0/2')
+        finally: release.set()
+
     def test_parallel_snapshot_main_thread_results_and_completion_100(self):
         release = threading.Event()
         started = []

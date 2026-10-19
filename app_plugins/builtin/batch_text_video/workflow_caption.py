@@ -59,7 +59,7 @@ def subtitle_words(asset, duration, uniform=False):
 
 def compile_caption(operation, directory, context, video_info, *, timing=None):
     from .captions import write_caption_ass
-    from .caption_styles import is_catalog
+    from .caption_styles import uses_style_renderer
     if QtGui.QGuiApplication.instance() is None:
         raise ValueError("动态字幕缺少字体环境；不会在后台线程创建Qt窗口。")
     options, assets = dict(operation.options), dict(operation.assets)
@@ -89,4 +89,4 @@ def compile_caption(operation, directory, context, video_info, *, timing=None):
     native = (FilterOperation(operation.title, operation.video, "ass", (("filename", name),)),)
     # Exactly the full-chroma blending used by the existing batch renderer.
     return ((FilterOperation("字幕全色彩混合", operation.video, "format", (("pix_fmts", "rgba"),)),) + native
-            if is_catalog(layer) else native)
+            if uses_style_renderer(layer) else native)

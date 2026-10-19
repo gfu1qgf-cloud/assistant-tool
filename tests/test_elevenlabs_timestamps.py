@@ -162,7 +162,7 @@ class ForcedAlignmentTests(unittest.TestCase):
         audio=Path(directory)/'task_audio.mp3'; audio.write_bytes(b'fixture')
         return service,token,audio,config
 
-    def test_selected_key_only_and_persistent_permission_denial_does_not_disable_tts(self):
+    def test_permission_denials_are_learned_across_shared_pool_without_disabling_tts(self):
         class Denied(Exception):
             status_code=403
             body={'detail':{'status':'missing_permissions'}}
@@ -172,9 +172,9 @@ class ForcedAlignmentTests(unittest.TestCase):
             with patch('elevenlabs.client.ElevenLabs',return_value=client) as factory:
                 for _ in range(2):
                     with self.assertRaisesRegex(ValueError,'权限'): service.forced_align(token,audio,TEXT,1.)
-            self.assertEqual(factory.call_count,1)
-            self.assertEqual(factory.call_args.kwargs['api_key'],'dummy2')
-            self.assertEqual(client.forced_alignment.create.call_count,1)
+            self.assertEqual(factory.call_count,2)
+            self.assertEqual(factory.call_args_list[0].kwargs['api_key'],'dummy2')
+            self.assertEqual(client.forced_alignment.create.call_count,2)
             self.assertEqual(set(service.tts_credentials(token)[0]),{'dummy1','dummy2'})
             status=json.loads(config.read_text('utf8'))['elevenlabs_api_key_statuses'][api_key_id('dummy2')]
             self.assertEqual(status['forced_alignment_status'],'permission_denied')
@@ -209,13 +209,15 @@ class ForcedAlignmentTests(unittest.TestCase):
             self.assertEqual(client.forced_alignment.create.call_count,1)
             self.assertEqual(service._input_locks,{})
 
-    def test_no_designated_key_no_upload_or_fallback(self):
+    def test_no_designated_key_automatically_uses_shared_pool(self):
         with tempfile.TemporaryDirectory() as directory:
             service,_,audio,config=self.setup_service(directory)
             token=service.bind({'elevenlabs_api_keys':['dummy1','dummy2']},config)
-            with patch('elevenlabs.client.ElevenLabs') as factory:
-                with self.assertRaisesRegex(ValueError,'指定'): service.forced_align(token,audio,TEXT,1.)
-            factory.assert_not_called()
+            client=MagicMock(); client.forced_alignment.create.return_value=dict(words=WORDS)
+            with patch('elevenlabs.client.ElevenLabs',return_value=client) as factory:
+                self.assertEqual(service.forced_align(token,audio,TEXT,1.),WORDS)
+            self.assertEqual(factory.call_args.kwargs['api_key'],'dummy1')
+            self.assertEqual(client.forced_alignment.create.call_count,1)
 
     def test_offline_and_cancel_prevent_http(self):
         from model.OfflineMode import OfflineModeError
@@ -374,7 +376,7 @@ class HostCredentialTests(unittest.TestCase):
             config['elevenlabs_api_key_statuses']={api_key_id('dummy-legacy'):{'last_success_unix':i}}
             self.assertEqual(service.bind(config,''),token)
 
-    def test_main_settings_selects_only_fingerprint_and_keeps_key_list(self):
+    def test_main_settings_uses_one_list_and_preserves_legacy_preference_without_selector(self):
         from qt_compat import QtCore
         from PYUI.main_setting_pyui import MainSettingDialog
         with tempfile.TemporaryDirectory() as directory:
@@ -384,7 +386,7 @@ class HostCredentialTests(unittest.TestCase):
             with patch('PYUI.main_setting_pyui.CONFIG_PATH',config):
                 dialog=MainSettingDialog()
                 try:
-                    self.assertEqual(dialog.elevenlabs_alignment_key.currentData(),api_key_id('dummy2'))
+                    self.assertFalse(hasattr(dialog,'elevenlabs_alignment_key'))
                     self.assertEqual(dialog.get_config()[ALIGNMENT_KEY],api_key_id('dummy2'))
                     self.assertEqual(dialog.get_api_keys(),['dummy1','dummy2'])
                 finally:

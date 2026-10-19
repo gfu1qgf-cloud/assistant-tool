@@ -94,6 +94,37 @@ def build_listdir(inputs, params, context):
     return {"files": FileList(directory, tuple(selected))}
 
 
+def build_file_filter(inputs, params, context):
+    """Filter an existing snapshot without enumerating or modifying the directory."""
+    from .text_nodes import literal_test
+
+    files = inputs['files']
+    if not isinstance(files, FileList):
+        raise TypeError('请连接文件列表。')
+    pattern = inputs.get('pattern')
+    pattern = str(params['pattern'] if pattern is None else pattern)
+    if not pattern:
+        raise ValueError('文件筛选条件不能为空；要保留全部文件请直接使用原列表。')
+    if len(pattern) > 500:
+        raise ValueError('文件筛选条件过长。')
+    ignore = params['case'] == 'ignore'
+    selected = []
+    for resource in files.files:
+        context.check_canceled()
+        path = Path(resource.path)
+        value = {'name': path.name, 'path': resource.path, 'extension': path.suffix}[params['subject']]
+        if params['operation'] == 'glob':
+            value, match = (unicodedata.normalize('NFC', item) for item in (value, pattern))
+            if ignore:
+                value, match = value.casefold(), match.casefold()
+            matched = fnmatch.fnmatchcase(value, match)
+        else:
+            matched = literal_test(value, pattern, params['operation'], ignore)
+        if matched != (params['exclude'] == 'yes'):
+            selected.append(resource)
+    return {'files': FileList(files.directory, tuple(selected)), 'count': len(selected)}
+
+
 def register_filesystem(registry):
     registry.register("core", NodeDefinition("core.directory", "目录路径",
         outputs=(NodePort("directory", "目录", "directory"),),
@@ -111,3 +142,20 @@ def register_filesystem(registry):
                     NodeParameter("sort", "文件顺序", "choice", "natural", choices=(("natural", "自然序号：1、2、10"), ("name", "文件名"), ("modified", "修改时间：最新优先"))),
                     NodeParameter("limit", "最多文件数（超出报错，不截断）", "integer", 50000, 1, 100000)),
         description="仅按这里的规则读取目录，输出有顺序、带文件签名的列表；下游不会再次搜文件。空列表也如实输出。执行时枚举，不阻塞主界面。"))
+    registry.register('core', NodeDefinition('core.file_filter', '筛选已有文件列表',
+        inputs=(NodePort('files', '文件列表', 'files'),
+                NodePort('pattern', '匹配文字 · 可覆盖设置', 'text', required=False)),
+        outputs=(NodePort('files', '筛选后的文件列表', 'files'),
+                 NodePort('count', '保留文件数', 'number')),
+        parameters=(NodeParameter('pattern', '匹配文字／通配符', required=False),
+                    NodeParameter('subject', '匹配范围', 'choice', 'name', choices=(
+                        ('name', '文件名'), ('path', '完整路径'), ('extension', '扩展名 · 含点'))),
+                    NodeParameter('operation', '匹配方式', 'choice', 'contains', choices=(
+                        ('contains', '包含'), ('starts_with', '开头'), ('ends_with', '结尾'), ('glob', '通配符 · * 和 ?'))),
+                    NodeParameter('case', '大小写', 'choice', 'ignore', choices=(
+                        ('ignore', '忽略'), ('sensitive', '区分'))),
+                    NodeParameter('exclude', '反选', 'choice', 'no', choices=(
+                        ('no', '保留匹配项'), ('yes', '排除匹配项')))),
+        build=build_file_filter, category='文件与路径/文件列表',
+        description='在已有 FileList 快照上继续筛选，不重新扫描目录、复制文件或改动顺序。'
+                    '结果可为空；若下游要求非空，由下游明确报错。'))

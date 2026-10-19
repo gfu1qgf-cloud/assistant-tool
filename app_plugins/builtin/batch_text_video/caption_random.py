@@ -19,9 +19,5 @@ def size_contrast(layer):
 
 
 def supports_random_size(layer):
-    if layer.get('caption_preset') == 'pop':
-        return True
-    from .caption_styles import is_catalog, effects
-    if not is_catalog(layer): return False
-    style=effects(layer)
-    return style['anim_in_type'] in {'word_pop_random','word_pop_random_pulse','scatter_pop','word_random_position'} or style['block_typography_enabled']
+    # A preset selects values, never the component's available capabilities.
+    return layer.get('kind','caption') == 'caption' or bool(layer.get('_caption_style_design'))

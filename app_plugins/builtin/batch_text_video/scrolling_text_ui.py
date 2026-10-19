@@ -63,6 +63,12 @@ class ScrollTextProperties(QtWidgets.QWidget):
         self.controls['scroll_end_offset'].setToolTip('相对“终点位置”微调；正数向下、负数向上。文案视频画面下方点击动画快览“结尾”即可检查终点，不必先渲染视频。')
         self.controls["scroll_end_early"].setToolTip("提前到达终点，余下时间停在终点。两项之和必须小于最终视频时长。")
         self.controls["scroll_edge_fade"].setToolTip("框顶部和底部各占框高度的此比例；0 = 硬裁切。只渐隐文字，不渐隐背景底板。")
+        from .property_pairs import pair_form_fields
+        pair_form_fields(form,'滚动位置',[('start','起点',self.start_anchor),('end','终点',self.end_anchor)])
+        pair_form_fields(form,'动画时间',[('start','延迟',self.controls['scroll_start_delay']),
+            ('end','提前结束',self.controls['scroll_end_early'])])
+        pair_form_fields(form,'文字偏移',[('start','起点',self.controls['scroll_start_offset']),
+            ('end','终点',self.controls['scroll_end_offset'])])
         root.addLayout(form)
         self.info = QtWidgets.QLabel()
         self.info.setWordWrap(True)
@@ -79,8 +85,9 @@ class ScrollTextProperties(QtWidgets.QWidget):
             "快览背景保持首帧；节点文字使用已保存工作流。复杂视频／字幕效果用播放预览核对。")
         note.setWordWrap(True)
         note.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored, QtWidgets.QSizePolicy.Policy.Preferred)
-        root.addWidget(note)
-        root.addStretch()
+        from .property_sections import PropertySection
+        self.help_section=PropertySection('滚动说明',note)
+        root.addWidget(self.help_section)
         self.mode.currentIndexChanged.connect(self._edit)
         self.units.currentIndexChanged.connect(self._units_changed)
         self.set_layer(None)

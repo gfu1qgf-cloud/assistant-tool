@@ -4,7 +4,7 @@ import unittest
 from unittest.mock import patch
 
 from qt_compat import QtCore, QtGui, QtWidgets
-from app_plugins.builtin.batch_text_video.caption_ui import EffectDialog
+from app_plugins.builtin.batch_text_video.caption_effect_ui import CaptionEffectEditor
 from app_plugins.builtin.batch_text_video.color_ui import EffectColorEditor
 from app_plugins.builtin.batch_text_video.caption_styles import COLOR_KEYS, PREFIX, colors, effects
 from app_plugins.builtin.batch_text_video.caption_style_catalog import PRESETS
@@ -76,7 +76,7 @@ class EffectColorTests(unittest.TestCase):
                 layer = new_caption()
                 layer.update(caption_preset=PREFIX + name)
                 before = copy.deepcopy(layer)
-                dialog = EffectDialog(layer)
+                dialog = CaptionEffectEditor(layer)
                 for key in COLOR_KEYS & dialog.controls.keys():
                     self.assertIsInstance(dialog.controls[key], EffectColorEditor)
                 result = effects({**layer, 'caption_effects': dialog.value()})
@@ -85,7 +85,6 @@ class EffectColorTests(unittest.TestCase):
                     if key in COLOR_KEYS:
                         self.assertEqual(colors(result[key]), colors(original[key]))
                 self.assertEqual(layer, before)
-                dialog.reject()
                 dialog.deleteLater()
                 QtCore.QCoreApplication.sendPostedEvents(None, QtCore.QEvent.Type.DeferredDelete)
 

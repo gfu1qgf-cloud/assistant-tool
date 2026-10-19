@@ -3,11 +3,11 @@ from pathlib import Path
 import tempfile
 from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from model.DailyQuantityStats import (
     _external_assignments, _scope_key, collect_assignments, effective_batch_slot,
-    external_video_records, reconcile_daily_quantity,
+    external_video_records, reconcile_daily_quantity, update_external_video_records,
 )
 from tests.test_daily_quantity_prayer_repair import fake_sheet
 
@@ -20,7 +20,7 @@ class DefaultSlotTests(unittest.TestCase):
         self.assertEqual(effective_batch_slot("02"), "02")
         self.assertEqual(effective_batch_slot("99"), "99")
 
-    def test_legacy_missing_slot_counts_but_user_exclusions_and_revisions_do_not(self):
+    def test_ambiguous_legacy_exclusions_do_not_count_without_manual_opt_in(self):
         base = {"batch_date": "2026-10-01", "daily_scan_date": "2026-10-01",
                 "batch_slot": "", "included": False, "sheet": "祷告词", "category": "动画"}
         items = [dict(base, id="default", drive_file_id="default"),
@@ -32,7 +32,7 @@ class DefaultSlotTests(unittest.TestCase):
             item["file_name"] = item["id"] + ".mp4"
         with patch("model.DailyQuantityStats.read_review_history", return_value={"items": {}}):
             groups, warnings = _external_assignments({"external_videos": items}, "本人", {})
-        self.assertEqual(len(groups[("祷告词", "2026-10-01", "03", "动画", "本人")]), 1)
+        self.assertFalse(groups)
         self.assertFalse(warnings)
 
     def test_local_upload_without_slot_uses_last_period(self):
@@ -54,7 +54,7 @@ class DefaultSlotTests(unittest.TestCase):
             self.assertEqual(list(groups)[0][2], "03")
             self.assertFalse(warnings)
 
-    def test_saved_blank_period_backfills_once_and_display_matches_counting(self):
+    def test_saved_blank_period_stays_excluded_until_explicitly_enabled(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "state.json"
             config = {"daily_quantity_sheet_url": "fake-id", "task_submission_creator": "本人"}
@@ -69,12 +69,33 @@ class DefaultSlotTests(unittest.TestCase):
             with patch("model.DailyQuantityStats.read_review_history", return_value={"items": {}}):
                 display = external_video_records(config, directory, path)[0]
                 self.assertEqual(display["batch_slot"], "03")
-                self.assertTrue(display["included"])
+                self.assertFalse(display["included"])
                 first = reconcile_daily_quantity(config, directory, service=service, records=[], state_path=path)
+                self.assertEqual(first["counted"], 0)
+                update_external_video_records(config, directory, [{**display, "included": True}], state_path=path)
+                self.assertTrue(external_video_records(config, directory, path)[0]["included"])
                 second = reconcile_daily_quantity(config, directory, service=service, records=[], state_path=path)
-            self.assertEqual(first["updated"], [{"range": "'祷告词'!H3", "count": 1}])
-            self.assertEqual(second["updated"], [])
+                third = reconcile_daily_quantity(config, directory, service=service, records=[], state_path=path)
+            self.assertEqual(first["updated"], [])
+            self.assertEqual(second["updated"], [{"range": "'祷告词'!H3", "count": 1}])
+            self.assertEqual(third["updated"], [])
             self.assertEqual(grid[2][3:5], [50, "=SUM(F3:H3)"])
+
+    def test_previously_synced_ambiguous_exclusion_stops_before_sheet_access(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "state.json"
+            config = {"daily_quantity_sheet_url": "fake-id", "task_submission_creator": "本人"}
+            record = {"id": "legacy", "drive_file_id": "legacy", "included": False,
+                      "batch_date": "2026-10-01", "batch_slot": "03", "review_path": True}
+            cell_key = json.dumps(["祷告词", "2026-10-01", "03", "动画", "本人"], ensure_ascii=False)
+            scope = {"external_videos": [record], "cells": {
+                cell_key: {"base": 0, "written": 1, "videos": [{"drive_file_id": "legacy"}]}}}
+            path.write_text(json.dumps({_scope_key(config, directory): scope}), encoding="utf-8")
+            service = MagicMock()
+            with self.assertRaisesRegex(ValueError, "计数选择不明确"):
+                reconcile_daily_quantity(config, directory, service=service,
+                                         records=[], state_path=path)
+            service.spreadsheets.assert_not_called()
 
 
 if __name__ == "__main__":

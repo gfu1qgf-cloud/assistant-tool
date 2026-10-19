@@ -66,11 +66,12 @@ class TaskCancellationToken:
 
 
 class TaskRunContext:
-    def __init__(self, canceled, report, log, item_report=None):
+    def __init__(self, canceled, report, log, item_report=None, item_stage=None):
         self._canceled = canceled
         self._report = report
         self._log = log
         self._item_report = item_report
+        self._item_stage = item_stage
 
     def is_canceled(self):
         return self._canceled.is_set()
@@ -97,11 +98,16 @@ class TaskRunContext:
         if self._item_report is not None:
             self._item_report(str(identifier), max(0, min(100, int(percent))))
 
+    def report_item_stage(self, identifier, stage):
+        if self._item_stage is not None:
+            self._item_stage(str(identifier), str(stage)[:160])
+
 
 class BackgroundTaskHandle(QtCore.QObject):
     """Observable job handle, not a thread owned by a plugin window."""
     progressChanged = QtCore.pyqtSignal(str, object)
     itemProgress = QtCore.pyqtSignal(str, int)
+    itemStage = QtCore.pyqtSignal(str, str)
     completed = QtCore.pyqtSignal(object)
     failed = QtCore.pyqtSignal(str)
     finished = QtCore.pyqtSignal()
@@ -112,6 +118,7 @@ class BackgroundTaskHandle(QtCore.QObject):
         self.task_id = task_id
         self._result_handler = None
         self._result_pending = False
+        self.item_stages = {}
 
     def set_result_handler(self, callback, *, pending=False):
         self.manager._assert_main_thread()
@@ -146,6 +153,7 @@ class BackgroundTaskHandle(QtCore.QObject):
 class _TaskWorker(QtCore.QThread):
     progress = QtCore.pyqtSignal(str, str, object)
     itemProgress = QtCore.pyqtSignal(str, str, int)
+    itemStage = QtCore.pyqtSignal(str, str, str)
     outcome = QtCore.pyqtSignal(str, object)
     message = QtCore.pyqtSignal(str, str)
 
@@ -162,6 +170,7 @@ class _TaskWorker(QtCore.QThread):
             lambda text, percent: self.progress.emit(self.task_id, text, percent),
             lambda text: self.message.emit(self.task_id, text),
             lambda identifier, percent: self.itemProgress.emit(self.task_id, identifier, percent),
+            lambda identifier, stage: self.itemStage.emit(self.task_id, identifier, stage),
         )
         try:
             context.check_canceled()
@@ -387,6 +396,7 @@ class BackgroundTaskManager(QtCore.QObject):
         row.update(status="running", stage="正在启动", started_at=time.time(), percent=None)
         worker.progress.connect(self._on_progress)
         worker.itemProgress.connect(self._on_item_progress)
+        worker.itemStage.connect(self._on_item_stage)
         worker.outcome.connect(self._on_outcome)
         worker.message.connect(self._on_message)
         worker.finished.connect(self._on_finished)
@@ -407,6 +417,14 @@ class BackgroundTaskManager(QtCore.QObject):
     def _on_item_progress(self, task_id, identifier, percent):
         if self._records[task_id]['status'] == 'running':
             self._handles[task_id].itemProgress.emit(identifier, percent)
+
+    @QtCore.pyqtSlot(str, str, str)
+    def _on_item_stage(self, task_id, identifier, stage):
+        if self._records[task_id]['status'] == 'running':
+            handle = self._handles[task_id]
+            stage = redact_sensitive_text(stage)
+            handle.item_stages[identifier] = stage
+            handle.itemStage.emit(identifier, stage)
 
     @QtCore.pyqtSlot(str, object)
     def _on_outcome(self, task_id, outcome):

@@ -202,10 +202,12 @@ def register_loops(registry):
                  NodePort("iterations", "实际执行次数", "number")),
         parameters=(NodeParameter("count", "执行次数（按次数模式）", "integer", 10, 0, MAX_ITERATIONS),
                     NodeParameter("limit", "安全次数上限", "integer", 1000, 1, MAX_ITERATIONS),
+                    NodeParameter("empty", "逐项遍历遇到空列表", "choice", "error", choices=(
+                        ("error", "报错 · 没有处理项目"), ("skip", "允许 0 次 · 明确跳过"))),
                     NodeParameter("gather", "结果保存方式", "choice", "collect", choices=(
                         ("collect", "收集每一轮 · 保持原顺序"), ("last", "仅保留最终结果 · 节省内存")))),
         build=_managed, category=category, keywords=("for", "foreach", "while", "循环", "收集", "反馈"),
-        description="统一管理循环次数和停止条件。真时结束；条件循环在本轮完成后判断。超出上限报错，不静默截断；支持后台取消。循环只构建原有数据/视频计划，不生成中间视频。"))
+        description="统一管理循环次数和停止条件。逐项遍历遇到空列表默认报错，可显式允许 0 次；条件循环在本轮完成后判断。超出上限报错，不静默截断；支持后台取消。循环只构建原有数据/视频计划，不生成中间视频。"))
     registry.register("core", NodeDefinition("core.loop_list", "循环结果 → Python 列表",
         inputs=(NodePort("results", "循环结果", "loop_results"),),
         outputs=(NodePort("items", "列表", "list"),), build=lambda i, _p, _c: {"items": i["results"].to_list()},

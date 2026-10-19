@@ -27,12 +27,15 @@ def register_type(registry, owner, definition):
             or not isinstance(definition.title, str) or not definition.title or len(definition.title) > 120
             or not all(kind.startswith(owner + '.') and kind in registry.definitions
                        for kind in (definition.entry_kind, definition.output_kind))
-            or not callable(definition.example_factory) or not callable(definition.preview_factory)
+            or not callable(definition.example_factory)
+            or definition.preview_factory is not None and not callable(definition.preview_factory)
             or definition.execution_mode not in {'detail', 'line'}
-            or definition.execution_mode == 'line' and not callable(definition.preview_task_factory)
+            or definition.execution_mode == 'line' and definition.preview_factory is not None and not callable(definition.preview_task_factory)
+            or definition.preview_task_factory is not None and not callable(definition.preview_task_factory)
+            or definition.preview_plan_factory is not None and definition.preview_factory is None
             or definition.preview_plan_factory is not None and not callable(definition.preview_plan_factory)
             or definition.migrate_graph is not None and not callable(definition.migrate_graph)):
-        raise ValueError('工作流类型必须有插件命名空间、版本及已注册的输入输出节点和示例／预览接口。')
+        raise ValueError('工作流类型必须有插件命名空间、版本、已注册的输入输出节点及示例接口；提供预览时还需有效的预览接口。')
     if definition.type_id in registry.workflow_types:
         raise ValueError('工作流类型重复：' + definition.type_id)
     registry.workflow_types[definition.type_id] = definition
@@ -72,7 +75,16 @@ def can_preview_operations(graph, registry, node):
     try:
         provider = selected_type(graph, registry)
         definition = registry.definitions.get(node['kind'])
-        return bool(provider and provider.preview_plan_factory and definition and any(
+        return bool(provider and provider.preview_factory and provider.preview_plan_factory and definition and any(
             port.data_type == 'operations' for port in definition.result_ports(node['params'])))
     except (ValueError, TypeError, KeyError):
         return False
+
+
+def preview_available(graph, registry):
+    """A plugin may register and run a workflow before adding simulation."""
+    try:
+        provider = selected_type(graph, registry)
+    except ValueError:
+        return False
+    return provider is None or provider.preview_factory is not None

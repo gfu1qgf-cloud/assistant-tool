@@ -21,7 +21,9 @@ from app_plugins.builtin import (
     BatchTextVideoPlugin,
     VideoStitchPlugin,
     ChromeLauncherPlugin,
+    FlowAssistantPlugin,
     CodexAccountSwitcherPlugin,
+    AntigravityAccountSwitcherPlugin,
     DailyTasksPlugin,
     FacebookContactSheetPlugin,
     DaVinciRemotePlugin,
@@ -900,9 +902,21 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
                 logging.exception("Facebook 分镜插件加载失败")
         self.task_delivery_plugin = self.plugin_host.install(TaskDeliveryPlugin())
         self.chrome_plugin = self.plugin_host.install(ChromeLauncherPlugin())
+        self.flow_assistant_plugin = self.plugin_host.install(FlowAssistantPlugin())
         self.codex_account_switcher_plugin = self.plugin_host.install(
             CodexAccountSwitcherPlugin()
         )
+        self.antigravity_account_switcher_plugin = (
+            self.plugin_host.install(AntigravityAccountSwitcherPlugin())
+            if AntigravityAccountSwitcherPlugin is not None else None
+        )
+        if AntigravityAccountSwitcherPlugin is None:
+            self.appendLog(
+                "[插件/antigravity_account_switcher] Antigravity 多账号切换插件源码缺失，"
+                "加载失败；这不是设置中禁用。请恢复 app_plugins/builtin/"
+                "antigravity_account_switcher 的完整源码。账号资料未删除。",
+                level=logging.ERROR,
+            )
         self.music_ducker_plugin = self.plugin_host.install(MusicDuckerPlugin())
         self.audio_splitter_plugin = self.plugin_host.install(AudioSplitterPlugin())
         self.task_audio_subtitle_plugin = self.plugin_host.install(
@@ -3002,6 +3016,7 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
             api_keys,
             config.get(API_KEY_STATUSES_CONFIG_KEY, {}),
             self._elevenlabs_api_key_index,
+            capability='text_to_speech',
         )
         self._elevenlabs_api_key_index = next_index
 
@@ -3022,6 +3037,8 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
             )
         elif mode == 'no_usable_keys':
             emit("所有 ElevenLabs API Key 均已标记为无效，请在程序设置中处理。")
+        elif mode == 'no_permission':
+            emit('当前 Key 清单没有可用的语音生成权限，请在 ElevenLabs 开启 Text to Speech 后重新检测／重置状态。')
         return []
 
     def genAllTaskVtt(self):

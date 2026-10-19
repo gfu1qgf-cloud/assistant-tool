@@ -68,6 +68,9 @@ def _classify_api_error(error):
         str(details[name]).lower()
         for name in ('type', 'code', 'status', 'message')
     )
+    from model.ElevenLabsPermissions import missing_permission
+    if missing_permission(details):
+        return 'permission', details
 
     if (
         details['status_code'] == 402
@@ -169,9 +172,15 @@ def _save_audio_with_api_keys(api_keys, filename, convert_audio,
     """依次尝试 Key，并仅在音频完整生成后替换目标文件。"""
     from model.OfflineMode import require_online
     require_online("ElevenLabs 音频生成")
+    from model.ElevenLabsPermissions import TTS, permission_updates
+    from model.ApiKeyHelper import select_api_keys_for_attempt
+    from model.ConfigTransactions import read_api_statuses
+    statuses = read_api_statuses(api_key_status_config) if api_key_status_config else {}
+    api_keys, _next, _selection = select_api_keys_for_attempt(api_keys, statuses, capability=TTS)
     temp_filename = f"{filename}.part"
 
     for index, api_key in enumerate(api_keys, 1):
+        audio, has_audio = None, False
         try:
             if os.path.exists(temp_filename):
                 data_io.remove(temp_filename)
@@ -220,6 +229,9 @@ def _save_audio_with_api_keys(api_keys, filename, convert_audio,
                 reset_source=None,
                 retry_after_unix=None,
                 progress_callback=progress_callback,
+                permission_authentication=True,
+                permission_authentication_at=int(time.time()),
+                **permission_updates(TTS, True),
             )
             _emit_progress(progress_callback, f"音频已保存：{filename}")
             return True
@@ -233,6 +245,21 @@ def _save_audio_with_api_keys(api_keys, filename, convert_audio,
                 index, type(e).__name__, details.get('status_code'),
             )
             now = int(time.time())
+            partial_success = has_audio or bool(getattr(audio, 'completed_requests', 0))
+
+            if error_type == 'permission':
+                _record_status(api_key_status_config, api_key, progress_callback=progress_callback,
+                               **permission_updates(TTS, False))
+                if partial_success:
+                    _emit_progress(progress_callback, '此前已有音频分段生成成功，本次不换 Key 从头重试，避免重复扣费。')
+                    break
+                _emit_progress(progress_callback,
+                    f'第 {index} 个 Key 没有语音生成权限，已记录；自动改用同一清单中的其他 Key。')
+                continue  # Explicit rejection, never retry an ambiguous/billed request.
+
+            if partial_success:
+                _emit_progress(progress_callback, '音频已部分生成但未完成，不换 Key 从头重试；原成品未替换，避免重复扣费。')
+                break
 
             if error_type == 'quota':
                 reset_unix = _record_quota_exhausted(

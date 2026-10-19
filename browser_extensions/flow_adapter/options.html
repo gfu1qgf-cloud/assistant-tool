@@ -1,0 +1,9 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>Flow 视频助手配对</title>
+<style>body{font:15px system-ui;max-width:700px;margin:40px auto;background:#f4f6fa;color:#243247}label{display:block;margin:18px 0}input,textarea{box-sizing:border-box;width:100%;padding:10px;border:1px solid #b9c5d8;border-radius:6px}button{padding:10px 20px;background:#2769c6;color:white;border:0;border-radius:6px}small{color:#63708a}#status{margin-left:16px}</style>
+<h2>Flow 视频助手 · 连接此浏览器</h2><p>正常使用只需在软件点击“打开浏览器并连接”：直接打开本配置的 Flow 项目，扩展会在后台自动协商。已配对的浏览器会自动重连；无需粘贴连接信息。</p>
+<details><summary>手动配置（自动连接失败时备用）</summary>
+<label>粘贴连接信息（会自动填好下面两项）<textarea id="pair" rows="3" autocomplete="off" spellcheck="false" placeholder="Ctrl+V 粘贴软件已准备的连接信息"></textarea></label>
+<label>本 Chrome 配置目录<input id="profile" placeholder="例如 Profile 23 或 Default"><small>与主程序 Chrome 启动器中的目录名一致，便于按配置组自动启动。</small></label>
+<label>此配置的 Flow 项目链接<input id="project" placeholder="https://labs.google/fx/tools/flow/project/…"><small>必须手动指定一个已有项目；每个配置分别保存，不会复制其他网页或其他账号的地址。</small></label>
+<p><small>不要在当前浏览器正在生成／下载时重新配对；软件连接向导会检查这一点。配对信息无需发送给任何网站。</small></p>
+<button id="save">保存并连接</button></details><p id="status">等待软件自动连接；也可展开手动配置。</p><script src="lzx-options.js"></script></html>

@@ -15,14 +15,14 @@ from app_plugins.builtin.batch_text_video.caption_basic_render import make_primi
 from app_plugins.builtin.batch_text_video.caption_appearance import group_colors,COMMON_EFFECT_KEYS
 from app_plugins.builtin.batch_text_video.layers import normalize_layers
 from app_plugins.builtin.batch_text_video.layer_ui import LayerPanel
-from app_plugins.builtin.batch_text_video.caption_ui import EffectDialog
+from app_plugins.builtin.batch_text_video.caption_effect_ui import CaptionEffectEditor
 from app_plugins.builtin.batch_text_video.layout import ensure_fonts
 
 WORDS=[dict(text=text,start=.2+i*.5,end=.55+i*.5) for i,text in enumerate(('Božia','nádej','pokoj','láska','nový','deň'))]
 
 
 def caption(preset='pop',**values):
-    layer=apply_style(new_caption(),preset)
+    layer=apply_style(new_caption(),preset,reset_layout=True)
     layer.update(width=96,height=85,x=50,y=50,font_min=30,font_max=44,caption_words=2,caption_per_line=2)
     layer.update(values)
     return normalize_layers([layer])[0]
@@ -55,15 +55,15 @@ class CaptionCommonTests(unittest.TestCase):
         self.assertEqual(result['caption_appearance_version'],2)
         self.assertFalse(result['caption_random_size'])
 
-    def test_new_random_size_is_off_and_inapplicable_styles_never_randomize(self):
+    def test_random_size_is_off_by_default_but_available_to_every_preset(self):
         self.assertFalse(new_caption()['caption_random_size'])
         from app_plugins.builtin.batch_text_video.caption_random import size_contrast,supports_random_size
         for name in ['pop','appear']+[key for _,key in preset_choices()]:
             layer=caption(name)
             self.assertFalse(layer['caption_random_size'],name)
-            if not supports_random_size(layer):
-                layer['caption_random_size']=True
-                self.assertEqual(size_contrast(layer),0,name)
+            self.assertTrue(supports_random_size(layer),name)
+            layer['caption_random_size']=True
+            self.assertEqual(size_contrast(layer),layer['caption_size_contrast'],name)
 
     def test_basic_ui_and_advanced_have_one_owner_and_save_on_reselection(self):
         layer=caption('appear'); panel=LayerPanel([layer],'.'); panel.select_layer_id(layer['id'])
@@ -71,8 +71,9 @@ class CaptionCommonTests(unittest.TestCase):
         editor=panel.editor; common=editor.caption_appearance.controls
         self.assertTrue(editor.sections['font'].content.isAncestorOf(editor.caption_appearance))
         self.assertTrue(editor.sections['background'].content.isAncestorOf(editor.caption_background))
-        self.assertFalse(editor.sections['font'].content.isAncestorOf(editor.sections['random_size']))
-        self.assertTrue(editor.sections['random_size'].isHidden())
+        self.assertNotIn('random_size',editor.sections)
+        self.assertTrue(editor.sections['font'].content.isAncestorOf(editor.caption_properties.random_widget))
+        self.assertFalse(editor.caption_properties.random_widget.isHidden())
         common['karaoke_highlight'].setChecked(True)
         common['color_high'].setText('#ff75bd')
         common['dynamic_box'].setChecked(True)
@@ -97,7 +98,7 @@ class CaptionCommonTests(unittest.TestCase):
             scroll.ensureWidgetVisible(common['opacity_high_bg'])
             self.app.processEvents()
             self.assertTrue(scroll.grab().save(os.environ['LZX_CAPTION_COMMON_SCREENSHOT']))
-        dialog=EffectDialog(caption(PREFIX+'暗夜青_青高亮'))
+        dialog=CaptionEffectEditor(caption(PREFIX+'暗夜青_青高亮'))
         self.addCleanup(dialog.deleteLater)
         self.assertFalse(set(dialog.controls)&COMMON_EFFECT_KEYS)
 

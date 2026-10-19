@@ -8,6 +8,7 @@ from model.BackgroundTasks import BackgroundTaskResultError, TaskCancellationTok
 from .components import resolve_sources
 from .engine import Cancelled, RENDERERS
 from .store import Store, ProfileStore
+from .render_progress import bind
 
 
 def batch_resources(store, state, ids):
@@ -86,7 +87,7 @@ def execute_batch(store, state, ids, cancel, progress, message, done, renderers=
                 from model.ElevenLabsService import alignment_session
                 with alignment_session(elevenlabs_binding):
                     output, plan = renderer(job, state, store.directory, cancel,
-                                           lambda value: progress(job_id, value), message, **kwargs)
+                                           bind(progress, job_id), message, **kwargs)
             except Cancelled:
                 break
             except Exception as exc:
@@ -128,6 +129,14 @@ def run_batch_video_job(payload, context, *, node_registry=None):
     percentages = dict.fromkeys(ids, 0)
     progress_lock = threading.Lock()
     finished = set()
+    stages = {}
+    def item_stage(job_id, text):
+        if not context.is_canceled():
+            with progress_lock:
+                if stages.get(job_id) != text and job_id not in finished:
+                    stages[job_id] = text
+                    callback = getattr(context, 'report_item_stage', None)
+                    if callable(callback): callback(job_id, text)
     def progress(job_id, value):
         if not context.is_canceled():
             with progress_lock:
@@ -136,9 +145,12 @@ def run_batch_video_job(payload, context, *, node_registry=None):
                     context.report_item(job_id, percentages[job_id])
                 context.report(f"文案视频 · 已结束 {len(finished)}/{len(ids)}",
                                int(sum(percentages.values()) / max(1, len(ids))))
+    progress.stage = item_stage
     def done(job_id, _status):
         with progress_lock:
             finished.add(job_id)
+            callback = getattr(context, 'report_item_stage', None)
+            if callable(callback): callback(job_id, _status)
             percentages[job_id] = 100
             if callable(getattr(context, 'report_item', None)):
                 context.report_item(job_id, 100)
