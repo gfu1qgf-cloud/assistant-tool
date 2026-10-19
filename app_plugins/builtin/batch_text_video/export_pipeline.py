@@ -53,7 +53,7 @@ def execute_parallel_batch(store, state, ids, cancel, progress, message, done, p
     error = ''
     workers = min(pipeline_workers(state['settings'], node_effects), max(1, len(ids)))
     started = time.monotonic()
-    message(f'并发导出：本项目最多{workers}路最终编码；音乐独立预取，结果及轮换仅成功后按序保存。')
+    message(f'本批导出：本项目最多{workers}路最终编码；音乐独立预取，结果及轮换仅成功后按序保存。')
 
     def fail(job_id, exc):
         nonlocal state, failed

@@ -84,7 +84,7 @@ def base_filter(width, height, settings, plan, fps):
             f"trim=duration={plan['clip_duration']:.9f},setpts=PTS-STARTPTS")
 
 
-def prepare_cycle(source, directory, ffmpeg, ffprobe, width, height, settings, plan, fps, cancel, report):
+def prepare_cycle(source, directory, ffmpeg, ffprobe, width, height, settings, plan, fps, cancel, report, *, leases=None):
     from .engine import _run, filter_file_option, probe
     info = Path(source).stat()
     values = ["cycle-v4-sdr709", str(Path(source).resolve()), info.st_size, info.st_mtime_ns,
@@ -95,10 +95,16 @@ def prepare_cycle(source, directory, ffmpeg, ffprobe, width, height, settings, p
     cache = Path(directory)/"video-cache"
     data_directory(cache).ensure(parents=True, exist_ok=True)
     target = cache/(key + ".mp4")
-    from model.MediaCacheLeases import media_cache_build
+    from model.MediaCacheLeases import media_cache_build, media_cache_lease, trim_generated_cache
     try:
         with media_cache_build(target, cancel):
-            return _prepare_cycle_cached(source, cache, target, ffmpeg, ffprobe, width, height, settings, plan, fps, cancel, report)
+            result = _prepare_cycle_cached(source, cache, target, ffmpeg, ffprobe, width, height, settings, plan, fps, cancel, report)
+            if leases is not None:
+                # Transfer to the export before releasing the build lock. A
+                # concurrent cleanup must never see an unowned ready cache.
+                leases.callback(trim_generated_cache, result[0].parent, '.mp4', 512*1024**2)
+                leases.enter_context(media_cache_lease(result[0]))
+            return result
     except InterruptedError as error:
         from .engine import Cancelled
         raise Cancelled(str(error)) from error

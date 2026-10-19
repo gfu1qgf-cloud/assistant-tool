@@ -280,6 +280,24 @@ def choose_music(state, duration, cache, ffmpeg, ffprobe, cancel, report):
     raise ValueError("音乐列表没有可用的非静音音频，请检查音乐或静音阈值。")
 
 
+def source_paths(state):
+    """Protect registered source media even when it has not been paired yet."""
+    inputs = list(state.get('backgrounds', []))
+    for key in ('jobs', 'copy_pool', 'music', 'image_pool'):
+        for item in state.get(key, []):
+            inputs.extend(item.get(field) for field in (
+                'path', 'voice_path', 'task_voice_path', 'task_subtitle_path', 'subtitle_path', 'srt_path'))
+    inputs.extend(item['path'] for pool in state.get('resource_pools', []) for item in pool['items'])
+    from .components import walk_components
+    from .chroma_key import active_mask
+    for layer in walk_components(state.get('settings', {}).get('layers', [])):
+        inputs.extend(layer.get(key) for key in ('path', 'source_file', 'caption_file'))
+        if layer.get('kind') == 'image' and active_mask(layer):
+            inputs.append(active_mask(layer))
+        inputs.extend(item.get('path') for item in layer.get('sequence_items', []))
+    return [path for path in inputs if path]
+
+
 def safe_output(folder, name, inputs):
     name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", str(name)).strip(" .")
     if not name:
@@ -369,15 +387,7 @@ def prepare_static_text(job, state, directory, cancel=None, progress=None, repor
     folder = job.get("task_dir") or settings["output_dir"] or str(Path(job["path"]).parent)
     if not folder:
         raise ValueError("请选择输出文件夹。")
-    inputs = [item.get(key) for item in state["jobs"] for key in ("path", "voice_path") if item.get(key)]
-    inputs += [item["path"] for pool in state.get("resource_pools", []) for item in pool["items"]]
-    from .components import walk_components
-    from .chroma_key import active_mask
-    for layer in walk_components(state["settings"]["layers"]):
-        inputs += [layer[key] for key in ("path", "source_file", "caption_file") if layer.get(key)]
-        if layer.get("kind") == "image" and active_mask(layer):
-            inputs.append(active_mask(layer))
-        inputs += [item["path"] for item in layer.get("sequence_items", []) if item.get("path")]
+    inputs = source_paths(state)
     if voice_path:
         inputs.append(voice_path)
     from .task_naming import output_stem
@@ -444,9 +454,7 @@ def prepare_static_text(job, state, directory, cancel=None, progress=None, repor
         next_index = 1
         if adaptation and adaptation["fade"]:
             cycle, cycle_duration = prepare_cycle(job["path"], media_directory, ffmpeg, ffprobe, width, height,
-                settings, adaptation, fps, cancel, report)
-            leases.callback(trim_generated_cache, cycle.parent, '.mp4', 512*1024**2)
-            leases.enter_context(media_cache_lease(cycle))
+                settings, adaptation, fps, cancel, report, leases=leases)
             prefix = adaptation["clip_duration"] - adaptation["fade"]
             cycle_loops = max(0, math.ceil((duration-prefix)/cycle_duration)-1)
             args += ["-stream_loop", str(cycle_loops), "-i", str(cycle)]
@@ -530,7 +538,8 @@ def prepare_static_text(job, state, directory, cancel=None, progress=None, repor
             sequence_plan, cancel, progress, report, settings['overwrite'], encoder,
             settings['encoder_fallback'], preview, workers, effects=node_effects if effects else None,
             cwd=temporary if effects else None, timings={'prepare_seconds': time.monotonic()-started},
-            quality=settings['export_quality'], render_scope='' if preview else file_identity(Path(directory)/'state.json'))
+            quality=settings['export_quality'], render_scope='' if preview else file_identity(Path(directory)/'state.json'),
+            source_paths=tuple(inputs))
 
 
 def render_static_text(job, state, directory, cancel=None, progress=None, report=None, preview=False, *, node_effects=None, preview_limit=None):

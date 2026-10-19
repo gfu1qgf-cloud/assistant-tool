@@ -21,11 +21,12 @@ def batch_resources(store, state, ids):
 
 def validate_batch_outputs(state, ids):
     """Reject two queue rows targeting the same final file before encoding."""
-    from .engine import safe_output
+    from .engine import safe_output, source_paths
     from .store import file_identity
     from .task_naming import output_stem
 
     jobs = {job['id']: job for job in state['jobs']}
+    inputs = source_paths(state)
     seen_ids, outputs = set(), {}
     for job_id in ids:
         if job_id in seen_ids:
@@ -34,7 +35,7 @@ def validate_batch_outputs(state, ids):
         job = jobs[job_id]
         folder = job.get('task_dir') or state['settings']['output_dir'] or Path(job['path']).parent
         name = output_stem(job, state['settings'].get('task_naming_rules', {}))
-        output = safe_output(folder, name, [job['path']])
+        output = safe_output(folder, name, inputs)
         identity = file_identity(output)
         if identity in outputs:
             raise ValueError(f'两条任务会写入同一成品 {output.name}（{outputs[identity]}、{job_id}）；请修改输出名称后重试。')
@@ -60,14 +61,15 @@ def execute_batch(store, state, ids, cancel, progress, message, done, renderers=
                 'error': '导出配置校验失败，未启动编码：' + str(error)}, state
     if state['settings']['export_workers'] > 1 and workers == 1:
         message('工作流含AI请求／自定义Python，为避免故障重排时重复请求或副作用，本批按单路执行。')
+    preparer = getattr(renderer, 'prepare_export', None)
+    if (callable(preparer) and callable(getattr(store, 'completion_state', None)) and
+            (node_effects is None or callable(getattr(node_effects, 'fork', None)))):
+        # One worker uses the same publish guard, with no lookahead/replay of
+        # paid or arbitrary-code work. The legacy renderer publishes too early.
+        return execute_parallel_batch(store, state, ids, cancel, progress, message, done, preparer,
+            node_effects=node_effects, elevenlabs_binding=elevenlabs_binding)
     if workers > 1:
-        preparer = getattr(renderer, 'prepare_export', None)
-        if (not callable(preparer) or not callable(getattr(store, 'completion_state', None)) or
-                node_effects is not None and not callable(getattr(node_effects, 'fork', None))):
-            message('当前进程中的渲染实现尚未提供完整并发接口，本次保持单路；新功能在下次正常重启后统一生效。')
-        else:
-            return execute_parallel_batch(store, state, ids, cancel, progress, message, done, preparer,
-                node_effects=node_effects, elevenlabs_binding=elevenlabs_binding)
+        message('当前进程中的渲染实现尚未提供完整并发接口，本次保持单路；新功能在下次正常重启后统一生效。')
     completed = failed = 0
     paths, failures = [], []
     error = ""

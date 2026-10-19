@@ -28,6 +28,7 @@ class PreparedExport:
     encoded: bool = False
     quality: str = 'high'
     render_scope: str = ''
+    source_paths: tuple = field(default_factory=tuple)
 
     def encode(self):
         from .render_slots import render_slot
@@ -80,7 +81,7 @@ class PreparedExport:
     def publish(self):
         from model.AppDataStorage import data_io
         from model.MediaEncoding import encoder_label
-        from .engine import Cancelled
+        from .engine import Cancelled, safe_output
         from .render_progress import stage
         stage(self.progress, '保存成品')
         if not self.encoded:
@@ -89,6 +90,7 @@ class PreparedExport:
             raise Cancelled('已取消，未发布临时成品。')
         if self.effects is not None:
             self.effects.verify()
+        safe_output(self.output.parent, self.output.name, self.source_paths)
         if self.output.exists() and not self.overwrite:
             raise FileExistsError('生成期间已有同名文件出现，未覆盖。')
         data_io.replace(self.target, self.output)
