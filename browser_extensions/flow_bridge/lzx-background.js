@@ -110,16 +110,23 @@ async function receive(message) {
     if (message.action === 'run_tasks') {
       const batch = message.params?.batch_id;
       if (!/^[a-f0-9]{32}$/.test(batch || '') || message.params.tasks?.length !== 1) throw new Error('任务批次格式无效');
-      const saved = await local();
-      const batches = saved.lzxBatches || {};
-      if (batches[batch]) {
+      const claimed = await serialize(async () => {
+        const saved = await local();
+        const batches = saved.lzxBatches || {};
+        if (batches[batch]) return false;
+        batches[batch] = Date.now();
+        // Atomically claim before forwarding; concurrent replays must also
+        // observe this durable claim, including while storage is awaiting I/O.
+        await chrome.storage.local.set({lzxBatch: batch, lzxBatches: batches});
+        activeBatch = batch;
+        return true;
+      });
+      if (typeof claimed !== 'boolean') throw new Error('无法保存批次去重记录，未提交生成。');
+      if (!claimed) {
         send({action: 'run_tasks_response', request_id: message.request_id, success: true, data: {resumed: true}});
         await forward({action: 'snapshot'});
         return;
       }
-      batches[batch] = Date.now(); activeBatch = batch;
-      // Persist before forwarding. Replayed commands cannot cause another paid generation.
-      await chrome.storage.local.set({lzxBatch: batch, lzxBatches: batches});
     }
     await forward(message);
   } catch (error) {
@@ -148,7 +155,7 @@ async function retryBoundDownload(message) {
     const item = (await chrome.downloads.search({id: Number(id)}))[0];
     if (item && item.exists !== false && ['complete', 'in_progress'].includes(item.state)) {
       await serialize(() => reportDownload(Number(id)));
-      send({action: 'retry_download_response', request_id: message.request_id, success: true});
+      send({action: 'retry_download_response', request_id: message.request_id, success: true, data: {downloadId: Number(id)}});
       return;
     }
   }
@@ -192,7 +199,13 @@ async function connect() {
   } finally { connecting = false; if (epoch !== connectionEpoch) setTimeout(connect, 0); }
 }
 let serial = Promise.resolve();
-function serialize(work) { serial = serial.then(work).catch(error => console.error('[AssistantFlow]', error.message)); return serial; }
+function serialize(work) {
+  const result = serial.then(work);
+  // Keep the queue usable after a failed write, but let its caller know the
+  // durable operation failed instead of reporting a successful download/claim.
+  serial = result.catch(error => console.error('[AssistantFlow]', error.message));
+  return result;
+}
 async function reportDownload(id) {
   const saved = await local(), binding = (saved.lzxDownloads || {})[id];
   if (!binding) return;
@@ -220,7 +233,7 @@ globalThis.__lzxDownloadBound = async (id, task) => {
   });
 };
 chrome.downloads.onChanged.addListener(delta => {
-  if (['complete', 'interrupted'].includes(delta.state?.current)) serialize(() => reportDownload(delta.id));
+  if (['complete', 'interrupted'].includes(delta.state?.current)) serialize(() => reportDownload(delta.id)).catch(() => {});
 });
 chrome.runtime.onMessage.addListener((message, sender, reply) => {
   const ownPage = sender.id === chrome.runtime.id && sender.url?.startsWith(`chrome-extension://${chrome.runtime.id}/`);
@@ -354,9 +367,9 @@ async function projectSetupAction(entry, sender) {
         if (reply.type !== 'setup_reload_allowed') return;
         if (reply.ticket !== ticket || !reply.profile || new URL(reply.project).href.replace(/\/$/, '') !== project) throw Error('项目与本次连接请求不匹配。');
         receiving = true; clearTimeout(timer);
-        if (chrome.runtime.getManifest().version !== '1.1.13') {
+        if (chrome.runtime.getManifest().version !== '1.1.14') {
           await chrome.storage.local.set({lzxReloadSetup: {...entry, tabId: sender.tab.id,
-            mode: reply.mode || 'pair', profile: reply.profile, version: '1.1.13'}});
+            mode: reply.mode || 'pair', profile: reply.profile, version: '1.1.14'}});
           finish(null, {success: true, updating: true}); chrome.runtime.reload(); return;
         }
         if (action === 'options') {

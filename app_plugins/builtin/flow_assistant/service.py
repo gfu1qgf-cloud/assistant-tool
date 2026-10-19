@@ -15,7 +15,7 @@ from .archive import archive_download
 from .store import QueueStore, TRANSIENT, choose_client, fingerprint, make_jobs
 from .routing import cost_key, lane_for, lane_key, dispatch_rank, automatic_lane, normalize_lane
 from .credit_policy import debit_balance
-from .media_identity import owns_download, generated_bindings
+from .media_identity import owns_download, generated_bindings, merge_snapshot_bindings
 from .operations import FlowOperations
 from .policy import capable, block_for, estimated_cost, batch_wait, waiting_reason
 from .setup_support import EXTENSION_ID, EXTENSION_VERSION, OPTIONS_URL, profile_name, project_url, project_identity, project_block, compatible_extension
@@ -380,18 +380,31 @@ class FlowService(QtCore.QObject, FlowOperations):
             self.request(client, 'run_tasks', params, job_id)
         elif action in {'run_tasks', 'retry_download'}:
             remote = row['remote']
+            deferred = []
             if action == 'retry_download':
+                deferred = remote.get('deferred_download_interrupts', [])
+                remote = {key: value for key, value in remote.items() if key != 'deferred_download_interrupts'}
                 info = {**retry_info(row, 'download'), 'active': True, 'next_at': 0, 'waiting': ''}
                 if data.get('downloadId') is not None: info['download_id'] = data['downloadId']
                 remote = {**remote, 'activity_at': time.time(), 'transfer_retries': {
                     **remote.get('transfer_retries', {}), 'download': info}}
             self.store.update(job_id, 'generating' if action == 'run_tasks' else 'downloading', remote=remote)
+            # The Chrome download can fail before its start acknowledgement.
+            # Resolve queued failures only after that acknowledgement identifies
+            # the current download, so an older failure cannot cancel this request.
+            for event in deferred:
+                self._download(client, event)
 
     @staticmethod
     def download_name(row):
         return f'FlowBridge/{row["attempt"]}/result.mp4'
 
     def _snapshot(self, client, data):
+        # Snapshots are events, including on older compatible extensions; they
+        # do not send a separate request_id response. This page has answered.
+        for key, request in list(self.pending.items()):
+            if request['action'] == 'snapshot' and request['client'] == client['id']:
+                self.pending.pop(key, None)
         if project_identity(data.get('url')):
             client.update(project=data['url'], page_loaded=True,
                 page_ready=data.get('controls_ready', True) is True, ready_note=str(data.get('ready_note') or '')[:300],
@@ -419,10 +432,7 @@ class FlowService(QtCore.QObject, FlowOperations):
                 previous and incoming and {identity(b) for b in previous} != {identity(b) for b in incoming}):
             self.store.update(row['id'], 'uncertain', error='原任务的媒体归属发生变化，已停止接收替代结果；保留原绑定，不会重新生成。')
             return
-        # Page state is temporary. Never discard durable, completed bindings
-        # just because a refreshed page reports an empty/partial task object.
-        if generated_bindings(row['remote']) and ready_bindings(row['remote']) and not generated_bindings({'bindings': bindings}):
-            bindings = row['remote']['bindings']
+        bindings = merge_snapshot_bindings(row['remote'], bindings)
         # A refreshed signed URL is not generation/download progress.
         progress = {'running': data.get('running'), 'task_id': task.get('taskId'),
                     'status': task.get('status'), 'downloads': task.get('downloadIds'),
@@ -481,6 +491,13 @@ class FlowService(QtCore.QObject, FlowOperations):
         events = row['remote'].get('download_events', [])
         if message.get('event_id') and message['event_id'] in events:
             self.send(client, {'type': 'ack', 'event_id': message['event_id']})
+            return
+        if data.get('state') == 'interrupted' and self._transfer_pending(row, 'download'):
+            deferred = row['remote'].get('deferred_download_interrupts', [])
+            if message not in deferred:
+                self.store.update(row['id'], row['status'], remote={**row['remote'],
+                    'deferred_download_interrupts': (deferred + [message])[-8:]}, error=row['error'])
+            self.send(client, {'type': 'ack', 'event_id': message.get('event_id')})
             return
         current_download = retry_info(row, 'download').get('download_id')
         if data.get('state') == 'interrupted' and current_download is not None and data.get('downloadId') not in (None, current_download):

@@ -12,6 +12,34 @@ def generated_bindings(remote):
             and all(isinstance(value, str) and value for value in b['mediaIds'] + b['readyIds'])]
 
 
+def merge_snapshot_bindings(remote, bindings):
+    """Retain durable ownership/readiness when the same page state is partial.
+
+    The caller rejects conflicting task/submission/media identities first.
+    A new signed URL may replace its old URL; missing readiness cannot erase it.
+    """
+    previous = generated_bindings(remote)
+    incoming = generated_bindings({'bindings': bindings})
+    if not previous:
+        return bindings
+    if not incoming:
+        return remote['bindings']
+    identity = lambda b: (b['taskId'], b['submissionId'], tuple(sorted(b['mediaIds'])))
+    saved = {identity(binding): binding for binding in previous}
+    merged = []
+    for binding in bindings:
+        if binding not in incoming or identity(binding) not in saved:
+            merged.append(binding)
+            continue
+        old = saved[identity(binding)]
+        urls = dict(old.get('urls') or {})
+        urls.update({media: url for media, url in (binding.get('urls') or {}).items()
+                     if media in binding['mediaIds'] and isinstance(url, str) and url.startswith('https:')})
+        merged.append({**old, **binding, 'urls': urls,
+                       'readyIds': list(dict.fromkeys(old['readyIds'] + binding['readyIds']))})
+    return merged
+
+
 def owns_download(job, download):
     if not isinstance(download, dict) or not isinstance(download.get('mediaId'), str) or not download['mediaId']:
         return False

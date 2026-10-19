@@ -42,6 +42,7 @@ const vm = require('node:vm');
   items.set(50, {state: 'in_progress', exists: true});
   await context.receive({...message, request_id: 'repeat'});
   assert.equal(downloads.length, 1, 'repeated retry must not duplicate an in-progress download');
+  assert.equal(events.at(-1).data?.downloadId, 50, 'reused downloads must acknowledge their exact Chrome ID');
   saved.lzxDownloads = {}; items.clear();
   const mismatch = structuredClone(message);
   mismatch.params.restore.bindings[0].urls['original-media'] = 'https://flow-content.google/video/different-media';

@@ -195,6 +195,9 @@ class FlowOperations(TransferRecovery):
                 if parsed.hostname == 'flow-content.google':
                     match = re.fullmatch(r'/video/([a-zA-Z0-9_-]+)', parsed.path)
                     media = match[1] if match else None
+                elif parsed.hostname == 'flow.google.com':
+                    match = re.fullmatch(r'/asb/([a-zA-Z0-9_-]+)(?:=[a-zA-Z0-9_,.-]+)?', parsed.path)
+                    media = match[1] if match else None
                 elif parsed.hostname == 'labs.google' and parsed.path == '/fx/api/trpc/media.getMediaUrlRedirect':
                     name = parse_qs(parsed.query).get('name', [''])[0]
                     match = re.search(r'(?:^|/)media/([a-zA-Z0-9_-]+)$', name)

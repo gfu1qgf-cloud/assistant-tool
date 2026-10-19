@@ -41,7 +41,7 @@ const crypto = require('node:crypto');
   await Promise.all([api.ensureTab(), api.ensureTab()]);
   assert.equal(created, 0, 'concurrent startup requests must adopt the desktop-opened tab without creating one');
   const request = {action: 'run_tasks', request_id: 'one', params: {batch_id: 'a'.repeat(32), tasks: [{}]}};
-  await api.receive(request); await api.receive({...request, request_id: 'two'});
+  await Promise.all([api.receive(request), api.receive({...request, request_id: 'two'})]);
   assert.equal(forwarded.filter(item => item.value.message.action === 'run_tasks').length, 1,
     'replayed batch must never generate twice');
   await api.receive({action: 'retry_download', request_id: 'old', params: {batch_id: 'b'.repeat(32)}});
@@ -56,6 +56,26 @@ const crypto = require('node:crypto');
   assert.equal(complete.data.download_path, task.download_path, 'renaming must not lose the requested media binding');
   await api.receive({type: 'ack', event_id: complete.event_id});
   assert.equal(Object.keys(data.lzxOutbox).length, 0);
+  const saveLocal = chrome.storage.local.set;
+  chrome.storage.local.set = async values => {
+    if ('lzxBatches' in values) throw Error('synthetic batch journal failure');
+    return saveLocal(values);
+  };
+  const rejected = {...request, request_id: 'failed-claim', params: {...request.params, batch_id: 'c'.repeat(32)}};
+  await api.receive(rejected);
+  assert.equal(sent.find(message => message.request_id === 'failed-claim').success, false);
+  assert.equal(forwarded.filter(item => item.value.message.action === 'run_tasks').length, 1,
+    'a failed batch claim must not forward a paid command');
+  assert(!data.lzxBatches['c'.repeat(32)]);
+  chrome.storage.local.set = async values => {
+    if ('lzxDownloads' in values) throw Error('synthetic download journal failure');
+    return saveLocal(values);
+  };
+  await assert.rejects(context.__lzxDownloadBound(5, task), /synthetic download journal failure/,
+    'a failed durable download binding must reach the downloader instead of appearing successful');
+  chrome.storage.local.set = saveLocal;
+  await context.__lzxDownloadBound(6, task);
+  assert(data.lzxDownloads[6], 'a failed write must not poison the next serialized operation');
   const before = sent.length;
   hooks.message({action: 'lzxPageEvent', data: {type: 'snapshot', data: {}}}, {tab: {id: 999}, frameId: 0});
   assert.equal(sent.length, before, 'unowned page cannot publish a task result');
