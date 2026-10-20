@@ -7,7 +7,7 @@ import time
 
 from .routing import cost_key, lane_key, dispatch_rank
 from .credit_policy import balance_ready
-from .connection_status import browser_keys, configured_profiles
+from .connection_status import browser_keys, configured_profiles, browser_status
 from .pricing import fixed_cost
 
 FAILURES = {'failed', 'uncertain', 'download_failed', 'archive_failed'}
@@ -42,6 +42,7 @@ def block_for(client, preferences):
 def capable(client, job, preferences, cost=None):
     credits = client.get('credits')
     return (not client.get('blocked') and not block_for(client, preferences)
+            and not (client.get('credit_check') or {}).get('hold_dispatch')
             and client.get('page_ready') is not False
             and balance_ready(client)
             and (credits >= cost if cost is not None else credits > 0)
@@ -80,6 +81,15 @@ def waiting_reason(row, clients, rows, preferences, observed, batches, *, paused
                 return '尚无可启动的项目配置：请为一个浏览器保存项目地址；时长由程序自动分配，无需手动分档'
             return f'{label}暂无匹配浏览器：当前配置为手动固定档；可切回“自动分配”后由程序接单'
         return f'{label}等待浏览器自动启动／空闲后自动分配时长，无需手动分档'
+    if not any(capable(c, row['payload'], preferences, cost) for c in lane):
+        funded = [c for c in lane if balance_ready(c)
+                  and (c['credits'] >= cost if cost is not None else c['credits'] > 0)]
+        if funded:
+            # A funded browser may still be pairing, loading or quarantined.
+            # A separate zero-credit backup must not turn that into a shortage.
+            client = funded[0]
+            status = browser_status(client, preferences, rows)
+            return str(client.get('profile') or client.get('id') or '浏览器') + '：' + status['reason']
     if all(block_for(c, preferences) or c.get('blocked') for c in lane):
         return '对应浏览器已暂停：' + str(next((block_for(c, preferences) or c.get('blocked') for c in lane), ''))
     if all(c.get('page_ready') is False for c in lane):

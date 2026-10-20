@@ -11,25 +11,43 @@ def confirm_saved_connection(service, client):
     """A valid saved session need not re-pair just to retire an unused ticket.
 
     Only the authenticated socket's saved identity AND its real page response
-    may confirm the exact requested project. Never steal an in-flight claim or
-    an explicit repair, and never rewrite credentials/reconnect a busy browser.
+    may confirm the exact requested project. A different in-flight claim or
+    explicit repair stays protected; an authenticated saved ticket can finish
+    its own handoff. Never rewrite credentials or reconnect a busy browser.
     """
-    if (not client.get('authorized') or not client.get('setup_pending')
-            or not compatible_extension(client.get('extension_version'))
-            or not (client.get('page_loaded') or client.get('page_ready'))):
+    if not client.get('authorized'):
+        return False
+    if not client.get('setup_pending'):
+        if not client.get('setup_blocked'):
+            return False
+        block = project_block(client, service.preferences)
+        if block != client.get('setup_blocked', ''):
+            client['setup_blocked'] = block
+            return True
+        return False
+    if (not compatible_extension(client.get('extension_version'))
+            or not (client.get('page_loaded') or client.get('page_ready'))
+            or time.time() - client.get('page_at', 0) > 45):
         return False
     profile = client.get('profile')
     setup = service.setup_requests.get(profile)
-    if not setup or setup.get('mode') == 'reload_only' or not re.fullmatch(r'[a-f0-9]{32}', str(setup.get('id', ''))):
+    if setup and (setup.get('mode') == 'reload_only' or not re.fullmatch(r'[a-f0-9]{32}', str(setup.get('id', '')))):
         return False
-    live = setup.get('expires', 0) > time.time()
-    if live and (setup.get('claimed') or setup.get('force_pair')):
+    # An authenticated connection may already have saved this very ticket.
+    # Only a different live claim/explicit repair still needs its own handoff.
+    live = setup and setup.get('expires', 0) > time.time()
+    saved_ticket = setup and hmac.compare_digest(str(client.get('setup_id') or ''), str(setup['id']))
+    if live and (setup.get('claimed') or setup.get('force_pair')) and not saved_ticket:
         return False
-    expected = project_identity(setup.get('project'))
+    preferred = service.preferences.get('profile_projects', {}).get(profile)
+    expected = project_identity(setup.get('project') if setup else preferred)
     if (not expected or project_identity(client.get('saved_project')) != expected
             or project_identity(client.get('project')) != expected
-            or project_identity(service.preferences.get('profile_projects', {}).get(profile)) != expected):
+            or project_identity(preferred) != expected):
         return False
+    # The temporary request can have been retired while its in-memory pending
+    # flag remained. Exact saved/preferred/live project proof retires that flag
+    # without issuing credentials, navigating, or granting a new paid request.
     service.setup_requests.pop(profile, None)
     client['setup_pending'] = False
     client['setup_blocked'] = project_block(client, service.preferences)

@@ -1,7 +1,7 @@
 """One truthful, side-effect-free status model for the guide and queue UI."""
 import time
 
-from .setup_support import project_identity
+from .setup_support import project_identity, project_block
 from .credit_policy import balance_ready
 
 
@@ -25,10 +25,16 @@ def browser_status(client, preferences, jobs=(), now=None):
         return {'connection': '未连接', 'project': project, 'state': '待连接' if project_identity(saved) else '待配置',
                 'reason': '等待打开此配置并连接扩展' if project_identity(saved) else '请先添加这个配置自己的 Flow 项目地址', 'color': '#986100'}
     blocks = preferences.get('browser_blocks', {})
-    block = client.get('environment_block') or client.get('setup_blocked') or client.get('blocked') or next(
-        (blocks[key] for key in sorted(browser_keys(client)) if blocks.get(key)), '')
-    if (client.get('setup_pending') and not client.get('environment_block') and not client.get('blocked')
-            and not any(blocks.get(key) for key in browser_keys(client))):
+    stored_block = next((blocks[key] for key in sorted(browser_keys(client)) if blocks.get(key)), '')
+    environment_block = client.get('environment_block')
+    # publish() includes the setup block in its aggregate environment field.
+    # That alias is not a second independent failure of an auto-confirming page.
+    if environment_block == client.get('setup_blocked'):
+        environment_block = ''
+    project_error = project_block(client, preferences, include_pending=False) if client.get('setup_pending') else ''
+    block = project_error or environment_block or client.get('setup_blocked') or client.get('blocked') or stored_block
+    if (client.get('setup_pending') and not project_error and not environment_block
+            and not client.get('blocked') and not stored_block):
         return {'connection': '已连接', 'project': project, 'state': '自动确认中',
                 'reason': str(client.get('setup_blocked') or '正在后台确认本配置，无需手动操作'), 'color': '#986100'}
     if block:
@@ -40,6 +46,9 @@ def browser_status(client, preferences, jobs=(), now=None):
     if active:
         return {'connection': '已连接', 'project': project, 'state': '执行中',
                 'reason': active.get('wait_reason') or active.get('error') or '正在处理已分配任务', 'color': '#206bb0'}
+    if (client.get('credit_check') or {}).get('state') == 'checking':
+        return {'connection': '已连接', 'project': project, 'state': '积分检测中',
+                'reason': '正在读取此浏览器的账号和积分，完成后自动恢复接单', 'color': '#986100'}
     if not client.get('page_ready'):
         reason = client.get('ready_note') or client.get('page_error') or '扩展在线，正在自动等待 Flow 页面控件加载稳定'
     elif not client.get('account'):

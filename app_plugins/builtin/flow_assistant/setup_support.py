@@ -62,8 +62,7 @@ def project_identity(value):
         return None
 
 
-def project_block(client, preferences):
-    if client.get('setup_pending'): return '扩展正在后台自动确认本配置；无需手动打开网页或复制配对信息。'
+def project_block(client, preferences, *, include_pending=True):
     if client.get('extension_version') and not compatible_extension(client['extension_version']):
         return f'桥接扩展需更新到 {EXTENSION_VERSION}：浏览器空闲后在扩展管理页点“重新加载”，再刷新 Flow 项目页；无需重新配对。'
     saved = project_identity(client.get('saved_project'))
@@ -74,6 +73,8 @@ def project_block(client, preferences):
     current = project_identity(client.get('project'))
     if current and current != (expected or saved):
         return '当前网页不是此配置保存的项目，请打开正确项目后刷新连接。'
+    if include_pending and client.get('setup_pending'):
+        return '扩展正在后台自动确认本配置；无需手动打开网页或复制配对信息。'
     return ''
 
 

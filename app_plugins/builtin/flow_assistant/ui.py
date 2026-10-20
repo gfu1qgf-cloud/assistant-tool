@@ -176,7 +176,8 @@ class FlowDialog(QtWidgets.QDialog):
         row.addStretch()
         layout.addLayout(row)
         hint = QtWidgets.QLabel('默认自动安排时长：优先同档和通用浏览器，没有匹配时会把空闲的自动配置改为所需时长并接单，无需手动分档。\n'
-            '正在生成／下载的浏览器不改；需要专用账号时，可手动选“固定 6／8／10 秒”。积分连接时读取一次，之后本地扣算。')
+            '正在生成／下载的浏览器不改；需要专用账号时，可手动选“固定 6／8／10 秒”。积分连接时读取一次，之后本地扣算。\n'
+            '选中浏览器后右键“检测选中浏览器积分”，可直接检查账号和积分；积分栏显示检测时间或失败原因。')
         hint.setWordWrap(True); layout.addWidget(hint)
         self.allow_general = QtWidgets.QCheckBox('允许通用档浏览器补位（不使用其他专用时长档）', page)
         self.allow_general.setChecked(True)
@@ -193,6 +194,9 @@ class FlowDialog(QtWidgets.QDialog):
         for column in (4, 5, 6): self.browsers.setColumnWidth(column, 100)
         self.browsers.setHorizontalScrollMode(QtWidgets.QAbstractItemView.ScrollMode.ScrollPerPixel)
         self.browsers.cellDoubleClicked.connect(lambda row, _column: self.open_browser_row(row))
+        self.browsers.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
+        self.browsers.customContextMenuRequested.connect(self.browser_menu)
+        self.browsers.setToolTip('右键浏览器行可检测所选浏览器积分；无需提交生成任务。')
         self.lane_edits = {}
         self.pending_lanes = {}
         layout.addWidget(self.browsers)
@@ -400,9 +404,22 @@ class FlowDialog(QtWidgets.QDialog):
             with QtCore.QSignalBlocker(combo): combo.setCurrentIndex(combo.findData(value))
             online = bool(client.get('id'))
             status = browser_status(client, preferences, self.state.get('jobs', []))
+            credit_text = ((f'{client["credits"]:g}' + ('（估算）' if client.get('credits_estimated') else ''))
+                           if client.get('credits') is not None else '未知')
+            check = client.get('credit_check') or {}
+            if check.get('state') == 'checking':
+                credit_text += '\n检测中…'
+            elif check.get('state') == 'success':
+                checked = QtCore.QDateTime.fromSecsSinceEpoch(int(check['at'])).toString('HH:mm:ss')
+                credit_text += '\n检测成功 ' + checked
+            elif check.get('state') == 'failed':
+                if client.get('credits') is not None: credit_text += '（上次）'
+                credit_text += '\n检测失败：' + str(check.get('message') or '读取未完成')[:80]
+            elif check.get('state') == 'deferred':
+                credit_text += '\n暂未检测：执行中，完成后再检测'
             values = {0: client.get('profile') or ('浏览器 ' + identifier[:8]),
                       1: (client.get('account') or '待确认') if online else '未连接',
-                      2: (f'{client["credits"]:g}' + ('（估算）' if client.get('credits_estimated') else '')) if client.get('credits') is not None else '未知',
+                      2: credit_text,
                       4: status['connection'], 5: status['project'], 6: status['state'], 7: status['reason']}
             for column, text in values.items():
                 item = self.browsers.item(row, column)
@@ -410,10 +427,13 @@ class FlowDialog(QtWidgets.QDialog):
                     item = QtWidgets.QTableWidgetItem(); self.browsers.setItem(row, column, item)
                 if item.text() != text: item.setText(text)
                 item.setToolTip(text)
+                if column == 2 and check.get('message'):
+                    item.setToolTip(text + '\n' + str(check['message']))
                 if column in (4, 5, 6): item.setForeground(QtGui.QColor(status['color']))
             self.browsers.item(row, 0).setData(QtCore.Qt.ItemDataRole.UserRole, {'key': scope + ':' + identifier,
                 'browser': client.get('id'), 'profile': client.get('profile')})
-        stamp = tuple((self.browsers.item(row, 7).text() for row in range(self.browsers.rowCount())))
+        stamp = tuple((self.browsers.item(row, 7).text(), self.browsers.item(row, 2).text())
+                      for row in range(self.browsers.rowCount()))
         if getattr(self, '_browser_reason_stamp', None) != stamp:
             self._browser_reason_stamp = stamp
             self.browsers.resizeRowsToContents()
@@ -421,6 +441,29 @@ class FlowDialog(QtWidgets.QDialog):
     def browser_selections(self):
         return [self.browsers.item(index, 0).data(QtCore.Qt.ItemDataRole.UserRole)
                 for index in sorted({item.row() for item in self.browsers.selectedIndexes()}) if self.browsers.item(index, 0)]
+
+    def browser_menu(self, position):
+        index = self.browsers.indexAt(position)
+        if not index.isValid(): return
+        if index.row() not in {item.row() for item in self.browsers.selectedIndexes()}:
+            self.browsers.clearSelection()
+            self.browsers.selectRow(index.row())
+        menu = QtWidgets.QMenu(self.browsers)
+        menu.addAction('检测选中浏览器积分', self.detect_selected_credits)
+        menu.addAction('打开选中浏览器', self.open_selected_browser)
+        menu.addAction('连接／安装扩展…', self.open_setup)
+        menu.exec(self.browsers.viewport().mapToGlobal(position))
+
+    def detect_selected_credits(self):
+        if getattr(self.plugin, 'manual_credit_check_api', 0) != 1:
+            self.note.setText('本次运行仍是旧服务；下次正常重启后可使用所选浏览器积分检测，现有任务保持不动。')
+            return
+        selected = self.browser_selections()
+        if not selected:
+            self.note.setText('请先选择要检测积分的浏览器。')
+            return
+        self.note.setText('正在检测所选浏览器账号和积分，结果显示在积分栏；未放行生成任务。')
+        self.send('credits', keys=[value['key'] for value in selected], manual=True)
 
     def open_selected_browser(self):
         rows = sorted({item.row() for item in self.browsers.selectedIndexes()})

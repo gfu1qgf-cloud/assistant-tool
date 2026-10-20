@@ -19,7 +19,7 @@ from .media_identity import owns_download, generated_bindings, merge_snapshot_bi
 from .operations import FlowOperations
 from .policy import capable, block_for, estimated_cost, batch_wait, waiting_reason
 from .setup_support import EXTENSION_ID, EXTENSION_VERSION, OPTIONS_URL, profile_name, project_url, project_identity, project_block, compatible_extension
-from .connection_status import configured_profiles
+from .connection_status import configured_profiles, browser_keys
 from .pricing import fixed_cost
 from .transfer_policy import retry_info, retry_detail, ready_bindings
 from .setup_pairing import confirm_saved_connection
@@ -102,6 +102,7 @@ class FlowService(QtCore.QObject, FlowOperations):
                                     'attempt': row['attempt'] if row else ''}
         if action == 'get_points':
             self.pending[request_id]['credit_debits'] = dict(self.credit_debits)
+            client['credit_check'] = {'state': 'checking', 'at': time.time(), 'message': '正在读取本浏览器当前账号和积分'}
         params = dict(params or {})
         if action in {'prepare', 'upload_images', 'run_tasks'}:
             params['wait_for_ready'] = True
@@ -245,6 +246,8 @@ class FlowService(QtCore.QObject, FlowOperations):
         action, job_id = request['action'], request['job']
         data = message.get('data') or {}
         if action == 'get_points':
+            client['credit_check'] = {'state': 'failed', 'at': time.time(),
+                'message': str(message.get('error') or ('尚未确认当前账号邮箱' if not data.get('email') else '页面未返回有效积分'))[:500]}
             if message.get('code') == 'FLOW_ACCOUNT_NOT_READY' or (message.get('success') and not data.get('email')):
                 failures = client.get('credits_ready_failures', 0) + 1
                 client.update(account='', credits_local=False, credits_waiting_account=True,
@@ -279,6 +282,9 @@ class FlowService(QtCore.QObject, FlowOperations):
                         current.update(credits=balance, credits_local=True, credits_at=client['credits_at'],
                                        credits_estimated=spent > 0)
             client['note'] = message.get('error') or ('' if client['account'] else '尚未确认当前 Flow 登录账号')
+            if message.get('success', True) and client['credits_local']:
+                client['credit_check'] = {'state': 'success', 'at': time.time(),
+                    'message': '已读取当前账号和积分；后续按实际提交费用本地扣算'}
             if not message.get('success', True):
                 client['page_error'] = str(message.get('error') or 'Flow 页面未响应')[:500]
             if client.get('blocked') == '积分不足':
@@ -708,10 +714,26 @@ class FlowService(QtCore.QObject, FlowOperations):
                 self.commit_preferences({**self.preferences, **command['value']})
                 self.downloads_root = self.preferences.get('downloads_root') or self.downloads_root
             elif action == 'credits':
-                for client in self.clients.values():
-                    if client['authorized']:
-                        self.request(client, 'get_points')
-                        self.request(client, 'snapshot')
+                keys = set(command.get('keys') or [])
+                selected = [client for client in self.clients.values() if client['authorized']
+                            and ('keys' not in command or browser_keys(client) & keys)]
+                if command.get('manual') and not selected:
+                    raise ValueError('选中的浏览器未连接，请先连接该配置后再检测积分。')
+                rows = self.store.rows() if command.get('manual') else []
+                for client in selected:
+                    busy = any((row['status'] in TRANSIENT or row['status'] == 'uncertain'
+                                and not row['remote'].get('cloud_finished'))
+                               and (row['browser'] == client['id'] or
+                                    client.get('account') and row['remote'].get('account') == client['account'])
+                               for row in rows)
+                    if busy:
+                        client['credit_check'] = {'state': 'deferred', 'at': time.time(),
+                            'message': '此账号正在处理任务，完成后可手动检测；已保留当前任务'}
+                        continue
+                    self.request(client, 'get_points')
+                    if command.get('manual'):
+                        client['credit_check']['hold_dispatch'] = True
+                    self.request(client, 'snapshot')
             elif action == 'cancel':
                 for row in self.store.rows():
                     if row['id'] in command['ids'] and row['status'] in {'queued', 'failed'}:
@@ -793,6 +815,9 @@ class FlowService(QtCore.QObject, FlowOperations):
                     for client in self.clients.values():
                         if client.get('id') == request['client']:
                             client['page_error'] = '扩展已连接，但项目页面响应超时；请打开浏览器检查登录和项目'
+                            if request['action'] == 'get_points':
+                                client['credit_check'] = {'state': 'failed', 'at': time.time(),
+                                    'message': '积分检测响应超时，请检查该浏览器的登录和项目页面后重试'}
                 if request['job']:
                     row = self.store.get(request['job'])
                     # A disconnected request may outlive an explicit retry.
