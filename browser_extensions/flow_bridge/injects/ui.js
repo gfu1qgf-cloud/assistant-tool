@@ -6788,7 +6788,7 @@ ${presetAfter || ""}`.trim();
           status: t.status, mediaBindings: t.mediaBindings, downloadIds: t.downloadIds}))
       }), {prepare: syncPageVideoSettings, initialized: () => bridgeUiReady,
         reconcileResults: reconcileResultReceipts,
-        upload: uploadPathsToFlow, images: getLoadedPageImages, click: simulateClick,
+        upload: uploadPathsToFlow, images: getLoadedPageImages, click: simulateClick, cleanup: cleanupPageOverlays,
         failed: (taskId, submissionId, reason) => {
           const row = state.tasks.findIndex(t => t.taskId === taskId);
           const line = state.tasks[row]?.mediaBindings?.findIndex(b => b?.submissionId === submissionId);

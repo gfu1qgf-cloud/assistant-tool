@@ -300,9 +300,9 @@ class CreditCooldownTests(unittest.TestCase):
         dialog, _, _ = self.ui()
         dialog.state = {'clients': [], 'preferences': service.preferences}
         dialog.update_browsers()
-        self.assertIn('9（冷却记录）', dialog.browsers.item(0, 2).text())
-        self.assertEqual(dialog.browsers.item(0, 6).text(), '积分冷却')
-        self.assertIn('6 小时', dialog.browsers.item(0, 7).text())
+        self.assertIn('9（冷却记录）', dialog.browsers.item(0, 3).text())
+        self.assertEqual(dialog.browsers.item(0, 7).text(), '积分冷却')
+        self.assertIn('6 小时', dialog.browsers.item(0, 8).text())
         service.store.enqueue(self.jobs(duration=6, budget=0)); row = service.store.rows()[0]
         service.preferences['profiles'] = [client['profile']]
         self.assertIn('积分冷却', waiting_reason(row, [], [row], service.preferences, {}, {}))

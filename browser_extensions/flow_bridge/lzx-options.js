@@ -1,7 +1,7 @@
 const byId = id => document.getElementById(id);
 const extensionId = 'pnjppjjfgiccpcfajkpooklgohgihdom';
 let editing = false, setupGeneration = 0, setupSocket = null;
-const expectedVersion = '1.1.24';
+const expectedVersion = '1.1.25';
 let timingValues = {};
 const timingMs = (key,fallback) => Math.max(1, (Number.isFinite(timingValues[key]) && timingValues[key] > 0 ? timingValues[key] : fallback)*1000);
 async function loadTiming() {

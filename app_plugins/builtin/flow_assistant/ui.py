@@ -12,8 +12,9 @@ from .credit_cooldown import credit_hold
 from .credit_cache import restore_balance
 from .timing import value as timing_value
 from .pricing import RULE_NOTE
+from .browser_table import Column as BC, HEADERS as BROWSER_HEADERS, BrowserItem
 
-STATUS = {'queued': '等待执行', 'preparing': '首次核对／更新快照', 'uploading': '上传参考图',
+STATUS = {'queued': '等待执行', 'preparing': '首次核对／更新快照', 'uploading': '准备参考图',
           'submitting': '提交生成', 'generating': '生成中', 'downloading': '下载中',
           'archiving': '保存到任务目录', 'completed': '已完成', 'failed': '失败',
           'download_failed': '下载自动恢复／需处理', 'archive_failed': '归档待重试',
@@ -184,7 +185,8 @@ class FlowDialog(QtWidgets.QDialog):
         layout.addLayout(row)
         hint = QtWidgets.QLabel('默认自动安排时长：优先同档和通用浏览器，没有匹配时会把空闲的自动配置改为所需时长并接单，无需手动分档。\n'
             '正在生成／下载的浏览器不改；需要专用账号时，可手动选“固定 6／8／10 秒”。积分连接时读取一次，之后本地扣算。\n'
-            '选中浏览器后右键“检测选中浏览器积分”，可直接检查账号和积分；积分栏显示检测时间或失败原因。')
+            '选中浏览器后右键“检测选中浏览器积分”，可直接检查账号和积分；积分栏显示检测时间或失败原因。\n'
+            '点击表头排序，再次点击切换升序／降序；配置名称与 Chrome 启动器一致。')
         hint.setWordWrap(True); layout.addWidget(hint)
         self.allow_general = QtWidgets.QCheckBox('允许通用档浏览器补位（不使用其他专用时长档）', page)
         self.allow_general.setChecked(True)
@@ -194,11 +196,14 @@ class FlowDialog(QtWidgets.QDialog):
         self.auto_lane.setChecked(True)
         self.auto_lane.toggled.connect(lambda checked: self.send('preferences', value={'auto_lane': checked}))
         layout.addWidget(self.auto_lane)
-        self.browsers = self.table(['Chrome 配置', 'Flow 登录账号', '可用积分／本地估算', '时长分档', '扩展连接', '项目页面', '接单状态', '等待原因／下一步'], page)
-        self.browsers.setColumnWidth(1, 200)
-        self.browsers.setColumnWidth(2, 145)
-        self.browsers.setColumnWidth(3, 175)
-        for column in (4, 5, 6): self.browsers.setColumnWidth(column, 100)
+        self.browsers = self.table(BROWSER_HEADERS, page)
+        for column, width in ((BC.PROFILE, 115), (BC.NAME, 150), (BC.ACCOUNT, 200),
+                              (BC.CREDITS, 165), (BC.LANE, 175), (BC.CONNECTION, 100),
+                              (BC.PROJECT, 100), (BC.STATE, 100), (BC.REASON, 260)):
+            self.browsers.setColumnWidth(column, width)
+        self.browsers.setSortingEnabled(True)
+        self.browsers.sortItems(BC.PROFILE, QtCore.Qt.SortOrder.AscendingOrder)
+        self.browsers.horizontalHeader().sortIndicatorChanged.connect(lambda *_: self.browsers.resizeRowsToContents())
         self.browsers.setHorizontalScrollMode(QtWidgets.QAbstractItemView.ScrollMode.ScrollPerPixel)
         self.browsers.cellDoubleClicked.connect(lambda row, _column: self.open_browser_row(row))
         self.browsers.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
@@ -372,8 +377,27 @@ class FlowDialog(QtWidgets.QDialog):
             self.send('lane', scope=scope, key=identifier, duration=value)
 
     def update_browsers(self):
+        # QTableWidget otherwise moves a row as soon as its sorted cell changes,
+        # causing the remaining cells to be written into another account's row.
+        sorting = self.browsers.isSortingEnabled()
+        self.browsers.setSortingEnabled(False)
+        try:
+            self.update_browser_rows()
+        finally:
+            self.browsers.setSortingEnabled(sorting)
+        stamp = tuple(tuple(self.browsers.item(row, column).text()
+                            for column in (BC.PROFILE, BC.NAME, BC.CREDITS, BC.REASON))
+                      for row in range(self.browsers.rowCount()))
+        if getattr(self, '_browser_reason_stamp', None) != stamp:
+            self._browser_reason_stamp = stamp
+            self.browsers.resizeRowsToContents()
+
+    def update_browser_rows(self):
         clients = self.state.get('clients', [])
         preferences = self.state.get('preferences', {})
+        launcher = getattr(getattr(self.plugin.context.parent_widget, 'chrome_plugin', None), 'dialog', None)
+        names = {profile['directory']: profile.get('name') or profile['directory']
+                 for profile in getattr(launcher, 'profiles', [])}
         entries = {}
         for profile in self.group.currentData() or []:
             entries[('profile', profile)] = {'profile': profile}
@@ -383,27 +407,35 @@ class FlowDialog(QtWidgets.QDialog):
             entries.setdefault(('profile', profile), {'profile': profile})
         for client in clients:
             entries[lane_key(client)] = client
-        keys = list(entries)
-        # Reuse editors while state updates; do not steal focus or reset edits.
-        if getattr(self, '_browser_keys', None) != keys:
-            self.browsers.setRowCount(0)
-            self.lane_edits = {}
-            self.browsers.setRowCount(len(keys))
-            self._browser_keys = keys
-            for row, key in enumerate(keys):
+        # Reconcile by identity rather than row number. Sorting, a reconnect or
+        # a new group member must keep selections and in-progress lane edits.
+        wanted = {scope + ':' + identifier for scope, identifier in entries}
+        for row in reversed(range(self.browsers.rowCount())):
+            value = self.browsers.item(row, BC.PROFILE).data(QtCore.Qt.ItemDataRole.UserRole)
+            if value['key'] not in wanted:
+                self.browsers.removeRow(row)
+                self.lane_edits.pop(tuple(value['key'].split(':', 1)), None)
+        rows = {self.browsers.item(row, BC.PROFILE).data(QtCore.Qt.ItemDataRole.UserRole)['key']: row
+                for row in range(self.browsers.rowCount())}
+        for key, client in entries.items():
+            scope, identifier = key
+            identity = scope + ':' + identifier
+            row = rows.get(identity)
+            if row is None:
+                row = self.browsers.rowCount()
+                self.browsers.insertRow(row)
+                for column in BC:
+                    self.browsers.setItem(row, column, BrowserItem())
                 combo = QtWidgets.QComboBox(self.browsers)
                 combo.addItem('自动分配', 'automatic')
                 combo.addItem('固定通用档', None)
                 for seconds in DURATIONS: combo.addItem(f'固定 {seconds} 秒', seconds)
                 combo.currentIndexChanged.connect(lambda _index, k=key, w=combo: self.lane_changed(k, w))
-                self.browsers.setCellWidget(row, 3, combo)
+                self.browsers.setCellWidget(row, BC.LANE, combo)
                 self.lane_edits[key] = combo
-        for row, key in enumerate(keys):
-            client = entries[key]
             if not client.get('id'):
                 client = {**client, 'saved_project': preferences.get('profile_projects', {}).get(client.get('profile'))}
                 restore_balance(client, preferences)
-            scope, identifier = key
             stored = preferences.get(scope + '_lanes', {}).get(identifier)
             current_lane = stored
             if automatic_lane(client, preferences): stored = 'automatic'
@@ -420,6 +452,7 @@ class FlowDialog(QtWidgets.QDialog):
             hold = credit_hold(client, preferences)
             if hold and (not online or client.get('credits') is None):
                 credit_text = f'{hold["balance"]:g}（冷却记录）'
+            credit_number = hold['balance'] if hold and (not online or client.get('credits') is None) else client.get('credits')
             check = client.get('credit_check') or {}
             if check.get('state') == 'checking':
                 credit_text += '\n检测中…'
@@ -441,26 +474,21 @@ class FlowDialog(QtWidgets.QDialog):
                     deadline = QtCore.QDateTime.fromSecsSinceEpoch(int(client['credits_at'] + lifetime)).toString('MM-dd HH:mm')
                     credit_text += '\n余额有效至 ' + deadline
                 else: credit_text += '\n余额不过期'
-            values = {0: client.get('profile') or ('浏览器 ' + identifier[:8]),
-                      1: (client.get('account') or '待确认') if online else (str(client['account']) + '（上次）' if client.get('account') else '未连接'),
-                      2: credit_text,
-                      4: status['connection'], 5: status['project'], 6: status['state'], 7: status['reason']}
+            values = {BC.PROFILE: client.get('profile') or ('浏览器 ' + identifier[:8]),
+                      BC.NAME: names.get(client.get('profile'), '未读取到名称'),
+                      BC.ACCOUNT: (client.get('account') or '待确认') if online else (str(client['account']) + '（上次）' if client.get('account') else '未连接'),
+                      BC.CREDITS: credit_text, BC.LANE: combo.currentText(),
+                      BC.CONNECTION: status['connection'], BC.PROJECT: status['project'],
+                      BC.STATE: status['state'], BC.REASON: status['reason']}
             for column, text in values.items():
                 item = self.browsers.item(row, column)
-                if item is None:
-                    item = QtWidgets.QTableWidgetItem(); self.browsers.setItem(row, column, item)
-                if item.text() != text: item.setText(text)
-                item.setToolTip(text)
-                if column == 2 and check.get('message'):
+                number = credit_number if column == BC.CREDITS else (current_lane if value == 'automatic' else value)
+                item.update_value(text, identity, number=number, numeric=column in (BC.CREDITS, BC.LANE))
+                if column == BC.CREDITS and check.get('message'):
                     item.setToolTip(text + '\n' + str(check['message']))
-                if column in (4, 5, 6): item.setForeground(QtGui.QColor(status['color']))
-            self.browsers.item(row, 0).setData(QtCore.Qt.ItemDataRole.UserRole, {'key': scope + ':' + identifier,
+                if column in (BC.CONNECTION, BC.PROJECT, BC.STATE): item.setForeground(QtGui.QColor(status['color']))
+            self.browsers.item(row, BC.PROFILE).setData(QtCore.Qt.ItemDataRole.UserRole, {'key': identity,
                 'browser': client.get('id'), 'profile': client.get('profile')})
-        stamp = tuple((self.browsers.item(row, 7).text(), self.browsers.item(row, 2).text())
-                      for row in range(self.browsers.rowCount()))
-        if getattr(self, '_browser_reason_stamp', None) != stamp:
-            self._browser_reason_stamp = stamp
-            self.browsers.resizeRowsToContents()
 
     def browser_selections(self):
         return [self.browsers.item(index, 0).data(QtCore.Qt.ItemDataRole.UserRole)

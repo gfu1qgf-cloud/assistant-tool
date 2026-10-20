@@ -67,5 +67,43 @@ class ReferenceImageTests(unittest.TestCase):
         self.assertEqual(task['image_name'], data['reference']['filename'])
         self.assertNotEqual(task['image_name'], self.image.name)
 
+    def test_verified_reused_media_keeps_current_attempt_proof_and_is_charged_only_once(self):
+        service = self.service(); row, client = self.upload(service)
+        data = upload_receipt(service, row['id'])
+        data['reference'].update(media_id='same-previously-uploaded-media', reused=True, source_upload_id='d' * 32)
+        request = self.request(service, 'upload_images')
+        service._response(client, {'request_id': request, 'success': True, 'data': data})
+        service._response(client, {'request_id': request, 'success': True, 'data': data})
+        runs = [value for value in self.actions(client) if value['action'] == 'run_tasks']
+        self.assertEqual(len(runs), 1)
+        self.assertEqual(runs[0]['params']['tasks'][0]['reference']['upload_id'], row['attempt'])
+        self.assertEqual(runs[0]['params']['tasks'][0]['reference']['media_id'], 'same-previously-uploaded-media')
+        self.assertEqual(service.store.get(row['id'])['remote']['reference_receipt'], data['reference'])
+
+    def test_reused_marker_cannot_authorize_an_old_attempt_receipt(self):
+        service = self.service(); row, client = self.upload(service)
+        data = upload_receipt(service, row['id'])
+        data['reference'].update(upload_id='d' * 32, reused=True)
+        service._response(client, {'request_id': self.request(service, 'upload_images'), 'success': True, 'data': data})
+        self.assertEqual(service.store.get(row['id'])['status'], 'failed')
+        self.assertFalse(service.store.attempt_charged(row['attempt']))
+        self.assertNotIn('run_tasks', [value['action'] for value in self.actions(client)])
+
+    def test_upload_request_binds_expected_account_and_manual_reset_changes_asset_revision(self):
+        service = self.service(); row, client = self.upload(service)
+        request = next(value for value in self.actions(client) if value['action'] == 'upload_images')
+        self.assertEqual(request['params']['expected_account'], client['account'])
+        result = service.store.reset_tasks([row['id']], versions={row['id']: {
+            key: row[key] for key in ('status', 'attempt', 'browser')}})
+        self.assertEqual(result['reset'], [row['id']])
+        current = service.store.get(row['id']); revision = current['payload']['reference_reset']
+        self.assertEqual(len(revision), 32)
+        service.pending.clear()
+        service.store.update(row['id'], 'uploading', attempt='e' * 32, browser=client['id'],
+                             remote={'account': client['account'], 'cost': 2})
+        service.start_upload(service.store.get(row['id']))
+        request = [value for value in self.actions(client) if value['action'] == 'upload_images'][-1]
+        self.assertEqual(request['params']['reference_reset'], revision)
+
 
 if __name__ == '__main__': unittest.main()

@@ -126,7 +126,9 @@ class TransferRecovery:
         info.update(count=info.get('count', 0) + int(retry), active=True, stopped=False,
                     next_at=0, waiting='', waiting_since=0, last_error='')
         self._save_transfer(row, 'upload', info, status='uploading', error='')
-        self.request(client, 'upload_images', {'paths': [reference['path']], 'upload_id': row['attempt'], 'reference': reference}, row['id'])
+        self.request(client, 'upload_images', {'paths': [reference['path']], 'upload_id': row['attempt'],
+            'reference': reference, 'expected_account': client.get('account'),
+            'reference_reset': row['payload'].get('reference_reset', '')}, row['id'])
         return True
 
     def retry_download(self, row, *, automatic=False):

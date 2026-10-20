@@ -19,6 +19,7 @@ const {installDownloadHelpers} = require('./flow_test_support.cjs');
   let currentDownload = null, attached;
   const context = {state, batchPromise: null, isStopRequested: false,
     uploadPathsToFlow() {throw Error('download-only recovery cannot upload');}, getLoadedPageImages:()=>[], simulateClick() {throw Error('download-only recovery cannot click');},
+    cleanupPageOverlays() {throw Error('download-only recovery cannot change page overlays');},
     console: {log() {}, warn() {}, error() {}},
     document: {querySelectorAll: () => []},
     mediaIdFromVideoUrl: url => typeof url === 'string' ? new URL(url).pathname.split('/').at(-1) : '',

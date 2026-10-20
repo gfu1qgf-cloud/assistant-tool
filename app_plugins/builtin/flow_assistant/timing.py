@@ -138,7 +138,7 @@ def request_timeout(preferences, action, client=None):
     key = {'prepare': 'prepare_timeout_seconds', 'upload_images': 'upload_timeout_seconds',
            'retry_download': 'download_timeout_seconds', 'close_exhausted': 'credit_close_timeout_seconds'}.get(action, 'request_timeout_seconds')
     seconds = value(preferences, key)
-    if (client and client.get('extension_version') and client['extension_version'] not in {'1.1.21', '1.1.22', '1.1.23', '1.1.24'}
+    if (client and client.get('extension_version') and client['extension_version'] not in {'1.1.21', '1.1.22', '1.1.23', '1.1.24', '1.1.25'}
             and 'timing_settings_v1' not in client.get('capabilities', [])):
         seconds = max(seconds, CATALOG[key].default)
     return seconds

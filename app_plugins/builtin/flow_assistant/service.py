@@ -553,8 +553,10 @@ class FlowService(QtCore.QObject, FlowOperations):
         elif action == 'upload_images':
             reference = row['remote'].get('upload_reference')
             if not verified_receipt(reference, data.get('reference')) or reference['upload_id'] != row['attempt']:
-                self.transfer_failed(row, 'upload', '扩展未返回本次参考图的准确首帧凭据；未提交生成。请加载桥接扩展 1.1.22 后完全重置此任务。', permanent=True)
+                self.transfer_failed(row, 'upload', '扩展未返回本次参考图的准确首帧凭据；未提交生成。请在浏览器空闲时加载当前桥接扩展后完全重置此任务。', permanent=True)
                 return
+            self.store.update(job_id, row['status'], remote={**row['remote'], 'reference_receipt': data['reference']}, error=row['error'])
+            row = self.store.get(job_id)
             info = {**retry_info(row, 'upload'), 'active': False, 'next_at': 0, 'waiting': '', 'done': True}
             self._save_transfer(row, 'upload', info)
             row = self.store.get(job_id)

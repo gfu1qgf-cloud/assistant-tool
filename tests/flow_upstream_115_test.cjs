@@ -14,6 +14,7 @@ function page(managed) {
     localStorage:{getItem(key){storage.push(key);return'2';},setItem(key){storage.push(key);}},
     state:{isRunning:false,tasks:[]},batchPromise:null,bridgeUiReady:false,syncPageVideoSettings(){},
     uploadPathsToFlow(){throw Error('account bridge cannot upload');},getLoadedPageImages:()=>[],simulateClick(){throw Error('account bridge cannot click');},
+    cleanupPageOverlays(){throw Error('account bridge cannot change page overlays');},
     sendToExtension(action){native.push(action);return new Promise(()=>{});},
     setTimeout(fn,ms){timers.push({fn,ms});return timers.length;},clearTimeout(){},
     setInterval(fn,ms){intervals.push({fn,ms});return intervals.length;},clearInterval(){}};

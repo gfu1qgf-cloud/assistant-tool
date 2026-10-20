@@ -376,7 +376,7 @@ class TimingSettingsTests(unittest.TestCase):
         service = self.service(); client = self.browser(service); self.observe(service, client, 52)
         dialog, _, _ = self.ui(); dialog.state = {'clients': [], 'preferences': service.store.settings()}
         dialog.update_browsers()
-        text = dialog.browsers.item(0, 2).text()
+        text = dialog.browsers.item(0, 3).text()
         self.assertIn('52', text); self.assertIn('上次检测缓存', text); self.assertIn('有效至', text)
 
     def test_setup_retry_intervals_are_configurable_beyond_three_attempts(self):

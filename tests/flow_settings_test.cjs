@@ -103,6 +103,26 @@ const vm = require('node:vm');
   assert.equal(messages.find(value => value.request_id === 'failed-explicit-refresh').success, false,
     'an explicit failed identity refresh must invalidate the old session');
 
+  await fresh('fresh@example.test');
+  transport.send({action:'get_points_response',data:{email:'fresh@example.test',remaining_points:50}});
+  let referenceCalls=0, invalidations=0, referenceScope;
+  window.__lzxReferenceIdentity.invalidate=()=>invalidations++;
+  window.__lzxReferenceIdentity.upload=async (_params,scope)=>{
+    referenceCalls++;referenceScope=scope;await scope.guard();return {reference:{verified:true},reused:true};
+  };
+  const upload=(id,expected='fresh@example.test')=>hooks.message({source:window,origin:context.location.origin,
+    data:{sender:'lzx-flow-extension',message:{action:'upload_images',request_id:id,params:{expected_account:expected}}}});
+  await upload('reuse-scope');
+  assert.equal(messages.find(value=>value.request_id==='reuse-scope').success,true);
+  assert.equal(referenceScope.account,'fresh@example.test');assert(referenceScope.page_instance);
+  await upload('wrong-reference-account','other@example.test');
+  assert.equal(referenceCalls,1,'wrong-account requests must not upload or reuse any asset');
+  assert.equal(messages.find(value=>value.request_id==='wrong-reference-account').success,false);
+  window.__lzxReferenceIdentity.upload=async (_params,scope)=>{await fresh('changed@example.test');await scope.guard();};
+  await upload('changed-during-reference');
+  assert.equal(messages.find(value=>value.request_id==='changed-during-reference').success,false);
+  assert.equal(invalidations,2,'both wrong-account cases must discard old asset proofs');
+
   const built = fs.readFileSync(path.join(__dirname, '../browser_extensions/flow_bridge/injects/ui.js'), 'utf8');
   const check = built.indexOf('await window.__lzxFlowTransport.waitForSettings(settings)');
   const close = built.indexOf('// 4. 关闭设置面板');

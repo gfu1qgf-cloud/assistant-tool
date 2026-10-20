@@ -297,6 +297,7 @@ class QueueStore:
                 payload = copy.deepcopy(row['payload'])
                 if not automatic:
                     payload.pop('generation_recovery', None)
+                    payload['reference_reset'] = uuid.uuid4().hex
                 if risk or Path(payload['output']).exists():
                     sequence = 1
                     while True:

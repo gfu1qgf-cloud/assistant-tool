@@ -1,11 +1,14 @@
-// Managed references are bound to a frozen, attempt-unique local upload.
+// Each attempt keeps its own proof; verified assets may be reused in this page.
 (() => {
   if (window.top !== window || window.__lzxReferenceIdentity) return;
   let helpers, ms = (_key, fallback) => fallback * 1000;
-  const bindings = new Map();
+  const bindings = new Map(), assets = new Map();
+  let assetScope = '';
   const error = text => Object.assign(Error(text), {code:'FLOW_REFERENCE_NOT_CONFIRMED'});
   const sleep = duration => new Promise(resolve => setTimeout(resolve, duration));
   const name = value => String(value || '').split(/[\\/]/).at(-1).toLowerCase();
+  const project = () => location.href.split('#')[0];
+  function invalidate() {bindings.clear(); assets.clear(); assetScope = '';}
   function valid(reference) {
     return reference && /^[a-f0-9]{32}$/.test(reference.upload_id || '') && /^[a-f0-9]{64}$/.test(reference.sha256 || '') &&
       /^LZXREF[a-f0-9]{32}\.(png|jpe?g|webp|bmp)$/.test(reference.filename || '') &&
@@ -37,7 +40,8 @@
   }
   function trusted(image) {
     const reference = image?.reference, saved = bindings.get(reference?.upload_id);
-    return valid(reference) && saved && same(reference, saved.reference) && image.primaryMediaKey === reference.media_id;
+    return valid(reference) && saved && saved.project === project() &&
+      same(reference, saved.reference) && image.primaryMediaKey === reference.media_id;
   }
   function verify(image, footage='VIDEO_FRAMES') {
     if (footage !== 'VIDEO_FRAMES' || !trusted(image)) return false;
@@ -98,28 +102,68 @@
   }
   function resolve(item) {
     const reference = item?.reference, saved = bindings.get(reference?.upload_id);
-    if (!valid(reference) || !saved || !same(reference, saved.reference) || item.local_image_path !== reference.path ||
+    if (!valid(reference) || !saved || saved.project !== project() || !same(reference, saved.reference) || item.local_image_path !== reference.path ||
         item.download_path !== `FlowBridge/${reference.upload_id}/result.mp4`) throw error('任务图片与本次上传凭据不一致，未提交生成。');
     return {...saved.image, reference:saved.reference, localImagePath:reference.path};
   }
-  async function upload(params) {
+  function bind(reference, image, media_id, url, source, reused) {
+    const receipt = {...reference, media_id, verified:true, source_upload_id:source, reused};
+    const bound = {...image, primaryMediaKey:media_id, reference:receipt};
+    bindings.set(reference.upload_id, {reference:receipt, image:bound, project:url});
+    while (bindings.size > 16) bindings.delete(bindings.keys().next().value);
+    return bound;
+  }
+  async function upload(params, context={}) {
     const reference = params.reference;
     if (!valid(reference) || params.upload_id !== reference.upload_id || params.paths?.length !== 1 || params.paths[0] !== reference.path)
       throw error('参考图上传请求缺少本次独立副本标识。');
+    const url = project();
+    const scope = context.page_instance && context.account ?
+      JSON.stringify([url, context.page_instance, String(context.account).trim().toLowerCase()]) : '';
+    if (scope !== assetScope) {invalidate(); assetScope = scope;}
+    const guard = async () => {
+      if (url !== project()) {invalidate(); throw error('准备参考图时项目发生变化，未提交生成。');}
+      await context.guard?.();
+    };
+    await guard();
+    const cached = scope && assets.get(reference.sha256);
+    // This proof originated from our unique upload and a verified live first
+    // frame. Never infer the bytes from a matching filename in project history.
+    if (cached && (!params.reference_reset || cached.reset === params.reference_reset)) {
+      const bound = bind(reference, cached.image, cached.media_id, url, cached.source, true);
+      try {
+        await attach(bound);
+        await guard();
+        assets.delete(reference.sha256); assets.set(reference.sha256, cached);
+        return {uploaded:[], skipped:[reference.path], failed:[], errors:{}, reused:true,
+          reference:bound.reference, upload_id:reference.upload_id};
+      } catch (failure) {
+        bindings.delete(reference.upload_id); assets.delete(reference.sha256);
+        if (failure.code !== 'FLOW_REFERENCE_NOT_CONFIRMED') throw failure;
+        await guard();
+        // A removed or unmountable cached asset gets one fresh upload. The
+        // ordinary bounded upload retries still handle a failed fresh attempt.
+        await helpers.cleanup?.();
+      }
+    }
+    await guard();
     const result = await helpers.upload(params.paths, {timeoutMs:ms('page_controls_wait_seconds',45)});
+    await guard();
     if (result.failed?.length) throw error('本条参考图上传未确认：' + Object.values(result.errors || {}).join('；'));
     const matches = helpers.images().filter(image => name(image.displayName) === name(reference.filename) ||
       name(image.displayName) === name(reference.filename).replace(/\.[^.]+$/, ''));
     const ids = new Set(matches.map(image => image.primaryMediaKey || image.id).filter(id => id && !String(id).startsWith('img_')));
     if (ids.size !== 1) throw error('未找到唯一对应本条独立副本的图片素材；不按同名旧图或图块数量放行。');
     const media_id = [...ids][0], image = matches.find(item => (item.primaryMediaKey || item.id) === media_id);
-    const receipt = {...reference, media_id, verified:true};
-    const bound = {...image, primaryMediaKey:media_id, reference:receipt};
-    bindings.set(reference.upload_id, {reference:receipt, image:bound});
-    while (bindings.size > 16) bindings.delete(bindings.keys().next().value);
-    try {await attach(bound);} catch (failure) {bindings.delete(reference.upload_id);throw failure;}
-    return {...result, reference:receipt, upload_id:reference.upload_id};
+    const bound = bind(reference, image, media_id, url, reference.upload_id, false);
+    try {await attach(bound); await guard();} catch (failure) {bindings.delete(reference.upload_id);throw failure;}
+    if (scope) {
+      assets.delete(reference.sha256);
+      assets.set(reference.sha256, {image:{...image}, media_id, source:reference.upload_id, reset:params.reference_reset || ''});
+      while (assets.size > 16) assets.delete(assets.keys().next().value);
+    }
+    return {...result, reference:bound.reference, upload_id:reference.upload_id, reused:false};
   }
-  window.__lzxReferenceIdentity = {init(api, timing) {helpers=api; ms=timing;}, upload, resolve, attach, verify,
+  window.__lzxReferenceIdentity = {init(api, timing) {helpers=api; ms=timing;}, upload, resolve, attach, verify, invalidate,
     assert(image, footage) {if (!verify(image, footage)) throw error('点击生成前首帧已变化或无法确认，未提交生成。');}, mediaIds};
 })();

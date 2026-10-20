@@ -437,7 +437,16 @@
           data: {verified: true, model: 'omni_1_1_flash', cost: readCost(), summary: summary(), email, page_instance:pageInstance}});
       } else if (message.action === 'upload_images') {
         if (!window.__lzxReferenceIdentity) throw Error('参考图校验脚本尚未就绪，未提交生成。');
-        const data = await window.__lzxReferenceIdentity.upload(message.params || {});
+        const email = await confirmAccount();
+        const guardAccount = async () => {
+          if (await confirmAccount() !== email || message.params?.expected_account && email !== message.params.expected_account.toLowerCase()) {
+            window.__lzxReferenceIdentity.invalidate();
+            throw Object.assign(Error('准备参考图期间登录账号变化，未提交生成。'), {code:'FLOW_ACCOUNT_CHANGED'});
+          }
+        };
+        await guardAccount();
+        const data = await window.__lzxReferenceIdentity.upload(message.params || {},
+          {account:email, page_instance:pageInstance, guard:guardAccount});
         emit({action:'upload_images_response', request_id:message.request_id, success:true, data});
       } else if (message.action === 'retry_download') {
         const ok = await helpers.retry(message.params?.batch_id);

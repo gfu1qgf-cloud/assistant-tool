@@ -111,9 +111,9 @@ class ManualCreditCheckTests(unittest.TestCase):
                 ('failed', '没有读取到积分字段', '没有读取到积分字段')):
             client['credit_check'] = {'state': state, 'at': time.time(), 'message': message}
             dialog.update_browsers()
-            self.assertIn(expected, dialog.browsers.item(0, 2).text())
-            self.assertIn('52', dialog.browsers.item(0, 2).text())
-        self.assertIn('上次', dialog.browsers.item(0, 2).text())
+            self.assertIn(expected, dialog.browsers.item(0, 3).text())
+            self.assertIn('52', dialog.browsers.item(0, 3).text())
+        self.assertIn('上次', dialog.browsers.item(0, 3).text())
 
     def test_new_panel_cannot_send_scoped_command_to_old_running_service(self):
         dialog, _, commands = self.ui()

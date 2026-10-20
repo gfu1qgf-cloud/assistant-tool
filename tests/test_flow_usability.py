@@ -203,9 +203,9 @@ class UsabilityTests(unittest.TestCase):
         dialog.update_state(state)
         self.assertIn('已连接 1', dialog.connection_summary.text())
         self.assertIn('可接单 0', dialog.connection_summary.text())
-        self.assertEqual(dialog.browsers.item(0, 4).text(), '已连接')
-        self.assertEqual(dialog.browsers.item(0, 5).text(), '地址已保存')
-        self.assertEqual(dialog.browsers.item(0, 6).text(), '未就绪')
+        self.assertEqual(dialog.browsers.item(0, 5).text(), '已连接')
+        self.assertEqual(dialog.browsers.item(0, 6).text(), '地址已保存')
+        self.assertEqual(dialog.browsers.item(0, 7).text(), '未就绪')
         self.assertEqual(dialog.browsers.rowCount(), 2)
         paths = os.environ.get('LZX_FLOW_USABILITY_SCREENSHOTS')
         if paths:
