@@ -7,6 +7,7 @@ from .setup_support import EXTENSION_VERSION, project_identity, compatible_exten
 from .account_policy import account_hold
 from .credit_cooldown import credit_hold
 from .routing import lane_key
+from .timing import value as timing_value, delay
 
 
 def missing_window(error):
@@ -26,17 +27,18 @@ def defer_prepare(service, client, row, error, code=''):
     if previous.get('browser') != client['id']:
         previous = {}
     count = int(previous.get('count', 0)) + 1
-    if count > 3:
-        service.quarantine(client, row, '页面或浏览器窗口连续未就绪，自动等待已达3次；未提交生成。')
+    limit = timing_value(service.preferences, 'prepare_attempts')
+    if count > limit:
+        service.quarantine(client, row, f'页面或浏览器窗口连续未就绪，自动等待已达{limit}次；未提交生成。')
         return True
-    recovery = {'count': count, 'next_at': time.time() + (2, 5, 15)[count-1],
+    recovery = {'count': count, 'next_at': time.time() + delay(service.preferences, 'prepare_retry_delays', count-1),
         'profile': client.get('profile', ''), 'browser': client['id'], 'reopen': missing_window(error)}
     # A fresh snapshot may already show controls again. Keep the backoff on
     # this browser so the next queue row cannot bypass it or reset its counter.
     client['prepare_wait'] = recovery
     remote = {**row['remote'], 'prepare_retry': recovery}
     service.store.update(row['id'], 'queued', attempt='', browser='', remote=remote,
-        error=f'正在等待页面控件／窗口就绪（自动重试{count}/3）；尚未提交生成')
+        error=f'正在等待页面控件／窗口就绪（自动重试{count}/{limit}）；尚未提交生成')
     client['page_ready'] = False
     client['page_error'] = '页面或窗口尚未就绪，程序正在自动等待，不需要手动重新配对'
     service.request(client, 'snapshot')
@@ -76,7 +78,7 @@ def recover_preparation_block(service, client):
     clearing a block is never proof that the requested settings are selected.
     """
     if (not client.get('authorized') or not client.get('page_ready') or client.get('batch_running') is not False
-            or client.get('extension_version') not in {'1.1.16', '1.1.17', '1.1.18', '1.1.19'} or client.get('setup_blocked')
+            or client.get('extension_version') not in {'1.1.16', '1.1.17', '1.1.18', '1.1.19', '1.1.20'} or client.get('setup_blocked')
             or client.get('preparation_block_recovered')):
         return False
     expected = project_identity(service.preferences.get('profile_projects', {}).get(client.get('profile')))
@@ -91,7 +93,7 @@ def recover_preparation_block(service, client):
         return False
     legacy = {'无法确认页面已选中 Omni 1.1 Flash、比例、分辨率和 x1，未提交生成。',
               '浏览器响应超时，请检查页面后恢复；未发送新的生成请求。'}
-    if client.get('extension_version') in {'1.1.18', '1.1.19'}:
+    if client.get('extension_version') in {'1.1.18', '1.1.19', '1.1.20'}:
         legacy.update(f'找不到视频时长选项，无法确认 {duration} 秒；请检查当前模型的设置面板'
                       for duration in (4, 6, 8, 10))
     blocks = service.preferences.get('browser_blocks', {})
@@ -141,7 +143,7 @@ def retry_initial_credits(service, client):
     page_available = client.get('page_loaded') if client.get('credits_waiting_account') else client.get('page_ready')
     if (not client.get('authorized') or not page_available or account_hold(client, service.preferences)
             or credit_hold(client, service.preferences) and not client.get('credits_retry_manual')
-            or not client.get('credits_waiting_ready') or client.get('credits_ready_failures', 0) >= 3
+            or not client.get('credits_waiting_ready') or client.get('credits_ready_failures', 0) >= timing_value(service.preferences, 'credit_read_attempts')
             or client.get('credits_retry_at', 0) > time.time()
             or any(r['client'] == client['id'] and r['action'] == 'get_points' for r in service.pending.values())):
         return False

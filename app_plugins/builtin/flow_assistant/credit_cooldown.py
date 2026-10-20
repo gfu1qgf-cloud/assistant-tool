@@ -3,6 +3,8 @@ import math
 import time
 
 from .account_policy import identities, account_hold
+from .credit_cache import with_balance
+from .timing import value as timing_value, duration_label
 
 MIN_CREDITS = 10
 COOLDOWN_SECONDS = 6 * 60 * 60
@@ -32,7 +34,8 @@ def credit_reason(client, preferences, now=None):
     hold = credit_hold(client, preferences, now)
     if not hold: return ''
     deadline = time.strftime('%m-%d %H:%M', time.localtime(hold['until']))
-    return f'积分低于 10，冷却 6 小时至 {deadline}；手动检测积分可提前重新确认'
+    duration = duration_label(hold['until'] - hold['at'])
+    return f'积分低于 10，冷却 {duration}至 {deadline}；手动检测积分可提前重新确认'
 
 
 def remember_balance(service, client, *, manual=False, source='page'):
@@ -53,15 +56,14 @@ def remember_balance(service, client, *, manual=False, source='page'):
     if points < MIN_CREDITS:
         if not held or manual:
             records[account] = {'account': account, 'balance': points, 'at': now,
-                                'until': now + COOLDOWN_SECONDS, 'source': source}
+                                'until': now + timing_value(service.preferences, 'credit_cooldown_seconds'), 'source': source}
         elif points < held['balance']:
             records[account] = {**held, 'balance': points}
     elif manual or not held:
         records.pop(account, None)
-    if (records != service.preferences.get('credit_cooldowns', {}) or
-            links != service.preferences.get('credit_cooldown_links', {})):
-        service.commit_preferences({**service.preferences, 'credit_cooldowns': records,
-                                    'credit_cooldown_links': links})
+    preferences = with_balance({**service.preferences, 'credit_cooldowns': records,
+                                'credit_cooldown_links': links}, client, service.clients.values())
+    if preferences != service.preferences: service.commit_preferences(preferences)
     for current in related + [client]:
         if manual or not held:
             current.pop('credit_close', None)
@@ -130,14 +132,15 @@ def close_idle_exhausted(service):
         if any(p['client'] == client['id'] for p in service.pending.values()):
             continue
         state = client.get('credit_close') or {}
-        if state.get('count', 0) >= 3 or state.get('next_at', 0) > now:
+        if state.get('count', 0) >= timing_value(service.preferences, 'credit_close_attempts') or state.get('next_at', 0) > now:
             continue
         # Leave a manual probe's result visible and let a user inspect it.
         check = client.get('credit_check') or {}
-        if now - check.get('at', 0) < 30:
+        if now - check.get('at', 0) < timing_value(service.preferences, 'credit_close_grace_seconds'):
             continue
         client['credit_close'] = {'state': 'checking', 'count': state.get('count', 0) + 1,
-            'next_at': now + 60, 'message': '积分低于 10，没有未完成任务，正在核对下载后关闭此浏览器'}
+            'next_at': now + timing_value(service.preferences, 'credit_close_timeout_seconds'),
+            'message': '积分低于 10，没有未完成任务，正在核对下载后关闭此浏览器'}
         changed |= bool(service.request(client, 'close_exhausted', {'idle': True,
             'profile': client['profile'], 'url': client.get('saved_project'),
             'balance': hold['balance'], 'until': hold['until']}))

@@ -8,6 +8,7 @@ from qt_compat import QtCore, QtGui, QtWidgets
 from .policy import draft_key, cost_key, estimated_cost
 from .pricing import fixed_cost
 from .routing import dispatch_rank
+from .timing import value as timing_value
 from .connection_status import configured_profiles, browser_status
 
 
@@ -147,7 +148,8 @@ class ManualWorkflowMixin:
         self.shortcut = QtGui.QShortcut(QtGui.QKeySequence('Ctrl+Return'), self)
         self.shortcut.setContext(QtCore.Qt.ShortcutContext.WidgetWithChildrenShortcut)
         self.shortcut.activated.connect(lambda: self.enqueue(advance=True) if self.isEnabled() else None)
-        self.timer = QtCore.QTimer(self); self.timer.setSingleShot(True); self.timer.setInterval(450)
+        self.timer = QtCore.QTimer(self); self.timer.setSingleShot(True)
+        self.timer.setInterval(round(timing_value(self.dialog.state.get('preferences', {}), 'draft_save_seconds') * 1000))
         self.timer.timeout.connect(self.flush_draft)
         self.picker.image_changed.connect(self.image_changed)
         self.prompt.textChanged.connect(self.edited)
@@ -159,7 +161,8 @@ class ManualWorkflowMixin:
     def edited(self, *_):
         self.update_route()
         if not self.loading and self.current_key:
-            self.dirty_keys.add(self.current_key); self.timer.start()
+            self.dirty_keys.add(self.current_key)
+            self.timer.start(round(timing_value(self.dialog.state.get('preferences', {}), 'draft_save_seconds') * 1000))
 
     def flush_draft(self):
         self.timer.stop()

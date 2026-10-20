@@ -209,15 +209,24 @@ class FlowTests(unittest.TestCase):
         from qt_compat import QtTest
         self.namespace.file('pairing.json').write_json({'token': 'x' * 40, 'port': 0})
         parent = QtWidgets.QWidget()
-        context = SimpleNamespace(storage=self.namespace, parent_widget=parent, log=MagicMock(), register_command=MagicMock())
+        context = SimpleNamespace(storage=self.namespace, parent_widget=parent, log=MagicMock(),
+            register_command=MagicMock(), register_settings_page=MagicMock(), load_config=MagicMock(return_value={
+                'flow_assistant_timing': {'credit_validity_seconds': 43200, 'queue_tick_seconds': 2}}))
         plugin = FlowAssistantPlugin(); plugin.register(context)
         self.assertEqual(context.register_command.call_count, 2)
+        self.assertEqual(context.register_settings_page.call_count, 1)
         plugin.start()
         try:
             for _ in range(100):
                 QtTest.QTest.qWait(10)
                 if plugin.snapshot: break
             self.assertIn('jobs', plugin.snapshot)
+            self.assertEqual(plugin.snapshot['preferences']['timing']['credit_validity_seconds'], 43200)
+            plugin.apply_settings({'flow_assistant_timing': {'credit_validity_seconds': 21600}})
+            for _ in range(100):
+                QtTest.QTest.qWait(10)
+                if plugin.snapshot['preferences']['timing']['credit_validity_seconds'] == 21600: break
+            self.assertEqual(plugin.snapshot['preferences']['timing']['credit_validity_seconds'], 21600)
             self.assertTrue(plugin.stop())
             self.assertFalse(plugin.thread.isRunning())
         finally:

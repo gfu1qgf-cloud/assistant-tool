@@ -10,6 +10,7 @@ import uuid
 from .routing import dispatch_rank
 from .credit_policy import balance_ready, credit_order
 from .policy import signature, capable, block_for
+from .timing import value as timing_value
 from .transfer_policy import retry_info, ready_bindings
 
 IMAGE_SUFFIXES = {'.png', '.jpg', '.jpeg', '.webp', '.bmp'}
@@ -277,7 +278,8 @@ class QueueStore:
                 self.update(row['id'], 'uploading', remote={**row['remote'], 'transfer_retries': {
                     **row['remote'].get('transfer_retries', {}), 'upload': info}}, error='程序重启，保留原图片上传进度。')
             elif row['status'] == 'downloading' and ready_bindings(row['remote']):
-                info = {**retry_info(row, 'download'), 'active': False, 'next_at': time.time() + 5}
+                info = {**retry_info(row, 'download'), 'active': False,
+                    'next_at': time.time() + timing_value(self.settings(), 'transfer_wait_seconds')}
                 self.update(row['id'], 'download_failed', remote={**row['remote'], 'transfer_retries': {
                     **row['remote'].get('transfer_retries', {}), 'download': info}}, error='程序重启，将自动恢复原视频下载，不重新生成。')
             elif row['status'] in TRANSIENT:

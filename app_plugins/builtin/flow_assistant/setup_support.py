@@ -5,11 +5,11 @@ import re
 from urllib.parse import parse_qs, urlencode, urlsplit, urlunsplit
 
 EXTENSION_ID = 'pnjppjjfgiccpcfajkpooklgohgihdom'
-EXTENSION_VERSION = '1.1.19'
+EXTENSION_VERSION = '1.1.20'
 # Reviewed bridge releases with the same protocol and no automatic page reload.
 # A patch update is available, but is not a reason to disable a working client.
 def compatible_extension(version):
-    return str(version or '') in {'1.1.8', '1.1.9', '1.1.10', '1.1.11', '1.1.12', '1.1.13', '1.1.14', '1.1.15', '1.1.16', '1.1.17', '1.1.18', '1.1.19'}
+    return str(version or '') in {'1.1.8', '1.1.9', '1.1.10', '1.1.11', '1.1.12', '1.1.13', '1.1.14', '1.1.15', '1.1.16', '1.1.17', '1.1.18', '1.1.19', '1.1.20'}
 OPTIONS_URL = f'chrome-extension://{EXTENSION_ID}/options.html'
 EXTENSIONS_URL = 'chrome://extensions/'
 

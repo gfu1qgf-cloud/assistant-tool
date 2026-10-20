@@ -1,6 +1,15 @@
 (() => {
   if (window.top !== window) return;
   let ready = false, lastPageAt = 0, running, bootReady;
+  let timingValues = {};
+  const timingMs = (key,fallback) => Math.max(1, (Number.isFinite(timingValues[key]) && timingValues[key] > 0 ? timingValues[key] : fallback)*1000);
+  function applyTiming(raw) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return;
+    timingValues = Object.fromEntries(Object.entries(raw).filter(([key,item]) => /^(page_|bridge_|setup_)/.test(key) &&
+      typeof item === 'number' && Number.isFinite(item) && item > 0 && item <= 86400));
+    window.postMessage({sender:'lzx-flow-extension',message:{action:'configure_timing',values:timingValues}},location.origin);
+  }
+  Promise.resolve(chrome.storage?.local?.get?.(['lzxTiming'])).then(saved=>applyTiming(saved?.lzxTiming)).catch(()=>{});
   window.addEventListener('message', event => {
     if (event.source === window && event.origin === location.origin && event.data?.sender === 'lzx-flow-page') {
       if (['page_status', 'snapshot'].includes(event.data.data?.type)) {
@@ -13,14 +22,16 @@
     }
   });
   chrome.runtime.onMessage.addListener((message, sender, reply) => {
+    if (message.action === 'lzxTiming') {applyTiming(message.values); reply({configured:true}); return;}
     if (message.action === 'lzxPageHealth') {
       window.postMessage({sender: 'lzx-flow-extension', message: {action: 'snapshot'}}, location.origin);
       window.postMessage({sender: 'lzx-flow-extension', message: {action: 'ready'}}, location.origin);
-      setTimeout(() => reply({healthy: ready && bootReady !== false && Date.now() - lastPageAt < 1500 &&
-        !!document.getElementById('flow-batch-fab') && !!document.getElementById('flow-batch-overlay'), running}), 300);
+      setTimeout(() => reply({healthy: ready && bootReady !== false && Date.now() - lastPageAt < timingMs('page_health_valid_seconds',1.5) &&
+        !!document.getElementById('flow-batch-fab') && !!document.getElementById('flow-batch-overlay'), running}), timingMs('page_health_wait_seconds',.3));
       return true;
     }
     if (message.action !== 'lzxCommand') return;
+    applyTiming(message.message?.timing);
     if (!ready) {
       window.postMessage({sender: 'lzx-flow-extension', message: {action: 'ready'}}, location.origin);
       reply({accepted: false}); return;

@@ -2,6 +2,17 @@
 (() => {
   if (window.top !== window || window.__lzxFlowTransport) return;
   let handler, getSnapshot, helpers, lastSnapshot = '', lastIdentity = '', confirmedIdentity = '', lastSnapshotAt = 0, preparedProof = null;
+  let timingValues = {}, statusTimer;
+  const timingMs = (key,fallback) => Math.max(1, (Number.isFinite(timingValues[key]) && timingValues[key] > 0 ? timingValues[key] : fallback)*1000);
+  function applyTiming(raw) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return;
+    const next = Object.fromEntries(Object.entries(raw).filter(([key,item]) => /^page_/.test(key) &&
+      typeof item === 'number' && Number.isFinite(item) && item > 0 && item <= 86400));
+    if (JSON.stringify(next) === JSON.stringify(timingValues)) return;
+    timingValues = next;
+    if (statusTimer) globalThis.clearInterval?.(statusTimer);
+    statusTimer = setInterval(() => {accountIssue(); snapshot();}, timingMs('page_poll_seconds',2));
+  }
   const emit = data => window.postMessage({sender: 'lzx-flow-page', data}, location.origin);
   let attachedAt = 0, stableSince = 0, stablePrompt, stableSettings, stableUrl = '', lastReadiness = '';
   let lastAccountIssue = '';
@@ -34,18 +45,19 @@
     if (!present || prompt !== stablePrompt || settings !== stableSettings || url !== stableUrl) {
       stableSince = Date.now(); stablePrompt = prompt; stableSettings = settings; stableUrl = url;
     }
-    const ready = !!present && Date.now() - attachedAt >= 2000 && Date.now() - stableSince >= 1500;
+    const ready = !!present && Date.now() - attachedAt >= timingMs('page_initial_settle_seconds',2) &&
+      Date.now() - stableSince >= timingMs('page_dom_stable_seconds',1.5);
     return {controls_ready: ready, boot_ready: !!handler && !!helpers && (!helpers.initialized || helpers.initialized()), ready_note: ready ? '' :
       present ? '页面控件已出现，正在自动等待加载稳定…' : '正在自动等待提示词框和模型设置控件加载…'};
   }
   async function waitForControls() {
-    const url = location.href.split('#')[0], until = Date.now() + 45000;
+    const url = location.href.split('#')[0], until = Date.now() + timingMs('page_controls_wait_seconds',45);
     while (Date.now() < until) {
       const issue = accountIssue();
       if (issue) throw Object.assign(new Error(issue.error), {code: issue.code});
       if (location.href.split('#')[0] !== url) break;
       if (readiness().controls_ready) return;
-      await new Promise(resolve => setTimeout(resolve, 250));
+      await new Promise(resolve => setTimeout(resolve, timingMs('page_control_poll_seconds',.25)));
     }
     throw Object.assign(new Error('Flow 页面控件尚未加载稳定，程序将自动等待后重试；未提交生成。'), {code: 'FLOW_PAGE_NOT_READY'});
   }
@@ -136,7 +148,7 @@
   }
   async function applyDuration(value) {
     if (value == null) return;
-    const target = Number(value), url = location.href, until = Date.now() + 8000;
+    const target = Number(value), url = location.href, until = Date.now() + timingMs('page_duration_wait_seconds',8);
     const clicked = new WeakSet();
     let opens = 0, nextOpen = 0, previousGroup, optionsStamp = '', optionsAt = 0, selectedOnce = false;
     while (Date.now() < until) {
@@ -145,7 +157,7 @@
       if (!panel && opens < 3 && Date.now() >= nextOpen) {
         const trigger = document.querySelector('button.settings-trigger-button') ||
           document.querySelector('div.submit-controls button:not(.generate-icon-button)');
-        if (live(trigger)) {trigger.click(); opens++; nextOpen = Date.now() + 2000;}
+        if (live(trigger)) {trigger.click(); opens++; nextOpen = Date.now() + timingMs('page_duration_reopen_seconds',2);}
       }
       const group = panel && durationGroup(panel);
       if (group) {
@@ -172,19 +184,19 @@
           }
         }
         const model = panel.querySelector('.model-select-trigger-content');
-        if (!option && available.length && Date.now() - optionsAt >= 2000 &&
+        if (!option && available.length && Date.now() - optionsAt >= timingMs('page_duration_options_stable_seconds',2) &&
             /omni.*1[._]?1.*flash/.test(compact(model?.textContent))) {
           throw Object.assign(new Error(`当前 Omni 1.1 Flash 不支持 ${target} 秒；可选时长：${available.join('、')} 秒`),
             {code: 'FLOW_DURATION_UNSUPPORTED', data: {duration: target, available_durations: available}});
         }
       } else {selectedOnce = false; previousGroup = null;}
-      await new Promise(resolve => setTimeout(resolve, 200));
+      await new Promise(resolve => setTimeout(resolve, timingMs('page_control_poll_seconds',.25)));
     }
     throw Object.assign(new Error('时长设置面板尚未稳定，自动等待后重新核对；未提交生成。'),
       {code: 'FLOW_SETTINGS_NOT_READY'});
   }
   async function waitForSettings(settings) {
-    const url = location.href, until = Date.now() + 5000;
+    const url = location.href, until = Date.now() + timingMs('page_settings_wait_seconds',5);
     let previous = false, failure;
     while (Date.now() <= until) {
       if (location.href !== url) throw new Error('核对参数时项目地址发生变化，未提交生成。');
@@ -193,7 +205,7 @@
         if (previous) return true;
         previous = true;
       } catch (error) {failure = error; previous = false; preparedProof = null;}
-      await new Promise(resolve => setTimeout(resolve, 200));
+      await new Promise(resolve => setTimeout(resolve, timingMs('page_control_poll_seconds',.25)));
     }
     preparedProof = null;
     throw failure || Object.assign(new Error('设置面板尚未稳定，自动等待后重新核对；未提交生成。'), {code: 'FLOW_SETTINGS_NOT_READY'});
@@ -272,7 +284,7 @@
     if (stamp !== lastReadiness) {lastReadiness = stamp; pageStatus(state);}
     const data = {...getSnapshot(), ...state};
     const encoded = JSON.stringify(data);
-    if (force || encoded !== lastSnapshot || Date.now() - lastSnapshotAt > 15000) {
+    if (force || encoded !== lastSnapshot || Date.now() - lastSnapshotAt > timingMs('page_snapshot_seconds',15)) {
       lastSnapshot = encoded;
       lastSnapshotAt = Date.now();
       emit({type: 'snapshot', data});
@@ -359,6 +371,8 @@
   window.addEventListener('message', async event => {
     if (event.source !== window || event.origin !== location.origin || event.data?.sender !== 'lzx-flow-extension') return;
     const message = event.data.message;
+    if (message?.action === 'configure_timing') {applyTiming(message.values); return;}
+    if (message?.timing) applyTiming(message.timing);
     if (!handler || !message) return;
     if (message.action === 'ready') {pageStatus(); return;}
     if (!['get_points', 'prepare', 'upload_images', 'run_tasks', 'snapshot', 'retry_download'].includes(message.action)) return;
@@ -380,7 +394,7 @@
         preparedProof = null;
         await helpers.prepare(message.params);
         if (!(preparedProof && preparedProof.signature === signature(message.params) && preparedProof.url === location.href &&
-            Date.now() - preparedProof.at < 5000)) verifySettings(message.params);
+            Date.now() - preparedProof.at < timingMs('page_proof_valid_seconds',5))) verifySettings(message.params);
         const email = await confirmAccount();
         emit({action: 'prepare_response', request_id: message.request_id, success: true,
           data: {verified: true, model: 'omni_1_1_flash', cost: readCost(), summary: summary(), email}});
@@ -401,5 +415,5 @@
         ...(error.code === 'FLOW_DURATION_UNSUPPORTED' ? {data: error.data} : {})});
     }
   });
-  setInterval(() => {accountIssue(); snapshot();}, 2000);
+  statusTimer = setInterval(() => {accountIssue(); snapshot();}, timingMs('page_poll_seconds',2));
 })();

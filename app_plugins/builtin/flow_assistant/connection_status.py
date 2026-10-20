@@ -74,8 +74,9 @@ def browser_status(client, preferences, jobs=(), now=None):
         reason = recovery.get('message') or client.get('ready_note') or client.get('page_error') or '扩展在线，正在自动等待 Flow 页面控件加载稳定'
     elif not client.get('account'):
         reason = client.get('note') or '页面已连接，正在首次读取 Flow 登录账号信息'
-    elif not balance_ready(client, now):
-        reason = '等待本次连接首次读取积分；之后按提交费用本地计算'
+    elif not balance_ready(client, now, preferences):
+        reason = ('本次账号尚未确认，已保留上次余额，等待重新读取账号' if client.get('identity_unconfirmed') else
+                  '余额已过设置的有效期，保留上次值；有排队任务时空闲后重新检测')
     elif client['credits'] < MIN_CREDITS:
         reason = '积分低于 10，等待补充积分或备用账号'
     else:

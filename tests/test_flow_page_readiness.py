@@ -42,8 +42,9 @@ class PageReadinessTests(unittest.TestCase):
             key = next(k for k, r in service.pending.items() if r['action'] == 'get_points')
             service._response(client, {'request_id': key, 'success': False,
                 'code': 'FLOW_ACCOUNT_NOT_READY', 'data': {'remaining_points': 50, 'email': ''}})
-            self.assertEqual(client['account'], '')
-            self.assertFalse(client['credits_local'], 'an unreadable fresh account must not authorize the previous login')
+            self.assertEqual(client['account'], 'previous@example.test')
+            self.assertEqual(client['credits'], 50, 'the last confirmed number remains visible')
+            self.assertTrue(client['identity_unconfirmed'], 'an unreadable fresh account must not authorize the previous login')
             service._snapshot(client, {'url': PROJECT, 'controls_ready': True, 'tasks': []})
             self.assertFalse(service.pending, 'wait for cooldown before reopening account menu')
             client['credits_retry_at'] = 0

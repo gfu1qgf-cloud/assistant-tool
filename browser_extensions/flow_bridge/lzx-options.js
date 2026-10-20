@@ -1,7 +1,13 @@
 const byId = id => document.getElementById(id);
 const extensionId = 'pnjppjjfgiccpcfajkpooklgohgihdom';
 let editing = false, setupGeneration = 0, setupSocket = null;
-const expectedVersion = '1.1.19';
+const expectedVersion = '1.1.20';
+let timingValues = {};
+const timingMs = (key,fallback) => Math.max(1, (Number.isFinite(timingValues[key]) && timingValues[key] > 0 ? timingValues[key] : fallback)*1000);
+async function loadTiming() {
+  const saved = await chrome.storage.local.get(['lzxTiming']);
+  timingValues = saved?.lzxTiming || {};
+}
 function projectLink(value) {
   try {
     const url = new URL(String(value || '').trim());
@@ -64,8 +70,10 @@ async function connectionStatus() {
   catch { return null; }
 }
 async function waitForConnection() {
+  await loadTiming();
   const {lzxConfig: expected = {}} = await chrome.storage.local.get('lzxConfig');
-  for (let count = 0; count < 20; count++) {
+  const attempts = Math.max(1, Math.ceil(timingMs('setup_status_wait_seconds',10)/timingMs('setup_status_poll_seconds',.5)));
+  for (let count = 0; count < attempts; count++) {
     const state = await connectionStatus();
     if (state?.connected && state.profile === expected.profile && state.project === expected.project &&
         state.setupId === (expected.setup_id || '')) {
@@ -73,13 +81,14 @@ async function waitForConnection() {
       return true;
     }
     byId('status').textContent = '配置已保存，正在等待后台与主程序完成连接…';
-    await new Promise(resolve => setTimeout(resolve, 500));
+    await new Promise(resolve => setTimeout(resolve, timingMs('setup_status_poll_seconds',.5)));
   }
   byId('status').textContent = '配置已保存，但后台尚未连上主程序。请保持辅助工具打开；若刚更新扩展，请在扩展管理页重新加载。不会重复生成。';
   return false;
 }
 
 async function automaticSetup() {
+  await loadTiming();
   if (typeof location === 'undefined') return;
   const generation = ++setupGeneration;
   setupSocket?.close(); setupSocket = null;
@@ -109,7 +118,7 @@ async function automaticSetup() {
   let done = false, receiving = false;
   const fail = text => {if (done) return; done = true; clearTimeout(timer); socket.close();
     if (generation === setupGeneration) byId('status').textContent = text;};
-  const timer = setTimeout(() => fail('自动连接超时，请保持软件打开，再回软件点一次连接。'), 10000);
+  const timer = setTimeout(() => fail('自动连接超时，请保持软件打开，再回软件点一次连接。'), timingMs('setup_claim_timeout_seconds',10));
   socket.onopen = () => socket.send(JSON.stringify({type: 'setup_claim', ticket}));
   socket.onerror = () => fail('无法连接本机软件，请确认辅助工具已打开，再点击连接。');
   socket.onmessage = async event => {
@@ -150,7 +159,7 @@ async function ensureExtensionCurrent() {
         const socket = new WebSocket(`ws://127.0.0.1:${saved.port}`);
         let finished = false;
         const finish = value => {if (finished) return; finished = true; clearTimeout(timer); socket.close(); resolve(value);};
-        const timer = setTimeout(() => finish(null), 3000);
+        const timer = setTimeout(() => finish(null), timingMs('setup_discovery_timeout_seconds',3));
         socket.onopen = () => socket.send(JSON.stringify({type: 'setup_lookup', token: saved.token, profile: saved.profile}));
         socket.onerror = () => finish(null); socket.onclose = () => finish(null);
         socket.onmessage = event => {try {const reply = JSON.parse(event.data); finish(reply.type === 'setup_ticket' && reply.profile === saved.profile ? reply : null);} catch {finish(null);}};
@@ -164,7 +173,7 @@ async function ensureExtensionCurrent() {
       const socket = new WebSocket(`ws://127.0.0.1:${entry.port}`);
       let finished = false;
       const finish = value => {if (finished) return; finished = true; clearTimeout(timer); socket.close(); resolve(value);};
-      const timer = setTimeout(() => finish(null), 3000);
+      const timer = setTimeout(() => finish(null), timingMs('setup_discovery_timeout_seconds',3));
       socket.onopen = () => socket.send(JSON.stringify({type: 'setup_reload_check', ticket: entry.ticket}));
       socket.onerror = () => finish(null); socket.onclose = () => finish(null);
       socket.onmessage = event => {try {const message = JSON.parse(event.data);
@@ -187,7 +196,7 @@ chrome.storage.onChanged?.addListener((changes, area) => {
 });
 let refreshTimer;
 const refreshSetup = tab => {if (tab?.url?.includes('lzx_setup=')) {
-  clearTimeout(refreshTimer); refreshTimer = setTimeout(automaticSetup, 100);
+  clearTimeout(refreshTimer); refreshTimer = setTimeout(automaticSetup, timingMs('setup_refresh_debounce_seconds',.1));
 }};
 chrome.tabs?.onCreated?.addListener(refreshSetup);
 chrome.tabs?.onUpdated?.addListener((_id, change, tab) => {if (change.url) refreshSetup(tab);});

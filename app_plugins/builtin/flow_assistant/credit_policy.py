@@ -1,15 +1,19 @@
 """One session balance observation, then conservative local reservations."""
 import time
 import math
+from .timing import value as timing_value
 
 
-def balance_ready(client, now=None):
+def balance_ready(client, now=None, preferences=None):
     now = time.time() if now is None else now
     credits = client.get('credits')
     valid = (type(credits) is int or client.get('credits_local') is True and
              type(credits) is float and math.isfinite(credits))
-    return (bool(client.get('account')) and valid and
-            (client.get('credits_local') is True or client.get('credits_at', 0) > now - 90))
+    lifetime = timing_value(preferences, 'credit_validity_seconds')
+    observed = client.get('credits_at', 0)
+    if type(observed) not in (int, float) or not math.isfinite(observed) or observed <= 0: return False
+    return (bool(client.get('account')) and valid and not client.get('identity_unconfirmed') and
+            (lifetime == 0 or observed > now - lifetime))
 
 
 def debit_balance(client, clients, cost):

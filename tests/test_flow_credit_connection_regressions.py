@@ -92,7 +92,7 @@ class CreditConnectionRegressionTests(unittest.TestCase):
         self.assertFalse(confirm_saved_connection(service, client))
         self.assertTrue(client['setup_pending'])
         service.setup_requests.clear()
-        client.update(page_at=time.time() - 60, page_ready=False)
+        client.update(page_at=time.time() - 181, page_ready=False)
         self.assertFalse(confirm_saved_connection(service, client))
         self.assertTrue(client['setup_pending'])
 

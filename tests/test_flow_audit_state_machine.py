@@ -47,7 +47,8 @@ class FlowAuditStateTests(unittest.TestCase):
         key = next(iter(service.pending))
         service._response(client, {'request_id': key, 'success': False, 'error': '账户读取失败',
             'data': {'email': client['account'], 'remaining_points': 1500}})
-        self.assertFalse(client.get('credits_local'))
+        self.assertEqual(client['credits'], 50, 'a failed probe must preserve the prior confirmed balance, never adopt 1500')
+        self.assertTrue(client.get('identity_unconfirmed'))
         self.assertFalse(client.get('credits_waiting_ready'), 'a non-transient failure must not loop the initial probe')
         self.assertIsNone(choose_client([client], [], 4, self.jobs(duration=8)[0], {}, 12))
 
@@ -218,7 +219,7 @@ class FlowAuditStateTests(unittest.TestCase):
 class FlowCreditOrderTests(unittest.TestCase):
     def client(self, credits, **updates):
         return {'id': str(credits), 'profile': str(credits), 'account': str(credits)+'@example.test',
-            'credits': credits, 'credits_local': True, 'page_ready': True, **updates}
+            'credits': credits, 'credits_at': time.time(), 'credits_local': True, 'page_ready': True, **updates}
 
     def test_credit_tiers_apply_even_with_unknown_cost_and_without_a_job(self):
         clients = [self.client(n) for n in (1500, 300, 70)]

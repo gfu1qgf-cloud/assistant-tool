@@ -115,6 +115,7 @@ class UsabilityTests(unittest.TestCase):
 
     def test_missing_page_heartbeat_changes_state_without_failing_active_job(self):
         service = self.service(); client = self.client(service)
+        service.preferences['timing'] = {'page_stale_seconds': 45}
         client.update(page_ready=True, page_at=time.time() - 60)
         service.store.enqueue(self.jobs()); row = service.store.rows()[0]
         service.store.update(row['id'], 'generating', browser=client['id'], remote={'activity_at': time.time()})
@@ -154,6 +155,8 @@ class UsabilityTests(unittest.TestCase):
         client.update(account='fixture@example.test', credits=50, credits_at=time.time())
         self.assertEqual(browser_status(client, preferences)['state'], '可接单')
         client['credits_at'] -= 100
+        self.assertEqual(browser_status(client, preferences)['state'], '可接单', 'confirmed balance must not expire after a few minutes')
+        client['credits_at'] -= 21600
         self.assertEqual(browser_status(client, preferences)['state'], '未就绪')
         client['environment_block'] = 'Unsupported duration'
         self.assertEqual(browser_status(client, preferences)['state'], '需处理')

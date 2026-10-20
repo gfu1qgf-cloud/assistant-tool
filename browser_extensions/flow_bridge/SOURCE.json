@@ -2,7 +2,7 @@
   "repository": "https://github.com/dedeyuyu/FlowCue",
   "commit": "e4e8f34ea6a0e0d7d9e0e87bbf7218e66d315ec2",
   "upstream_version": "1.1.4",
-  "bridge_version": "1.1.19",
+  "bridge_version": "1.1.20",
   "protocol": 1,
   "patch_module": "tools/flow_bridge_patches.py",
   "patches": [
@@ -14,6 +14,7 @@
     "duration panel reopening after rerender; verified selected seconds and scoped unsupported durations",
     "cold-start bridge health and idle-only bounded page recovery; no saved paid-batch auto restart",
     "profile-scoped low-credit close only after page idle, acknowledged receipts and all downloads complete",
+    "desktop timing settings persisted in each profile and relayed without private data to page and options",
     "durable download notification and exact saved-binding download-only retry",
     "per-profile project setup; desktop-owned navigation and no extra blank tabs",
     "generation-response ownership only; no DOM/prompt/polling ownership guesses",

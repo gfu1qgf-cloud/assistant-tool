@@ -6,6 +6,7 @@ from urllib.parse import urlsplit
 from .policy import block_for
 from .store import fingerprint
 from .transfer_policy import DELAYS, LABELS, retry_info, retry_limit, ready_bindings
+from .timing import value as timing_value, delay
 from .media_identity import generated_bindings
 from .setup_support import compatible_extension
 
@@ -62,7 +63,7 @@ class TransferRecovery:
         limit = retry_limit(self.preferences, stage)
         stopped = permanent or info.get('stopped', False) or count >= limit
         # Duplicate snapshots/error notifications must not postpone a scheduled retry.
-        next_at = 0 if stopped else info.get('next_at') or time.time() + DELAYS[min(count, len(DELAYS) - 1)]
+        next_at = 0 if stopped else info.get('next_at') or time.time() + delay(self.preferences, stage + '_retry_delays', count)
         info.update(count=count, stopped=stopped, active=False, next_at=next_at,
                     last_error=str(error)[:1000], waiting='')
         status = ('failed' if stopped else 'uploading') if stage == 'upload' else 'download_failed'
@@ -70,7 +71,7 @@ class TransferRecovery:
 
     def _wait_transfer(self, row, stage, reason):
         info = dict(retry_info(row, stage)); info.update(active=False, waiting=reason,
-            next_at=info.get('next_at') or time.time() + 5)
+            next_at=info.get('next_at') or time.time() + timing_value(self.preferences, 'transfer_wait_seconds'))
         return self._save_transfer(row, stage, info)
 
     def _transfer_client(self, row, stage, *, fresh=False):
@@ -131,7 +132,7 @@ class TransferRecovery:
         if not bindings or not row['remote'].get('upstream_task'):
             # No media-ID guessing or regenerated tasks: first ask the original
             # page for its saved snapshot. These probes are bounded too.
-            if time.time() >= info.get('probe_at', 0) + 15:
+            if time.time() >= info.get('probe_at', 0) + timing_value(self.preferences, 'download_probe_seconds'):
                 if info.get('probes', 0) >= 10:
                     return self.transfer_failed(row, 'download', '未找到原媒体绑定，已停止自动探测；请核对原项目。', permanent=True)
                 self.request(client, 'snapshot')

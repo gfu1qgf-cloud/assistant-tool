@@ -9,6 +9,8 @@ from .manual_panel import estimate_text
 from .task_ui import TaskSelector
 from .connection_status import browser_status
 from .credit_cooldown import credit_hold
+from .credit_cache import restore_balance
+from .timing import value as timing_value
 from .pricing import RULE_NOTE
 
 STATUS = {'queued': '等待执行', 'preparing': '核对模型／费用', 'uploading': '上传参考图',
@@ -229,15 +231,15 @@ class FlowDialog(QtWidgets.QDialog):
         form.addRow('允许自动启动的浏览器配置组', self.group)
         form.addRow('最多并行账号', self.concurrent)
         form.addRow('浏览器默认下载目录', root_row)
-        self.stall_minutes = QtWidgets.QSpinBox(page); self.stall_minutes.setRange(2, 120); self.stall_minutes.setValue(20)
         self.upload_retries = QtWidgets.QSpinBox(page); self.upload_retries.setRange(0, 10); self.upload_retries.setValue(5)
         self.download_retries = QtWidgets.QSpinBox(page); self.download_retries.setRange(0, 10); self.download_retries.setValue(5)
         for widget in (self.upload_retries, self.download_retries):
             widget.setSuffix(' 次'); widget.setSpecialValueText('关闭自动重试')
-            widget.setToolTip('首次失败后最多自动重试的次数；间隔依次为 5、15、30、60、120 秒，之后保持 120 秒。只重试传输，不重新生成。')
+            widget.setToolTip('首次失败后最多自动重试的次数；等待间隔在“程序设置 → 插件设置 → Flow 视频助手 · 时间与重试”中设置。只重试传输，不重新生成。')
         form.addRow('图片上传自动重试', self.upload_retries)
         form.addRow('视频下载自动重试', self.download_retries)
-        form.addRow('无进展后自动核对（分钟）', self.stall_minutes)
+        timing_hint = QtWidgets.QLabel('积分有效期、冷却、超时和重试间隔：在主界面的“程序设置 → 插件设置 → Flow 视频助手 · 时间与重试”中统一修改。', page)
+        timing_hint.setWordWrap(True); layout.addWidget(timing_hint)
         self.cleanup_downloads = QtWidgets.QCheckBox('归档校验成功且无质量异常后，自动清理浏览器下载副本（默认关闭）', page)
         form.addRow(self.cleanup_downloads)
         layout.addLayout(form)
@@ -342,14 +344,15 @@ class FlowDialog(QtWidgets.QDialog):
         self.send('start')
 
     def save_preferences(self):
-        self.send('preferences', value={'concurrency': self.concurrent.value(), 'profiles': self.group.currentData() or [],
+        values = {'concurrency': self.concurrent.value(), 'profiles': self.group.currentData() or [],
             'downloads_root': self.download_root.text().strip(), 'defaults': {
                 'duration': self.duration.currentData(), 'aspect': self.aspect.currentText(),
                 'resolution': self.resolution.currentText(), 'count': self.count.value(), 'budget': self.budget.value()},
             'manual_defaults': self.manual.options.values(), 'allow_general': self.allow_general.isChecked(),
-            'auto_lane': self.auto_lane.isChecked(), 'stall_seconds': self.stall_minutes.value() * 60,
+            'auto_lane': self.auto_lane.isChecked(),
             'upload_retry_limit': self.upload_retries.value(), 'download_retry_limit': self.download_retries.value(),
-            'cleanup_downloads': self.cleanup_downloads.isChecked()})
+            'cleanup_downloads': self.cleanup_downloads.isChecked()}
+        self.send('preferences', value=values)
 
     def general_changed(self, checked):
         self.send('preferences', value={'allow_general': checked})
@@ -393,6 +396,9 @@ class FlowDialog(QtWidgets.QDialog):
                 self.lane_edits[key] = combo
         for row, key in enumerate(keys):
             client = entries[key]
+            if not client.get('id'):
+                client = {**client, 'saved_project': preferences.get('profile_projects', {}).get(client.get('profile'))}
+                restore_balance(client, preferences)
             scope, identifier = key
             stored = preferences.get(scope + '_lanes', {}).get(identifier)
             current_lane = stored
@@ -408,7 +414,7 @@ class FlowDialog(QtWidgets.QDialog):
             credit_text = ((f'{client["credits"]:g}' + ('（估算）' if client.get('credits_estimated') else ''))
                            if client.get('credits') is not None else '未知')
             hold = credit_hold(client, preferences)
-            if hold and client.get('credits') is None:
+            if hold and (not online or client.get('credits') is None):
                 credit_text = f'{hold["balance"]:g}（冷却记录）'
             check = client.get('credit_check') or {}
             if check.get('state') == 'checking':
@@ -423,8 +429,16 @@ class FlowDialog(QtWidgets.QDialog):
                 credit_text += '\n暂未检测：执行中，完成后再检测'
             elif check.get('state') == 'cooldown':
                 credit_text += '\n冷却中，未自动检测'
+            elif check.get('state') == 'cached':
+                credit_text += '\n上次检测缓存'
+            if client.get('credits') is not None and client.get('credits_at'):
+                lifetime = timing_value(preferences, 'credit_validity_seconds')
+                if lifetime:
+                    deadline = QtCore.QDateTime.fromSecsSinceEpoch(int(client['credits_at'] + lifetime)).toString('MM-dd HH:mm')
+                    credit_text += '\n余额有效至 ' + deadline
+                else: credit_text += '\n余额不过期'
             values = {0: client.get('profile') or ('浏览器 ' + identifier[:8]),
-                      1: (client.get('account') or '待确认') if online else '未连接',
+                      1: (client.get('account') or '待确认') if online else (str(client['account']) + '（上次）' if client.get('account') else '未连接'),
                       2: credit_text,
                       4: status['connection'], 5: status['project'], 6: status['state'], 7: status['reason']}
             for column, text in values.items():
@@ -620,7 +634,6 @@ class FlowDialog(QtWidgets.QDialog):
                 self.manual.loading = True
                 self.manual.options.set_values(preferences.get('manual_defaults', {}))
                 self.manual.loading = False
-            self.stall_minutes.setValue(int(preferences.get('stall_seconds', 1200)) // 60)
             from .transfer_policy import retry_limit
             self.upload_retries.setValue(retry_limit(preferences, 'upload'))
             self.download_retries.setValue(retry_limit(preferences, 'download'))

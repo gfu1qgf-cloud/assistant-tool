@@ -8,6 +8,7 @@ from .setup_support import (inspect_extension, project_url, project_identity,
                             project_block, setup_project_entry, EXTENSION_VERSION, OPTIONS_URL, EXTENSIONS_URL, compatible_extension)
 from .connection_status import browser_status
 from .account_policy import account_hold
+from .timing import value as timing_value, delay
 
 
 class _Signals(QtCore.QObject):
@@ -82,13 +83,20 @@ class ConnectionSetup(QtWidgets.QGroupBox):
         self.project.textEdited.connect(lambda: self.dirty_profiles.add(self.active_profile))
         self.project.textChanged.connect(self.project_changed)
         self.clipboard_timer = QtCore.QTimer(self); self.clipboard_timer.setSingleShot(True)
-        self.clipboard_timer.setInterval(120000); self.clipboard_timer.timeout.connect(self.clear_sensitive_clipboard)
+        self.clipboard_timer.setInterval(self.timer_ms('setup_clipboard_seconds')); self.clipboard_timer.timeout.connect(self.clear_sensitive_clipboard)
         self.capture_timer = QtCore.QTimer(self); self.capture_timer.setSingleShot(True)
-        self.capture_timer.setInterval(300000); self.capture_timer.timeout.connect(self.capture_expired)
+        self.capture_timer.setInterval(self.timer_ms('setup_capture_seconds')); self.capture_timer.timeout.connect(self.capture_expired)
         self.connection_timer = QtCore.QTimer(self); self.connection_timer.setSingleShot(True)
-        self.connection_timer.setInterval(30000); self.connection_timer.timeout.connect(self.connection_expired)
+        self.connection_timer.setInterval(self.timer_ms('setup_pair_wait_seconds')); self.connection_timer.timeout.connect(self.connection_expired)
         QtWidgets.QApplication.clipboard().dataChanged.connect(self.capture_project)
         self.apply_state({})
+
+    def timer_ms(self, key):
+        return max(1, round(timing_value(self.dialog.state.get('preferences', {}), key) * 1000))
+
+    def retry_wait_ms(self):
+        if not self.auto_retries: return self.timer_ms('setup_pair_wait_seconds')
+        return max(1, round(delay(self.dialog.state.get('preferences', {}), 'setup_retry_delays', self.auto_retries - 1) * 1000))
 
     def launcher(self):
         return getattr(getattr(self.dialog.plugin.context.parent_widget, 'chrome_plugin', None), 'dialog', None)
@@ -219,9 +227,9 @@ class ConnectionSetup(QtWidgets.QGroupBox):
             self._busy(False); self.status.setText(result['error'])
             if result.get('deferred'):
                 self.auto_retries = max(0, self.auto_retries - 1)
-                self.phase = 'auto_pair'; self.connection_timer.start(30000)
+                self.phase = 'auto_pair'; self.connection_timer.start(self.timer_ms('setup_pair_wait_seconds'))
             elif self.auto_retries and not result.get('account_blocked'):
-                self.phase = 'auto_pair'; self.connection_timer.start(60000)
+                self.phase = 'auto_pair'; self.connection_timer.start(self.timer_ms('setup_update_wait_seconds'))
             return
         if result.get('connected'):
             if result.get('pairing'):
@@ -230,14 +238,14 @@ class ConnectionSetup(QtWidgets.QGroupBox):
             if self.phase == 'copy':
                 self.copy_bundle(); return
             if result.get('repaired_pending'):
-                self.phase = 'auto_pair'; self.connection_timer.start(30000)
+                self.phase = 'auto_pair'; self.connection_timer.start(self.timer_ms('setup_pair_wait_seconds'))
                 self.status.setText('正在检查并自动恢复原项目页的扩展消息通道；等待页面重新确认。')
                 return
             if not self.launch_urls([result.get('project') or self.project.text().strip()]): return
             client = next((c for c in self.dialog.state.get('clients', []) if c.get('profile') == self.profile.currentData()), {})
             if self.auto_retries or not client.get('page_ready'):
                 self.phase = 'auto_pair'
-                self.connection_timer.start((30000, 60000, 120000, 120000)[self.auto_retries])
+                self.connection_timer.start(self.retry_wait_ms())
             if result.get('needs_update'):
                 self.status.setText('扩展已连接且协议兼容，不用再复制配置，可以继续使用。有修复更新可用，空闲时再加载；无需重新配对。')
                 return
@@ -317,8 +325,8 @@ class ConnectionSetup(QtWidgets.QGroupBox):
             self.status.setText('启动所选 Chrome 配置失败：' + str(error)); return
         self.continue_button.hide()
         self.phase = 'auto_pair'
-        self.connection_timer.start((30000, 60000, 120000, 120000)[self.auto_retries])
-        self.status.setText((f'自动重试 {self.auto_retries}/3：' if self.auto_retries else '') +
+        self.connection_timer.start(self.retry_wait_ms())
+        self.status.setText((f'自动重试 {self.auto_retries}/{timing_value(self.dialog.state.get("preferences", {}), "setup_auto_attempts")}：' if self.auto_retries else '') +
             '主程序已将本配置的 Flow 项目网址交给 Chrome；扩展正在后台自动完成连接。')
 
     def launch_urls(self, urls):
@@ -357,7 +365,7 @@ class ConnectionSetup(QtWidgets.QGroupBox):
     def open_flow_for_project(self):
         if not self.launch_urls(['https://flow.google.com/']): return
         self.waiting_profile = self.profile.currentData(); self.phase = 'await_project'
-        self.continue_button.hide(); self.capture_timer.start()
+        self.continue_button.hide(); self.capture_timer.start(self.timer_ms('setup_capture_seconds'))
         self.status.setText('第 2 步：已打开 Flow。请在这个浏览器进入要用的项目，复制地址栏网址（Ctrl+L、Ctrl+C）；程序会自动识别并完成后续配置，不用回软件粘贴。')
 
     def capture_project(self):
@@ -393,14 +401,15 @@ class ConnectionSetup(QtWidgets.QGroupBox):
             for row in state.get('jobs', []))
         if busy or client and client.get('batch_running'):
             self.status.setText('原账号仍在执行／核对任务，空闲后再自动重试连接。')
-            self.connection_timer.start(30000); return
-        if self.auto_retries >= 3:
+            self.connection_timer.start(self.timer_ms('setup_pair_wait_seconds')); return
+        limit = timing_value(preferences, 'setup_auto_attempts')
+        if self.auto_retries >= limit:
             self.phase = ''
-            self.status.setText('自动连接已重试3次仍未确认。请从“更多 → 检查／安装扩展”检查此配置，或处理浏览器中的登录／验证提示。')
+            self.status.setText(f'自动连接已重试{limit}次仍未确认。请从“更多 → 检查／安装扩展”检查此配置，或处理浏览器中的登录／验证提示。')
             return
         self.auto_retries += 1
         self.begin(automatic=True)
-        self.status.setText(f'自动重试 {self.auto_retries}/3：重新准备此配置的连接；等待确认后再调度。')
+        self.status.setText(f'自动重试 {self.auto_retries}/{limit}：重新准备此配置的连接；等待确认后再调度。')
 
     def cancel_auto_retry(self):
         self.connection_timer.stop(); self.auto_cancelled = True; self.retry_origin = None
@@ -412,7 +421,7 @@ class ConnectionSetup(QtWidgets.QGroupBox):
             self.begin('copy'); return
         self.copied = json.dumps(self.bundle, ensure_ascii=False)
         QtWidgets.QApplication.clipboard().setText(self.copied)
-        self.clipboard_timer.start()
+        self.clipboard_timer.start(self.timer_ms('setup_clipboard_seconds'))
         self.status.setText('配对信息已复制。备用手动连接：点“打开扩展设置”，粘贴后保存即可。')
 
     def copy_directory(self):

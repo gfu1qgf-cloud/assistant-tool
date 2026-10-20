@@ -1,16 +1,20 @@
 from qt_compat import QtCore
-from app_plugins.api import MAIN_MENU, TASK_CONTEXT_MENU, PluginCommand
+from app_plugins.api import MAIN_MENU, TASK_CONTEXT_MENU, PluginCommand, PluginSettingsPage
+from .timing import CONFIG_KEY, normalize, snapshot as timing_snapshot, validate
+import json
+import uuid
 
 
 class FlowAssistantPlugin(QtCore.QObject):
     command = QtCore.pyqtSignal(object)
     plugin_id = 'flow_assistant'
     display_name = 'Flow 视频助手'
-    version = '0.4.22'
+    version = '0.4.23'
     upstream_version = '1.1.4'
     ui_api_version = 1
     manual_credit_check_api = 1
     account_state_api = 1
+    timing_settings_api = 1
     required_api_version = 1
 
     def __init__(self):
@@ -19,6 +23,8 @@ class FlowAssistantPlugin(QtCore.QObject):
         self.snapshot = {}
         self.busy = False
         self.launch_probes, self.stopping = {}, False
+        self.timing_request = ''
+        self.pending_timing = None
 
     def register(self, context):
         self.context = context
@@ -26,13 +32,31 @@ class FlowAssistantPlugin(QtCore.QObject):
             frozenset({MAIN_MENU}), order=33, tooltip='连接 FlowCue 扩展、批量生成 Omni 视频、保存队列与任务归档'))
         context.register_command(PluginCommand('generate', '生成 Flow 视频…', self.open_tasks,
             frozenset({TASK_CONTEXT_MENU}), order=34, enabled=lambda rows: bool(rows)))
+        context.register_settings_page(PluginSettingsPage('timing', 'Flow 视频助手 · 时间与重试', self.create_timing_settings, order=212))
+
+    def create_timing_settings(self, parent=None):
+        from .timing_ui import TimingSettings
+        preferences = self.snapshot.get('preferences')
+        if preferences is None:
+            # Read legacy preferences without creating tables or touching the queue.
+            preferences = {}
+            saved = self.context.storage.file('queue.sqlite3')
+            if saved.exists():
+                db = saved.connect()
+                try:
+                    row = db.execute('SELECT value FROM settings WHERE key="preferences"').fetchone()
+                    if row: preferences = json.loads(row[0])
+                finally: db.close()
+        return TimingSettings(parent, preferences=preferences)
 
     def start(self):
         self.stopping = False
         from .service import FlowService
         self.thread = QtCore.QThread(self)
         downloads = QtCore.QStandardPaths.writableLocation(QtCore.QStandardPaths.StandardLocation.DownloadLocation)
-        self.service = FlowService(self.context.storage, downloads)
+        config = self.context.load_config()
+        timing = validate({'timing': normalize(config[CONFIG_KEY])}) if CONFIG_KEY in config else None
+        self.service = FlowService(self.context.storage, downloads, program_timing=timing)
         self.service.moveToThread(self.thread)
         self.thread.started.connect(self.service.start)
         self.command.connect(self.service.execute)
@@ -45,6 +69,7 @@ class FlowAssistantPlugin(QtCore.QObject):
         self.service.submission_failed.connect(self._submission_failed)
         self.service.setup_ready.connect(self._setup_ready)
         self.service.records_deleted.connect(self._records_deleted)
+        self.service.preferences_saved.connect(self._preferences_saved)
         self.service.stopped.connect(self.thread.quit, QtCore.Qt.ConnectionType.DirectConnection)
         self.thread.finished.connect(self.service.deleteLater)
         self.thread.start()
@@ -96,6 +121,13 @@ class FlowAssistantPlugin(QtCore.QObject):
     def _records_deleted(self, result):
         if self.dialog:
             self.dialog.records_deleted(result)
+
+    def _preferences_saved(self, result):
+        if result.get('request_id') != self.timing_request: return
+        self.timing_request, self.pending_timing = '', None
+        if not result.get('success'):
+            self.context.log('Flow 时间设置已写入程序设置，但本次应用失败：' + str(result.get('error') or '未知错误') +
+                '；已保留当前运行参数，下次正常启动会重新应用。')
 
     def _launch(self, directory):
         launcher = getattr(self.context.parent_widget, 'chrome_plugin', None)
@@ -196,7 +228,17 @@ class FlowAssistantPlugin(QtCore.QObject):
         # The main-menu entry / Refresh Tasks loads the whole current table.
         dialog.set_targets(self._snapshots(targets), preferred_directory=targets[0]['target_dir'])
 
-    def apply_settings(self, _config):
+    def apply_settings(self, config):
+        if CONFIG_KEY not in config: return True
+        timing = validate({'timing': normalize(config[CONFIG_KEY])})
+        if self.service is not None and self.thread is not None and self.thread.isRunning():
+            if self.pending_timing == timing: return True
+            if (self.pending_timing is None and isinstance(self.snapshot.get('preferences'), dict)
+                    and timing_snapshot(self.snapshot['preferences']) == timing):
+                return True
+            self.timing_request, self.pending_timing = uuid.uuid4().hex, timing
+            self.command.emit({'action': 'preferences', 'request_id': self.timing_request,
+                'value': {'timing': timing}})
         return True
 
     def can_close(self):

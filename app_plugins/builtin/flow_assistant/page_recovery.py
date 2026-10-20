@@ -7,6 +7,7 @@ from contextlib import closing
 
 from .media_identity import generated_bindings
 from .transfer_policy import ready_bindings
+from .timing import value as timing_value
 
 BINDING_MISSING = 'FLOW_MEDIA_BINDING_MISSING'
 
@@ -76,7 +77,7 @@ def schedule(service, client, message):
         return
     service.store.update(row['id'], 'uncertain', remote={**row['remote'], **metadata,
         'recovery_code': BINDING_MISSING,
-        'page_recovery': {'count': 0, 'next_at': time.time()+15, 'mode': 'snapshot_only'}},
+        'page_recovery': {'count': 0, 'next_at': time.time()+timing_value(service.preferences, 'binding_probe_seconds'), 'mode': 'snapshot_only'}},
         error='尚未解析到本次媒体编号，正在等待并只读核对原任务；不会刷新页面、重复生成或下载其他视频。')
 
 
@@ -103,14 +104,15 @@ def watch(service):
             remote['page_recovery'] = {**recovery, 'done': True, 'next_at': 0}
             service.store.update(row['id'], 'download_failed' if ready_bindings(remote) else 'generating', remote=remote, error='')
             continue
-        if recovery.get('count', 0) >= 3:
+        limit = timing_value(service.preferences, 'binding_probe_attempts')
+        if recovery.get('count', 0) >= limit:
             remote['page_recovery'] = {**recovery, 'done': True, 'next_at': 0}
             detail = '已收到原生成响应，尚待解析出本次媒体编号。' if remote.get('generation_response') else '暂未收到可用的原生成响应，仍会接收原任务的后续结果。'
             service.store.update(row['id'], 'uncertain', remote=remote,
-                error='已完成三次只读核对，保留原任务继续等待结果。'+detail+' 没有刷新页面、重复生成或下载其他视频。')
+                error=f'已完成{limit}次只读核对，保留原任务继续等待结果。'+detail+' 没有刷新页面、重复生成或下载其他视频。')
             continue
         remote['page_recovery'] = {'count': recovery.get('count', 0)+1,
-            'next_at': time.time()+15, 'mode': 'snapshot_only'}
+            'next_at': time.time()+timing_value(service.preferences, 'binding_probe_seconds'), 'mode': 'snapshot_only'}
         service.store.update(row['id'], 'uncertain', remote=remote,
             error='正在只读核对原任务；保持当前页面，不刷新、不重新生成。')
         service.request(client, 'snapshot')

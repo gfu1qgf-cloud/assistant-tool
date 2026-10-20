@@ -12,6 +12,7 @@ from .store import make_jobs
 from .connection_status import browser_keys
 from .pricing import fixed_cost
 from .transfer_retry import TransferRecovery
+from .timing import value as timing_value
 
 
 class FlowOperations(TransferRecovery):
@@ -126,7 +127,7 @@ class FlowOperations(TransferRecovery):
         now = time.time()
         changed = False
         clients = {client.get('id'): client for client in self.clients.values() if client.get('authorized')}
-        timeout = max(120, min(7200, int(self.preferences.get('stall_seconds', 1200))))
+        timeout = timing_value(self.preferences, 'stall_seconds')
         for row in self.store.rows():
             if row['status'] not in {'generating', 'downloading'}:
                 continue
@@ -134,18 +135,18 @@ class FlowOperations(TransferRecovery):
             if row['status'] == 'downloading':
                 # Download recovery has its own bounded counter; the generation
                 # watchdog must not turn its second retry into "uncertain".
-                if now - remote.get('activity_at', row['updated']) >= min(timeout, 120):
+                if now - remote.get('activity_at', row['updated']) >= timing_value(self.preferences, 'download_stall_seconds'):
                     changed |= self.transfer_failed(row, 'download', '下载长时间没有进展，将自动核对并恢复原下载')
                 continue
             if now - remote.get('activity_at', row['updated']) < timeout:
                 continue
-            if now - remote.get('watch_at', 0) < 60:
+            if now - remote.get('watch_at', 0) < timing_value(self.preferences, 'generation_probe_seconds'):
                 continue
             count = int(remote.get('watch_count', 0))
             changed = True
             client = clients.get(row['browser'])
             remote = {**remote, 'watch_at': now, 'watch_count': count + 1}
-            if count >= 2:
+            if count >= timing_value(self.preferences, 'generation_probe_attempts') - 1:
                 remote['watch_attention'] = True
                 self.store.update(row['id'], 'uncertain', remote=remote,
                     error='长时间无进展；已自动核对原任务但结果仍不明确。请打开原浏览器检查，未重新生成。')
@@ -289,7 +290,7 @@ class FlowOperations(TransferRecovery):
         return True
 
     def space_status(self, rows):
-        if time.time() - getattr(self, '_space_at', 0) < 15:
+        if time.time() - getattr(self, '_space_at', 0) < timing_value(self.preferences, 'disk_check_seconds'):
             return self._spaces
         paths = [self.downloads_root] + list(dict.fromkeys(row['payload']['directory'] for row in rows))[-8:]
         drives = {}

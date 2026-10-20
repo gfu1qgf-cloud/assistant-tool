@@ -3,6 +3,27 @@ import './background.js';
 let socket, heartbeat, connecting = false, retryAt = 0, retryDelay = 1000, connectionEpoch = 0, authenticated = false, booting = true;
 let ownedTab = null, activeBatch = '', config = {}, browserId = '', opening, resumingSetup;
 let closingBrowser = false, commandsInFlight = 0;
+let timingValues = {};
+const timingMs = (key, fallback) => Math.max(1, Math.min(86400000,
+  (typeof timingValues[key] === 'number' && Number.isFinite(timingValues[key]) && timingValues[key] > 0 ? timingValues[key] : fallback) * 1000));
+function reconnectAlarm() {chrome.alarms.create?.('lzxReconnect', {periodInMinutes:Math.max(.5, timingMs('bridge_reconnect_alarm_seconds',30)/60000)});}
+async function applyTiming(raw, persist = true) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return;
+  const next = Object.fromEntries(Object.entries(raw).filter(([key,item]) => /^(bridge_|page_|setup_)/.test(key) &&
+    typeof item === 'number' && Number.isFinite(item) && item > 0 && item <= 86400));
+  if (JSON.stringify(next) === JSON.stringify(timingValues)) return;
+  timingValues = next; retryDelay = timingMs('bridge_reconnect_initial_seconds',1); reconnectAlarm();
+  if (authenticated) {
+    clearInterval(heartbeat);
+    heartbeat = setInterval(() => send({type:'ping'}), timingMs('bridge_heartbeat_seconds',20));
+  }
+  if (persist) await chrome.storage.local.set({lzxTiming:timingValues});
+  for (const tab of await chrome.tabs.query({})) {
+    if (projectUrl(tab.pendingUrl || tab.url)) {
+      try {await chrome.tabs.sendMessage(tab.id, {action:'lzxTiming', values:timingValues}, {frameId:0});} catch {}
+    }
+  }
+}
 const setupClaims = new Map();
 const configSignature = value => JSON.stringify(['token', 'port', 'profile', 'project', 'setup_id'].map(key => value?.[key] ?? null));
 const projectUrl = value => {
@@ -23,7 +44,7 @@ async function findProjectTab(url) {
   // the user has brought a newer tab to the foreground.
   return matches.find(tab => tab.id === ownedTab) || matches.find(tab => tab.active) || matches[0];
 }
-async function local() { return chrome.storage.local.get(['lzxConfig', 'lzxBrowserId', 'lzxOwnedTab', 'lzxBatch', 'lzxOutbox', 'lzxDownloads', 'lzxBatches']); }
+async function local() { return chrome.storage.local.get(['lzxConfig', 'lzxBrowserId', 'lzxOwnedTab', 'lzxBatch', 'lzxOutbox', 'lzxDownloads', 'lzxBatches', 'lzxTiming']); }
 function send(message) { if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify(message)); }
 async function ensureTab() {
   if (opening) return opening;
@@ -45,14 +66,15 @@ async function openTab() {
 }
 async function forward(message) {
   const usesPageUi = ['get_points', 'prepare', 'upload_images', 'run_tasks'].includes(message.action);
-  for (let attempt = 0; attempt < 45; attempt++) {
+  const attempts = Math.max(1, Math.ceil(timingMs('bridge_forward_wait_seconds',45) / timingMs('bridge_forward_retry_seconds',1)));
+  for (let attempt = 0; attempt < attempts; attempt++) {
     try {
       const tabId = await ensureTab();
       if (usesPageUi) await readyWorkTab(tabId);
-      const response = await chrome.tabs.sendMessage(tabId, {action: 'lzxCommand', message}, {frameId: 0});
+      const response = await chrome.tabs.sendMessage(tabId, {action: 'lzxCommand', message:{...message,timing:timingValues}}, {frameId: 0});
       if (response?.accepted) return;
     } catch {}
-    await new Promise(resolve => setTimeout(resolve, 1000));
+    await new Promise(resolve => setTimeout(resolve, timingMs('bridge_forward_retry_seconds',1)));
   }
   throw Object.assign(new Error('主程序打开的 Flow 项目页尚未就绪，请检查登录／项目页面；扩展没有另外创建标签页。'),
     {code: 'FLOW_PAGE_NOT_READY'});
@@ -71,6 +93,7 @@ async function readyWorkTab(tabId) {
 async function receive(message) {
   if (message.type === 'welcome') {
     authenticated = true;
+    await applyTiming(message.timing);
     await serialize(async () => {
       const saved = await local();
       for (const event of Object.values(saved.lzxOutbox || {})) send(event);
@@ -82,6 +105,7 @@ async function receive(message) {
     });
     return;
   }
+  if (message.type === 'timing_settings') {await applyTiming(message.timing); return;}
   if (message.type === 'ack') {
     await serialize(async () => {
       const saved = await local();
@@ -260,7 +284,7 @@ async function repairProject(message) {
       throw Object.assign(Error('网页仍保存未确认的提交记录，保留原任务，不自动刷新。'),{code:'FLOW_PAGE_REPAIR_BUSY'});
     }
     const {lzxPageRepair: previous} = await chrome.storage.local.get(['lzxPageRepair']);
-    if (previous?.project === config.project && Date.now()-previous.at < 30000) {
+    if (previous?.project === config.project && Date.now()-previous.at < timingMs('page_repair_gap_seconds',30)) {
       throw Error('本项目刚执行过页面恢复，等待加载完成后再检查。');
     }
     const tab = await chrome.tabs.get(tabId);
@@ -311,6 +335,7 @@ async function connect() {
   try {
     const saved = await local();
     if (epoch !== connectionEpoch) return;
+    await applyTiming(saved.lzxTiming, false);
     config = saved.lzxConfig || {}; browserId = saved.lzxBrowserId || crypto.randomUUID();
     ownedTab = saved.lzxOwnedTab ?? null; activeBatch = saved.lzxBatch || '';
     await chrome.storage.local.set({lzxBrowserId: browserId});
@@ -320,19 +345,19 @@ async function connect() {
     socket = current; authenticated = false;
     current.onopen = () => {
       if (socket !== current || epoch !== connectionEpoch) {current.close(); return;}
-      retryDelay = 1000;
+      retryDelay = timingMs('bridge_reconnect_initial_seconds',1);
       send({type: 'hello', protocol: 1, token: config.token, browser_id: browserId,
         profile: config.profile || '', project: config.project || '',
         extension_version: chrome.runtime.getManifest?.().version || '', setup_id: config.setup_id || '',
-        capabilities: ['idle_reload', 'project_setup_v1', 'generation_media_identity_v2', 'close_exhausted_v1']});
+        capabilities: ['idle_reload', 'project_setup_v1', 'generation_media_identity_v2', 'close_exhausted_v1', 'timing_settings_v1']});
       clearInterval(heartbeat);
-      heartbeat = setInterval(() => send({type: 'ping'}), 20000);
+      heartbeat = setInterval(() => send({type: 'ping'}), timingMs('bridge_heartbeat_seconds',20));
     };
     current.onmessage = event => { if (socket !== current) return; try { receive(JSON.parse(event.data)).catch(error => console.error('[AssistantFlow]', error.message)); } catch {} };
     current.onclose = () => {
       if (socket !== current) return;
       clearInterval(heartbeat); socket = null; authenticated = false; retryAt = Date.now() + retryDelay;
-      setTimeout(connect, retryDelay); retryDelay = Math.min(retryDelay * 2, 20000);
+      setTimeout(connect, retryDelay); retryDelay = Math.min(retryDelay * 2, timingMs('bridge_reconnect_max_seconds',20));
     };
     current.onerror = () => {};
   } finally { connecting = false; if (epoch !== connectionEpoch) setTimeout(connect, 0); }
@@ -433,11 +458,11 @@ chrome.storage.onChanged.addListener((changes, area) => {
     if (configSignature(changes.lzxConfig.oldValue) === configSignature(changes.lzxConfig.newValue) ||
         changes.lzxConfig.newValue && configSignature(changes.lzxConfig.newValue) === configSignature(config)) return;
     connectionEpoch++; authenticated = false; retryAt = 0; clearInterval(heartbeat);
-    const previous = socket; socket = null; previous?.close(); setTimeout(connect, 50);
+    const previous = socket; socket = null; previous?.close(); setTimeout(connect, timingMs('bridge_config_reload_seconds',.05));
   }
 });
 chrome.runtime.onStartup.addListener(connect);
-chrome.runtime.onInstalled.addListener(() => { chrome.alarms.create('lzxReconnect', {periodInMinutes: 0.5}); connect(); });
+chrome.runtime.onInstalled.addListener(() => { reconnectAlarm(); connect(); });
 chrome.alarms.onAlarm.addListener(alarm => { if (alarm.name === 'lzxReconnect') connect(); });
 chrome.action.onClicked.addListener(() => chrome.runtime.openOptionsPage());
 resumeReloadSetup().catch(error => console.error('[AssistantFlow]', error.message)).finally(() => {booting = false; connect();});
@@ -491,7 +516,7 @@ async function claimProjectSetup(sender) {
     const claim = new WebSocket(`ws://127.0.0.1:${port}`);
     let finished = false, receiving = false;
     const finish = (error, result) => {if (finished) return; finished = true; clearTimeout(timer); claim.close(); error ? reject(error) : resolve(result);};
-    const timer = setTimeout(() => finish(Error('自动连接超时，请保持主程序打开后再点击连接。')), 10000);
+    const timer = setTimeout(() => finish(Error('自动连接超时，请保持主程序打开后再点击连接。')), timingMs('setup_claim_timeout_seconds',10));
     claim.onopen = () => claim.send(JSON.stringify({type: 'setup_claim', ticket}));
     claim.onerror = () => finish(Error('本机连接服务不可用，请保持辅助工具打开。'));
     claim.onclose = () => {if (!finished && !receiving) finish(Error('主程序尚未完成自动连接，请正常重启辅助工具后重试。'));};
@@ -524,7 +549,7 @@ async function projectSetupAction(entry, sender) {
     const claim = new WebSocket(`ws://127.0.0.1:${port}`);
     let finished = false, receiving = false;
     const finish = (error, value) => {if (finished) return; finished = true; clearTimeout(timer); claim.close(); error ? reject(error) : resolve(value);};
-    const timer = setTimeout(() => finish(Error('本机连接确认超时，请保持辅助工具打开。')), 10000);
+    const timer = setTimeout(() => finish(Error('本机连接确认超时，请保持辅助工具打开。')), timingMs('setup_claim_timeout_seconds',10));
     claim.onopen = () => claim.send(JSON.stringify({type: 'setup_reload_check', ticket}));
     claim.onerror = () => finish(Error('无法连接本机软件。'));
     claim.onclose = () => {if (!finished && !receiving) finish(Error('本次连接尚未确认。'));};
@@ -536,9 +561,9 @@ async function projectSetupAction(entry, sender) {
         if (reply.type !== 'setup_reload_allowed') return;
         if (reply.ticket !== ticket || !reply.profile || new URL(reply.project).href.replace(/\/$/, '') !== project) throw Error('项目与本次连接请求不匹配。');
         receiving = true; clearTimeout(timer);
-        if (chrome.runtime.getManifest().version !== '1.1.19') {
+        if (chrome.runtime.getManifest().version !== '1.1.20') {
           await chrome.storage.local.set({lzxReloadSetup: {...entry, tabId: sender.tab.id,
-            mode: reply.mode || 'pair', profile: reply.profile, version: '1.1.19'}});
+            mode: reply.mode || 'pair', profile: reply.profile, version: '1.1.20'}});
           finish(null, {success: true, updating: true}); chrome.runtime.reload(); return;
         }
         if (action === 'options') {

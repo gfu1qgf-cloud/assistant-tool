@@ -49,7 +49,7 @@ def capable(client, job, preferences, cost=None):
             and (client.get('connection_recovery') or {}).get('state') != 'checking'
             and client.get('page_ready') is not False
             and (client.get('prepare_wait') or {}).get('next_at', 0) <= time.time()
-            and balance_ready(client)
+            and balance_ready(client, preferences=preferences)
             and credits >= MIN_CREDITS
             and (credits >= cost if cost is not None else credits > 0)
             and dispatch_rank(client, job, preferences) is not None)
@@ -93,7 +93,7 @@ def waiting_reason(row, clients, rows, preferences, observed, batches, *, paused
         if holds and all(holds): return '对应浏览器积分冷却中：' + holds[0]
         return f'{label}等待浏览器自动启动／空闲后自动分配时长，无需手动分档'
     if not any(capable(c, row['payload'], preferences, cost) for c in lane):
-        funded = [c for c in lane if balance_ready(c)
+        funded = [c for c in lane if balance_ready(c, preferences=preferences)
                   and (c['credits'] >= cost if cost is not None else c['credits'] > 0)]
         if funded:
             # A funded browser may still be pairing, loading or quarantined.
@@ -107,8 +107,8 @@ def waiting_reason(row, clients, rows, preferences, observed, batches, *, paused
         return '扩展已连接，但 Flow 项目页面未响应；请打开对应浏览器检查'
     if not any(c.get('account') for c in lane):
         return '需要登录／确认当前 Flow 账号，请打开对应浏览器'
-    if not any(balance_ready(c) for c in lane):
-        return '等待本次连接首次读取账号积分'
+    if not any(balance_ready(c, preferences=preferences) for c in lane):
+        return '等待确认当前账号／重新检测积分；上次余额保留，过期时间可在“时间与重试”设置'
     if not any(capable(c, row['payload'], preferences, cost) for c in lane):
         return '积分不足以承担下一条任务；等待补充积分或备用账号'
     held = [r for r in rows if r['status'] in ACTIVE - {'queued'} | {'uncertain', 'download_failed'}]

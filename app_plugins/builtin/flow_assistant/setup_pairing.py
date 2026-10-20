@@ -5,6 +5,7 @@ import time
 
 from .setup_support import EXTENSION_ID, EXTENSION_VERSION, project_identity, project_block, compatible_extension
 from .store import TRANSIENT
+from .timing import value as timing_value
 
 
 def confirm_saved_connection(service, client):
@@ -27,7 +28,7 @@ def confirm_saved_connection(service, client):
         return False
     if (not compatible_extension(client.get('extension_version'))
             or not (client.get('page_loaded') or client.get('page_ready'))
-            or time.time() - client.get('page_at', 0) > 45):
+            or time.time() - client.get('page_at', 0) > timing_value(service.preferences, 'page_stale_seconds')):
         return False
     profile = client.get('profile')
     setup = service.setup_requests.get(profile)
