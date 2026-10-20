@@ -25,11 +25,16 @@ def browser_status(client, preferences, jobs=(), now=None):
     project = '页面已响应' if online and client.get('page_ready') else ('地址已保存' if project_identity(saved) else '未设置地址')
     cooldown = credit_reason(client, preferences, now)
     if not online:
+        failure = preferences.get('browser_launch_failures', {}).get(client.get('profile'), {})
+        slot = preferences.get('browser_slots', {}).get(client.get('profile'), {})
         isolated = hold_reason(client, preferences)
         if isolated:
             return {'connection': '未连接', 'project': project, 'state': '账号已隔离', 'reason': isolated, 'color': '#b03728'}
         if cooldown:
             return {'connection': '未连接', 'project': project, 'state': '积分冷却', 'reason': cooldown, 'color': '#986100'}
+        if failure or slot:
+            return {'connection': '未连接', 'project': project, 'state': '启动待处理' if failure else '等待原连接',
+                    'reason': failure.get('message') or '原窗口仍占用启动名额；等待原扩展重连，未重复打开其他配置', 'color': '#986100'}
         return {'connection': '未连接', 'project': project, 'state': '待连接' if project_identity(saved) else '待配置',
                 'reason': '等待打开此配置并连接扩展' if project_identity(saved) else '请先添加这个配置自己的 Flow 项目地址', 'color': '#986100'}
     blocks = preferences.get('browser_blocks', {})

@@ -8,28 +8,28 @@ const command = () => ({action:'close_exhausted', request_id:'close', params:{id
 async function fixture(options = {}) {
   const data = {lzxConfig:{token:'x'.repeat(40), port:18189, profile:'Profile 1', project}, lzxBatch:batch,
     lzxBatches:{[batch]:{state:'accepted'}}, lzxDownloads:{1:binding()}, ...options.data};
-  const hooks = {}, messages = [], closed = []; let searches = 0;
+  const hooks = {}, messages = [], closed = [], sockets = [], windows = new Set(options.noWindows ? [] : [1,2]); let searches = 0;
   const event = name => ({addListener:fn => hooks[name] = fn});
   const tab = {id:7, windowId:1, url:project, active:true};
   const tabs = [tab, ...(options.extraTabs || [])];
-  class Socket {static OPEN=1; constructor(){this.readyState=1;} send(value){messages.push(JSON.parse(value));} close(){}}
+  class Socket {static OPEN=1; constructor(){this.readyState=1;sockets.push(this);} send(value){messages.push(JSON.parse(value));} close(){this.readyState=3;}}
   const chrome = {runtime:{id:'pnjppjjfgiccpcfajkpooklgohgihdom', getManifest:()=>({version:'1.1.19'}),
       onMessage:event('message'), onStartup:event('startup'), onInstalled:event('installed')},
     storage:{onChanged:event('changed'), local:{get:async keys=>Object.fromEntries(keys.filter(k=>k in data).map(k=>[k,structuredClone(data[k])])),
       set:async value=>Object.assign(data, structuredClone(value)), remove:async key=>delete data[key]}},
     tabs:{query:async()=>tabs, get:async()=>({...tab,url:options.changedProject ? project+'-changed':project}),
-      sendMessage:async id => options.health ? options.health(id) : {healthy:true, running:false}},
+      sendMessage:async id => options.health ? options.health(id) : {healthy:true, running:false, native_busy:false}},
     downloads:{onChanged:event('download'), search:async query=>query.state ?
       (options.progress?.(++searches) ? [{id:99,state:'in_progress'}] : []) : []},
-    windows:{getAll:async()=>{options.onWindows?.(hooks); return [{id:1},{id:2}];},
-      remove:async id=>{if(options.removeFailure) throw Error('window unavailable'); closed.push(id);}},
+    windows:{getAll:async()=>{options.onWindows?.(hooks); return [...windows].map(id=>({id}));},
+      remove:async id=>{if(options.removeFailure) throw Error('window unavailable'); closed.push(id);windows.delete(id);}},
     alarms:{onAlarm:event('alarm')}, action:{onClicked:event('action')}};
   const context={chrome, WebSocket:Socket, URL, URLSearchParams, crypto, Date, console,
     setTimeout:()=>1, clearTimeout(){}, setInterval:()=>1, clearInterval(){}};
   vm.createContext(context);
-  vm.runInContext(source.replace("import './background.js';", '') + '\nglobalThis.api={receive, setBusy:()=>commandsInFlight=1};', context);
+  vm.runInContext(source.replace("import './background.js';", '') + '\nglobalThis.api={receive,connect,setBusy:()=>commandsInFlight=1};', context);
   await new Promise(resolve=>setImmediate(resolve));
-  return {api:context.api, data, messages, closed};
+  return {api:context.api, data, messages, closed, sockets};
 }
 async function refused(options, mutate) {
   const f = await fixture(options); const message=command(); mutate?.(message);
@@ -41,6 +41,9 @@ async function refused(options, mutate) {
 (async()=>{
   const done=await fixture(); await done.api.receive(command());
   assert.deepEqual(done.closed,[1,2]); assert.equal(done.messages.at(-1).success,true);
+  assert.equal(done.messages.at(-1).data.closed,true);
+  await done.api.connect();assert.equal(done.sockets.length,1,'a closed profile background must not reconnect as another occupied browser');
+  const empty=await fixture({noWindows:true});await empty.api.connect();assert.equal(empty.sockets.length,0);
   const legacy=await fixture({data:{lzxBatches:{[batch]:Date.now()}}});
   await legacy.api.receive(command());assert.deepEqual(legacy.closed,[1,2],'old timestamp claims need exact completed downloads, not a guessed accepted state');
   await refused({data:{lzxBatches:{[batch]:Date.now()},lzxDownloads:{1:binding('interrupted')}}});
@@ -54,6 +57,8 @@ async function refused(options, mutate) {
   await refused({health:()=>undefined});
   await refused({health:()=>({healthy:true})});
   await refused({health:()=>({healthy:false,running:false})});
+  await refused({health:()=>({healthy:true,running:false,native_busy:true})});
+  await refused({health:()=>({healthy:true,running:false})});
   await refused({extraTabs:[{id:8,url:project+'-second'}],health:id=>({healthy:true,running:id===8})});
   await refused({data:{lzxBatches:{[batch]:{state:'accepted'},['b'.repeat(32)]:{state:'accepted'}}}});
   for(const args of [{idle:false},{profile:'Other'},{url:project+'-other'},{balance:10},{balance:-1},{until:1}]) {
@@ -67,6 +72,7 @@ async function refused(options, mutate) {
   const busy=await fixture(); busy.api.setBusy(); await busy.api.receive(command());
   assert.equal(busy.closed.length,0);assert.equal(busy.messages.at(-1).code,'FLOW_CLOSE_BUSY');
   const failure=await fixture({removeFailure:true}); await failure.api.receive(command());
+  assert.equal(failure.messages.at(-2).data.closing,true,'close intent must precede the native operation');
   assert.equal(failure.messages.at(-1).success,false);
   await failure.api.receive(command());
   assert.notEqual(failure.messages.at(-1).code,'FLOW_CLOSE_BUSY','a failed native close must release its operation lock');

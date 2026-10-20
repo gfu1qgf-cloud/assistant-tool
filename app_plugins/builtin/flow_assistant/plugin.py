@@ -10,7 +10,7 @@ class FlowAssistantPlugin(QtCore.QObject):
     command = QtCore.pyqtSignal(object)
     plugin_id = 'flow_assistant'
     display_name = 'Flow 视频助手'
-    version = '0.4.30'
+    version = '0.4.31'
     upstream_version = '1.1.5'
     ui_api_version = 2
     manual_credit_check_api = 1
@@ -164,10 +164,12 @@ class FlowAssistantPlugin(QtCore.QObject):
         launcher = getattr(self.context.parent_widget, 'chrome_plugin', None)
         dialog = getattr(launcher, 'dialog', None)
         if dialog is None:
+            self.command.emit({'action':'browser_launch_result','profile':directory,'opened':False,'error':'Chrome 启动器尚未就绪'})
             self._failed('Chrome 启动器尚未就绪，保留 Flow 队列。')
             return
         profile = next((item for item in dialog.profiles if item['directory'] == directory), None)
         if profile is None:
+            self.command.emit({'action':'browser_launch_result','profile':directory,'opened':False,'error':'Chrome 配置已不存在'})
             self._failed('配置组中的 Chrome 配置已不存在：' + directory)
             return
         from .setup_support import project_identity
@@ -189,19 +191,25 @@ class FlowAssistantPlugin(QtCore.QObject):
     def _launch_checked(self, result):
         directory = result['profile']; self.launch_probes.pop(directory, None)
         if self.stopping: return
+        slot = self.snapshot.get('preferences', {}).get('browser_slots', {}).get(directory, {})
+        if slot.get('state') == 'opening' and (self.snapshot.get('safety_paused') or
+                self.snapshot.get('paused') and not self.snapshot.get('released')):
+            self.command.emit({'action':'browser_launch_result','profile':directory,'opened':False,'cancelled':True})
+            return
         from .setup_support import compatible_extension, project_identity
         live = next((c for c in self.snapshot.get('clients', []) if c.get('profile') == directory), None)
         if live:
             result = {**result, 'status': 'enabled', 'version': live.get('extension_version', '')}
         if result['status'] != 'enabled' or not compatible_extension(result.get('version')):
-            panel = self.open_dialog(); panel.open_setup(directory)
-            if panel.setup.profile.currentData() == directory and not panel.setup.request_id and not panel.setup.probe:
-                panel.setup.begin()
+            error = '扩展未启用或版本无法确认，请在连接向导修正后恢复；自动调度未打开此配置：' + directory
+            self.command.emit({'action': 'browser_launch_result', 'profile': directory, 'opened': False, 'error': error})
+            self._failed(error)
             return
         launcher = getattr(self.context.parent_widget, 'chrome_plugin', None)
         dialog = getattr(launcher, 'dialog', None)
         profile = next((p for p in getattr(dialog, 'profiles', []) if p['directory'] == directory), None)
         if not profile:
+            self.command.emit({'action':'browser_launch_result','profile':directory,'opened':False,'error':'Chrome 配置已不可用'})
             self._failed('Chrome 配置已不可用，保留 Flow 队列：' + directory); return
         # Do not inherit the launcher's unrelated preset websites (or an empty
         # new tab). Re-read the current per-profile project after the probe.
@@ -216,6 +224,7 @@ class FlowAssistantPlugin(QtCore.QObject):
             self.command.emit({'action': 'open_browser', 'profile': directory})
             return
         ok, error = self.launch_browser(directory, [project])
+        self.command.emit({'action': 'browser_launch_result', 'profile': directory, 'opened': ok, 'error': error})
         if not ok:
             self._failed('启动 Chrome 配置失败：' + str(error))
 

@@ -99,8 +99,9 @@ class PageReadinessTests(unittest.TestCase):
             client['extension_version'] = version
             self.assertTrue(project_block(client, service.preferences))
 
-    def test_no_current_window_before_submission_waits_and_reopens_once(self):
+    def test_no_current_window_before_submission_waits_and_repairs_existing_page(self):
         service, client, row = self.setup_job(); launches = []
+        service.paused = False
         service.launch_requested.connect(launches.append)
         service.request(client, 'prepare', {}, row['id'])
         key = next(k for k, v in service.pending.items() if v['action'] == 'prepare')
@@ -113,7 +114,8 @@ class PageReadinessTests(unittest.TestCase):
         recovery = {**current['remote']['prepare_retry'], 'next_at': 0}
         service.store.update(row['id'], 'queued', remote={**current['remote'], 'prepare_retry': recovery})
         self.assertTrue(watch_preparation(service)); self.assertFalse(watch_preparation(service))
-        self.assertEqual(launches, ['Profile 23'])
+        self.assertEqual(launches, [])
+        self.assertTrue(any(v['action'] == 'repair_project' for v in service.pending.values()))
         self.assertFalse(any(v['action'] == 'run_tasks' for v in service.pending.values()))
 
     def test_prepare_wait_is_bounded_and_count_survives_next_attempt(self):

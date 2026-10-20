@@ -58,6 +58,7 @@ SPECS = [Spec(*row) for row in (
     ('bridge_forward_wait_seconds', '扩展与页面', '等待页面消息通道', 45, 1, 3600, '秒', '项目脚本尚未就绪时允许等待多久；不另开标签页。'),
     ('bridge_forward_retry_seconds', '扩展与页面', '页面消息通道重查间隔', 1, .1, 60, '秒', '等待通道期间每次检查之间的时间。'),
     ('page_controls_wait_seconds', '扩展与页面', '等待页面控件就绪', 45, 1, 3600, '秒', '开始参数准备、上传或提交前等待真实页面控件。'),
+    ('page_reference_reuse_wait_seconds', '扩展与页面', '已上传参考图重新挂载等待', 5, 1, 300, '秒', '复用素材无法在此时间内准确挂载时，停止等待并补传；主程序上传超时自动覆盖整个操作上限。'),
     ('page_initial_settle_seconds', '扩展与页面', '页面脚本启动稳定等待', 2, .1, 60, '秒', '脚本刚加载后等待状态恢复和页面挂载。'),
     ('page_dom_stable_seconds', '扩展与页面', '页面控件稳定等待', 1.5, .1, 60, '秒', '页面变动结束后等待控件稳定。'),
     ('page_settings_wait_seconds', '扩展与页面', '参数选中状态核对等待', 5, 1, 300, '秒', '等待实际选中模型、比例、分辨率和数量稳定，不能代替参数核对。'),
@@ -138,7 +139,12 @@ def request_timeout(preferences, action, client=None):
     key = {'prepare': 'prepare_timeout_seconds', 'upload_images': 'upload_timeout_seconds',
            'retry_download': 'download_timeout_seconds', 'close_exhausted': 'credit_close_timeout_seconds'}.get(action, 'request_timeout_seconds')
     seconds = value(preferences, key)
-    if (client and client.get('extension_version') and client['extension_version'] not in {'1.1.21', '1.1.22', '1.1.23', '1.1.24', '1.1.25'}
+    if action == 'upload_images':
+        controls = value(preferences, 'page_controls_wait_seconds')
+        reuse = controls if (client or {}).get('extension_version') == '1.1.25' else value(preferences, 'page_reference_reuse_wait_seconds')
+        floor = value(preferences, 'bridge_forward_wait_seconds') + 3 * controls + reuse + 20 * value(preferences, 'page_control_poll_seconds') + 5
+        seconds = max(seconds, floor)
+    if (client and client.get('extension_version') and client['extension_version'] not in {'1.1.21', '1.1.22', '1.1.23', '1.1.24', '1.1.25', '1.1.26'}
             and 'timing_settings_v1' not in client.get('capabilities', [])):
         seconds = max(seconds, CATALOG[key].default)
     return seconds

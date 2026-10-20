@@ -78,7 +78,7 @@ def record_duration_limit(service, client, row, error, data):
 
 
 def recoverable_prepare_reason(text, version):
-    if version not in {'1.1.16', '1.1.17', '1.1.18', '1.1.19', '1.1.20', '1.1.21', '1.1.22', '1.1.23', '1.1.24', '1.1.25'}: return False
+    if version not in {'1.1.16', '1.1.17', '1.1.18', '1.1.19', '1.1.20', '1.1.21', '1.1.22', '1.1.23', '1.1.24', '1.1.25', '1.1.26'}: return False
     legacy = {'无法确认页面已选中 Omni 1.1 Flash、比例、分辨率和 x1，未提交生成。',
               '浏览器响应超时，请检查页面后恢复；未发送新的生成请求。'}
     return (text in legacy or bool(re.fullmatch(r'页面或浏览器窗口连续未就绪，自动等待已达\d+次；未提交生成。', str(text))) or
@@ -94,7 +94,7 @@ def recover_preparation_block(service, client):
     clearing a block is never proof that the requested settings are selected.
     """
     if (not client.get('authorized') or not client.get('page_ready') or client.get('batch_running') is not False
-            or client.get('extension_version') not in {'1.1.16', '1.1.17', '1.1.18', '1.1.19', '1.1.20', '1.1.21', '1.1.22', '1.1.23', '1.1.24', '1.1.25'} or client.get('setup_blocked')
+            or client.get('extension_version') not in {'1.1.16', '1.1.17', '1.1.18', '1.1.19', '1.1.20', '1.1.21', '1.1.22', '1.1.23', '1.1.24', '1.1.25', '1.1.26'} or client.get('setup_blocked')
             or client.get('preparation_block_recovered')):
         return False
     expected = project_identity(service.preferences.get('profile_projects', {}).get(client.get('profile')))
@@ -140,6 +140,8 @@ def watch_preparation(service):
         recovery = row['remote'].get('prepare_retry', {})
         if row['status'] != 'queued' or not recovery.get('reopen') or recovery.get('next_at', 0) > time.time():
             continue
+        if service.safety_paused or service.paused and row['id'] not in service.released:
+            continue
         profile = recovery.get('profile')
         if not profile or credit_hold({'profile': profile}, service.preferences):
             continue
@@ -148,7 +150,8 @@ def watch_preparation(service):
         ready = any(c.get('authorized') and c.get('profile') == profile and c.get('page_ready')
                     for c in service.clients.values())
         if not ready:
-            service.launch_requested.emit(profile)
+            from .browser_slots import request_start
+            request_start(service, profile)
         changed = True
     return changed
 

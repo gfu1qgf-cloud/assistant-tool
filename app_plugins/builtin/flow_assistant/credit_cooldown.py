@@ -101,7 +101,6 @@ def refresh_expired(service, queued_rows):
 
 def close_idle_exhausted(service):
     """The browser also checks its page, durable receipts and Chrome downloads."""
-    from .connection_recovery import occupied
     rows = service.store.rows()
     changed = False
     now = time.time()
@@ -111,9 +110,9 @@ def close_idle_exhausted(service):
                 or not client.get('account') or not client.get('profile')
                 or type(client.get('credits')) not in (int, float) or client['credits'] >= MIN_CREDITS
                 or 'close_exhausted_v1' not in client.get('capabilities', [])
-                or not client.get('page_ready') or client.get('batch_running') is not False
+                or (client.get('credit_close') or {}).get('state') in {'closing', 'closed'}
                 or client.get('setup_pending') or account_hold(client, service.preferences)
-                or occupied(service, client)):
+                or client.get('reset_wait_until', 0) > now):
             continue
         related = [row for row in rows if row['browser'] == client['id'] or
                    row['remote'].get('profile') == client['profile'] or

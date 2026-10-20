@@ -283,8 +283,12 @@ class CreditCooldownTests(unittest.TestCase):
         client['credit_check']['at'] -= 31
         self.assertFalse(close_idle_exhausted(service))
         client.update(capabilities=['close_exhausted_v1'], batch_running=True)
-        self.assertFalse(close_idle_exhausted(service))
+        self.assertTrue(close_idle_exhausted(service))
+        key = next(k for k,p in service.pending.items() if p['action'] == 'close_exhausted')
+        service._response(client, {'request_id':key,'success':False,'code':'FLOW_CLOSE_BUSY','error':'page still running'})
+        self.assertEqual(client['credit_close']['count'], 0)
         client['batch_running'] = False
+        client['credit_close']['next_at'] = 0
         self.assertTrue(close_idle_exhausted(service))
         self.assertFalse(close_idle_exhausted(service))
 

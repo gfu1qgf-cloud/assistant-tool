@@ -63,7 +63,7 @@
     }
     if (slots().ends.some(hasMedia)) throw error('结束帧旧素材尚未移除；未提交生成。');
   }
-  async function attach(image, footage='VIDEO_FRAMES') {
+  async function attach(image, footage='VIDEO_FRAMES', waitMs=ms('page_controls_wait_seconds',45)) {
     if (!trusted(image) || footage !== 'VIDEO_FRAMES') throw error('本条参考图没有本次上传的素材凭据，未提交生成。');
     await clearEnds();
     if (verify(image, footage)) return;
@@ -77,7 +77,7 @@
       !/remove|clear|移除|删除|刪除|清除/i.test((node.getAttribute('aria-label') || '') + ' ' + (node.textContent || '') + ' ' + node.className));
     if (!trigger) throw error('找不到首帧选择入口；未使用页面已有的其他图片。');
     helpers.click(trigger);
-    const deadline = Date.now() + ms('page_controls_wait_seconds',45);
+    const deadline = Date.now() + waitMs;
     while (Date.now() < deadline) {
       const panels = Array.from(document.querySelectorAll('.cdk-overlay-pane,[role="dialog"],[role="menu"],mat-dialog-container'))
         .filter(node => node.offsetWidth > 0 && node.offsetHeight > 0 && !node.closest('#flow-batch-overlay'));
@@ -132,7 +132,7 @@
     if (cached && (!params.reference_reset || cached.reset === params.reference_reset)) {
       const bound = bind(reference, cached.image, cached.media_id, url, cached.source, true);
       try {
-        await attach(bound);
+        await attach(bound, 'VIDEO_FRAMES', ms('page_reference_reuse_wait_seconds',5));
         await guard();
         assets.delete(reference.sha256); assets.set(reference.sha256, cached);
         return {uploaded:[], skipped:[reference.path], failed:[], errors:{}, reused:true,

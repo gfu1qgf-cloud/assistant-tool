@@ -282,7 +282,7 @@ async function closeExhausted(message) {
     for (const tab of tabs.filter(tab => projectUrl(tab.pendingUrl || tab.url))) {
       let health;
       try {health = await chrome.tabs.sendMessage(tab.id, {action:'lzxPageHealth'}, {frameId:0});} catch {}
-      if (health?.healthy !== true || health?.running !== false) {
+      if (health?.healthy !== true || health?.running !== false || health?.native_busy !== false) {
         throw busy('Flow 页面仍在执行或未确认空闲，保留浏览器。');
       }
     }
@@ -298,7 +298,10 @@ async function closeExhausted(message) {
     // Chrome process, which can also own another account's browser windows.
     send({action:'close_exhausted_response',request_id:message.request_id,success:true,data:{closing:true}});
     await Promise.all(windows.map(window => chrome.windows.remove(window.id)));
+    if ((await chrome.windows.getAll({windowTypes:['normal','popup']})).length) throw Error('浏览器仍有窗口未关闭，保留启动名额。');
+    send({action:'close_exhausted_response',request_id:message.request_id,success:true,data:{closed:true}});
     closing = true;
+    socket?.close();
   } finally {
     if (!closing) closingBrowser = false;
   }
@@ -370,7 +373,7 @@ async function retryBoundDownload(message) {
   send({action: 'retry_download_response', request_id: message.request_id, success: true, data: {downloadId: result.downloadId}});
 }
 async function connect() {
-  if (booting || connecting || socket && [0, 1].includes(socket.readyState) || Date.now() < retryAt) return;
+  if (booting || closingBrowser || connecting || socket && [0, 1].includes(socket.readyState) || Date.now() < retryAt) return;
   connecting = true;
   const epoch = connectionEpoch;
   try {
@@ -380,6 +383,7 @@ async function connect() {
     config = saved.lzxConfig || {};
     ownedTab = saved.lzxOwnedTab ?? null; activeBatch = saved.lzxBatch || '';
     if (!config.token || !Number.isInteger(config.port) || config.port < 1024 || config.port > 65535) return;
+    if (chrome.windows?.getAll && !(await chrome.windows.getAll({windowTypes:['normal','popup']})).length) return;
     browserId = saved.lzxBrowserId || crypto.randomUUID();
     if (!saved.lzxBrowserId) await chrome.storage.local.set({lzxBrowserId: browserId});
     if (epoch !== connectionEpoch) return;
@@ -562,6 +566,9 @@ async function restoreSetupTab() {
 }
 chrome.tabs?.onCreated?.addListener(() => resumeReloadSetup().catch(() => {}));
 chrome.tabs?.onUpdated?.addListener((_id, change) => {
+  if (closingBrowser && change.url && sameProjectTab({url:change.url}, config.project)) {
+    closingBrowser = false; retryAt = 0; connect().catch(() => {});
+  }
   if (authenticated && (change.status === 'complete' || change.url)) bootstrapProject(_id).catch(() => {});
   if (_id === ownedTab && change.url && authenticated && projectUrl(config.project)) {
     try {
@@ -634,9 +641,9 @@ async function projectSetupAction(entry, sender) {
         if (reply.type !== 'setup_reload_allowed') return;
         if (reply.ticket !== ticket || !reply.profile || new URL(reply.project).href.replace(/\/$/, '') !== project) throw Error('项目与本次连接请求不匹配。');
         receiving = true; clearTimeout(timer);
-        if (chrome.runtime.getManifest().version !== '1.1.25') {
+        if (chrome.runtime.getManifest().version !== '1.1.26') {
           await chrome.storage.local.set({lzxReloadSetup: {...entry, tabId: sender.tab.id,
-            mode: reply.mode || 'pair', profile: reply.profile, version: '1.1.25'}});
+            mode: reply.mode || 'pair', profile: reply.profile, version: '1.1.26'}});
           finish(null, {success: true, updating: true}); chrome.runtime.reload(); return;
         }
         if (action === 'options') {

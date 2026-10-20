@@ -8,7 +8,7 @@ import shutil
 ROOT = Path(__file__).resolve().parents[1]
 PIN = '847c928d60114183e42f838ba82577ba10e46d0b'
 UPSTREAM_VERSION = '1.1.5'
-BRIDGE_VERSION = '1.1.25'
+BRIDGE_VERSION = '1.1.26'
 KEY = 'MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAnvFDGkX5m/XE6cRqK89rmU6CkCtcOue7G3zgttpk45gF21Y9SQi4L6IvLh4SgLIPcU3Gm5MsXjB4UqmC03ssHqI9Q5SG4TqkGpS+LunJanIVy9Q7ak3IevqA1A3QgA28iAbMHsX9a8sEL/qhi13afdr7n42eF6A4XzJs3+9An6pjzAPNjK4AJLF7PytIzY9YxJ4eg7ANPQUPVTC233hvW5OGMXOxdo4QX1/qGe1npm6E8wwnGfp85NkRPLohy9t1cfJreXcqfswkRa1QlyeKsCfTIKQX2vclCDavsoddro3w98YS4SRb4Tz8NRnbJITsOoPqCbMtXyaWP2QIyy/S6QIDAQAB'
 HASHES = {
     'background.js': '756e503f5612b4f1218ea5b7f87ee7a3b17fdcd36009058d7442867df5b87139',
@@ -61,6 +61,7 @@ def build(root=ROOT):
         'upstream_version': UPSTREAM_VERSION, 'bridge_version': BRIDGE_VERSION, 'protocol': 1,
         'patch_module': 'tools/flow_bridge_patches.py',
         'patches': [
+            'durable bounded automatic browser reservations; live low-credit close checks and final native-close acknowledgement',
             'reuse SHA-256-proven reference assets per page/account/project with new per-attempt proofs and explicit reset invalidation',
             'page-instance-bound verified preflight snapshots; live settings/account/reference checks retained at submission',
             'bounded exact-ID ready-receipt reconciliation independent of video DOM rendering',

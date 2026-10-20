@@ -288,7 +288,7 @@ class SetupTests(unittest.TestCase):
         self.assertIs(dialog.tabs.currentWidget(), dialog.settings_page)
         self.assertFalse(any(item['action'] == 'enqueue' for item in commands))
 
-    def test_queue_launch_detects_missing_extension_and_prepares_guide(self):
+    def test_queue_launch_detects_missing_extension_without_opening_installation_windows(self):
         self.preferences({})
         dialog, launcher, commands = self.ui(); plugin = dialog.plugin
         plugin.snapshot = dialog.state = {'preferences': {'profile_projects': {'Profile 23': PROJECT}}}
@@ -296,10 +296,11 @@ class SetupTests(unittest.TestCase):
         deadline = time.monotonic() + 3
         while plugin.launch_probes and time.monotonic() < deadline: QtTest.QTest.qWait(10)
         self.assertFalse(plugin.launch_probes)
-        self.assertEqual(commands[-1]['action'], 'setup_profile')
+        self.assertEqual(commands[-1]['action'], 'browser_launch_result')
         self.assertEqual(commands[-1]['profile'], 'Profile 23')
+        self.assertIs(commands[-1]['opened'], False)
+        self.assertIn('连接向导', commands[-1]['error'])
         launcher.launch_profile.assert_not_called()
-        self.assertIs(dialog.tabs.currentWidget(), dialog.settings_page)
 
     def test_queue_launch_of_installed_current_extension_stays_seamless(self):
         self.preferences(self.installed())
@@ -317,6 +318,8 @@ class SetupTests(unittest.TestCase):
         plugin.snapshot = {'preferences': {'profile_projects': {'Profile 23': SECOND}}}
         plugin._launch_checked({'profile': 'Profile 23', 'status': 'enabled', 'version': EXTENSION_VERSION})
         self.assertEqual(launcher.launch_profile.call_args.kwargs['urls'], [SECOND])
+        self.assertEqual(commands[-1], {'action':'browser_launch_result','profile':'Profile 23','opened':True,'error':None})
+        commands.clear()
         launcher.launch_profile.reset_mock()
         plugin.snapshot = {'preferences': {}}
         plugin._launch_checked({'profile': 'Profile 23', 'status': 'enabled', 'version': EXTENSION_VERSION})

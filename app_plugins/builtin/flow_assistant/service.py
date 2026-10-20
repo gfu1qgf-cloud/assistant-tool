@@ -35,6 +35,7 @@ from .reference_image import verified_receipt
 from .balance_dispatch import prefer_smaller, profile_order
 from .image_affinity import remember_owner, allows_image, retained, affinity_context, cached_profile, dispatch_order, retire_exhausted
 from .prepare_snapshot import remember as remember_prepare, reuse as reuse_prepare
+from .browser_slots import request_start as start_browser, can_start as can_start_browser, occupied_profiles, summary as browser_capacity
 
 DEFAULT_PORT = 18189
 PROTOCOL = 1
@@ -210,6 +211,8 @@ class FlowService(QtCore.QObject, FlowOperations):
             # new connection's attempt, even though the browser ID is stable.
             if socket_alive(socket): socket.deleteLater()
             return
+        from .browser_slots import disconnected as release_disconnected_slot
+        release_disconnected_slot(self, client)
         for row in self.store.rows():
             if row['browser'] == client.get('id') and row['status'] in TRANSIENT:
                 if row['status'] in {'uploading', 'downloading'}:
@@ -284,6 +287,8 @@ class FlowService(QtCore.QObject, FlowOperations):
                     self.store.save_settings(preferences)
                     self.preferences = preferences
                 client['setup_blocked'] = project_block(client, self.preferences)
+                from .browser_slots import seen as browser_seen
+                browser_seen(self, client)
                 # A WebSocket hello is not a ready browser. Keep its startup
                 # slot until both the page and initial account probe finish.
                 cached = False
@@ -352,6 +357,11 @@ class FlowService(QtCore.QObject, FlowOperations):
         request = self.pending.get(request_id)
         if not request or request['client'] != client['id']:
             return
+        if (request['action'] == 'close_exhausted' and message.get('success') and
+                (message.get('data') or {}).get('closing') and not (message.get('data') or {}).get('closed')):
+            client['credit_close'] = {**client.get('credit_close', {}), 'state': 'closing',
+                'message': '下载已核对完成，正在关闭此浏览器；窗口退出前继续占用启动名额'}
+            return
         self.pending.pop(request_id)
         if request.get('retired'):
             if request['action'] in {'prepare', 'upload_images'}:
@@ -363,12 +373,15 @@ class FlowService(QtCore.QObject, FlowOperations):
         if action == 'close_exhausted':
             state = dict(client.get('credit_close') or {})
             busy = message.get('code') == 'FLOW_CLOSE_BUSY'
-            state.update(state='closing' if message.get('success') else 'waiting' if busy else 'failed',
+            state.update(state='closed' if message.get('success') and data.get('closed') else 'waiting' if busy else 'failed',
                 next_at=time.time() + timing_value(self.preferences, 'credit_close_retry_seconds'),
                 count=max(0, state.get('count', 1) - int(busy)),
                 message='下载已核对完成，正在关闭此浏览器' if message.get('success') else
                     str(message.get('error') or '浏览器关闭未完成')[:500])
             client['credit_close'] = state
+            if state['state'] == 'closed':
+                from .browser_slots import closed as browser_closed
+                browser_closed(self, client.get('profile'))
             return
         if action == 'repair_project':
             current = dict(client.get('connection_recovery') or {})
@@ -856,6 +869,9 @@ class FlowService(QtCore.QObject, FlowOperations):
             elif action == 'pause':
                 self.paused = True
                 self.released.clear()
+            elif action == 'browser_launch_result':
+                from .browser_slots import launch_result
+                launch_result(self, command)
             elif action == 'submit_selected':
                 self.released.update(row['id'] for row in self.store.rows()
                                      if row['id'] in command['ids'] and row['status'] == 'queued')
@@ -1230,6 +1246,8 @@ class FlowService(QtCore.QObject, FlowOperations):
                     self.publish()
                     return
                 attempt = uuid.uuid4().hex
+                from .browser_slots import seen as browser_seen
+                browser_seen(self, client)
                 remember_owner(self, queued, client)
                 self.assign_lane(client, queued['payload'])
                 remote = {'account': client['account'], 'profile': client.get('profile', ''), 'activity_at': time.time()}
@@ -1251,8 +1269,9 @@ class FlowService(QtCore.QObject, FlowOperations):
                 online = {c.get('profile') for c in clients}
                 held_profiles = {r['remote'].get('profile') for r in rows if r['status'] in TRANSIENT | {'uncertain', 'download_failed'}}
                 held_profiles.update(hold['profile'] for hold in self.store.reset_holds() if hold['profile'])
+                window_slots = occupied_profiles(self)
                 available = [p for p in profiles if p not in self.launched and p not in online and p not in held_profiles
-                             and not block_for({'profile': p}, self.preferences)]
+                             and not block_for({'profile': p}, self.preferences) and can_start_browser(self, p, window_slots)]
                 cached = {profile: cached_profile(profile, self.preferences) for profile in available}
                 held_accounts = {str(row['remote'].get('account') or '').strip().casefold() for row in rows
                     if row['status'] in TRANSIENT | {'uncertain', 'download_failed'}}
@@ -1287,12 +1306,7 @@ class FlowService(QtCore.QObject, FlowOperations):
                 occupied = sum(r['status'] in TRANSIENT for r in rows) + len(useful_accounts) + len(starting)
                 if candidate and occupied < limit:
                     target_job = queued_rows[ranked[0][1]]['payload']
-                    self.assign_lane({'profile': candidate, 'id': ''}, target_job)
-                    self.launched.add(candidate)
-                    self.launching[candidate] = time.time()
-                    self.last_launch = time.time()
-                    self.launch_requested.emit(candidate)
-                    self.publish()
+                    if start_browser(self, candidate, target_job): self.publish()
         except Exception as error:
             self.paused = True
             self.released.clear()
@@ -1321,6 +1335,7 @@ class FlowService(QtCore.QObject, FlowOperations):
             detail = retry_detail(row, self.preferences)
             if detail: row['wait_reason'] = detail
         self.changed.emit({'jobs': rows, 'clients': clients, 'paused': self.paused,
+                           'browser_capacity': browser_capacity(self),
                            'pairing': self.pair, 'preferences': self.preferences, 'downloads_root': self.downloads_root,
                            'released': list(self.released), 'safety_paused': self.safety_paused,
                            'drafts': self.drafts, 'batches': batches, 'spaces': self.space_status(rows),

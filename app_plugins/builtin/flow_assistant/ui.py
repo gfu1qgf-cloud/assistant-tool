@@ -405,6 +405,8 @@ class FlowDialog(QtWidgets.QDialog):
             entries.setdefault(('profile', profile), {'profile': profile})
         for profile in preferences.get('profile_projects', {}):
             entries.setdefault(('profile', profile), {'profile': profile})
+        for profile in set(preferences.get('browser_slots', {})) | set(preferences.get('browser_launch_failures', {})):
+            entries.setdefault(('profile', profile), {'profile': profile})
         for client in clients:
             entries[lane_key(client)] = client
         # Reconcile by identity rather than row number. Sorting, a reconnect or
@@ -726,6 +728,9 @@ class FlowDialog(QtWidgets.QDialog):
         attention = sum(item['state'] in {'需处理', '未就绪', '账号已隔离', '自动等待中'} for item in statuses)
         self.connection_summary.setText(f'账号并行 {active}/{limit} · 浏览器：已连接 {len(statuses)} · 可接单 {ready} · 执行中 {busy} · 等待／需处理 {attention}' +
             (f'\n排队原因：{reason}' if reason else '\n提交并保存成功后自动调度；不必再点开始。'))
+        capacity = state.get('browser_capacity', {})
+        if capacity.get('message') and queued:
+            self.connection_summary.setText(self.connection_summary.text() + '\n' + capacity['message'])
         self.update_browsers()
         self.setup.apply_state(state)
         self.manual.apply_state(state)

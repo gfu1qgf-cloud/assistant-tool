@@ -90,7 +90,13 @@ class FlowOperations(TransferRecovery, TaskReset):
         for key in keys:
             blocks.pop(key, None)
         limits = {key: value for key, value in self.preferences.get('parameter_blocks', {}).items() if key not in keys}
-        self.commit_preferences({**self.preferences, 'browser_blocks': blocks, 'parameter_blocks': limits})
+        launch_failures = {key: value for key, value in self.preferences.get('browser_launch_failures', {}).items()
+                           if 'profile:' + key not in keys}
+        self.commit_preferences({**self.preferences, 'browser_blocks': blocks, 'parameter_blocks': limits,
+                                  'browser_launch_failures': launch_failures})
+        for identity in keys:
+            if identity.startswith('profile:'):
+                getattr(self, 'launch_attempts', set()).discard(identity.split(':', 1)[1])
         for client in self.clients.values():
             if browser_keys(client) & keys:
                 client.pop('prepare_wait', None)

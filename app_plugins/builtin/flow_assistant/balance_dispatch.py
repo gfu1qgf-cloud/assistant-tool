@@ -10,6 +10,7 @@ from .policy import block_for, estimated_cost
 from .routing import dispatch_rank
 from .timing import value as timing_value
 from .image_affinity import retained, allows_image, cached_profile, dispatch_order
+from .browser_slots import request_start, can_start, summary as browser_capacity
 
 
 def profile_order(profile, preferences):
@@ -55,6 +56,12 @@ def prefer_smaller(service, row, selected):
         options.append(((0 if retained(client, service.preferences) else 1, *scheduling_order(client)), profile, client))
     if not options: return False
     _, profile, client = min(options, key=lambda value: (value[0], profiles.index(value[1])))
+    if profile not in online and not can_start(service, profile):
+        message = browser_capacity(service)['message'] or '原浏览器启动尚未确认，保留名额等待原连接；不再打开其他配置'
+        if row['error'] != message:
+            service.store.update(row['id'], 'queued', remote=row['remote'], error=message)
+            service.publish()
+        return True
     if profile not in probes:
         until = service.launching.get(profile, now) + timing_value(service.preferences, 'browser_startup_seconds')
         probes[profile] = until
@@ -64,9 +71,7 @@ def prefer_smaller(service, row, selected):
             if not any(p['client'] == client['id'] and p['action'] == 'snapshot' for p in service.pending.values()):
                 service.request(client, 'snapshot')
         else:
-            service.assign_lane({'profile':profile,'id':''}, row['payload'])
-            service.launched.add(profile); service.launching[profile] = now; service.last_launch = now
-            service.launch_requested.emit(profile)
+            if not request_start(service, profile, row['payload']): return True
     if probes[profile] <= now: return False
     waiting = {'profile':profile, 'until':probes[profile]}
     if row['remote'].get('small_balance_wait') != waiting:
