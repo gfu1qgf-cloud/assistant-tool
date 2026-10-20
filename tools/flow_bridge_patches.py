@@ -33,6 +33,19 @@ TRANSPORT = '''    if (window.__lzxFlowTransport) {
 
 def patch_ui(ui):
     ui = exact(ui, '  "use strict";', '  "use strict";\n' + QUIET)
+    ui = exact(ui,
+        '      onBatchFinished();\n      document.querySelectorAll("#flow-tasks-table input, #flow-tasks-table textarea, #flow-tasks-table select, #flow-tasks-table button").forEach(el => el.disabled = false);\n      batchPromise = null;',
+        '      try {\n        onBatchFinished();\n'
+        '        document.querySelectorAll("#flow-tasks-table input, #flow-tasks-table textarea, #flow-tasks-table select, #flow-tasks-table button").forEach(el => el.disabled = false);\n'
+        '      } finally {\n        batchPromise = null;\n        window.__lzxFlowTransport?.batchIdle?.();\n      }')
+    ui = exact(ui,
+        '        // 任务下载完成后的批量间隔延时',
+        '        // The desktop owns the next batch. Its final job has no next-item interval.\n'
+        '        if (window.__lzxFlowTransport && isTaskCompleted && rIdx === endRow - 1 && lIdx === lines.length - 1) return;\n\n'
+        '        // 任务下载完成后的批量间隔延时')
+    ui = exact(ui, '        reply(true, "", { count });', '')
+    ui = exact(ui, '        try { await startBatch(); } catch (e) { log("托管批次异常", e); }',
+        '        try { const executing = startBatch(); reply(true, "", { count }); await executing; } catch (e) { log("托管批次异常", e); }')
     for condition in (
         'if (!match && state.isRunning) {',
         'if (!bound && state.isRunning && renderedId && inTile && renderedUrl) {',

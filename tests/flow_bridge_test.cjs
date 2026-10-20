@@ -76,6 +76,11 @@ const crypto = require('node:crypto');
   chrome.storage.local.set = saveLocal;
   await context.__lzxDownloadBound(6, task);
   assert(data.lzxDownloads[6], 'a failed write must not poison the next serialized operation');
+  const actualPageBatch = 'd'.repeat(32);
+  hooks.message({action: 'lzxPageEvent', data: {type: 'snapshot', data: {running: true, tasks: [
+    {download_path: `FlowBridge/${actualPageBatch}/result.mp4`}]}}}, {tab: {id: 7}, frameId: 0});
+  assert.equal(sent.at(-1).data.batch_id, actualPageBatch,
+    'a newly claimed batch must not relabel the previous still-running page snapshot');
   const before = sent.length;
   hooks.message({action: 'lzxPageEvent', data: {type: 'snapshot', data: {}}}, {tab: {id: 999}, frameId: 0});
   assert.equal(sent.length, before, 'unowned page cannot publish a task result');

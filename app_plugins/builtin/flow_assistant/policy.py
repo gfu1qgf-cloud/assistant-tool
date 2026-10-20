@@ -42,6 +42,7 @@ def block_for(client, preferences):
 def capable(client, job, preferences, cost=None):
     credits = client.get('credits')
     return (not client.get('blocked') and not block_for(client, preferences)
+            and not client.get('batch_running')
             and not (client.get('credit_check') or {}).get('hold_dispatch')
             and client.get('page_ready') is not False
             and balance_ready(client)

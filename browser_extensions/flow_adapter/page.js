@@ -190,6 +190,7 @@
   window.__lzxFlowTransport = {
     verifySettings, activeEmail, captureAccount, locateResult, readiness, waitForControls,
     findSubmission, matchesSubmission, hasPendingResults,
+    batchIdle() {snapshot(true);},
     sitePaused() {emit({type: 'site_pause', reason: 'Flow 网站提示安全限制，已暂停后续提交；保留当前页面，不自动刷新。'});},
     recordGenerationResponse(process, response) {
       const task = getSnapshot?.()?.tasks?.[process.rowIndex];
@@ -245,6 +246,10 @@
       }
       if (message.action === 'get_points') { lastIdentity = ''; confirmedIdentity = ''; }
       if (message.action === 'prepare') {
+        if (getSnapshot?.()?.running) {
+          snapshot(true);
+          throw Object.assign(new Error('上一批网页队列仍在收尾，空闲后自动继续；未提交本条生成。'), {code: 'FLOW_BATCH_BUSY'});
+        }
         preparedProof = null;
         await helpers.prepare(message.params);
         if (!(preparedProof && preparedProof.signature === signature(message.params) && preparedProof.url === location.href &&

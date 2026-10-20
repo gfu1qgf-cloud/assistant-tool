@@ -46,6 +46,9 @@ def browser_status(client, preferences, jobs=(), now=None):
     if active:
         return {'connection': '已连接', 'project': project, 'state': '执行中',
                 'reason': active.get('wait_reason') or active.get('error') or '正在处理已分配任务', 'color': '#206bb0'}
+    if client.get('batch_running'):
+        return {'connection': '已连接', 'project': project, 'state': '网页队列收尾中',
+                'reason': '上一批网页队列仍在收尾，结束后自动继续下一条，无需手动停止', 'color': '#986100'}
     if (client.get('credit_check') or {}).get('state') == 'checking':
         return {'connection': '已连接', 'project': project, 'state': '积分检测中',
                 'reason': '正在读取此浏览器的账号和积分，完成后自动恢复接单', 'color': '#986100'}

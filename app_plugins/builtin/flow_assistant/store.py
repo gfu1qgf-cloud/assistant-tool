@@ -280,9 +280,39 @@ class QueueStore:
             elif row['status'] == 'archiving':
                 self.update(row['id'], 'archive_failed', error='归档曾中断，可以仅重试归档。')
 
+    def retry_rejected_batch(self, job_id):
+        """Explicit retry only: the audited upstream busy guard precedes import.
+
+        Keep all charge/history rows. Zero only this unsubmitted reservation;
+        do not fabricate a website credit refund or reopen ambiguous submissions.
+        """
+        with self.connection() as db:
+            db.execute('BEGIN IMMEDIATE')
+            raw = db.execute('SELECT id,payload,status,attempt,browser,remote,error,updated FROM jobs WHERE id=?', (job_id,)).fetchone()
+            if not raw: return False
+            row = self._row(raw)
+            if (row['status'] != 'uncertain' or row['error'].strip() != '插件队列正在运行，请先停止'
+                    or any(row['remote'].get(key) for key in ('bindings', 'upstream_task', 'generation_response',
+                        'download', 'unverified_download', 'page_recovery', 'cloud_finished'))):
+                return False
+            unused = db.execute('SELECT COALESCE(SUM(cost),0) FROM charges WHERE attempt=? AND job=?',
+                                (row['attempt'], job_id)).fetchone()[0]
+            db.execute('UPDATE charges SET cost=0,source="rejected_before_submission" WHERE attempt=? AND job=?',
+                       (row['attempt'], job_id))
+            message = '原批次在网页接收前被拒绝，已撤销本次未提交预算预留；等待网页空闲后重新核对参数。'
+            db.execute('UPDATE jobs SET status="queued",attempt="",browser="",remote="{}",error=?,updated=? WHERE id=?',
+                       (message, time.time(), job_id))
+            db.execute('INSERT INTO history VALUES (?,?,"queued",?)', (job_id, time.time(),
+                message + f' 撤销未提交预留：{unused:g}；原执行批次：' + row['attempt']))
+        return True
+
     def retry(self, ids, *, regenerate=False):
         for row in self.rows():
             if row['id'] not in ids or row['status'] in TERMINAL:
+                continue
+            if (not regenerate and row['status'] == 'uncertain'
+                    and row['error'].strip() == '插件队列正在运行，请先停止'
+                    and self.retry_rejected_batch(row['id'])):
                 continue
             if row['remote'].get('download', {}).get('state') == 'complete':
                 self.update(row['id'], 'archive_failed')
@@ -297,10 +327,11 @@ def choose_client(clients, rows, limit, job=None, preferences=None, cost=None):
     if len(active) >= limit:
         return None
     held = active + [r for r in rows if r['status'] in {'uncertain', 'download_failed'}]
-    busy_accounts = {row['remote'].get('account') for row in held}
+    busy_accounts = {row['remote'].get('account') for row in held} | {
+        client.get('account') for client in clients if client.get('batch_running')}
     busy_browsers = {row['browser'] for row in held}
     eligible = [client for client in clients if client.get('account') and client.get('credits') is not None
-                and balance_ready(client) and not client.get('blocked')
+                and balance_ready(client) and not client.get('blocked') and not client.get('batch_running')
                 and client['id'] not in busy_browsers and client['account'] not in busy_accounts]
     if job is None:
         return max(eligible, key=lambda c: c['credits'], default=None)

@@ -412,6 +412,9 @@ class FlowService(QtCore.QObject, FlowOperations):
             if request['action'] == 'snapshot' and request['client'] == client['id']:
                 self.pending.pop(key, None)
         if project_identity(data.get('url')):
+            if (type(data.get('running')) is bool and
+                    project_identity(data['url']) == project_identity(client.get('saved_project'))):
+                client['batch_running'] = data['running']
             client.update(project=data['url'], page_loaded=True,
                 page_ready=data.get('controls_ready', True) is True, ready_note=str(data.get('ready_note') or '')[:300],
                 page_at=time.time(), page_error='')
@@ -721,7 +724,7 @@ class FlowService(QtCore.QObject, FlowOperations):
                     raise ValueError('选中的浏览器未连接，请先连接该配置后再检测积分。')
                 rows = self.store.rows() if command.get('manual') else []
                 for client in selected:
-                    busy = any((row['status'] in TRANSIENT or row['status'] == 'uncertain'
+                    busy = client.get('batch_running') or any((row['status'] in TRANSIENT or row['status'] == 'uncertain'
                                 and not row['remote'].get('cloud_finished'))
                                and (row['browser'] == client['id'] or
                                     client.get('account') and row['remote'].get('account') == client['account'])
@@ -945,4 +948,5 @@ class FlowService(QtCore.QObject, FlowOperations):
                            'released': list(self.released), 'safety_paused': self.safety_paused,
                            'drafts': self.drafts, 'batches': batches, 'spaces': self.space_status(rows),
                            'saving': bool(self.archiving)})
-        self.running_changed.emit(any(row['status'] in TRANSIENT | {'archiving', 'uncertain', 'download_failed'} for row in rows))
+        self.running_changed.emit(any(row['status'] in TRANSIENT | {'archiving', 'uncertain', 'download_failed'} for row in rows)
+                                  or any(client.get('batch_running') for client in clients))

@@ -2739,9 +2739,13 @@
       console.error("[Batch] 队列异常", err);
       showToast(`队列停止：${err.message}`, 6000);
     }).finally(() => {
-      onBatchFinished();
-      document.querySelectorAll("#flow-tasks-table input, #flow-tasks-table textarea, #flow-tasks-table select, #flow-tasks-table button").forEach(el => el.disabled = false);
-      batchPromise = null;
+      try {
+        onBatchFinished();
+        document.querySelectorAll("#flow-tasks-table input, #flow-tasks-table textarea, #flow-tasks-table select, #flow-tasks-table button").forEach(el => el.disabled = false);
+      } finally {
+        batchPromise = null;
+        window.__lzxFlowTransport?.batchIdle?.();
+      }
     });
     return batchPromise;
   }
@@ -3940,6 +3944,9 @@
           onBatchFinished();
           return;
         }
+
+        // The desktop owns the next batch. Its final job has no next-item interval.
+        if (window.__lzxFlowTransport && isTaskCompleted && rIdx === endRow - 1 && lIdx === lines.length - 1) return;
 
         // 任务下载完成后的批量间隔延时 (严格按照规则设置或当前设定执行停顿，基于绝对时间戳保证失焦/后台准确走完)
         const baseInterval = (task.interval !== undefined && task.interval !== null && !isNaN(Number(task.interval)))
@@ -6655,7 +6662,7 @@ ${presetAfter || ""}`.trim();
           await saveState();
         } catch (e) { reply(false, "导入任务失败：" + String(e && e.message || e)); return; }
         if (!count) { reply(false, "没有可导入的任务"); return; }
-        reply(true, "", { count });
+
         try { showToast(`🤖 托管模式：已接收 ${count} 个任务，开始生成`, 4000); } catch (_) {}
 
         hostedStatusHook = (r, l, status, message) => {
@@ -6664,7 +6671,7 @@ ${presetAfter || ""}`.trim();
           send({ type: "hosted_task_status", batch_id: batchId, client_id: clientId, row: r, line: l, status, message: message || "",
                  download_path: t.download_path || "", image_name: t.image?.displayName || "" });
         };
-        try { await startBatch(); } catch (e) { log("托管批次异常", e); }
+        try { const executing = startBatch(); reply(true, "", { count }); await executing; } catch (e) { log("托管批次异常", e); }
         hostedStatusHook = null;
 
         const results = state.tasks.map((t, i) => {

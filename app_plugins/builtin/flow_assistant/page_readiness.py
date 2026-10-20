@@ -11,6 +11,12 @@ def missing_window(error):
 
 
 def defer_prepare(service, client, row, error, code=''):
+    if code == 'FLOW_BATCH_BUSY':
+        client['batch_running'] = True
+        service.store.update(row['id'], 'queued', attempt='', browser='', remote={**row['remote'],
+            'batch_wait': True}, error='上一批网页队列正在收尾，空闲后自动继续；尚未上传或提交本条生成。')
+        service.request(client, 'snapshot')
+        return True
     if not missing_window(error) and code != 'FLOW_PAGE_NOT_READY':
         return False
     previous = row['remote'].get('prepare_retry', {})

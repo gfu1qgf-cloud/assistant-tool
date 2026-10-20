@@ -256,7 +256,13 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
   if (message.action !== 'lzxPageEvent' || sender.tab?.id !== ownedTab || sender.frameId !== 0) return;
   const event = message.data;
   if (!event || typeof event !== 'object') return;
-  if (event.type === 'snapshot') event.data = {...event.data, batch_id: activeBatch};
+  if (event.type === 'snapshot') {
+    // A freshly claimed command may still be refused by a draining page.
+    // Snapshot ownership belongs to actual page tasks, never that new claim.
+    const batches = new Set((event.data?.tasks || []).map(task =>
+      String(task.download_path || '').match(/^FlowBridge\/([a-f0-9]{32})\/result\.mp4$/)?.[1]).filter(Boolean));
+    event.data = {...event.data, batch_id: batches.size === 1 ? [...batches][0] : ''};
+  }
   if (['generation_response', 'binding_missing'].includes(event.type)) {
     // Late receipts belong to their saved submission, not a newer active batch.
     const batch = String(event.download_path || '').match(/^FlowBridge\/([a-f0-9]{32})\/result\.mp4$/)?.[1];
@@ -367,9 +373,9 @@ async function projectSetupAction(entry, sender) {
         if (reply.type !== 'setup_reload_allowed') return;
         if (reply.ticket !== ticket || !reply.profile || new URL(reply.project).href.replace(/\/$/, '') !== project) throw Error('项目与本次连接请求不匹配。');
         receiving = true; clearTimeout(timer);
-        if (chrome.runtime.getManifest().version !== '1.1.14') {
+        if (chrome.runtime.getManifest().version !== '1.1.15') {
           await chrome.storage.local.set({lzxReloadSetup: {...entry, tabId: sender.tab.id,
-            mode: reply.mode || 'pair', profile: reply.profile, version: '1.1.14'}});
+            mode: reply.mode || 'pair', profile: reply.profile, version: '1.1.15'}});
           finish(null, {success: true, updating: true}); chrome.runtime.reload(); return;
         }
         if (action === 'options') {
