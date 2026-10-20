@@ -69,16 +69,29 @@ async function readyWorkTab(tabId) {
 async function receive(message) {
   if (message.type === 'welcome') {
     authenticated = true;
-    const saved = await local();
-    for (const event of Object.values(saved.lzxOutbox || {})) send(event);
+    await serialize(async () => {
+      const saved = await local();
+      for (const event of Object.values(saved.lzxOutbox || {})) send(event);
+      // Chrome or the worker can stop between completion and journaling its
+      // event. Reconcile known downloads without starting a new download.
+      for (const [id, binding] of Object.entries(saved.lzxDownloads || {})) {
+        if (binding.reported !== 'complete') await reportDownload(Number(id));
+      }
+    });
     return;
   }
   if (message.type === 'ack') {
     await serialize(async () => {
       const saved = await local();
       const outbox = saved.lzxOutbox || {};
+      const event = outbox[message.event_id];
+      const downloads = saved.lzxDownloads || {};
+      const binding = event?.type === 'download' && downloads[event.data?.downloadId];
+      if (binding && binding.batch === event.batch_id && binding.submissionId === event.data.submissionId) {
+        binding.reported = event.data.state;
+      }
       delete outbox[message.event_id];
-      await chrome.storage.local.set({lzxOutbox: outbox});
+      await chrome.storage.local.set({lzxOutbox: outbox, ...(binding ? {lzxDownloads: downloads} : {})});
     });
     return;
   }
@@ -114,7 +127,7 @@ async function receive(message) {
         const saved = await local();
         const batches = saved.lzxBatches || {};
         if (batches[batch]) return false;
-        batches[batch] = Date.now();
+        batches[batch] = {at: Date.now(), request_id: message.request_id, state: 'sent'};
         // Atomically claim before forwarding; concurrent replays must also
         // observe this durable claim, including while storage is awaiting I/O.
         await chrome.storage.local.set({lzxBatch: batch, lzxBatches: batches});
@@ -123,7 +136,11 @@ async function receive(message) {
       });
       if (typeof claimed !== 'boolean') throw new Error('无法保存批次去重记录，未提交生成。');
       if (!claimed) {
-        send({action: 'run_tasks_response', request_id: message.request_id, success: true, data: {resumed: true}});
+        const entry = (await local()).lzxBatches?.[batch];
+        send({action: 'run_tasks_response', request_id: message.request_id, success: entry?.state === 'accepted',
+          data: {resumed: entry?.state === 'accepted'},
+          ...(entry?.state === 'accepted' ? {} : {code: entry?.code || 'FLOW_BATCH_UNCONFIRMED',
+            error: entry?.error || '此批次已有发送记录，但尚未确认网页接收；保留原任务核对，不再次生成。'})});
         await forward({action: 'snapshot'});
         return;
       }
@@ -213,6 +230,7 @@ async function reportDownload(id) {
   if (!item || !['complete', 'interrupted'].includes(item.state)) return;
   const eventId = `${binding.batch}:${id}:${item.state}`;
   const outbox = saved.lzxOutbox || {};
+  if (binding.reported === item.state || outbox[eventId]) return;
   const event = {type: 'download', event_id: eventId, batch_id: binding.batch, data: {
     filename: item.filename, state: item.state, error: item.error || '', downloadId: id,
     download_path: binding.download_path, taskId: binding.taskId,
@@ -226,8 +244,11 @@ globalThis.__lzxDownloadBound = async (id, task) => {
   if (!match) return;
   await serialize(async () => {
     const saved = await local(), downloads = saved.lzxDownloads || {};
+    const previous = downloads[id];
     downloads[id] = {batch: match[1], download_path: task.download_path, taskId: task.taskId,
-      submissionId: task.submissionId, mediaId: task.mediaId};
+      submissionId: task.submissionId, mediaId: task.mediaId,
+      ...(previous?.batch === match[1] && previous?.submissionId === task.submissionId &&
+          previous?.mediaId === task.mediaId && previous?.reported ? {reported: previous.reported} : {})};
     await chrome.storage.local.set({lzxDownloads: downloads});
     await reportDownload(id);
   });
@@ -256,6 +277,20 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
   if (message.action !== 'lzxPageEvent' || sender.tab?.id !== ownedTab || sender.frameId !== 0) return;
   const event = message.data;
   if (!event || typeof event !== 'object') return;
+  if (event.action === 'run_tasks_response') {
+    serialize(async () => {
+      const saved = await local(), batches = saved.lzxBatches || {};
+      const entry = Object.values(batches).find(value => value?.request_id === event.request_id);
+      if (entry && (entry.state !== 'accepted' || event.success)) {
+        Object.assign(entry, {state: event.success ? 'accepted' : 'rejected',
+          error: String(event.error || '').slice(0, 1000), code: String(event.code || '')});
+        await chrome.storage.local.set({lzxBatches: batches});
+      }
+      send(event);
+    }).catch(() => send({action: event.action, request_id: event.request_id, success: false,
+      code: 'FLOW_BATCH_UNCONFIRMED', error: '网页批次回执保存失败，保留原任务核对，不再次生成。'}));
+    return;
+  }
   if (event.type === 'snapshot') {
     // A freshly claimed command may still be refused by a draining page.
     // Snapshot ownership belongs to actual page tasks, never that new claim.
@@ -308,6 +343,12 @@ async function restoreSetupTab() {
 }
 chrome.tabs?.onCreated?.addListener(() => resumeReloadSetup().catch(() => {}));
 chrome.tabs?.onUpdated?.addListener((_id, change) => {
+  if (_id === ownedTab && change.url && authenticated && projectUrl(config.project)) {
+    try {
+      if (new URL(change.url).hostname === 'accounts.google.com') send({type: 'account_issue',
+        url: config.project, code: 'FLOW_ACCOUNT_SIGNED_OUT', error: 'Flow 项目页已转到 Google 登录页面，请重新登录后手动重置账号状态。'});
+    } catch {}
+  }
   if (change.url) resumeReloadSetup().catch(() => {});
 });
 
@@ -373,9 +414,9 @@ async function projectSetupAction(entry, sender) {
         if (reply.type !== 'setup_reload_allowed') return;
         if (reply.ticket !== ticket || !reply.profile || new URL(reply.project).href.replace(/\/$/, '') !== project) throw Error('项目与本次连接请求不匹配。');
         receiving = true; clearTimeout(timer);
-        if (chrome.runtime.getManifest().version !== '1.1.16') {
+        if (chrome.runtime.getManifest().version !== '1.1.17') {
           await chrome.storage.local.set({lzxReloadSetup: {...entry, tabId: sender.tab.id,
-            mode: reply.mode || 'pair', profile: reply.profile, version: '1.1.16'}});
+            mode: reply.mode || 'pair', profile: reply.profile, version: '1.1.17'}});
           finish(null, {success: true, updating: true}); chrome.runtime.reload(); return;
         }
         if (action === 'options') {

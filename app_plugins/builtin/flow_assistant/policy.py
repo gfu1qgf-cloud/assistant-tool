@@ -9,6 +9,7 @@ from .routing import cost_key, lane_key, dispatch_rank
 from .credit_policy import balance_ready
 from .connection_status import browser_keys, configured_profiles, browser_status
 from .pricing import fixed_cost
+from .account_policy import hold_reason
 
 FAILURES = {'failed', 'uncertain', 'download_failed', 'archive_failed'}
 ACTIVE = {'queued', 'preparing', 'uploading', 'submitting', 'generating', 'downloading'}
@@ -36,7 +37,7 @@ def estimated_cost(job, observed):
 
 def block_for(client, preferences):
     blocks = preferences.get('browser_blocks', {})
-    return client.get('setup_blocked') or next((blocks[key] for key in sorted(browser_keys(client)) if blocks.get(key)), '')
+    return hold_reason(client, preferences) or client.get('setup_blocked') or next((blocks[key] for key in sorted(browser_keys(client)) if blocks.get(key)), '')
 
 
 def capable(client, job, preferences, cost=None):

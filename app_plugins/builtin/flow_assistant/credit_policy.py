@@ -24,3 +24,9 @@ def debit_balance(client, clients, cost):
     for current in clients:
         if str(current.get('account') or '').casefold() == str(client.get('account') or '').casefold():
             current.update(credits=balance, credits_local=True, credits_estimated=True)
+
+
+def credit_order(client):
+    """Spend small funded accounts first; preserve 1000+ balances for last."""
+    credits = client['credits']
+    return (0 if credits < 100 else 1 if credits < 1000 else 2, credits)

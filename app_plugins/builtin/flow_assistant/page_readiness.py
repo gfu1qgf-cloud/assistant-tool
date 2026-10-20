@@ -4,6 +4,7 @@ import time
 
 from .connection_status import browser_keys
 from .setup_support import EXTENSION_VERSION, project_identity, compatible_extension
+from .account_policy import account_hold
 
 
 def missing_window(error):
@@ -103,7 +104,7 @@ def watch_preparation(service):
 
 def retry_initial_credits(service, client):
     page_available = client.get('page_loaded') if client.get('credits_waiting_account') else client.get('page_ready')
-    if (not client.get('authorized') or not page_available
+    if (not client.get('authorized') or not page_available or account_hold(client, service.preferences)
             or not client.get('credits_waiting_ready') or client.get('credits_ready_failures', 0) >= 3
             or client.get('credits_retry_at', 0) > time.time()
             or any(r['client'] == client['id'] and r['action'] == 'get_points' for r in service.pending.values())):

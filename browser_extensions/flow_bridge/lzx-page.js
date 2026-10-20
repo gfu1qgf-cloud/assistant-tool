@@ -4,6 +4,23 @@
   let handler, getSnapshot, helpers, lastSnapshot = '', lastIdentity = '', confirmedIdentity = '', lastSnapshotAt = 0, preparedProof = null;
   const emit = data => window.postMessage({sender: 'lzx-flow-page', data}, location.origin);
   let attachedAt = 0, stableSince = 0, stablePrompt, stableSettings, stableUrl = '', lastReadiness = '';
+  let lastAccountIssue = '';
+  function accountIssue() {
+    // Inspect explicit site alerts only. Prompts and arbitrary page text can
+    // contain these words without describing the signed-in account.
+    const text = [...document.querySelectorAll('[role="alert"], flow-error-page, flow-account-error')]
+      .filter(live).map(node => node.textContent || '').join(' ').slice(0, 2000);
+    const code = /account\s+(?:(?:has\s+been|is|was)\s+)?(?:disabled|suspended|banned)\b|账号(?:已被|已经|已|被)?(?:停用|封禁|封停)|帳號(?:已遭|已被|已|被)?(?:停用|封鎖)/i.test(text) ? 'FLOW_ACCOUNT_DISABLED' :
+      /please\s+(?:sign|log)\s*in|sign\s*in\s+to\s+continue|authentication\s+required|登录(?:已过期|已失效|失效)|需要登录|请先登录|請先登入/i.test(text) ? 'FLOW_ACCOUNT_SIGNED_OUT' :
+      /captcha|unusual\s+activity|verify\s+your\s+identity|需要验证|验证码|異常活動|异常活动/i.test(text) ? 'FLOW_ACCOUNT_VERIFICATION' : '';
+    if (!code) {lastAccountIssue = ''; return null;}
+    const issue = {code, error: text.slice(0, 700)};
+    if (lastAccountIssue !== code + issue.error) {
+      lastAccountIssue = code + issue.error;
+      emit({type: 'account_issue', url: location.href, ...issue});
+    }
+    return issue;
+  }
   const live = node => node && node.isConnected !== false && !node.disabled &&
     node.getAttribute?.('aria-disabled') !== 'true' && node.getAttribute?.('aria-hidden') !== 'true' &&
     (typeof node.getClientRects !== 'function' || node.getClientRects().length > 0);
@@ -23,6 +40,8 @@
   async function waitForControls() {
     const url = location.href.split('#')[0], until = Date.now() + 45000;
     while (Date.now() < until) {
+      const issue = accountIssue();
+      if (issue) throw Object.assign(new Error(issue.error), {code: issue.code});
       if (location.href.split('#')[0] !== url) break;
       if (readiness().controls_ready) return;
       await new Promise(resolve => setTimeout(resolve, 250));
@@ -264,6 +283,10 @@
     if (!['get_points', 'prepare', 'upload_images', 'run_tasks', 'snapshot', 'retry_download'].includes(message.action)) return;
     try {
       if (message.action === 'snapshot') { snapshot(true); return; }
+      if (['prepare', 'upload_images', 'run_tasks', 'get_points'].includes(message.action)) {
+        const issue = accountIssue();
+        if (issue) throw Object.assign(new Error(issue.error), {code: issue.code});
+      }
       if (message.params?.wait_for_ready && ['prepare', 'upload_images', 'run_tasks'].includes(message.action)) {
         await waitForControls();
       }
@@ -296,5 +319,5 @@
         error: String(error.message || error), code: error.code || ''});
     }
   });
-  setInterval(() => snapshot(), 2000);
+  setInterval(() => {accountIssue(); snapshot();}, 2000);
 })();

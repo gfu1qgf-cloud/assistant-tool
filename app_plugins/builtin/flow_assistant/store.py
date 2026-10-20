@@ -8,8 +8,8 @@ import re
 import time
 import uuid
 from .routing import dispatch_rank
-from .credit_policy import balance_ready
-from .policy import signature, capable
+from .credit_policy import balance_ready, credit_order
+from .policy import signature, capable, block_for
 from .transfer_policy import retry_info, ready_bindings
 
 IMAGE_SUFFIXES = {'.png', '.jpg', '.jpeg', '.webp', '.bmp'}
@@ -267,7 +267,12 @@ class QueueStore:
         for row in self.rows():
             upload = retry_info(row, 'upload')
             charged = row['attempt'] in charged_attempts
-            if row['status'] == 'uploading' and upload and not charged:
+            evidence = any(row['remote'].get(key) for key in ('bindings', 'upstream_task',
+                'generation_response', 'download', 'unverified_download', 'page_recovery', 'cloud_finished'))
+            if row['status'] in {'preparing', 'uploading'} and not charged and not evidence and not upload:
+                self.update(row['id'], 'queued', attempt='', browser='', remote={},
+                    error='程序曾在提交生成前中断，等待继续后重新核对参数。')
+            elif row['status'] == 'uploading' and upload and not charged and not evidence:
                 info = {**upload, 'active': False, 'next_at': time.time(), 'waiting': '等待继续队列后自动恢复上传'}
                 self.update(row['id'], 'uploading', remote={**row['remote'], 'transfer_retries': {
                     **row['remote'].get('transfer_retries', {}), 'upload': info}}, error='程序重启，保留原图片上传进度。')
@@ -308,7 +313,7 @@ class QueueStore:
 
     def retry(self, ids, *, regenerate=False):
         for row in self.rows():
-            if row['id'] not in ids or row['status'] in TERMINAL:
+            if row['id'] not in ids or row['status'] in TERMINAL | TRANSIENT | {'archiving'}:
                 continue
             if (not regenerate and row['status'] == 'uncertain'
                     and row['error'].strip() == '插件队列正在运行，请先停止'
@@ -319,6 +324,13 @@ class QueueStore:
             elif row['remote'].get('bindings') and not regenerate:
                 self.update(row['id'], 'download_failed', error='保留已有媒体，只重试下载。')
             elif row['status'] == 'failed' or regenerate:
+                if not regenerate:
+                    with self.connection() as db:
+                        charged = db.execute('SELECT 1 FROM charges WHERE attempt=?', (row['attempt'],)).fetchone()
+                    if charged or any(row['remote'].get(key) for key in ('generation_response',
+                            'upstream_task', 'unverified_download', 'page_recovery', 'cloud_finished')):
+                        self.update(row['id'], 'uncertain', error='原记录已有提交／结果证据，保留核对；普通重试不会再次生成。')
+                        continue
                 self.update(row['id'], 'queued', attempt='', browser='', remote={})
 
 
@@ -327,19 +339,22 @@ def choose_client(clients, rows, limit, job=None, preferences=None, cost=None):
     if len(active) >= limit:
         return None
     held = active + [r for r in rows if r['status'] in {'uncertain', 'download_failed'}]
-    busy_accounts = {row['remote'].get('account') for row in held} | {
-        client.get('account') for client in clients if client.get('batch_running')}
+    account = lambda value: str(value or '').strip().casefold()
+    busy_accounts = {account(row['remote'].get('account')) for row in held} | {
+        account(client.get('account')) for client in clients if client.get('batch_running') or
+        (client.get('credit_check') or {}).get('hold_dispatch')}
     busy_browsers = {row['browser'] for row in held}
     eligible = [client for client in clients if client.get('account') and client.get('credits') is not None
                 and balance_ready(client) and not client.get('blocked') and not client.get('batch_running')
-                and client['id'] not in busy_browsers and client['account'] not in busy_accounts]
+                and not block_for(client, preferences or {})
+                and client['id'] not in busy_browsers and account(client['account']) not in busy_accounts]
     if job is None:
-        return max(eligible, key=lambda c: c['credits'], default=None)
+        return min(eligible, key=credit_order, default=None)
     preferences = preferences or {}
     ranked = [(dispatch_rank(client, job, preferences), client) for client in eligible if capable(client, job, preferences, cost)]
     ranked = [(rank, client) for rank, client in ranked if rank is not None
               and (cost is None or client['credits'] >= cost)]
-    # Prefer a matching lane, then use the smallest sufficient balance when
-    # this exact parameter combination has a freshly observed page cost.
-    ranked.sort(key=lambda item: (item[0], item[1]['credits'] if cost is not None else -item[1]['credits']))
+    # Manual lanes still filter eligibility; automatic lanes must not make a
+    # rich account outrank a smaller funded account that can perform this job.
+    ranked.sort(key=lambda item: (*credit_order(item[1]), item[0]))
     return ranked[0][1] if ranked else None

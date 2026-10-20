@@ -24,7 +24,7 @@ def merge_snapshot_bindings(remote, bindings):
         return bindings
     if not incoming:
         return remote['bindings']
-    identity = lambda b: (b['taskId'], b['submissionId'], tuple(sorted(b['mediaIds'])))
+    identity = lambda b: (b['taskId'], b['submissionId'])
     saved = {identity(binding): binding for binding in previous}
     merged = []
     for binding in bindings:
@@ -32,10 +32,11 @@ def merge_snapshot_bindings(remote, bindings):
             merged.append(binding)
             continue
         old = saved[identity(binding)]
+        media_ids = binding['mediaIds'] or old['mediaIds']
         urls = dict(old.get('urls') or {})
         urls.update({media: url for media, url in (binding.get('urls') or {}).items()
-                     if media in binding['mediaIds'] and isinstance(url, str) and url.startswith('https:')})
-        merged.append({**old, **binding, 'urls': urls,
+                     if media in media_ids and isinstance(url, str) and url.startswith('https:')})
+        merged.append({**old, **binding, 'mediaIds': media_ids, 'urls': urls,
                        'readyIds': list(dict.fromkeys(old['readyIds'] + binding['readyIds']))})
     return merged
 

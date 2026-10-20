@@ -8,7 +8,7 @@ import shutil
 ROOT = Path(__file__).resolve().parents[1]
 PIN = 'e4e8f34ea6a0e0d7d9e0e87bbf7218e66d315ec2'
 UPSTREAM_VERSION = '1.1.4'
-BRIDGE_VERSION = '1.1.16'
+BRIDGE_VERSION = '1.1.17'
 KEY = 'MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAnvFDGkX5m/XE6cRqK89rmU6CkCtcOue7G3zgttpk45gF21Y9SQi4L6IvLh4SgLIPcU3Gm5MsXjB4UqmC03ssHqI9Q5SG4TqkGpS+LunJanIVy9Q7ak3IevqA1A3QgA28iAbMHsX9a8sEL/qhi13afdr7n42eF6A4XzJs3+9An6pjzAPNjK4AJLF7PytIzY9YxJ4eg7ANPQUPVTC233hvW5OGMXOxdo4QX1/qGe1npm6E8wwnGfp85NkRPLohy9t1cfJreXcqfswkRa1QlyeKsCfTIKQX2vclCDavsoddro3w98YS4SRb4Tz8NRnbJITsOoPqCbMtXyaWP2QIyy/S6QIDAQAB'
 HASHES = {
     'background.js': '756e503f5612b4f1218ea5b7f87ee7a3b17fdcd36009058d7442867df5b87139',
@@ -60,6 +60,8 @@ def build(root=ROOT):
         'patches': [
             'page transport seam; fresh upstream account/credits readers',
             'strict selected model checks; single paid submission attempt',
+            'explicit account alerts and login redirects; durable accepted/rejected batch receipts',
+            'startup reconciliation of missed terminal downloads and durable receipt acknowledgement',
             'live settings panel reacquisition and bounded selected-control stability wait',
             'durable download notification and exact saved-binding download-only retry',
             'per-profile project setup; desktop-owned navigation and no extra blank tabs',

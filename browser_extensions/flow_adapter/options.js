@@ -1,7 +1,7 @@
 const byId = id => document.getElementById(id);
 const extensionId = 'pnjppjjfgiccpcfajkpooklgohgihdom';
 let editing = false, setupGeneration = 0, setupSocket = null;
-const expectedVersion = '1.1.16';
+const expectedVersion = '1.1.17';
 function projectLink(value) {
   try {
     const url = new URL(String(value || '').trim());

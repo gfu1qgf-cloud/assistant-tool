@@ -3,6 +3,7 @@ import time
 
 from .setup_support import project_identity, project_block
 from .credit_policy import balance_ready
+from .account_policy import hold_reason
 
 
 def browser_keys(client):
@@ -22,6 +23,9 @@ def browser_status(client, preferences, jobs=(), now=None):
     saved = preferences.get('profile_projects', {}).get(client.get('profile')) or client.get('saved_project')
     project = '页面已响应' if online and client.get('page_ready') else ('地址已保存' if project_identity(saved) else '未设置地址')
     if not online:
+        isolated = hold_reason(client, preferences)
+        if isolated:
+            return {'connection': '未连接', 'project': project, 'state': '账号已隔离', 'reason': isolated, 'color': '#b03728'}
         return {'connection': '未连接', 'project': project, 'state': '待连接' if project_identity(saved) else '待配置',
                 'reason': '等待打开此配置并连接扩展' if project_identity(saved) else '请先添加这个配置自己的 Flow 项目地址', 'color': '#986100'}
     blocks = preferences.get('browser_blocks', {})
@@ -32,13 +36,14 @@ def browser_status(client, preferences, jobs=(), now=None):
     if environment_block == client.get('setup_blocked'):
         environment_block = ''
     project_error = project_block(client, preferences, include_pending=False) if client.get('setup_pending') else ''
-    block = project_error or environment_block or client.get('setup_blocked') or client.get('blocked') or stored_block
+    account_error = hold_reason(client, preferences)
+    block = account_error or project_error or environment_block or client.get('setup_blocked') or client.get('blocked') or stored_block
     if (client.get('setup_pending') and not project_error and not environment_block
             and not client.get('blocked') and not stored_block):
         return {'connection': '已连接', 'project': project, 'state': '自动确认中',
                 'reason': str(client.get('setup_blocked') or '正在后台确认本配置，无需手动操作'), 'color': '#986100'}
     if block:
-        return {'connection': '已连接', 'project': project, 'state': '需处理', 'reason': str(block), 'color': '#b03728'}
+        return {'connection': '已连接', 'project': project, 'state': '账号已隔离' if account_error else '需处理', 'reason': str(block), 'color': '#b03728'}
     active = next((row for row in jobs if row.get('status') in
         {'preparing', 'uploading', 'submitting', 'generating', 'downloading', 'uncertain', 'download_failed'}
         and (row.get('browser') == client['id'] or client.get('account') and

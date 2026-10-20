@@ -44,6 +44,22 @@ const crypto = require('node:crypto');
   await Promise.all([api.receive(request), api.receive({...request, request_id: 'two'})]);
   assert.equal(forwarded.filter(item => item.value.message.action === 'run_tasks').length, 1,
     'replayed batch must never generate twice');
+  assert.equal(sent.find(message => message.request_id === 'two').success, false,
+    'a durable send claim is not proof that the webpage accepted the task');
+  hooks.message({action:'lzxPageEvent',data:{action:'run_tasks_response',request_id:'one',success:true}},
+    {tab:{id:7},frameId:0});
+  await new Promise(resolve => setImmediate(resolve));
+  await api.receive({...request,request_id:'accepted-replay'});
+  assert.equal(sent.find(message => message.request_id === 'accepted-replay').success,true);
+  const refused = {...request,request_id:'refused',params:{...request.params,batch_id:'f'.repeat(32)}};
+  await api.receive(refused);
+  hooks.message({action:'lzxPageEvent',data:{action:'run_tasks_response',request_id:'refused',success:false,
+    error:'插件队列正在运行，请先停止'}},{tab:{id:7},frameId:0});
+  await new Promise(resolve => setImmediate(resolve));
+  await api.receive({...refused,request_id:'refused-replay'});
+  assert.equal(sent.find(message => message.request_id === 'refused-replay').success,false);
+  assert.equal(sent.find(message => message.request_id === 'refused-replay').error,'插件队列正在运行，请先停止');
+  assert.equal(forwarded.filter(item => item.value.message.action === 'run_tasks').length,2);
   await api.receive({action: 'retry_download', request_id: 'old', params: {batch_id: 'b'.repeat(32)}});
   assert.equal(sent.find(message => message.request_id === 'old').success, false);
   const task = {download_path: `FlowBridge/${'a'.repeat(32)}/result.mp4`, taskId: 'upstream-task', submissionId: 'submission', mediaId: 'media'};
@@ -64,7 +80,7 @@ const crypto = require('node:crypto');
   const rejected = {...request, request_id: 'failed-claim', params: {...request.params, batch_id: 'c'.repeat(32)}};
   await api.receive(rejected);
   assert.equal(sent.find(message => message.request_id === 'failed-claim').success, false);
-  assert.equal(forwarded.filter(item => item.value.message.action === 'run_tasks').length, 1,
+  assert.equal(forwarded.filter(item => item.value.message.action === 'run_tasks').length, 2,
     'a failed batch claim must not forward a paid command');
   assert(!data.lzxBatches['c'.repeat(32)]);
   chrome.storage.local.set = async values => {
@@ -76,6 +92,15 @@ const crypto = require('node:crypto');
   chrome.storage.local.set = saveLocal;
   await context.__lzxDownloadBound(6, task);
   assert(data.lzxDownloads[6], 'a failed write must not poison the next serialized operation');
+  data.lzxDownloads[9] = {...data.lzxDownloads[6]};
+  delete data.lzxDownloads[9].reported;
+  await api.receive({type:'welcome'});
+  const missed = sent.filter(message => message.type === 'download' && message.data.downloadId === 9);
+  assert.equal(missed.length,1,'welcome must reconcile a completed download whose notification was lost');
+  await api.receive({type:'ack',event_id:missed[0].event_id});
+  await api.receive({type:'welcome'});
+  assert.equal(sent.filter(message => message.type === 'download' && message.data.downloadId === 9).length,1,
+    'acknowledged completed downloads must not be emitted on every reconnection');
   const actualPageBatch = 'd'.repeat(32);
   hooks.message({action: 'lzxPageEvent', data: {type: 'snapshot', data: {running: true, tasks: [
     {download_path: `FlowBridge/${actualPageBatch}/result.mp4`}]}}}, {tab: {id: 7}, frameId: 0});

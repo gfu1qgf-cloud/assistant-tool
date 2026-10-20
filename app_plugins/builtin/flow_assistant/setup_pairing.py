@@ -66,6 +66,9 @@ def claim_setup(service, client, message):
         service.send(client, {'type': 'setup_error', 'error': '这是原配置的扩展更新入口，无需重新配对；请等待后台重连。'})
         return False
     ids = {c.get('id') for c in service.clients.values() if c.get('profile') == profile}
+    if any(c.get('profile') == profile and c.get('batch_running') for c in service.clients.values()):
+        service.send(client, {'type': 'setup_error', 'error': '网页队列仍在收尾，空闲后再更换连接。'})
+        return False
     if any(row['status'] in TRANSIENT | {'archiving', 'uncertain', 'download_failed'} and
            (row['browser'] in ids or row['remote'].get('profile') == profile) for row in service.store.rows()):
         service.send(client, {'type': 'setup_error', 'error': '此浏览器仍有未完成任务，暂不更换连接。'})
@@ -88,6 +91,9 @@ def check_reload(service, client, message):
     profile, setup = match
     ids = {c.get('id') for c in service.clients.values() if c.get('profile') == profile}
     blocked_states = TRANSIENT | {'archiving', 'uncertain'}
+    if any(c.get('profile') == profile and c.get('batch_running') for c in service.clients.values()):
+        service.send(client, {'type': 'setup_reload_denied', 'error': '网页队列仍在收尾，本次不重载扩展。'})
+        return False
     if any((row['status'] in blocked_states or row['status'] == 'download_failed'
             and (setup.get('mode') != 'reload_only' or not row['remote'].get('cloud_finished'))) and
            (row['browser'] in ids or row['remote'].get('profile') == profile) for row in service.store.rows()):

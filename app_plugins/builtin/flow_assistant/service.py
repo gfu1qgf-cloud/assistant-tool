@@ -14,7 +14,7 @@ from PyQt6.QtWebSockets import QWebSocketServer
 from .archive import archive_download
 from .store import QueueStore, TRANSIENT, choose_client, fingerprint, make_jobs
 from .routing import cost_key, lane_for, lane_key, dispatch_rank, automatic_lane, normalize_lane
-from .credit_policy import debit_balance
+from .credit_policy import debit_balance, credit_order
 from .media_identity import owns_download, generated_bindings, merge_snapshot_bindings
 from .operations import FlowOperations
 from .policy import capable, block_for, estimated_cost, batch_wait, waiting_reason
@@ -24,6 +24,7 @@ from .pricing import fixed_cost
 from .transfer_policy import retry_info, retry_detail, ready_bindings
 from .setup_pairing import confirm_saved_connection
 from .page_readiness import defer_prepare, watch_preparation, recover_window_block, recover_preparation_block, retry_initial_credits, missing_window
+from .account_policy import mark_account, reset_accounts, account_hold, park_unsubmitted_job
 
 DEFAULT_PORT = 18189
 PROTOCOL = 1
@@ -170,9 +171,6 @@ class FlowService(QtCore.QObject, FlowOperations):
                 browser_id = str(message.get('browser_id') or '')
                 if not browser_id or len(browser_id) > 100:
                     raise ValueError('浏览器标识无效')
-                for other, info in list(self.clients.items()):
-                    if other is not socket and info.get('id') == browser_id:
-                        other.close()
                 client.update(authorized=True, id=browser_id, profile=str(message.get('profile') or '')[:100],
                               project=message.get('project') or '', saved_project=message.get('project') or '',
                               extension_version=str(message.get('extension_version') or '')[:30],
@@ -180,6 +178,12 @@ class FlowService(QtCore.QObject, FlowOperations):
                               capabilities=[c for c in message.get('capabilities', []) if isinstance(c, str)][:20],
                               page_ready=False, page_at=0, page_error='',
                               account='', credits=None, credits_at=0, blocked='')
+                # Register the replacement first: close() may synchronously
+                # deliver the old socket's disconnect signal.
+                for other, info in list(self.clients.items()):
+                    if other is not socket and info.get('id') == browser_id:
+                        info['authorized'] = False
+                        other.close()
                 setup_request = self.setup_requests.get(client['profile'], {})
                 expected_setup = setup_request.get('id') if setup_request.get('mode') != 'reload_only' else None
                 if setup_request.get('mode') == 'reload_only' and client['extension_version'] == EXTENSION_VERSION:
@@ -197,7 +201,8 @@ class FlowService(QtCore.QObject, FlowOperations):
                 client['setup_blocked'] = project_block(client, self.preferences)
                 self.launching.pop(client['profile'], None)
                 self.send(client, {'type': 'welcome', 'protocol': PROTOCOL})
-                self.request(client, 'get_points')
+                if not account_hold(client, self.preferences):
+                    self.request(client, 'get_points')
                 self.request(client, 'snapshot')
                 self.recover_extension_downloads(client)
                 self.publish()
@@ -231,6 +236,10 @@ class FlowService(QtCore.QObject, FlowOperations):
                 self.paused = self.safety_paused = True
                 self.released.clear()
                 client['blocked'] = 'Flow 网站提示安全限制，后续提交已暂停；保留当前生成页面，不自动刷新。'
+            elif message.get('type') == 'account_issue':
+                if (project_identity(client.get('saved_project')) and
+                        project_identity(message.get('url')) == project_identity(client.get('saved_project'))):
+                    mark_account(self, client, message.get('error', ''), message.get('code', ''))
             elif message.get('type') in {'hosted_task_status', 'hosted_batch_finished'}:
                 self._status(client, message)
             else:
@@ -240,12 +249,20 @@ class FlowService(QtCore.QObject, FlowOperations):
             self.failed.emit('Flow 消息处理失败：' + str(error))
 
     def _response(self, client, message):
-        request = self.pending.pop(str(message.get('request_id')), None)
+        request_id = str(message.get('request_id'))
+        request = self.pending.get(request_id)
         if not request or request['client'] != client['id']:
             return
+        self.pending.pop(request_id)
         action, job_id = request['action'], request['job']
         data = message.get('data') or {}
         if action == 'get_points':
+            if request['at'] < client.get('account_reset_at', 0):
+                self.request(client, 'get_points')
+                client['credit_check']['hold_dispatch'] = True
+                return
+            if not message.get('success', True):
+                mark_account(self, client, message.get('error', ''), message.get('code', ''))
             client['credit_check'] = {'state': 'failed', 'at': time.time(),
                 'message': str(message.get('error') or ('尚未确认当前账号邮箱' if not data.get('email') else '页面未返回有效积分'))[:500]}
             if message.get('code') == 'FLOW_ACCOUNT_NOT_READY' or (message.get('success') and not data.get('email')):
@@ -260,6 +277,11 @@ class FlowService(QtCore.QObject, FlowOperations):
                 client.update(page_ready=False, credits_waiting_ready=True, credits_waiting_account=False,
                     credits_ready_failures=client.get('credits_ready_failures', 0)+1,
                     page_error='页面尚未稳定，控件就绪后自动重试本次首次积分读取')
+                return
+            if not message.get('success', True):
+                client.update(credits=None, credits_local=False, credits_waiting_ready=False,
+                    credits_waiting_account=False, credits_retry_at=0,
+                    page_error=str(message.get('error') or '账号和积分读取失败')[:500])
                 return
             client['credits_waiting_ready'] = False
             client['credits_waiting_account'] = False
@@ -297,7 +319,16 @@ class FlowService(QtCore.QObject, FlowOperations):
             return
         if action == 'prepare' and row['status'] != 'preparing':
             return
+        if action == 'upload_images' and row['status'] != 'uploading':
+            return
+        if action == 'run_tasks' and (row['status'] not in {'submitting', 'generating', 'uncertain'}
+                or row['remote'].get('page_recovery') or row['remote'].get('watch_attention')):
+            return
         if not message.get('success'):
+            isolated = mark_account(self, client, message.get('error', ''), message.get('code', ''))
+            if isolated and action in {'prepare', 'upload_images'}:
+                park_unsubmitted_job(self, row)
+                return
             if action == 'refresh_project':
                 recovery = {**row['remote'].get('page_recovery', {}), 'done': True, 'next_at': 0}
                 self.store.update(job_id, 'uncertain', remote={**row['remote'], 'page_recovery': recovery},
@@ -316,6 +347,9 @@ class FlowService(QtCore.QObject, FlowOperations):
                 return
             status = 'uncertain' if action == 'run_tasks' else 'download_failed' if action == 'retry_download' else 'failed'
             self.store.update(job_id, status, error=str(message.get('error') or '浏览器操作未完成')[:1000])
+            return
+        if action in {'prepare', 'upload_images'} and account_hold(client, self.preferences):
+            park_unsubmitted_job(self, row)
             return
         if action == 'prepare':
             cost, budget = data.get('cost'), row['payload']['budget']
@@ -440,9 +474,12 @@ class FlowService(QtCore.QObject, FlowOperations):
         bindings = task.get('mediaBindings') or []
         previous = generated_bindings(row['remote'])
         incoming = generated_bindings({'bindings': bindings})
-        identity = lambda b: (b['taskId'], b['submissionId'], tuple(sorted(b['mediaIds'])))
+        identity = lambda b: (b['taskId'], b['submissionId'])
+        previous_ids = {identity(b): set(b['mediaIds']) for b in previous}
         if (row['remote'].get('upstream_task') and task['taskId'] != row['remote']['upstream_task'] or
-                previous and incoming and {identity(b) for b in previous} != {identity(b) for b in incoming}):
+                previous and incoming and ({identity(b) for b in previous} != {identity(b) for b in incoming}
+                    or any(previous_ids.get(identity(b)) and b['mediaIds'] and
+                           previous_ids[identity(b)] != set(b['mediaIds']) for b in incoming))):
             self.store.update(row['id'], 'uncertain', error='原任务的媒体归属发生变化，已停止接收替代结果；保留原绑定，不会重新生成。')
             return
         bindings = merge_snapshot_bindings(row['remote'], bindings)
@@ -528,13 +565,15 @@ class FlowService(QtCore.QObject, FlowOperations):
 
     def _status(self, client, message):
         row = next((r for r in self.store.rows() if r['attempt'] == message.get('batch_id') and r['browser'] == client['id']), None)
-        if not row or row['status'] in {'completed', 'archiving', 'archive_failed', 'download_parked', 'needs_review'}:
+        if not row or row['status'] in {'completed', 'cancelled', 'archiving', 'archive_failed', 'download_parked', 'needs_review'}:
             return
         if row['status'] == 'downloading' and retry_info(row, 'download').get('active'):
             return
         if message.get('status') == 'failed' or (message.get('type') == 'hosted_batch_finished' and any(r.get('status') == 'failed' for r in message.get('results', []))):
             text = str(message.get('message') or next((r.get('message') for r in message.get('results', []) if r.get('message')), '生成未完成'))
-            if any(word in text.casefold() for word in ('captcha', 'unusual', '验证码', '异常活动', 'risk', '风控')):
+            mark_account(self, client, text, message.get('code', ''))
+            if (account_hold(client, self.preferences).get('kind') not in {'disabled', 'manual'} and
+                    any(word in text.casefold() for word in ('captcha', 'unusual', '验证码', '异常活动', 'risk', '风控'))):
                 client['blocked'], self.paused = '需要网站验证', True
                 self.released.clear()
                 self.safety_paused = True
@@ -556,14 +595,19 @@ class FlowService(QtCore.QObject, FlowOperations):
         self.archiving.add(job_id)
         self.store.update(job_id, 'archiving')
         from .archive import archive_package
-        future = self.pool.submit(archive_package, row, self.downloads_root,
-                                  cleanup=self.preferences.get('cleanup_downloads', False))
+        try:
+            future = self.pool.submit(archive_package, row, self.downloads_root,
+                                      cleanup=self.preferences.get('cleanup_downloads', False))
+        except Exception as error:
+            self.archiving.discard(job_id)
+            self.store.update(job_id, 'archive_failed', error='归档工作线程未能启动：' + str(error))
+            return
         def completed(result):
             try:
                 package = result.result()
-                value = {'id': job_id, **package}
+                value = {'id': job_id, 'attempt': row['attempt'], **package}
             except Exception as error:
-                value = {'id': job_id, 'error': str(error)}
+                value = {'id': job_id, 'attempt': row['attempt'], 'error': str(error)}
             self.archive_result.emit(value)
         future.add_done_callback(completed)
 
@@ -572,6 +616,9 @@ class FlowService(QtCore.QObject, FlowOperations):
         self.archiving.discard(result['id'])
         row = self.store.get(result['id'])
         if not row:
+            if not self.closing: self.publish()
+            return
+        if result.get('attempt', row['attempt']) != row['attempt']:
             if not self.closing: self.publish()
             return
         if result.get('cleanup_only'):
@@ -657,7 +704,7 @@ class FlowService(QtCore.QObject, FlowOperations):
                     c.get('profile') == profile and not c.get('setup_pending') and
                     project_identity(c.get('saved_project')) == project_identity(project)), None)
                 if existing and not compatible_extension(existing.get('extension_version')):
-                    if any((r['status'] in TRANSIENT | {'archiving', 'uncertain'} or
+                    if existing.get('batch_running') or any((r['status'] in TRANSIENT | {'archiving', 'uncertain'} or
                             r['status'] == 'download_failed' and not r['remote'].get('cloud_finished')) and
                            (r['browser'] == existing['id'] or r['remote'].get('profile') == profile) for r in self.store.rows()):
                         raise ValueError('此配置仍在生成／传输或结果未确认，暂不更新扩展和刷新页面；原任务保持不动。')
@@ -690,6 +737,8 @@ class FlowService(QtCore.QObject, FlowOperations):
                     self.publish()
                     return
                 client_ids = {c.get('id') for c in self.clients.values() if c.get('profile') == profile}
+                if any(c.get('profile') == profile and c.get('batch_running') for c in self.clients.values()):
+                    raise ValueError('网页队列仍在收尾，空闲后再更换连接。')
                 if any(row['status'] in TRANSIENT | {'archiving', 'uncertain', 'download_failed'} and
                        (row['browser'] in client_ids or row['remote'].get('profile') == profile) for row in self.store.rows()):
                     raise ValueError('这个浏览器仍在执行生成／下载，当前不能重新设置连接，请等它完成。')
@@ -720,14 +769,27 @@ class FlowService(QtCore.QObject, FlowOperations):
             elif action == 'preferences':
                 self.commit_preferences({**self.preferences, **command['value']})
                 self.downloads_root = self.preferences.get('downloads_root') or self.downloads_root
+            elif action == 'reset_account_state':
+                reset_accounts(self, command.get('keys', []))
+            elif action == 'mark_account_unavailable':
+                keys = set(command.get('keys', []))
+                if not keys: raise ValueError('请先选择需要停用的账号。')
+                selected = [c for c in self.clients.values() if browser_keys(c) & keys]
+                for key in keys:
+                    if key.startswith('profile:') and not any('profile:' + c.get('profile', '') == key for c in selected):
+                        selected.append({'profile': key[len('profile:'):], 'id': ''})
+                for client in selected:
+                    mark_account(self, client, '用户手动标记账号不可用', manual=True)
             elif action == 'credits':
                 keys = set(command.get('keys') or [])
                 selected = [client for client in self.clients.values() if client['authorized']
                             and ('keys' not in command or browser_keys(client) & keys)]
                 if command.get('manual') and not selected:
                     raise ValueError('选中的浏览器未连接，请先连接该配置后再检测积分。')
-                rows = self.store.rows() if command.get('manual') else []
+                rows = self.store.rows()
                 for client in selected:
+                    if command.get('manual'):
+                        client['credits_ready_failures'] = 0
                     busy = client.get('batch_running') or any((row['status'] in TRANSIENT or row['status'] == 'uncertain'
                                 and not row['remote'].get('cloud_finished'))
                                and (row['browser'] == client['id'] or
@@ -883,9 +945,11 @@ class FlowService(QtCore.QObject, FlowOperations):
                 selected = choose_client(clients, rows, limit, candidate['payload'], self.preferences,
                                          estimated_cost(candidate['payload'], self.observed_costs))
                 if selected:
-                    matches.append((dispatch_rank(selected, candidate['payload'], self.preferences), index, candidate, selected))
+                    rank = (-candidate['payload'].get('priority', 0), *credit_order(selected),
+                            dispatch_rank(selected, candidate['payload'], self.preferences), index)
+                    matches.append((rank, candidate, selected))
             if matches:
-                _rank, _index, queued, client = min(matches, key=lambda item: item[:2])
+                _rank, queued, client = min(matches, key=lambda item: item[0])
             if client:
                 if not self.media_disks_ready(queued):
                     return
@@ -947,6 +1011,8 @@ class FlowService(QtCore.QObject, FlowOperations):
                     'duration_lane': lane_for(client, self.preferences),
                     'environment_block': block_for(client, self.preferences)}
                    for client in self.clients.values() if client['authorized']]
+        for client in clients:
+            client['account_state'] = account_hold(client, self.preferences)
         for row in rows:
             row['wait_reason'] = waiting_reason(row, clients, rows, self.preferences, self.observed_costs, batches,
                 paused=self.paused, released=self.released)

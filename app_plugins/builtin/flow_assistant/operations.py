@@ -269,17 +269,17 @@ class FlowOperations(TransferRecovery):
                     continue
                 def work(current=row):
                     try:
-                        return {'id': current['id'], 'cleanup_only': True,
+                        return {'id': current['id'], 'attempt': current['attempt'], 'cleanup_only': True,
                                 'download_cleaned': cleanup_download(current, self.downloads_root)}
                     except Exception as error:
-                        return {'id': current['id'], 'cleanup_only': True, 'error': str(error)}
+                        return {'id': current['id'], 'attempt': current['attempt'], 'cleanup_only': True, 'error': str(error)}
                 future = self.pool.submit(work)
                 self.archiving.add(row['id'])
-                def completed(result, job_id=row['id']):
+                def completed(result, job_id=row['id'], attempt=row['attempt']):
                     try:
                         value = result.result()
                     except Exception as error:
-                        value = {'id': job_id, 'cleanup_only': True, 'error': str(error) or '清理任务已取消'}
+                        value = {'id': job_id, 'attempt': attempt, 'cleanup_only': True, 'error': str(error) or '清理任务已取消'}
                     self.archive_result.emit(value)
                 future.add_done_callback(completed)
         else:

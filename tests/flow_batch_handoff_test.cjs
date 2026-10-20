@@ -85,7 +85,7 @@ async function pagePreflightTest() {
   const window = {postMessage(value) {events.push(value.data);}, addEventListener(name, fn) {hooks[name] = fn;}};
   window.top = window;
   const context = {window, location: {origin: 'https://labs.google', href: 'https://labs.google/project/test'},
-    document: {documentElement: {}, querySelector: () => null}, MutationObserver: class {observe() {}}, setInterval() {}};
+    document: {documentElement: {}, querySelector: () => null, querySelectorAll: () => []}, MutationObserver: class {observe() {}}, setInterval() {}};
   vm.createContext(context);
   vm.runInContext(read('browser_extensions/flow_adapter/page.js'), context);
   window.__lzxFlowTransport.attach(() => {throw Error('no paid handler allowed');},
