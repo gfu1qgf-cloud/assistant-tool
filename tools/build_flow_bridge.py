@@ -8,7 +8,7 @@ import shutil
 ROOT = Path(__file__).resolve().parents[1]
 PIN = 'e4e8f34ea6a0e0d7d9e0e87bbf7218e66d315ec2'
 UPSTREAM_VERSION = '1.1.4'
-BRIDGE_VERSION = '1.1.20'
+BRIDGE_VERSION = '1.1.21'
 KEY = 'MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAnvFDGkX5m/XE6cRqK89rmU6CkCtcOue7G3zgttpk45gF21Y9SQi4L6IvLh4SgLIPcU3Gm5MsXjB4UqmC03ssHqI9Q5SG4TqkGpS+LunJanIVy9Q7ak3IevqA1A3QgA28iAbMHsX9a8sEL/qhi13afdr7n42eF6A4XzJs3+9An6pjzAPNjK4AJLF7PytIzY9YxJ4eg7ANPQUPVTC233hvW5OGMXOxdo4QX1/qGe1npm6E8wwnGfp85NkRPLohy9t1cfJreXcqfswkRa1QlyeKsCfTIKQX2vclCDavsoddro3w98YS4SRb4Tz8NRnbJITsOoPqCbMtXyaWP2QIyy/S6QIDAQAB'
 HASHES = {
     'background.js': '756e503f5612b4f1218ea5b7f87ee7a3b17fdcd36009058d7442867df5b87139',
@@ -33,6 +33,8 @@ def build(root=ROOT):
     shutil.copytree(source, destination, dirs_exist_ok=True)
     for name, content in {'injects/ui.js': ui, 'injects/flow-proxy.js': proxy, 'background.js': background}.items():
         (destination / name).write_text(content, encoding='utf-8')
+    (destination / 'content-isolated.js').write_text(patches.patch_isolated(
+        (source / 'content-isolated.js').read_text('utf-8')), encoding='utf-8')
     adapter = root / 'browser_extensions/flow_adapter'
     for original, target in {'background.js': 'lzx-background.js', 'page.js': 'lzx-page.js',
                              'content.js': 'lzx-content.js', 'options.js': 'lzx-options.js', 'options.html': 'options.html'}.items():
@@ -41,6 +43,7 @@ def build(root=ROOT):
     manifest.update(name='Flow 视频助手 · 辅助工具桥接', version=BRIDGE_VERSION, minimum_chrome_version='120', key=KEY,
                     options_page='options.html', description=f'基于 FlowCue {UPSTREAM_VERSION} 的辅助工具桥接：任务调度、自动下载与任务目录归档。')
     manifest['permissions'].append('alarms')
+    manifest['permissions'].append('scripting')
     manifest['host_permissions'].append('http://127.0.0.1/*')
     manifest['background']['service_worker'] = 'lzx-background.js'
     for script in manifest['content_scripts']:
@@ -58,6 +61,9 @@ def build(root=ROOT):
         'upstream_version': UPSTREAM_VERSION, 'bridge_version': BRIDGE_VERSION, 'protocol': 1,
         'patch_module': 'tools/flow_bridge_patches.py',
         'patches': [
+            'creation RPC frame isolation and single output identity; no main-batch DOM/thumbnail adoption of historical videos',
+            'document-pinned missing-script bootstrap with idempotent page/native controllers and no paid replay',
+            'durable exact-media terminal-failure receipts and bounded re-generation after a fresh balance check',
             'page transport seam; fresh upstream account/credits readers',
             'strict selected model checks; single paid submission attempt',
             'explicit account alerts and login redirects; durable accepted/rejected batch receipts',

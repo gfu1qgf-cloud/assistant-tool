@@ -11,7 +11,7 @@
     if (JSON.stringify(next) === JSON.stringify(timingValues)) return;
     timingValues = next;
     if (statusTimer) globalThis.clearInterval?.(statusTimer);
-    statusTimer = setInterval(() => {accountIssue(); snapshot();}, timingMs('page_poll_seconds',2));
+    statusTimer = setInterval(() => {accountIssue(); checkFailedCards(); snapshot();}, timingMs('page_poll_seconds',2));
   }
   const emit = data => window.postMessage({sender: 'lzx-flow-page', data}, location.origin);
   let attachedAt = 0, stableSince = 0, stablePrompt, stableSettings, stableUrl = '', lastReadiness = '';
@@ -277,6 +277,34 @@
     return values.size === 1 ? [...values][0] : null;
   }
   const pendingResponses = new Map(); // RAM only; never write response bodies to Chrome storage.
+  function generationFailed(mediaId, source, reason) {
+    if (!['server_status','refund_card'].includes(source)) return;
+    const matches = [];
+    for (const task of getSnapshot?.()?.tasks || []) for (const binding of task.mediaBindings || []) {
+      if (binding?.schema === 2 && binding.source === 'generation_response' && binding.taskId === task.taskId &&
+          binding.submissionId && binding.mediaIds?.length === 1 && binding.mediaIds.includes(mediaId) && !binding.readyIds?.includes(mediaId) &&
+          !binding.failedIds?.includes(mediaId) && /^FlowBridge\/[a-f0-9]{32}\/result\.mp4$/.test(task.download_path || '')) {
+        matches.push({task,binding});
+      }
+    }
+    if (matches.length !== 1) return;
+    const {task,binding} = matches[0];
+    binding.failedIds = [...(binding.failedIds || []),mediaId];
+    const text = String(reason || 'Flow 已确认生成失败，等待自动重试').slice(0,500);
+    helpers?.failed?.(task.taskId,binding.submissionId,text);
+    snapshot(true);
+    emit({type:'generation_failed',taskId:task.taskId,submissionId:binding.submissionId,
+      mediaId,download_path:task.download_path,failure_source:source,error:text});
+  }
+  function checkFailedCards() {
+    for (const tile of document.querySelectorAll('flow-video-tile, flow-grid-tile-container, [data-media-id]')) {
+      const text = tile.textContent || '';
+      if (!/failed to generate|生成失败|生成失敗/i.test(text) || !/refund|退还|退還|退回|退款/i.test(text)) continue;
+      const ids = new Set(['data-media-id','data-tile-id','data-generation-id','data-asset-id','data-id','id'].map(key=>tile.getAttribute?.(key)).filter(Boolean));
+      for (const id of ids) generationFailed(id,'refund_card','Flow 失败卡片明确提示生成失败并退款');
+    }
+  }
+  window.addEventListener('flow-task-media-failed',event=>generationFailed(event.detail?.mediaId,event.detail?.source,event.detail?.reason));
   function snapshot(force = false) {
     if (!getSnapshot) return;
     const state = readiness();
@@ -415,5 +443,5 @@
         ...(error.code === 'FLOW_DURATION_UNSUPPORTED' ? {data: error.data} : {})});
     }
   });
-  statusTimer = setInterval(() => {accountIssue(); snapshot();}, timingMs('page_poll_seconds',2));
+  statusTimer = setInterval(() => {accountIssue(); checkFailedCards(); snapshot();}, timingMs('page_poll_seconds',2));
 })();

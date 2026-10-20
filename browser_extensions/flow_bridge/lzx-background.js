@@ -64,6 +64,39 @@ async function openTab() {
   await chrome.storage.local.set({lzxOwnedTab: ownedTab});
   return ownedTab;
 }
+const pageBootstraps = new Map();
+async function bootstrapProject(expectedTab = null) {
+  if (!projectUrl(config.project) || !chrome.scripting?.executeScript) return {supported:false};
+  const tabId = await ensureTab();
+  if (expectedTab != null && expectedTab !== tabId) return {skipped:true};
+  if (pageBootstraps.has(tabId)) return pageBootstraps.get(tabId);
+  const epoch = connectionEpoch, project = config.project;
+  const work = (async () => {
+    const tab = await chrome.tabs.get(tabId);
+    if (!sameProjectTab(tab, project)) throw Error('项目地址已变化，未补装其他页面。');
+    if (tab.pendingUrl) return {waiting:true};
+    let health;
+    try {health = await chrome.tabs.sendMessage(tabId,{action:'lzxPageHealth'},{frameId:0});} catch {}
+    if (health?.healthy === true) return {healthy:true};
+    const proof = (await chrome.scripting.executeScript({target:{tabId,frameIds:[0]},world:'MAIN',
+      injectImmediately:true,func:()=>({url:location.href,legacy_ui:!!window.__flowAccountBridgeLoaded && !window.__lzxFlowUI})}))[0];
+    if (!proof?.documentId || !sameProjectTab({url:proof.result?.url}, project) || epoch !== connectionEpoch) {
+      throw Error('项目文档已变化，取消旧页面的脚本恢复。');
+    }
+    // Pin every operation to the probed document: a navigation between awaits
+    // must never install a project controller into another page.
+    const target = {tabId,documentIds:[proof.documentId]};
+    if (!health || health.native_bridge === false) await chrome.scripting.executeScript({target,world:'ISOLATED',injectImmediately:true,
+      files:proof.result.legacy_ui ? ['lzx-content.js'] : ['content-isolated.js','lzx-content.js']});
+    if (epoch !== connectionEpoch) throw Error('连接配置已变化，取消脚本恢复。');
+    await chrome.scripting.executeScript({target,world:'MAIN',injectImmediately:true,
+      files:['lzx-page.js','injects/flow-proxy.js','injects/ui.js']});
+    await chrome.scripting.insertCSS({target,files:['injects/ui.css']});
+    return {restored:true};
+  })();
+  pageBootstraps.set(tabId,work);
+  try {return await work;} finally {pageBootstraps.delete(tabId);}
+}
 async function forward(message) {
   const usesPageUi = ['get_points', 'prepare', 'upload_images', 'run_tasks'].includes(message.action);
   const attempts = Math.max(1, Math.ceil(timingMs('bridge_forward_wait_seconds',45) / timingMs('bridge_forward_retry_seconds',1)));
@@ -74,6 +107,7 @@ async function forward(message) {
       const response = await chrome.tabs.sendMessage(tabId, {action: 'lzxCommand', message:{...message,timing:timingValues}}, {frameId: 0});
       if (response?.accepted) return;
     } catch {}
+    if (attempt === 0) {try {await bootstrapProject();} catch {}}
     await new Promise(resolve => setTimeout(resolve, timingMs('bridge_forward_retry_seconds',1)));
   }
   throw Object.assign(new Error('主程序打开的 Flow 项目页尚未就绪，请检查登录／项目页面；扩展没有另外创建标签页。'),
@@ -103,6 +137,7 @@ async function receive(message) {
         if (binding.reported !== 'complete') await reportDownload(Number(id));
       }
     });
+    try {await bootstrapProject();} catch (error) {console.warn('[AssistantFlow] 页面脚本恢复等待：',error.message);}
     return;
   }
   if (message.type === 'timing_settings') {await applyTiming(message.timing); return;}
@@ -277,6 +312,11 @@ async function repairProject(message) {
     try {health = await chrome.tabs.sendMessage(tabId,{action:'lzxPageHealth'},{frameId:0});} catch {}
     if (health?.running === true) throw Object.assign(Error('原网页队列仍在执行，保留原页面。'),{code:'FLOW_PAGE_REPAIR_BUSY'});
     if (health?.healthy === true) return {reloaded:false,healthy:true};
+    if (chrome.scripting?.executeScript) {
+      await bootstrapProject(tabId);
+      try {health = await chrome.tabs.sendMessage(tabId,{action:'lzxPageHealth'},{frameId:0});} catch {}
+      if (health?.healthy === true) return {reloaded:false,healthy:true,restored:true};
+    }
     const saved = await local();
     const entry = saved.lzxBatches?.[activeBatch];
     const downloads = Object.values(saved.lzxDownloads || {}).filter(item=>item.batch===activeBatch);
@@ -445,11 +485,21 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
       String(task.download_path || '').match(/^FlowBridge\/([a-f0-9]{32})\/result\.mp4$/)?.[1]).filter(Boolean));
     event.data = {...event.data, batch_id: batches.size === 1 ? [...batches][0] : ''};
   }
-  if (['generation_response', 'binding_missing'].includes(event.type)) {
+  if (['generation_response', 'binding_missing', 'generation_failed'].includes(event.type)) {
     // Late receipts belong to their saved submission, not a newer active batch.
     const batch = String(event.download_path || '').match(/^FlowBridge\/([a-f0-9]{32})\/result\.mp4$/)?.[1];
     if (!batch) return;
     event.batch_id = batch;
+  }
+  if (event.type === 'generation_failed') {
+    const eventId = `generation-failed:${event.batch_id}:${event.submissionId}:${event.mediaId}`;
+    serialize(async () => {
+      const saved = await local(), outbox = saved.lzxOutbox || {};
+      if (!outbox[eventId]) outbox[eventId] = {...event,event_id:eventId};
+      await chrome.storage.local.set({lzxOutbox:outbox});
+      send(outbox[eventId]);
+    }).catch(error=>console.error('[AssistantFlow] 生成失败通知保存失败：',error.message));
+    return;
   }
   send(event);
 });
@@ -490,6 +540,7 @@ async function restoreSetupTab() {
 }
 chrome.tabs?.onCreated?.addListener(() => resumeReloadSetup().catch(() => {}));
 chrome.tabs?.onUpdated?.addListener((_id, change) => {
+  if (authenticated && (change.status === 'complete' || change.url)) bootstrapProject(_id).catch(() => {});
   if (_id === ownedTab && change.url && authenticated && projectUrl(config.project)) {
     try {
       if (new URL(change.url).hostname === 'accounts.google.com') send({type: 'account_issue',
@@ -561,9 +612,9 @@ async function projectSetupAction(entry, sender) {
         if (reply.type !== 'setup_reload_allowed') return;
         if (reply.ticket !== ticket || !reply.profile || new URL(reply.project).href.replace(/\/$/, '') !== project) throw Error('项目与本次连接请求不匹配。');
         receiving = true; clearTimeout(timer);
-        if (chrome.runtime.getManifest().version !== '1.1.20') {
+        if (chrome.runtime.getManifest().version !== '1.1.21') {
           await chrome.storage.local.set({lzxReloadSetup: {...entry, tabId: sender.tab.id,
-            mode: reply.mode || 'pair', profile: reply.profile, version: '1.1.20'}});
+            mode: reply.mode || 'pair', profile: reply.profile, version: '1.1.21'}});
           finish(null, {success: true, updating: true}); chrome.runtime.reload(); return;
         }
         if (action === 'options') {

@@ -1,5 +1,6 @@
 (() => {
-if (window.top !== window) return;
+if (window.top !== window || window.__lzxFlowNativeBridge) return;
+window.__lzxFlowNativeBridge = true;
 // content-isolated.js - 消息桥梁脚本，运行在 ISOLATED 独立世界
 
 // 向后台 Service Worker 发送消息，带有自动重试机制以解决 Service Worker 唤醒延迟/启动失败问题

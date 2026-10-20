@@ -29,6 +29,9 @@ SPECS = [Spec(*row) for row in (
     ('credit_retry_seconds', '超时与重试', '首次积分读取失败重试间隔', 5, 1, 3600, '秒', '只在页面可用且仍在重试次数内读取；不解除低积分冷却。'),
     ('credit_after_repair_seconds', '超时与重试', '页面修复后读取积分等待', 3, 0, 3600, '秒', '给原页面加载账号菜单的时间。'),
     ('credit_read_attempts', '超时与重试', '首次积分读取尝试上限', 3, 1, 20, '次', '失败仍展示上次成功余额及时间，不能把失败当作余额为零。'),
+    ('generation_retry_attempts', '超时与重试', '明确生成失败后自动重试上限', 2, 0, 10, '次', '0 关闭。仅重试本次媒体已明确失败的任务；超时或结果不明不重新生成。批次预算和账号隔离继续生效。'),
+    ('generation_retry_delays', '超时与重试', '生成失败各次重试等待', (120, 300), 30, 86400, '秒序列', '给网站退款和恢复留出时间，默认先等 2 分钟、再等 5 分钟。每次重新读取实际积分，不预先增加退款。'),
+    ('generation_retry_credit_probe_seconds', '超时与重试', '生成重试前积分重查间隔', 60, 5, 3600, '秒', '只核对可用且空闲的账号；每个浏览器最多使用积分读取尝试上限，不解除低积分冷却。'),
     ('prepare_retry_delays', '超时与重试', '参数准备各次重试等待', (2, 5, 15), .1, 86400, '秒序列', '按浏览器计数；未提交生成时才重试准备。'),
     ('prepare_attempts', '超时与重试', '参数准备自动重试上限', 3, 1, 20, '次', '不适用于结果不明的付费提交。'),
     ('upload_retry_delays', '超时与重试', '图片上传各次重试等待', (5, 15, 30, 60, 120), 1, 86400, '秒序列', '只重试原图片上传；次数仍由连接与设置中的上传重试上限控制。'),
@@ -129,7 +132,7 @@ def request_timeout(preferences, action, client=None):
     key = {'prepare': 'prepare_timeout_seconds', 'upload_images': 'upload_timeout_seconds',
            'retry_download': 'download_timeout_seconds', 'close_exhausted': 'credit_close_timeout_seconds'}.get(action, 'request_timeout_seconds')
     seconds = value(preferences, key)
-    if (client and client.get('extension_version') and client['extension_version'] != '1.1.20'
+    if (client and client.get('extension_version') and client['extension_version'] != '1.1.21'
             and 'timing_settings_v1' not in client.get('capabilities', [])):
         seconds = max(seconds, CATALOG[key].default)
     return seconds

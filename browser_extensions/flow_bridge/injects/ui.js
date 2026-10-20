@@ -3,7 +3,8 @@
 (function() {
   "use strict";
   const console = window.__lzxFlowTransport ? {log() {}, warn: globalThis.console.warn.bind(globalThis.console), error: globalThis.console.error.bind(globalThis.console)} : globalThis.console;
-  if (window.top !== window) return;
+  if (window.top !== window || window.__lzxFlowUI || window.__flowAccountBridgeLoaded) return;
+  window.__lzxFlowUI = true;
 
   console.log("[FlowUI] 界面控制器正在初始化...");
 
@@ -3772,7 +3773,7 @@
 
           let isVideoGenerated = false;
 
-          const boundMediaIds = binding?.mediaIds || [];
+          const boundMediaIds = window.__lzxFlowTransport && binding?.source !== "generation_response" ? [] : (binding?.mediaIds || []);
 
           // 2. 检查是否有已就绪的本任务媒体直链 (来自 flow-proxy RPC 拦截缓存或 DOMWatcher)
           let targetVideoUrl = null;
@@ -3780,7 +3781,7 @@
             const candidateUrl = (binding.urls?.[mId] && isValidFlowVideoUrl(binding.urls[mId]))
               ? binding.urls[mId]
               : discoveredVideoUrlsById.get(mId);
-            if (candidateUrl && isValidFlowVideoUrl(candidateUrl)) {
+            if (candidateUrl && isValidFlowVideoUrl(candidateUrl) && (!window.__lzxFlowTransport || binding.readyIds?.includes(mId))) {
               targetVideoUrl = candidateUrl;
               isVideoGenerated = true;
               if (!binding.readyIds.includes(mId)) binding.readyIds.push(mId);
@@ -3810,7 +3811,7 @@
               const thumbId = mediaIdFromImageThumbnailUrl(imgSrc);
               if (!thumbId) continue;
               const isTargetThumb = (boundMediaIds.length > 0 && boundMediaIds.includes(thumbId)) ||
-                                    (boundMediaIds.length === 0 && !wasVideoSeen(`https://flow-content.google/video/${thumbId}`));
+                                    (!window.__lzxFlowTransport && boundMediaIds.length === 0 && !wasVideoSeen(`https://flow-content.google/video/${thumbId}`));
               if (isTargetThumb) {
                 if (boundMediaIds.length === 0) {
                   console.log(`[Batch] 🎯 从新生成的视频缩略图 <img class="thumbnail"> 识别并绑定任务媒体 ID: ${thumbId}`);
@@ -3819,7 +3820,7 @@
                   await saveState();
                 }
                 const cachedVideoUrl = discoveredVideoUrlsById.get(thumbId);
-                if (cachedVideoUrl && isValidFlowVideoUrl(cachedVideoUrl)) {
+                if (cachedVideoUrl && isValidFlowVideoUrl(cachedVideoUrl) && (!window.__lzxFlowTransport || binding.readyIds?.includes(thumbId))) {
                   console.log(`[Batch] 🎉 从网络缓存直接命中缩略图 (${thumbId}) 对应的完整签名视频直链!`);
                   if (!binding.readyIds.includes(thumbId)) binding.readyIds.push(thumbId);
                   binding.urls = binding.urls || {};
@@ -3863,7 +3864,8 @@
                 if (vidId) discoveredVideoUrlsById.set(vidId, src);
                 const isFlowProjectVideo = /^https:\/\/flow-content\.google\/video\//i.test(src) || /^https:\/\/flow\.google\.com\/asb\//i.test(src);
                 const inVideoTile = typeof v.closest === "function" ? !!(v.closest("flow-video-tile") || (v.closest("flow-grid-tile-container") && !v.closest("flow-image-tile"))) : true;
-                if (vidId && boundMediaIds.length > 0 && boundMediaIds.includes(vidId)) {
+                if (vidId && boundMediaIds.length > 0 && boundMediaIds.includes(vidId) &&
+                    (!window.__lzxFlowTransport || !v.error && (v.readyState >= 1 || v.currentTime > 0))) {
                   console.log(`[Batch] 🎯 DOM 视频匹配到当前任务 boundMediaId=${vidId}: ${src.substring(0, 80)}`);
                   isVideoGenerated = true;
                   targetVideoUrl = src;
@@ -3871,7 +3873,7 @@
                   binding.urls = binding.urls || {};
                   binding.urls[vidId] = src;
                   break;
-                } else if (vidId && (!binding.readyIds || binding.readyIds.length === 0) && !wasVideoSeen(src, v) && isFlowProjectVideo && inVideoTile) {
+                } else if (!window.__lzxFlowTransport && vidId && (!binding.readyIds || binding.readyIds.length === 0) && !wasVideoSeen(src, v) && isFlowProjectVideo && inVideoTile) {
                   console.log(`[Batch] 🎯 DOM 发现提交后新生成的 Flow 视频 (mediaId=${vidId})，自动关联绑定到当前任务: ${src.substring(0, 80)}`);
                   binding.mediaIds = Array.isArray(binding.mediaIds) ? binding.mediaIds : [];
                   if (!binding.mediaIds.includes(vidId)) binding.mediaIds.push(vidId);
@@ -5460,7 +5462,7 @@ ${presetAfter || ""}`.trim();
       return false;
     }
     const { task, binding, rowIndex, lineIndex } = match;
-    if (window.__lzxFlowTransport && binding.source !== "generation_response") return false;
+    if (window.__lzxFlowTransport && (binding.source !== "generation_response" || binding.failedIds?.includes(mediaId))) return false;
     console.log(`[FlowUI] [AutoDownload] 🎯 匹配到任务行: Row=${rowIndex}, Line=${lineIndex}, 关联图片=[${task.image?.displayName || '未命名'}], 目标文件名=${binding.downloadPath}`);
     if (rowIndex !== state.currentIndex || lineIndex !== state.currentLineIndex) {
       console.log(`[FlowUI] [AutoDownload] ℹ️ 提示: 此就绪视频属于任务 Row=${rowIndex}, Line=${lineIndex} (当前队列处理指针为 Row=${state.currentIndex}, Line=${state.currentLineIndex})，继续为该任务行独立执行下载保存，绝不丢弃！`);
@@ -5721,7 +5723,7 @@ ${presetAfter || ""}`.trim();
         }
       }
 
-      if (bound && (videoEl.readyState >= 1 || videoEl.currentTime > 0 || isFlowProjectVideoUrl) && !videoEl.error && inTile) {
+      if (bound && (videoEl.readyState >= 1 || videoEl.currentTime > 0 || !window.__lzxFlowTransport && isFlowProjectVideoUrl) && !videoEl.error && inTile) {
         console.log(`[FlowUI] [DOMWatcher] 视频元素已就绪 (readyState=${videoEl.readyState})，更新 readyId 并启动下载: renderedId=${renderedId}`);
         if (!bound.binding.readyIds.includes(renderedId)) bound.binding.readyIds.push(renderedId);
         if (window.__lzxFlowTransport && bound.task === state.tasks[state.currentIndex]) {
@@ -5879,6 +5881,7 @@ ${presetAfter || ""}`.trim();
           match = { task: activeTask, binding: activeBinding, rowIndex: state.currentIndex, lineIndex: state.currentLineIndex };
         }
       }
+      if (window.__lzxFlowTransport && event.detail?.source === "url_discovery") return;
       if (!match) {
         console.log(`[FlowUI] [media-ready] 已缓存视频直链 (mediaId=${mediaId})，等待对应任务认领`);
         return;
@@ -6727,6 +6730,14 @@ ${presetAfter || ""}`.trim();
         tasks: state.tasks.map(t => ({taskId: t.taskId, download_path: t.download_path,
           status: t.status, mediaBindings: t.mediaBindings, downloadIds: t.downloadIds}))
       }), {prepare: syncPageVideoSettings, initialized: () => bridgeUiReady,
+        failed: (taskId, submissionId, reason) => {
+          const row = state.tasks.findIndex(t => t.taskId === taskId);
+          const line = state.tasks[row]?.mediaBindings?.findIndex(b => b?.submissionId === submissionId);
+          if (row < 0 || line == null || line < 0) return false;
+          updateLineStatus(row, line, "failed", reason);
+          stopBatch();
+          return true;
+        },
         account: async () => {
           cachedEmail = ""; cachedPoints = null; lastProbeAt = 0;
           const points = await probePoints();

@@ -49,6 +49,7 @@ def owns_download(job, download):
                 and binding['taskId'] == download.get('taskId')
                 and binding['taskId'] == job['remote'].get('upstream_task')
                 and download.get('mediaId') in binding.get('mediaIds', [])
+                and download.get('mediaId') not in binding.get('failedIds', [])
                 and download.get('mediaId') in binding.get('readyIds', [])):
             return True
     return False

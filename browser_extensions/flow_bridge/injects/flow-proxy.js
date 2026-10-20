@@ -3,7 +3,8 @@
 (function() {
   "use strict";
   const console = window.__lzxFlowTransport ? {log() {}, warn: globalThis.console.warn.bind(globalThis.console), error: globalThis.console.error.bind(globalThis.console)} : globalThis.console;
-  if (window.top !== window) return;
+  if (window.top !== window || window.__lzxFlowProxy || window.__flowAccountBridgeLoaded) return;
+  window.__lzxFlowProxy = true;
   
   console.log("[FlowProxy] 代理脚本注入成功，正在启动拦截...");
 
@@ -302,7 +303,8 @@
     const frames = readRpcFrames(data);
     let boundInThisResponse = false;
 
-    const submission = frames.find(frame => frame.rpc === "eb1hJf" || (Array.isArray(frame.payload?.[2]) && Array.isArray(frame.payload?.[3])));
+    const submission = frames.find(frame => window.__lzxFlowTransport ? ["eb1hJf", "L2jnw"].includes(frame.rpc) :
+      frame.rpc === "eb1hJf" || (Array.isArray(frame.payload?.[2]) && Array.isArray(frame.payload?.[3])));
     if (submission && isGenerateRequest && activeProcess?.submissionId && (window.__lzxFlowTransport?.matchesSubmission?.(activeProcess) ?? (window.currentProcess === activeProcess))) {
       const groups = submission.payload?.[2];
       const media = submission.payload?.[3];
@@ -337,6 +339,7 @@
         }).map(item => item[0]);
       }
 
+      if (window.__lzxFlowTransport && new Set(ids).size !== 1) ids = [];
       console.log(`[FlowProxy] [${submission.rpc}] 提取到的 mediaIds:`, ids);
       if (ids.length) {
         boundInThisResponse = true;
@@ -414,7 +417,7 @@
             if (mId && !dispatchedIds.has(mId)) {
               dispatchedIds.add(mId);
               console.log(`[FlowProxy] 🎉 从网络响应捕获到完整签名视频直链! mediaId=${mId}, URL=${url.substring(0, 120)}`);
-              window.dispatchEvent(new CustomEvent("flow-task-media-ready", { detail: { mediaId: mId, url } }));
+              window.dispatchEvent(new CustomEvent("flow-task-media-ready", { detail: { mediaId: mId, url, source:"url_discovery" } }));
             }
           }
         } catch (_) {}
@@ -426,7 +429,10 @@
       console.log(`[FlowProxy] responseMediaLists 解析到 ${lists.length} 组数据，展开后共 ${lists.flat().length} 个媒体条目`);
     }
     if (!boundInThisResponse && isGenerateRequest && activeProcess?.submissionId && (window.__lzxFlowTransport?.matchesSubmission?.(activeProcess) ?? (window.currentProcess === activeProcess))) {
-      const ids = lists.flat().map(media => mediaIdOf(media?.name)).filter(Boolean);
+      const createdLists = window.__lzxFlowTransport && frames.length ?
+        frames.filter(frame => ["eb1hJf", "L2jnw"].includes(frame.rpc)).flatMap(frame => responseMediaLists(frame.payload)) : lists;
+      const candidates = [...new Set(createdLists.flat().map(media => mediaIdOf(media?.name)).filter(Boolean))];
+      const ids = window.__lzxFlowTransport && candidates.length !== 1 ? [] : candidates;
       if (ids.length) {
         activeProcess.mediaBound = true;
         console.log(`[FlowProxy] 🚀 [mediaLists] 派发 flow-task-media-bound: submissionId=${activeProcess.submissionId}, mediaIds=`, ids);
@@ -442,6 +448,10 @@
       const mediaId = mediaIdOf(media?.name);
       const status = media?.mediaMetadata?.mediaStatus?.mediaGenerationStatus;
       console.log(`[FlowProxy] 媒体项状态检查: name=${media?.name}, mediaId=${mediaId}, status=${status}`);
+      if (window.__lzxFlowTransport && mediaId && status === "MEDIA_GENERATION_STATUS_FAILED") {
+        window.dispatchEvent(new CustomEvent("flow-task-media-failed", {detail:{mediaId, source:"server_status",
+          reason:String(media.mediaMetadata?.mediaStatus?.error?.message || "Flow 已明确返回视频生成失败").slice(0,500)}}));
+      }
       if (!mediaId || status !== "MEDIA_GENERATION_STATUS_SUCCESSFUL") continue;
       const candidates = extractMediaAssets(JSON.stringify(media)).urls;
       const url = candidates.find(value => {
@@ -456,6 +466,27 @@
   }
 
   function classifyRequest(url, body) {
+    if (window.__lzxFlowTransport) {
+      let parsed;
+      try { parsed = new URL(url, "https://flow.google.com"); } catch (_) { return {generate:false,status:false}; }
+      const rpcIds = new Set((parsed.searchParams.get("rpcids") || "").split(",").filter(Boolean));
+      if (!rpcIds.size) {
+        try {
+          const collect = value => {
+            if (!Array.isArray(value)) return;
+            if (typeof value[0] === "string") { rpcIds.add(value[0]); return; }
+            value.forEach(collect);
+          };
+          collect(JSON.parse(new URLSearchParams(body || "").get("f.req") || "null"));
+        } catch (_) {}
+      }
+      return {
+        generate: /(?:video:batchAsyncGenerateVideo[A-Za-z]*|StreamGenerateContent)(?:$|\/)/.test(parsed.pathname) ||
+          [...rpcIds].some(id => ["eb1hJf", "L2jnw"].includes(id)),
+        status: /batchCheckAsyncVideoGenerationStatus|BatchGetMedia|ListMedia|batchexecute/.test(parsed.pathname) ||
+          [...rpcIds].some(id => ["Iyc41d", "bOKtO", "jwpduf", "as29s", "nzlxg"].includes(id))
+      };
+    }
     let decoded = body || "";
     try { decoded = decodeURIComponent(decoded); } catch (_) {}
     return {

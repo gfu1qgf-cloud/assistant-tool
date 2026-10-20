@@ -16,6 +16,14 @@ TRANSPORT = '''    if (window.__lzxFlowTransport) {
         tasks: state.tasks.map(t => ({taskId: t.taskId, download_path: t.download_path,
           status: t.status, mediaBindings: t.mediaBindings, downloadIds: t.downloadIds}))
       }), {prepare: syncPageVideoSettings, initialized: () => bridgeUiReady,
+        failed: (taskId, submissionId, reason) => {
+          const row = state.tasks.findIndex(t => t.taskId === taskId);
+          const line = state.tasks[row]?.mediaBindings?.findIndex(b => b?.submissionId === submissionId);
+          if (row < 0 || line == null || line < 0) return false;
+          updateLineStatus(row, line, "failed", reason);
+          stopBatch();
+          return true;
+        },
         account: async () => {
           cachedEmail = ""; cachedPoints = null; lastProbeAt = 0;
           const points = await probePoints();
@@ -33,6 +41,9 @@ TRANSPORT = '''    if (window.__lzxFlowTransport) {
 
 def patch_ui(ui):
     ui = exact(ui, '  "use strict";', '  "use strict";\n' + QUIET)
+    ui = exact(ui, '  if (window.top !== window) return;',
+        '  if (window.top !== window || window.__lzxFlowUI || window.__flowAccountBridgeLoaded) return;\n'
+        '  window.__lzxFlowUI = true;')
     ui = exact(ui, '  let state = {', '  let bridgeUiReady = false;\n  let state = {')
     ui = exact(ui, '    if (state.isRunning && !batchPromise) {',
         '    if (!window.__lzxFlowTransport && state.isRunning && !batchPromise) {')
@@ -61,6 +72,25 @@ def patch_ui(ui):
         'if (!match && state.isRunning && cleanUrl && !wasVideoSeen(cleanUrl) && !isStaticShowcaseAsset(cleanUrl)) {',
     ):
         ui = exact(ui, condition, condition.replace('if (', 'if (!window.__lzxFlowTransport && ', 1))
+    ui = exact(ui,
+        '                } else if (vidId && (!binding.readyIds || binding.readyIds.length === 0) && !wasVideoSeen(src, v) && isFlowProjectVideo && inVideoTile) {',
+        '                } else if (!window.__lzxFlowTransport && vidId && (!binding.readyIds || binding.readyIds.length === 0) && !wasVideoSeen(src, v) && isFlowProjectVideo && inVideoTile) {')
+    ui = exact(ui, '          const boundMediaIds = binding?.mediaIds || [];',
+        '          const boundMediaIds = window.__lzxFlowTransport && binding?.source !== "generation_response" ? [] : (binding?.mediaIds || []);')
+    ui = exact(ui, '            if (candidateUrl && isValidFlowVideoUrl(candidateUrl)) {',
+        '            if (candidateUrl && isValidFlowVideoUrl(candidateUrl) && (!window.__lzxFlowTransport || binding.readyIds?.includes(mId))) {')
+    ui = exact(ui, '                if (cachedVideoUrl && isValidFlowVideoUrl(cachedVideoUrl)) {',
+        '                if (cachedVideoUrl && isValidFlowVideoUrl(cachedVideoUrl) && (!window.__lzxFlowTransport || binding.readyIds?.includes(thumbId))) {')
+    ui = exact(ui, '                if (vidId && boundMediaIds.length > 0 && boundMediaIds.includes(vidId)) {',
+        '                if (vidId && boundMediaIds.length > 0 && boundMediaIds.includes(vidId) &&\n'
+        '                    (!window.__lzxFlowTransport || !v.error && (v.readyState >= 1 || v.currentTime > 0))) {')
+    ui = exact(ui, '      if (bound && (videoEl.readyState >= 1 || videoEl.currentTime > 0 || isFlowProjectVideoUrl) && !videoEl.error && inTile) {',
+        '      if (bound && (videoEl.readyState >= 1 || videoEl.currentTime > 0 || !window.__lzxFlowTransport && isFlowProjectVideoUrl) && !videoEl.error && inTile) {')
+    ui = exact(ui, '      if (!match) {\n        console.log(`[FlowUI] [media-ready] 已缓存视频直链',
+        '      if (window.__lzxFlowTransport && event.detail?.source === "url_discovery") return;\n'
+        '      if (!match) {\n        console.log(`[FlowUI] [media-ready] 已缓存视频直链')
+    ui = exact(ui, '                                    (boundMediaIds.length === 0 && !wasVideoSeen(`https://flow-content.google/video/${thumbId}`));',
+        '                                    (!window.__lzxFlowTransport && boundMediaIds.length === 0 && !wasVideoSeen(`https://flow-content.google/video/${thumbId}`));')
     ui = exact(ui, '      const { submissionId, mediaIds, source } = event.detail || {};',
         '      const { submissionId, mediaIds, source } = event.detail || {};\n'
         '      if (window.__lzxFlowTransport && source !== "generation_response") return;')
@@ -111,7 +141,7 @@ def patch_ui(ui):
         '    if (!window.__lzxFlowTransport && !match && state.isRunning) {')
     ui = exact(ui, '    const { task, binding, rowIndex, lineIndex } = match;',
         '    const { task, binding, rowIndex, lineIndex } = match;\n'
-        '    if (window.__lzxFlowTransport && binding.source !== "generation_response") return false;')
+        '    if (window.__lzxFlowTransport && (binding.source !== "generation_response" || binding.failedIds?.includes(mediaId))) return false;')
     ui = exact(ui, '      await triggerAutoDownload(cleanUrl, mediaId);',
         '      await triggerAutoDownload(cleanUrl, mediaId, !state.isRunning && window.__lzxFlowTransport ? match.binding : null);')
     ui = exact(ui, '      if (!videoEl || !state.isRunning) return;',
@@ -178,6 +208,9 @@ def patch_ui(ui):
 
 def patch_proxy(proxy):
     proxy = exact(proxy, '  "use strict";', '  "use strict";\n' + QUIET)
+    proxy = exact(proxy, '  if (window.top !== window) return;',
+        '  if (window.top !== window || window.__lzxFlowProxy || window.__flowAccountBridgeLoaded) return;\n'
+        '  window.__lzxFlowProxy = true;')
     proxy = exact(proxy, '  const origHasOwnProperty = Object.prototype.hasOwnProperty;',
         '  if (!window.__lzxFlowTransport) {\n  const origHasOwnProperty = Object.prototype.hasOwnProperty;')
     proxy = exact(proxy, '    return origHasOwnProperty.call(this, prop);\n  };',
@@ -201,6 +234,50 @@ def patch_proxy(proxy):
     proxy = exact(proxy, '      if (!ids.length && Array.isArray(media) && media.length > 0) {',
         '      if (!window.__lzxFlowTransport && !ids.length && Array.isArray(media) && media.length > 0) {')
     proxy = exact(proxy, 'source: "submission"', 'source: "generation_response"', 2)
+    proxy = exact(proxy, 'window.dispatchEvent(new CustomEvent("flow-task-media-ready", { detail: { mediaId: mId, url } }));',
+        'window.dispatchEvent(new CustomEvent("flow-task-media-ready", { detail: { mediaId: mId, url, source:"url_discovery" } }));')
+    proxy = exact(proxy, '      if (!mediaId || status !== "MEDIA_GENERATION_STATUS_SUCCESSFUL") continue;',
+        '      if (window.__lzxFlowTransport && mediaId && status === "MEDIA_GENERATION_STATUS_FAILED") {\n'
+        '        window.dispatchEvent(new CustomEvent("flow-task-media-failed", {detail:{mediaId, source:"server_status",\n'
+        '          reason:String(media.mediaMetadata?.mediaStatus?.error?.message || "Flow 已明确返回视频生成失败").slice(0,500)}}));\n'
+        '      }\n'
+        '      if (!mediaId || status !== "MEDIA_GENERATION_STATUS_SUCCESSFUL") continue;')
+    # A single batchexecute response can contain old project history BEFORE the
+    # creation frame. Similar array shapes never prove a frame created media.
+    proxy = exact(proxy,
+        '    const submission = frames.find(frame => frame.rpc === "eb1hJf" || (Array.isArray(frame.payload?.[2]) && Array.isArray(frame.payload?.[3])));',
+        '    const submission = frames.find(frame => window.__lzxFlowTransport ? ["eb1hJf", "L2jnw"].includes(frame.rpc) :\n'
+        '      frame.rpc === "eb1hJf" || (Array.isArray(frame.payload?.[2]) && Array.isArray(frame.payload?.[3])));')
+    proxy = exact(proxy, '      console.log(`[FlowProxy] [${submission.rpc}] 提取到的 mediaIds:`, ids);',
+        '      if (window.__lzxFlowTransport && new Set(ids).size !== 1) ids = [];\n'
+        '      console.log(`[FlowProxy] [${submission.rpc}] 提取到的 mediaIds:`, ids);')
+    proxy = exact(proxy, '      const ids = lists.flat().map(media => mediaIdOf(media?.name)).filter(Boolean);',
+        '      const createdLists = window.__lzxFlowTransport && frames.length ?\n'
+        '        frames.filter(frame => ["eb1hJf", "L2jnw"].includes(frame.rpc)).flatMap(frame => responseMediaLists(frame.payload)) : lists;\n'
+        '      const candidates = [...new Set(createdLists.flat().map(media => mediaIdOf(media?.name)).filter(Boolean))];\n'
+        '      const ids = window.__lzxFlowTransport && candidates.length !== 1 ? [] : candidates;')
+    proxy = exact(proxy, '  function classifyRequest(url, body) {', '''  function classifyRequest(url, body) {
+    if (window.__lzxFlowTransport) {
+      let parsed;
+      try { parsed = new URL(url, "https://flow.google.com"); } catch (_) { return {generate:false,status:false}; }
+      const rpcIds = new Set((parsed.searchParams.get("rpcids") || "").split(",").filter(Boolean));
+      if (!rpcIds.size) {
+        try {
+          const collect = value => {
+            if (!Array.isArray(value)) return;
+            if (typeof value[0] === "string") { rpcIds.add(value[0]); return; }
+            value.forEach(collect);
+          };
+          collect(JSON.parse(new URLSearchParams(body || "").get("f.req") || "null"));
+        } catch (_) {}
+      }
+      return {
+        generate: /(?:video:batchAsyncGenerateVideo[A-Za-z]*|StreamGenerateContent)(?:$|\\/)/.test(parsed.pathname) ||
+          [...rpcIds].some(id => ["eb1hJf", "L2jnw"].includes(id)),
+        status: /batchCheckAsyncVideoGenerationStatus|BatchGetMedia|ListMedia|batchexecute/.test(parsed.pathname) ||
+          [...rpcIds].some(id => ["Iyc41d", "bOKtO", "jwpduf", "as29s", "nzlxg"].includes(id))
+      };
+    }''')
     message = '        console.log(`[FlowProxy] ℹ️ 生成请求响应未直接返回 mediaLists ID (submissionId=${activeProcess.submissionId})，继续等待后续轮询帧或 DOM 视频渲染认领`);'
     proxy = exact(proxy, message, message + '\n        if (window.__lzxFlowTransport) window.dispatchEvent(new CustomEvent("flow-task-binding-missing", {detail: {submissionId: activeProcess.submissionId}}));')
     proxy = exact(proxy,
@@ -250,3 +327,8 @@ def patch_upstream(source):
     return (patch_ui((source / 'injects/ui.js').read_text('utf-8')),
             patch_proxy((source / 'injects/flow-proxy.js').read_text('utf-8')),
             patch_background((source / 'background.js').read_text('utf-8')))
+
+
+def patch_isolated(text):
+    return exact(text, 'if (window.top !== window) return;',
+        'if (window.top !== window || window.__lzxFlowNativeBridge) return;\nwindow.__lzxFlowNativeBridge = true;')

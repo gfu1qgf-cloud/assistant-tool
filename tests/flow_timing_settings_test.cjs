@@ -44,7 +44,7 @@ async function background(saved={}) {
   assert.equal(restart.sent.at(-1).capabilities.includes('timing_settings_v1'),true);
 
   let now=10000;const hooks={},posted=[],timers=[];const location={origin:'https://flow.google.com',href:project,hash:''};
-  const window={postMessage:value=>posted.push(value),addEventListener:(name,fn)=>hooks[name]=fn};window.top=window;
+  const window={__lzxFlowNativeBridge:true,postMessage:value=>posted.push(value),addEventListener:(name,fn)=>hooks[name]=fn};window.top=window;
   const content={window,location,URLSearchParams,Promise,console,Date:{now:()=>now},document:{getElementById:()=>({})},
     chrome:{storage:{local:{get:async()=>({lzxTiming:settings})}},runtime:{sendMessage:async()=>({}),
       onMessage:{addListener:fn=>hooks.runtime=fn}}},setTimeout:(fn,ms)=>{timers.push({fn,ms});return timers.length;}};

@@ -164,6 +164,18 @@ class QueueStore:
             db.execute('INSERT INTO charges VALUES (?,?,?,?,?,?)', (attempt, batch, job_id, cost, source, time.time()))
         return True
 
+    def requeue_failed_generation(self, job_id, attempt, payload, remote):
+        with self.connection() as db:
+            db.execute('BEGIN IMMEDIATE')
+            current = db.execute('SELECT status,attempt FROM jobs WHERE id=?', (job_id,)).fetchone()
+            if current != ('failed', attempt): return False
+            now = time.time()
+            note = '原生成已明确失败，自动重试前重新核对积分和参数'
+            db.execute('UPDATE jobs SET status="queued",attempt="",browser="",payload=?,remote=?,error=?,updated=? WHERE id=?',
+                (json.dumps(payload, ensure_ascii=False), json.dumps(remote, ensure_ascii=False), note, now, job_id))
+            db.execute('INSERT INTO history VALUES (?,? ,"queued",?)', (job_id, now, note))
+            return True
+
     def set_batch_limit(self, batch_id, limit):
         if type(limit) not in (int, float) or not 0 <= limit <= 10**8:
             raise ValueError('整批积分上限无效。')

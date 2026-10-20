@@ -30,6 +30,7 @@ from .setup_pairing import confirm_saved_connection
 from .page_readiness import defer_prepare, watch_preparation, recover_window_block, recover_preparation_block, retry_initial_credits, missing_window, record_duration_limit
 from .account_policy import mark_account, reset_accounts, account_hold, park_unsubmitted_job
 from .connection_recovery import repair_idle, watch_connections
+from .generation_recovery import confirmed_failure, watch as watch_generation_retries, fresh_clients
 
 DEFAULT_PORT = 18189
 PROTOCOL = 1
@@ -319,6 +320,10 @@ class FlowService(QtCore.QObject, FlowOperations):
                 confirm_saved_connection(self, client)
                 recover_window_block(self, client)
                 retry_initial_credits(self, client)
+            elif message.get('type') == 'generation_failed':
+                confirmed_failure(self, client, message)
+                if message.get('event_id'):
+                    self.send(client, {'type': 'ack', 'event_id': message['event_id']})
             elif message.get('type') == 'site_pause':
                 self.paused = self.safety_paused = True
                 self.released.clear()
@@ -605,6 +610,8 @@ class FlowService(QtCore.QObject, FlowOperations):
         row = next((r for r in self.store.rows() if r['attempt'] == batch and r['browser'] == client['id']), None)
         if not row or row['status'] in {'completed', 'cancelled', 'archiving', 'archive_failed', 'download_parked', 'needs_review'}:
             return
+        if row['remote'].get('generation_retry', {}).get('failed_attempt') == row['attempt']:
+            return
         tasks = data.get('tasks') or []
         if not tasks:
             return
@@ -706,6 +713,8 @@ class FlowService(QtCore.QObject, FlowOperations):
     def _status(self, client, message):
         row = next((r for r in self.store.rows() if r['attempt'] == message.get('batch_id') and r['browser'] == client['id']), None)
         if not row or row['status'] in {'completed', 'cancelled', 'archiving', 'archive_failed', 'download_parked', 'needs_review'}:
+            return
+        if row['remote'].get('generation_retry', {}).get('failed_attempt') == row['attempt']:
             return
         if row['status'] == 'downloading' and retry_info(row, 'download').get('active'):
             return
@@ -1124,6 +1133,8 @@ class FlowService(QtCore.QObject, FlowOperations):
                 self.publish()
             if watch_connections(self):
                 self.publish()
+            if watch_generation_retries(self):
+                self.publish()
             if self.watch_transfer_retries():
                 self.publish()
             if close_idle_exhausted(self):
@@ -1154,7 +1165,7 @@ class FlowService(QtCore.QObject, FlowOperations):
             # An unavailable 10-second lane must not block a ready 6-second job.
             matches = []
             for index, candidate in enumerate(queued_rows):
-                selected = choose_client(clients, rows, limit, candidate['payload'], self.preferences,
+                selected = choose_client(fresh_clients(self, candidate, clients), rows, limit, candidate['payload'], self.preferences,
                                          estimated_cost(candidate['payload'], self.observed_costs))
                 if selected:
                     rank = (-candidate['payload'].get('priority', 0), *credit_order(selected),
@@ -1178,6 +1189,8 @@ class FlowService(QtCore.QObject, FlowOperations):
                 remote = {'account': client['account'], 'profile': client.get('profile', ''), 'activity_at': time.time()}
                 if queued['remote'].get('prepare_retry'):
                     remote['prepare_retry'] = queued['remote']['prepare_retry']
+                if queued['remote'].get('generation_retry'):
+                    remote['generation_retry'] = {**queued['remote']['generation_retry'], 'state': 'running'}
                 self.store.update(queued['id'], 'preparing', attempt=attempt, browser=client['id'], remote=remote)
                 job = queued['payload']
                 self.request(client, 'prepare', {'videoModel': 'omni_1_1_flash', 'duration': job['duration'],

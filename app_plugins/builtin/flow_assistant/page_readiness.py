@@ -78,7 +78,7 @@ def recover_preparation_block(service, client):
     clearing a block is never proof that the requested settings are selected.
     """
     if (not client.get('authorized') or not client.get('page_ready') or client.get('batch_running') is not False
-            or client.get('extension_version') not in {'1.1.16', '1.1.17', '1.1.18', '1.1.19', '1.1.20'} or client.get('setup_blocked')
+            or client.get('extension_version') not in {'1.1.16', '1.1.17', '1.1.18', '1.1.19', '1.1.20', '1.1.21'} or client.get('setup_blocked')
             or client.get('preparation_block_recovered')):
         return False
     expected = project_identity(service.preferences.get('profile_projects', {}).get(client.get('profile')))
@@ -93,7 +93,7 @@ def recover_preparation_block(service, client):
         return False
     legacy = {'无法确认页面已选中 Omni 1.1 Flash、比例、分辨率和 x1，未提交生成。',
               '浏览器响应超时，请检查页面后恢复；未发送新的生成请求。'}
-    if client.get('extension_version') in {'1.1.18', '1.1.19', '1.1.20'}:
+    if client.get('extension_version') in {'1.1.18', '1.1.19', '1.1.20', '1.1.21'}:
         legacy.update(f'找不到视频时长选项，无法确认 {duration} 秒；请检查当前模型的设置面板'
                       for duration in (4, 6, 8, 10))
     blocks = service.preferences.get('browser_blocks', {})
