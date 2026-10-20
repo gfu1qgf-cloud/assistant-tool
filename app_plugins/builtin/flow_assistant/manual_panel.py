@@ -120,6 +120,7 @@ class ManualWorkflowMixin:
         from .submission_ui import TaskImagePicker, GenerationOptions
         self.dialog, self.drafts, self.current_key = dialog, {}, ''
         self.request_id, self.pending_command = None, None
+        self.pending_editor = None
         self.current_target, self.current_image = {}, ''
         self.loading, self.dirty_keys, self.previous_prompt = False, set(), ''
         self.next_after_ack = False
@@ -152,11 +153,27 @@ class ManualWorkflowMixin:
         self.timer.setInterval(round(timing_value(self.dialog.state.get('preferences', {}), 'draft_save_seconds') * 1000))
         self.timer.timeout.connect(self.flush_draft)
         self.picker.image_changed.connect(self.image_changed)
-        self.prompt.textChanged.connect(self.edited)
+        self.prompt.textChanged.connect(self.prompt_edited)
         for widget in (self.options.duration, self.options.aspect, self.options.resolution):
             widget.currentIndexChanged.connect(self.edited)
         for widget in (self.options.count, self.options.budget, self.batch_limit): widget.valueChanged.connect(self.edited)
         self.update_route()
+
+    def update_prompt_submission(self):
+        draft = self.drafts.get(self.current_key, {})
+        submitted = draft.get('submitted') is True and draft.get('prompt') == self.prompt.toPlainText()
+        if self.prompt.property('flowSubmitted') == submitted: return
+        self.prompt.setProperty('flowSubmitted', submitted)
+        self.prompt.setStyleSheet('QPlainTextEdit { background-color: #ffe3e3; color: #7f1d1d; '
+                                 'border: 2px solid #dc2626; }' if submitted else '')
+        self.prompt.setToolTip('当前提示词已提交到队列；修改文字后清除红色标记。' if submitted else '')
+
+    def prompt_edited(self):
+        draft = self.drafts.get(self.current_key, {})
+        if not self.loading and draft.get('submitted') and draft.get('prompt') != self.prompt.toPlainText():
+            self.drafts[self.current_key] = {key: value for key, value in draft.items() if key != 'submitted'}
+        self.update_prompt_submission()
+        self.edited()
 
     def edited(self, *_):
         self.update_route()
@@ -170,6 +187,9 @@ class ManualWorkflowMixin:
         value = {'target': copy.deepcopy(self.current_target), 'image': self.current_image,
                  'prompt': self.prompt.toPlainText(), 'options': self.options.values(),
                  'batch_limit': self.batch_limit.value(), 'updated': time.time()}
+        previous = self.drafts.get(self.current_key, {})
+        if previous.get('submitted') is True and previous.get('prompt') == value['prompt']:
+            value['submitted'] = True
         self.drafts[self.current_key] = value
         self.dialog.send('draft_save', key=self.current_key, value=value)
 
@@ -190,6 +210,7 @@ class ManualWorkflowMixin:
             self.batch_limit.setValue(int(value.get('batch_limit', 0)))
         finally:
             self.loading = False
+        self.update_prompt_submission()
         self.update_route()
 
     def apply_state(self, state):
@@ -228,6 +249,7 @@ class ManualWorkflowMixin:
             prompt = self.prompt.toPlainText().strip()
             if not prompt: raise ValueError('请填写本条提示词。')
             self.flush_draft(); self.dialog.save_preferences()
+            self.pending_editor = self.current_key, self.prompt.toPlainText()
             self.request_id = uuid.uuid4().hex; self.next_after_ack = advance
             self.pending_command = {'source': 'manual', 'request_id': self.request_id,
                 'batch_limit': self.batch_limit.value(),
@@ -238,7 +260,15 @@ class ManualWorkflowMixin:
             self.status.setText(str(error))
 
     def acknowledged(self, result):
-        if result.get('request_id') != self.request_id: return
+        if not self.request_id or result.get('request_id') != self.request_id: return
+        key, text = self.pending_editor or ('', '')
+        draft = self.drafts.get(key, {})
+        if key and draft.get('prompt') == text and (key != self.current_key or self.prompt.toPlainText() == text):
+            value = {**draft, 'submitted': True, 'updated': time.time()}
+            self.drafts[key] = value; self.dirty_keys.add(key)
+            self.dialog.send('draft_save', key=key, value=value)
+        self.pending_editor = None
+        self.update_prompt_submission()
         self.setEnabled(True); self.request_id = None
         self.last_submitted_ids = set(result.get('ids', ()))
         self.status.setText(f'已可靠保存 {result["count"]} 条；' + ('等待确认继续。' if result.get('held') else '后台负责生成和归档。'))
@@ -251,12 +281,14 @@ class ManualWorkflowMixin:
         self.next_after_ack = False
 
     def failed(self, result):
-        if result.get('request_id') != self.request_id: return
+        if not self.request_id or result.get('request_id') != self.request_id: return
         self.setEnabled(True); self.request_id = None
         self.status.setText(result['error'])
         if result.get('duplicate_ids') and self.dialog.confirm_duplicate(result['duplicate_ids']):
             self.request_id = self.pending_command['request_id']; self.setEnabled(False)
             self.dialog.send('enqueue', **self.pending_command, allow_duplicates=True)
+        else:
+            self.pending_editor = None
 
     def restore_job(self, row, *, count=None):
         job = row['payload']; target = {'target_dir': job['directory'],
