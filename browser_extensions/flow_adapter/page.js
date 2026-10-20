@@ -87,12 +87,32 @@
   }
   const compact = value => String(value || '').toLowerCase().replace(/\s+/g, '').replace(/[×✕]/g, 'x');
   const signature = settings => JSON.stringify([settings.videoModel, settings.aspectRatio, settings.resolution, settings.duration, settings.count]);
+  function settingsPanel() {
+    return [...document.querySelectorAll('.cdk-overlay-pane flow-prompt-box-settings, flow-prompt-box-settings, .settings-content-overlay')]
+      .find(live) || null;
+  }
+  async function waitForSettings(settings) {
+    const url = location.href, until = Date.now() + 5000;
+    let previous = false, failure;
+    while (Date.now() <= until) {
+      if (location.href !== url) throw new Error('核对参数时项目地址发生变化，未提交生成。');
+      try {
+        verifySettings(settings, settingsPanel());
+        if (previous) return true;
+        previous = true;
+      } catch (error) {failure = error; previous = false; preparedProof = null;}
+      await new Promise(resolve => setTimeout(resolve, 200));
+    }
+    preparedProof = null;
+    throw failure || Object.assign(new Error('设置面板尚未稳定，自动等待后重新核对；未提交生成。'), {code: 'FLOW_SETTINGS_NOT_READY'});
+  }
   function verifySettings(settings, panel = null) {
     // Read selected controls only. A collapsed summary need not repeat fields
     // that the open settings panel presents separately. Unselected options,
     // requested store values and arbitrary page text are never evidence.
     const chosen = {};
     const put = (key, value) => { if (value) (chosen[key] ||= new Set()).add(compact(value)); };
+    if (panel && !live(panel)) throw Object.assign(new Error('设置面板正在重建，自动等待后重新核对；未提交生成。'), {code: 'FLOW_SETTINGS_NOT_READY'});
     if (panel) {
       const model = panel.querySelector('.model-select-trigger-content') ||
         panel.querySelector('button[aria-label="选择模型系列"], button[aria-label="選擇模型系列"], button[aria-label*="model" i]');
@@ -123,8 +143,11 @@
     const missing = fields.filter(([key, _label, matcher]) => chosen[key] ?
       chosen[key].size !== 1 || !matcher.test([...chosen[key]][0]) : !matcher.test(text));
     if (missing.length) {
-      throw new Error('无法确认页面已选中的' + missing.map(([, label]) => label).join('、') +
-        '；请检查 Flow 设置后恢复该浏览器。未提交生成。');
+      const wrong = missing.some(([key]) => chosen[key]);
+      throw Object.assign(new Error('无法确认页面已选中的' + missing.map(([, label]) => label).join('、') +
+        (wrong ? '；实际选中参数不一致，请检查 Flow 设置后恢复该浏览器。未提交生成。' :
+          '；设置控件尚未完整显示，自动等待后重新核对。未提交生成。')),
+        {code: wrong ? 'FLOW_SETTINGS_MISMATCH' : 'FLOW_SETTINGS_NOT_READY'});
     }
     if (panel) preparedProof = {signature: signature(settings), url: location.href, at: Date.now()};
     return true;
@@ -188,7 +211,7 @@
       task.status?.[line] !== 'success'));
   }
   window.__lzxFlowTransport = {
-    verifySettings, activeEmail, captureAccount, locateResult, readiness, waitForControls,
+    verifySettings, settingsPanel, waitForSettings, activeEmail, captureAccount, locateResult, readiness, waitForControls,
     findSubmission, matchesSubmission, hasPendingResults,
     batchIdle() {snapshot(true);},
     sitePaused() {emit({type: 'site_pause', reason: 'Flow 网站提示安全限制，已暂停后续提交；保留当前页面，不自动刷新。'});},

@@ -17,7 +17,7 @@ def defer_prepare(service, client, row, error, code=''):
             'batch_wait': True}, error='上一批网页队列正在收尾，空闲后自动继续；尚未上传或提交本条生成。')
         service.request(client, 'snapshot')
         return True
-    if not missing_window(error) and code != 'FLOW_PAGE_NOT_READY':
+    if not missing_window(error) and code not in {'FLOW_PAGE_NOT_READY', 'FLOW_SETTINGS_NOT_READY'}:
         return False
     previous = row['remote'].get('prepare_retry', {})
     count = int(previous.get('count', 0)) + 1
@@ -32,6 +32,53 @@ def defer_prepare(service, client, row, error, code=''):
     client['page_ready'] = False
     client['page_error'] = '页面或窗口尚未就绪，程序正在自动等待，不需要手动重新配对'
     service.request(client, 'snapshot')
+    return True
+
+
+def recover_preparation_block(service, client):
+    """Re-enter preflight once for two audited, pre-submit legacy failures.
+
+    An orphan block can outlive its queue row. Require a current bridge and a
+    fresh idle snapshot of the exact configured project, then verify again;
+    clearing a block is never proof that the requested settings are selected.
+    """
+    if (not client.get('authorized') or not client.get('page_ready') or client.get('batch_running') is not False
+            or client.get('extension_version') != EXTENSION_VERSION or client.get('setup_blocked')
+            or client.get('preparation_block_recovered')):
+        return False
+    expected = project_identity(service.preferences.get('profile_projects', {}).get(client.get('profile')))
+    if (not expected or project_identity(client.get('saved_project')) != expected
+            or project_identity(client.get('project')) != expected):
+        return False
+    rows = service.store.rows()
+    if any(row['status'] in {'preparing', 'uploading', 'submitting', 'generating', 'downloading',
+                            'uncertain', 'download_failed'} and
+           (row['browser'] == client['id'] or client.get('account') and
+            row['remote'].get('account') == client['account']) for row in rows):
+        return False
+    legacy = {'无法确认页面已选中 Omni 1.1 Flash、比例、分辨率和 x1，未提交生成。',
+              '浏览器响应超时，请检查页面后恢复；未发送新的生成请求。'}
+    blocks = service.preferences.get('browser_blocks', {})
+    keys = {key for key in browser_keys(client) if blocks.get(key) in legacy}
+    if not keys:
+        return False
+    history = list(service.preferences.get('preparation_block_history', []))
+    history.extend({'key': key, 'error': blocks[key], 'at': time.time()} for key in sorted(keys))
+    service.commit_preferences({**service.preferences,
+        'browser_blocks': {key: value for key, value in blocks.items() if key not in keys},
+        'preparation_block_history': history[-32:]})
+    client['preparation_block_recovered'] = True
+    for row in rows:
+        remote = row['remote']
+        identities = browser_keys({'profile': remote.get('profile'), 'id': remote.get('environment_browser')})
+        if (row['status'] not in {'queued', 'failed'} or row['attempt'] or not identities & keys
+                or not remote.get('environment_error') or not any(message in row['error'] for message in legacy)
+                or any(remote.get(key) for key in ('bindings', 'upstream_task', 'generation_response',
+                    'download', 'unverified_download', 'page_recovery', 'cloud_finished'))):
+            continue
+        remote = {key: value for key, value in remote.items() if key not in {'environment_error', 'environment_browser'}}
+        service.store.update(row['id'], 'queued', remote=remote,
+            error='旧准备失败标记已转为重新核对参数；尚未提交生成。')
     return True
 
 

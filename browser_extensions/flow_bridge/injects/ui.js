@@ -4312,6 +4312,10 @@
 
     // 3. 通用切换助手：支持简中/繁中/英文多语言 aria-label 列表，并自带图标/文字全组扫描兜底
     function setToggle(ariaLabels, matcher) {
+      if (window.__lzxFlowTransport) {
+        overlay = window.__lzxFlowTransport.settingsPanel();
+        if (!overlay) throw Object.assign(new Error("设置面板正在重建，自动等待后重新核对；未提交生成。"), {code: "FLOW_SETTINGS_NOT_READY"});
+      }
       const labelList = Array.isArray(ariaLabels) ? ariaLabels : [ariaLabels];
       let toggleGroup = null;
       for (const lbl of labelList) {
@@ -4426,8 +4430,7 @@
     }
 
     if (window.__lzxFlowTransport) {
-      const currentPanel = document.querySelector(".cdk-overlay-pane flow-prompt-box-settings, flow-prompt-box-settings, .settings-content-overlay");
-      window.__lzxFlowTransport.verifySettings(settings, currentPanel || overlay);
+      await window.__lzxFlowTransport.waitForSettings(settings);
     }
 
     // 4. 关闭设置面板

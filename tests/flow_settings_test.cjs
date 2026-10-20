@@ -96,7 +96,7 @@ const vm = require('node:vm');
     'an explicit failed identity refresh must invalidate the old session');
 
   const built = fs.readFileSync(path.join(__dirname, '../browser_extensions/flow_bridge/injects/ui.js'), 'utf8');
-  const check = built.indexOf('window.__lzxFlowTransport.verifySettings(settings, currentPanel || overlay)');
+  const check = built.indexOf('await window.__lzxFlowTransport.waitForSettings(settings)');
   const close = built.indexOf('// 4. 关闭设置面板');
   assert.ok(check > 0 && check < close, 'host must verify actual selected controls before closing their panel');
   assert.ok(!built.includes('if (window.__lzxFlowTransport && !window.__lzxFlowTransport.activeEmail()) pts = null;'),

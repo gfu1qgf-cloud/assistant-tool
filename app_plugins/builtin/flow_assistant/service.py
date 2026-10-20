@@ -23,7 +23,7 @@ from .connection_status import configured_profiles, browser_keys
 from .pricing import fixed_cost
 from .transfer_policy import retry_info, retry_detail, ready_bindings
 from .setup_pairing import confirm_saved_connection
-from .page_readiness import defer_prepare, watch_preparation, recover_window_block, retry_initial_credits, missing_window
+from .page_readiness import defer_prepare, watch_preparation, recover_window_block, recover_preparation_block, retry_initial_credits, missing_window
 
 DEFAULT_PORT = 18189
 PROTOCOL = 1
@@ -295,6 +295,8 @@ class FlowService(QtCore.QObject, FlowOperations):
         row = self.store.get(job_id)
         if not row or row['attempt'] != request['attempt'] or row['browser'] != client['id'] or row['status'] not in TRANSIENT | {'download_failed', 'uncertain'}:
             return
+        if action == 'prepare' and row['status'] != 'preparing':
+            return
         if not message.get('success'):
             if action == 'refresh_project':
                 recovery = {**row['remote'].get('page_recovery', {}), 'done': True, 'next_at': 0}
@@ -421,6 +423,8 @@ class FlowService(QtCore.QObject, FlowOperations):
             client['setup_blocked'] = project_block(client, self.preferences)
             confirm_saved_connection(self, client)
             recover_window_block(self, client)
+            if data.get('running') is False:
+                recover_preparation_block(self, client)
             retry_initial_credits(self, client)
         client['active_batch'] = str(data.get('batch_id') or '')
         batch = str(data.get('batch_id') or '')
@@ -811,7 +815,10 @@ class FlowService(QtCore.QObject, FlowOperations):
                 if confirm_saved_connection(self, client):
                     self.publish()
             for request_id, request in list(self.pending.items()):
-                if time.time() - request['at'] < (120 if request['action'] == 'upload_images' else 60):
+                # The page may first wait 45 seconds for controls, then open,
+                # rerender and verify settings. Do not time out its preflight
+                # at 60 seconds while the read-only preparation is still alive.
+                if time.time() - request['at'] < {'upload_images': 120, 'prepare': 110}.get(request['action'], 60):
                     continue
                 self.pending.pop(request_id, None)
                 if not request['job'] and request['action'] in {'get_points', 'snapshot'}:
@@ -834,7 +841,9 @@ class FlowService(QtCore.QObject, FlowOperations):
                             self.publish()
                             continue
                         if client and request['action'] == 'prepare':
-                            self.quarantine(client, row, '浏览器响应超时，请检查页面后恢复；未发送新的生成请求。', status='failed')
+                            if row['status'] != 'preparing':
+                                continue
+                            defer_prepare(self, client, row, '参数准备响应超时，自动等待后重新核对；未提交生成。', 'FLOW_PAGE_NOT_READY')
                             self.publish()
                             continue
                         status = 'uncertain' if request['action'] in {'run_tasks', 'retry_download'} else 'failed'

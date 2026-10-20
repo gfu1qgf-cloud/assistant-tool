@@ -122,10 +122,15 @@ def patch_ui(ui):
     watcher = exact(watcher, '      if (!state.isRunning || batchPromise) return;',
         '      if ((!state.isRunning && !window.__lzxFlowTransport?.hasPendingResults?.()) || batchPromise) return;')
     ui = ui[:start] + watcher + ui[end:]
+    ui = exact(ui, '    function setToggle(ariaLabels, matcher) {\n',
+        '    function setToggle(ariaLabels, matcher) {\n'
+        '      if (window.__lzxFlowTransport) {\n'
+        '        overlay = window.__lzxFlowTransport.settingsPanel();\n'
+        '        if (!overlay) throw Object.assign(new Error("设置面板正在重建，自动等待后重新核对；未提交生成。"), {code: "FLOW_SETTINGS_NOT_READY"});\n'
+        '      }\n')
     ui = exact(ui, '    // 4. 关闭设置面板\n',
         '    if (window.__lzxFlowTransport) {\n'
-        '      const currentPanel = document.querySelector(".cdk-overlay-pane flow-prompt-box-settings, flow-prompt-box-settings, .settings-content-overlay");\n'
-        '      window.__lzxFlowTransport.verifySettings(settings, currentPanel || overlay);\n'
+        '      await window.__lzxFlowTransport.waitForSettings(settings);\n'
         '    }\n\n    // 4. 关闭设置面板\n')
     old_loop = '!(task.mediaBindings?.[lIdx]?.schema === 2 && task.mediaBindings?.[lIdx]?.mediaIds?.length > 0) && subTry < 2'
     ui = exact(ui, old_loop,

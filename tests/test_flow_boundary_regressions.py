@@ -75,10 +75,11 @@ class FlowBoundaryTests(unittest.TestCase):
 
     def test_current_attempt_still_times_out_without_automatically_regenerating(self):
         service, client, job_id = self.service()
-        for action, status in (('prepare', 'failed'), ('upload_images', 'uploading'),
+        for action, status in (('prepare', 'queued'), ('upload_images', 'uploading'),
                                ('run_tasks', 'uncertain'), ('retry_download', 'download_failed')):
             with self.subTest(action=action):
-                service.store.update(job_id, 'submitting', attempt='a' * 32, browser=client['id'])
+                service.store.update(job_id, 'preparing' if action == 'prepare' else 'submitting',
+                                     attempt='a' * 32, browser=client['id'])
                 service.request(client, action, job=job_id)
                 for request in service.pending.values():
                     request['at'] = time.time() - 200
