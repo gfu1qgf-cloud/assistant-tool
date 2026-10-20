@@ -52,6 +52,12 @@ const vm = require('node:vm');
   await invoke('open-panel-proof');
   assert.equal(messages.find(value => value.request_id === 'open-panel-proof').success, true,
     'same invocation may use selected proof after settings panel closes');
+  const instance = messages.find(value => value.request_id === 'open-panel-proof').data.page_instance;
+  assert.equal(typeof instance, 'string'); assert(instance.length > 5);
+  assert(messages.some(value => value.type === 'page_status' && value.page_instance === instance),
+    'the prepare receipt and document status must carry the same page identity');
+  assert(messages.some(value => value.type === 'snapshot' && value.data.page_instance === instance),
+    'a read-only snapshot carries the same document identity');
   transport.attach(async () => {}, () => ({tasks: []}), {async prepare() {}});
   await invoke('no-old-proof');
   assert.equal(messages.find(value => value.request_id === 'no-old-proof').success, false,

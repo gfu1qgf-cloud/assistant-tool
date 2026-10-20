@@ -14,6 +14,13 @@ def missing_window(error):
     return bool(re.fullmatch(r'(?:error:\s*)?no current window\.?', str(error).strip(), re.I))
 
 
+def note_readiness(client):
+    if client.get('page_ready'):
+        client.pop('page_unready_at', None)
+    else:
+        client.setdefault('page_unready_at', time.time())
+
+
 def defer_prepare(service, client, row, error, code=''):
     if code == 'FLOW_BATCH_BUSY':
         client['batch_running'] = True
@@ -71,7 +78,7 @@ def record_duration_limit(service, client, row, error, data):
 
 
 def recoverable_prepare_reason(text, version):
-    if version not in {'1.1.16', '1.1.17', '1.1.18', '1.1.19', '1.1.20', '1.1.21', '1.1.22', '1.1.23'}: return False
+    if version not in {'1.1.16', '1.1.17', '1.1.18', '1.1.19', '1.1.20', '1.1.21', '1.1.22', '1.1.23', '1.1.24'}: return False
     legacy = {'无法确认页面已选中 Omni 1.1 Flash、比例、分辨率和 x1，未提交生成。',
               '浏览器响应超时，请检查页面后恢复；未发送新的生成请求。'}
     return (text in legacy or bool(re.fullmatch(r'页面或浏览器窗口连续未就绪，自动等待已达\d+次；未提交生成。', str(text))) or
@@ -87,7 +94,7 @@ def recover_preparation_block(service, client):
     clearing a block is never proof that the requested settings are selected.
     """
     if (not client.get('authorized') or not client.get('page_ready') or client.get('batch_running') is not False
-            or client.get('extension_version') not in {'1.1.16', '1.1.17', '1.1.18', '1.1.19', '1.1.20', '1.1.21', '1.1.22', '1.1.23'} or client.get('setup_blocked')
+            or client.get('extension_version') not in {'1.1.16', '1.1.17', '1.1.18', '1.1.19', '1.1.20', '1.1.21', '1.1.22', '1.1.23', '1.1.24'} or client.get('setup_blocked')
             or client.get('preparation_block_recovered')):
         return False
     expected = project_identity(service.preferences.get('profile_projects', {}).get(client.get('profile')))

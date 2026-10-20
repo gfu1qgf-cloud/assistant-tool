@@ -2,7 +2,6 @@
 import time
 
 from .account_policy import account_hold
-from .credit_cache import restore_balance
 from .credit_cooldown import credit_hold, MIN_CREDITS
 from .credit_policy import credit_order, balance_ready
 from .connection_status import configured_profiles
@@ -10,13 +9,7 @@ from .page_readiness import recoverable_prepare_reason
 from .policy import block_for, estimated_cost
 from .routing import dispatch_rank
 from .timing import value as timing_value
-from .image_affinity import preferred_owner
-
-
-def cached_profile(profile, preferences):
-    client = {'profile': profile, 'saved_project': preferences.get('profile_projects', {}).get(profile)}
-    restore_balance(client, preferences)
-    return client
+from .image_affinity import retained, allows_image, cached_profile, dispatch_order
 
 
 def profile_order(profile, preferences):
@@ -30,15 +23,15 @@ def scheduling_order(client):
 
 
 def prefer_smaller(service, row, selected):
-    if preferred_owner(row['payload'], list(service.clients.values()), service.preferences,
-            estimated_cost(row['payload'], service.observed_costs)):
+    if retained(selected, service.preferences):
         return False
-    selected_order = credit_order(selected)
+    selected_order = dispatch_order(selected, service.preferences)
     now = time.time(); cost = estimated_cost(row['payload'], service.observed_costs)
     probes = getattr(service, 'small_balance_probes', {})
     service.small_balance_probes = probes
     online = {c.get('profile'): c for c in service.clients.values() if c.get('authorized')}
-    active = [r for r in service.store.rows() if r['status'] in {
+    rows = service.store.rows()
+    active = [r for r in rows if r['status'] in {
         'preparing','uploading','submitting','generating','downloading','uncertain','download_failed'}]
     held = {r['remote'].get('profile') for r in active}
     held_accounts = {str(r['remote']['account']).strip().casefold() for r in active if r['remote'].get('account')}
@@ -49,7 +42,9 @@ def prefer_smaller(service, row, selected):
         client = online.get(profile) or cached_profile(profile, service.preferences)
         fresh = balance_ready(client, preferences=service.preferences)
         if (profile in held or str(client.get('account') or '').strip().casefold() in held_accounts or
-                fresh and client['credits'] < max(MIN_CREDITS, cost or 0) or scheduling_order(client) >= selected_order or
+                fresh and client['credits'] < max(MIN_CREDITS, cost or 0) or
+                (0 if retained(client, service.preferences) else 1, *scheduling_order(client)) >= selected_order or
+                not allows_image(client, row['payload'], rows, service.preferences) or
                 account_hold(client, service.preferences) or credit_hold(client, service.preferences) or
                 client.get('setup_blocked') or client.get('batch_running') or client.get('native_busy') or
                 dispatch_rank(client, row['payload'], service.preferences) is None): continue
@@ -57,7 +52,7 @@ def prefer_smaller(service, row, selected):
         if block and not recoverable_prepare_reason(block, client.get('extension_version')): continue
         if probes.get(profile, 0) and probes[profile] <= now: continue
         if profile not in online and profile in service.launched and profile not in service.launching: continue
-        options.append((scheduling_order(client), profile, client))
+        options.append(((0 if retained(client, service.preferences) else 1, *scheduling_order(client)), profile, client))
     if not options: return False
     _, profile, client = min(options, key=lambda value: (value[0], profiles.index(value[1])))
     if profile not in probes:

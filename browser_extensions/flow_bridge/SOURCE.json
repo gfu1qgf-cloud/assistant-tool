@@ -2,10 +2,11 @@
   "repository": "https://github.com/dedeyuyu/FlowCue",
   "commit": "847c928d60114183e42f838ba82577ba10e46d0b",
   "upstream_version": "1.1.5",
-  "bridge_version": "1.1.23",
+  "bridge_version": "1.1.24",
   "protocol": 1,
   "patch_module": "tools/flow_bridge_patches.py",
   "patches": [
+    "page-instance-bound verified preflight snapshots; live settings/account/reference checks retained at submission",
     "bounded exact-ID ready-receipt reconciliation independent of video DOM rendering",
     "FlowCue 1.1.5 dormant manual mode; no managed legacy badge timer or endpoint storage; stable bridge identity",
     "frozen attempt-unique reference upload, exact media-ID first-frame checks and page-operation mutual exclusion",

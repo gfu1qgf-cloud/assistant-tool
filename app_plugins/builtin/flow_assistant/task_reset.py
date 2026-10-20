@@ -35,13 +35,17 @@ class TaskReset:
         reset = set(result['reset'])
         if reset:
             saved = self.store.settings()
-            if 'image_affinities' in self.preferences or 'image_affinities' in saved:
-                self.preferences = {**self.preferences, 'image_affinities':saved.get('image_affinities', {})}
+            for key in ('image_affinities', 'account_images'):
+                if key in self.preferences or key in saved:
+                    self.preferences = {**self.preferences, key: saved.get(key, {})}
         for request in self.pending.values():
             if request['job'] in reset:
                 request['retired'] = True
         for row in rows:
             if row['id'] not in reset: continue
+            for client in self.clients.values():
+                if client.get('id') == row['browser'] or client.get('account') == row['remote'].get('account'):
+                    client.pop('prepare_snapshot', None)
             profile = row['remote'].get('profile')
             self.launched.discard(profile)
             self.launching.pop(profile, None)

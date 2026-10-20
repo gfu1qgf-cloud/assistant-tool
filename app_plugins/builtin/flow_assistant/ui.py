@@ -13,7 +13,7 @@ from .credit_cache import restore_balance
 from .timing import value as timing_value
 from .pricing import RULE_NOTE
 
-STATUS = {'queued': '等待执行', 'preparing': '核对模型／费用', 'uploading': '上传参考图',
+STATUS = {'queued': '等待执行', 'preparing': '首次核对／更新快照', 'uploading': '上传参考图',
           'submitting': '提交生成', 'generating': '生成中', 'downloading': '下载中',
           'archiving': '保存到任务目录', 'completed': '已完成', 'failed': '失败',
           'download_failed': '下载自动恢复／需处理', 'archive_failed': '归档待重试',

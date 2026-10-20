@@ -21,19 +21,20 @@ from .credit_cache import restore_balance, refresh_needed
 from .timing import value as timing_value, normalize as normalize_timing, snapshot as timing_snapshot, request_timeout, validate as validate_timing, timing_changes
 from .media_identity import owns_download, generated_bindings, merge_snapshot_bindings
 from .operations import FlowOperations
-from .policy import capable, block_for, estimated_cost, batch_wait, waiting_reason
+from .policy import capable, block_for, estimated_cost, batch_wait, waiting_reason, admitted_queue
 from .setup_support import EXTENSION_ID, EXTENSION_VERSION, OPTIONS_URL, profile_name, project_url, project_identity, project_block, compatible_extension
 from .connection_status import configured_profiles, browser_keys
 from .pricing import fixed_cost
 from .transfer_policy import retry_info, retry_detail, ready_bindings
 from .setup_pairing import confirm_saved_connection
-from .page_readiness import defer_prepare, watch_preparation, recover_window_block, recover_preparation_block, retry_initial_credits, missing_window, record_duration_limit
+from .page_readiness import defer_prepare, watch_preparation, recover_window_block, recover_preparation_block, retry_initial_credits, missing_window, record_duration_limit, note_readiness
 from .account_policy import mark_account, reset_accounts, account_hold, park_unsubmitted_job
 from .connection_recovery import repair_idle, watch_connections
 from .generation_recovery import confirmed_failure, watch as watch_generation_retries, fresh_clients
 from .reference_image import verified_receipt
 from .balance_dispatch import prefer_smaller, profile_order
-from .image_affinity import preferred_owner, remember_owner, active_image
+from .image_affinity import remember_owner, allows_image, retained, affinity_context, cached_profile, dispatch_order, retire_exhausted
+from .prepare_snapshot import remember as remember_prepare, reuse as reuse_prepare
 
 DEFAULT_PORT = 18189
 PROTOCOL = 1
@@ -311,10 +312,12 @@ class FlowService(QtCore.QObject, FlowOperations):
             elif message.get('type') == 'snapshot':
                 self._snapshot(client, message.get('data') or {})
             elif message.get('type') == 'page_status':
+                client['page_instance'] = str(message.get('page_instance') or '')[:100]
                 client['project'] = message.get('url') or ''
                 client['note'] = message.get('note') or ''
                 client['page_loaded'] = bool(project_identity(client['project']))
                 client['page_ready'] = client['page_loaded'] and message.get('controls_ready', True) is True
+                note_readiness(client)
                 client['ready_note'] = str(message.get('ready_note') or '')[:300]
                 client['page_at'] = time.time()
                 client['page_error'] = ''
@@ -470,6 +473,8 @@ class FlowService(QtCore.QObject, FlowOperations):
                 or row['remote'].get('page_recovery') or row['remote'].get('watch_attention')):
             return
         if not message.get('success'):
+            if action in {'prepare', 'run_tasks'}:
+                client.pop('prepare_snapshot', None)
             isolated = mark_account(self, client, message.get('error', ''), message.get('code', ''))
             if isolated and action in {'prepare', 'upload_images'}:
                 park_unsubmitted_job(self, row)
@@ -480,6 +485,7 @@ class FlowService(QtCore.QObject, FlowOperations):
                     error='自动刷新未执行：'+str(message.get('error') or '原页面未响应')+'；未重新生成。')
                 return
             if action == 'prepare':
+                client.pop('prepare_snapshot', None)
                 if message.get('code') == 'FLOW_DURATION_UNSUPPORTED':
                     if record_duration_limit(self, client, row, message.get('error') or '当前时长不可用', data):
                         return
@@ -502,6 +508,8 @@ class FlowService(QtCore.QObject, FlowOperations):
             park_unsubmitted_job(self, row)
             return
         if action == 'prepare':
+            if not request.get('snapshot_reuse'):
+                client.pop('prepare_snapshot', None)
             cost, budget = data.get('cost'), row['payload']['budget']
             rule = fixed_cost(row['payload'])
             cost_source = 'duration_rule' if rule is not None else 'page'
@@ -538,6 +546,8 @@ class FlowService(QtCore.QObject, FlowOperations):
                 return
             remote = {key: value for key, value in row['remote'].items() if key != 'prepare_retry'}
             remote.update(cost=cost, cost_source=cost_source)
+            if not request.get('snapshot_reuse'):
+                remember_prepare(self, client, row, data)
             self.store.update(job_id, 'uploading', remote=remote)
             self.start_upload(self.store.get(job_id))
         elif action == 'upload_images':
@@ -604,6 +614,7 @@ class FlowService(QtCore.QObject, FlowOperations):
             if request['action'] == 'snapshot' and request['client'] == client['id']:
                 self.pending.pop(key, None)
         if project_identity(data.get('url')):
+            client['page_instance'] = str(data.get('page_instance') or '')[:100]
             if (type(data.get('running')) is bool and
                     project_identity(data['url']) == project_identity(client.get('saved_project'))):
                 client['batch_running'] = data['running']
@@ -612,6 +623,7 @@ class FlowService(QtCore.QObject, FlowOperations):
                 page_ready=data.get('controls_ready', True) is True, ready_note=str(data.get('ready_note') or '')[:300],
                 page_visibility=str(data.get('page_visibility') or 'unknown')[:20], page_focused=data.get('page_focused') is True,
                 page_at=time.time(), page_error='')
+            note_readiness(client)
             client['setup_blocked'] = project_block(client, self.preferences)
             if client.get('page_ready') and client.get('credits_local'):
                 self.launching.pop(client.get('profile'), None)
@@ -1094,6 +1106,7 @@ class FlowService(QtCore.QObject, FlowOperations):
                     continue
                 if client.get('page_ready') and time.time() - client.get('page_at', 0) > timing_value(self.preferences, 'page_stale_seconds'):
                     client['page_ready'] = False
+                    note_readiness(client)
                     client['page_error'] = f'Flow 页面超过 {timing_value(self.preferences, "page_stale_seconds"):g} 秒未响应；已保留上次余额，等待页面恢复'
                 if confirm_saved_connection(self, client):
                     self.publish()
@@ -1175,12 +1188,9 @@ class FlowService(QtCore.QObject, FlowOperations):
                 self.publish()
             rows = self.store.rows()
             batches = self.store.batches()
-            queued_rows = sorted([row for row in rows if row['status'] == 'queued'
-                           and row['remote'].get('prepare_retry', {}).get('next_at', 0) <= time.time()
-                           and not batch_wait(row['payload'], batches, estimated_cost(row['payload'], self.observed_costs))
-                           and not (row['payload'].get('budget') and estimated_cost(row['payload'], self.observed_costs) is not None
-                                    and estimated_cost(row['payload'], self.observed_costs) > row['payload']['budget'])
-                           and (not self.paused or row['id'] in self.released)],
+            retire_exhausted(self)
+            admitted = admitted_queue(rows, batches, self.observed_costs, paused=self.paused, released=self.released)
+            queued_rows = sorted([row for row in admitted if row['remote'].get('prepare_retry', {}).get('next_at', 0) <= time.time()],
                            key=lambda row: -row['payload'].get('priority', 0))
             if not queued_rows or self.safety_paused:
                 return
@@ -1194,11 +1204,12 @@ class FlowService(QtCore.QObject, FlowOperations):
             client = queued = None
             # An unavailable 10-second lane must not block a ready 6-second job.
             matches = []
+            affinity = affinity_context(clients, rows, self.preferences, {row['id'] for row in admitted})
             for index, candidate in enumerate(queued_rows):
                 selected = choose_client(fresh_clients(self, candidate, clients), rows, limit, candidate['payload'], self.preferences,
-                                         estimated_cost(candidate['payload'], self.observed_costs))
+                                         estimated_cost(candidate['payload'], self.observed_costs), affinity=affinity)
                 if selected:
-                    rank = (-candidate['payload'].get('priority', 0), *credit_order(selected),
+                    rank = (-candidate['payload'].get('priority', 0), *dispatch_order(selected, self.preferences),
                             dispatch_rank(selected, candidate['payload'], self.preferences), index)
                     matches.append((rank, candidate, selected))
             if matches:
@@ -1228,7 +1239,8 @@ class FlowService(QtCore.QObject, FlowOperations):
                     remote['upload_recovery'] = queued['remote']['upload_recovery']
                 self.store.update(queued['id'], 'preparing', attempt=attempt, browser=client['id'], remote=remote)
                 job = queued['payload']
-                self.request(client, 'prepare', {'videoModel': 'omni_1_1_flash', 'duration': job['duration'],
+                if not reuse_prepare(self, client, self.store.get(queued['id'])):
+                    self.request(client, 'prepare', {'videoModel': 'omni_1_1_flash', 'duration': job['duration'],
                     'aspectRatio': 'ASPECT_RATIO_' + job['aspect'].replace(':', '_'),
                     'resolution': 'VIDEO_RESOLUTION_' + job['resolution'].upper(), 'footageType': 'VIDEO_FRAMES', 'count': 1}, queued['id'])
                 self.publish()
@@ -1239,18 +1251,23 @@ class FlowService(QtCore.QObject, FlowOperations):
                 held_profiles.update(hold['profile'] for hold in self.store.reset_holds() if hold['profile'])
                 available = [p for p in profiles if p not in self.launched and p not in online and p not in held_profiles
                              and not block_for({'profile': p}, self.preferences)]
+                cached = {profile: cached_profile(profile, self.preferences) for profile in available}
+                held_accounts = {str(row['remote'].get('account') or '').strip().casefold() for row in rows
+                    if row['status'] in TRANSIENT | {'uncertain', 'download_failed'}}
                 ranked = [(dispatch_rank({'profile': profile, 'id': ''}, row['payload'], self.preferences), index, profile)
                           for index, row in enumerate(queued_rows) for profile in available
-                          if not active_image(row['payload'], rows) and
-                          (not (owner := preferred_owner(row['payload'], clients, self.preferences,
-                              estimated_cost(row['payload'], self.observed_costs))) or not owner.get('profile') or owner['profile'] == profile)]
-                ranked = sorted((((*profile_order(profile, self.preferences), rank), index, profile) for rank, index, profile in ranked if rank is not None),
+                          if (not cached[profile].get('account') or str(cached[profile]['account']).strip().casefold() not in held_accounts) and
+                          allows_image(cached[profile], row['payload'], rows, self.preferences, affinity['images']) and
+                          (retained(cached[profile], self.preferences) or len(affinity['pool']) < limit)]
+                ranked = sorted(((((0 if retained(cached[profile], self.preferences) else 1),
+                    *profile_order(profile, self.preferences), rank), index, profile) for rank, index, profile in ranked if rank is not None),
                     key=lambda item:(item[0],item[1],available.index(item[2])))
                 candidate = ranked[0][2] if ranked else None
                 # Busy or unrelated lanes must not prevent starting a useful one.
                 held = [r for r in rows if r['status'] in TRANSIENT | {'uncertain', 'download_failed'}]
                 busy = {r['remote'].get('account') for r in held}
                 useful_accounts = {c['account'] for c in clients if c.get('account') not in busy and any(
+                    allows_image(c, row['payload'], rows, self.preferences, affinity['images']) and
                     capable(c, row['payload'], self.preferences, estimated_cost(row['payload'], self.observed_costs)) for row in queued_rows)}
                 self.launching = {profile: at for profile, at in self.launching.items() if time.time() - at < timing_value(self.preferences, 'browser_startup_seconds')}
                 # Cold connected pages and extension hello packets do not
@@ -1293,10 +1310,12 @@ class FlowService(QtCore.QObject, FlowOperations):
         for client in clients:
             client['account_state'] = account_hold(client, self.preferences)
             client['credit_cooldown'] = credit_hold(client, self.preferences)
+        admitted = admitted_queue(rows, batches, self.observed_costs, paused=self.paused, released=self.released)
+        affinity = affinity_context(clients, rows, self.preferences, {row['id'] for row in admitted})
         for row in rows:
             row['reset_risk'] = submission_risk(row, row['attempt'] in charged)
             row['wait_reason'] = waiting_reason(row, clients, rows, self.preferences, self.observed_costs, batches,
-                paused=self.paused, released=self.released)
+                paused=self.paused, released=self.released, affinity=affinity)
             detail = retry_detail(row, self.preferences)
             if detail: row['wait_reason'] = detail
         self.changed.emit({'jobs': rows, 'clients': clients, 'paused': self.paused,

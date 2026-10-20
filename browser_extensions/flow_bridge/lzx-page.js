@@ -4,6 +4,7 @@
   let handler, getSnapshot, helpers, lastSnapshot = '', lastIdentity = '', confirmedIdentity = '', lastSnapshotAt = 0, preparedProof = null;
   let timingValues = {}, statusTimer;
   let nativeOperation = false;
+  const pageInstance = globalThis.crypto?.randomUUID?.() || String(Date.now()) + ':' + Math.random();
   const timingMs = (key,fallback) => Math.max(1, (Number.isFinite(timingValues[key]) && timingValues[key] > 0 ? timingValues[key] : fallback)*1000);
   function applyTiming(raw) {
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return;
@@ -63,7 +64,7 @@
     throw Object.assign(new Error('Flow 页面控件尚未加载稳定，程序将自动等待后重试；未提交生成。'), {code: 'FLOW_PAGE_NOT_READY'});
   }
   function pageStatus(state = readiness()) {
-    emit({type: 'page_status', url: location.href, ...state, note: 'Flow 项目已连接'});
+    emit({type: 'page_status', url: location.href, page_instance:pageInstance, ...state, note: 'Flow 项目已连接'});
   }
   const locatedResults = new Set();
   function locateResult(tile, mediaId, taskId) {
@@ -312,7 +313,7 @@
     const state = readiness();
     const stamp = JSON.stringify(state);
     if (stamp !== lastReadiness) {lastReadiness = stamp; pageStatus(state);}
-    const data = {...getSnapshot(), ...state, native_busy:nativeOperation,
+    const data = {...getSnapshot(), ...state, native_busy:nativeOperation, page_instance:pageInstance,
       page_visibility:document.visibilityState || 'unknown', page_focused:document.hasFocus?.() === true};
     const encoded = JSON.stringify(data);
     if (force || encoded !== lastSnapshot || Date.now() - lastSnapshotAt > timingMs('page_snapshot_seconds',15)) {
@@ -433,7 +434,7 @@
             Date.now() - preparedProof.at < timingMs('page_proof_valid_seconds',5))) verifySettings(message.params);
         const email = await confirmAccount();
         emit({action: 'prepare_response', request_id: message.request_id, success: true,
-          data: {verified: true, model: 'omni_1_1_flash', cost: readCost(), summary: summary(), email}});
+          data: {verified: true, model: 'omni_1_1_flash', cost: readCost(), summary: summary(), email, page_instance:pageInstance}});
       } else if (message.action === 'upload_images') {
         if (!window.__lzxReferenceIdentity) throw Error('参考图校验脚本尚未就绪，未提交生成。');
         const data = await window.__lzxReferenceIdentity.upload(message.params || {});

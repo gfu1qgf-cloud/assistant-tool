@@ -263,6 +263,9 @@ class QueueStore:
             saved = db.execute('SELECT value FROM settings WHERE key="preferences"').fetchone()
             preferences = json.loads(saved[0]) if saved else {}
             affinities = dict(preferences.get('image_affinities', {}))
+            from .image_affinity import account_images, account_key
+            accounts = account_images(preferences)
+            original_accounts = dict(accounts)
             db.execute('DELETE FROM reset_holds WHERE until<=?', (time.time(),))
             for row in rows:
                 if row['id'] not in ids: continue
@@ -313,8 +316,10 @@ class QueueStore:
                 db.execute('INSERT INTO history VALUES (?,?,"queued",?)', (row['id'], now, message))
                 result['reset'].append(row['id'])
                 affinities.pop(row['payload'].get('image_identity', {}).get('sha256'), None)
-            if result['reset'] and affinities != preferences.get('image_affinities', {}):
+                accounts.pop(account_key(row['remote'].get('account')), None)
+            if result['reset'] and (affinities != preferences.get('image_affinities', {}) or accounts != original_accounts):
                 preferences['image_affinities'] = affinities
+                preferences['account_images'] = accounts
                 db.execute('INSERT OR REPLACE INTO settings VALUES ("preferences",?)', (json.dumps(preferences, ensure_ascii=False),))
         return result
 
@@ -437,9 +442,8 @@ class QueueStore:
                 self.update(row['id'], 'queued', attempt='', browser='', remote={})
 
 
-def choose_client(clients, rows, limit, job=None, preferences=None, cost=None):
-    from .image_affinity import active_image, preferred_owner
-    if job and active_image(job, rows): return None
+def choose_client(clients, rows, limit, job=None, preferences=None, cost=None, *, affinity=None):
+    from .image_affinity import allows_image, retained_pool, retained, dispatch_order
     active = [row for row in rows if row['status'] in TRANSIENT]
     if len(active) >= limit:
         return None
@@ -459,14 +463,14 @@ def choose_client(clients, rows, limit, job=None, preferences=None, cost=None):
     if job is None:
         return min(eligible, key=credit_order, default=None)
     preferences = preferences or {}
-    owner = preferred_owner(job, clients, preferences, cost)
-    if owner:
-        eligible = [client for client in eligible if account(client.get('account')) == account(owner['account']) and
-            (not owner.get('profile') or client.get('profile') == owner['profile'])]
+    pool = affinity['pool'] if affinity is not None else retained_pool(clients, rows, preferences)
+    pending = affinity['images'] if affinity is not None else None
+    eligible = [client for client in eligible if allows_image(client, job, rows, preferences, pending) and
+                (retained(client, preferences) or len(pool) < limit)]
     ranked = [(dispatch_rank(client, job, preferences), client) for client in eligible if capable(client, job, preferences, cost)]
     ranked = [(rank, client) for rank, client in ranked if rank is not None
               and (cost is None or client['credits'] >= cost)]
-    # Manual lanes still filter eligibility; automatic lanes must not make a
-    # rich account outrank a smaller funded account that can perform this job.
-    ranked.sort(key=lambda item: (*credit_order(item[1]), item[0]))
+    # Drain admitted accounts first. New accounts still enter by small balance;
+    # duration lanes filter eligibility rather than forcing account rotation.
+    ranked.sort(key=lambda item: (*dispatch_order(item[1], preferences), item[0]))
     return ranked[0][1] if ranked else None

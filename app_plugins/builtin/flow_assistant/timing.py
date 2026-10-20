@@ -24,6 +24,7 @@ SPECS = [Spec(*row) for row in (
     ('disk_check_seconds', '连接与启动', '下载磁盘状态缓存', 15, 1, 3600, '秒', '磁盘空间状态重新读取间隔。'),
     ('request_timeout_seconds', '超时与重试', '积分与普通请求响应超时', 60, 5, 3600, '秒', '等待扩展读取账号积分等普通请求。增大页面等待时，也应相应增大这里。'),
     ('prepare_timeout_seconds', '超时与重试', '参数准备响应超时', 110, 10, 7200, '秒', '应覆盖扩展等待消息通道、页面控件、参数和时长核对的总时间。'),
+    ('prepare_snapshot_seconds', '超时与重试', '浏览器参数快照有效期', 21600, 0, 2592000, '小时', '首次完整核对后，同一页面、账号和参数复用快照，省略重复准备。0 关闭；提交时仍设置并确认真实参数及本条图片。'),
     ('upload_timeout_seconds', '超时与重试', '图片上传响应超时', 120, 10, 7200, '秒', '超时仅恢复图片传输，不重新提交生成。'),
     ('download_timeout_seconds', '超时与重试', '重试下载响应超时', 60, 5, 7200, '秒', '等待扩展确认原结果下载已开始。'),
     ('credit_retry_seconds', '超时与重试', '首次积分读取失败重试间隔', 5, 1, 3600, '秒', '只在页面可用且仍在重试次数内读取；不解除低积分冷却。'),
@@ -137,7 +138,7 @@ def request_timeout(preferences, action, client=None):
     key = {'prepare': 'prepare_timeout_seconds', 'upload_images': 'upload_timeout_seconds',
            'retry_download': 'download_timeout_seconds', 'close_exhausted': 'credit_close_timeout_seconds'}.get(action, 'request_timeout_seconds')
     seconds = value(preferences, key)
-    if (client and client.get('extension_version') and client['extension_version'] not in {'1.1.21', '1.1.22', '1.1.23'}
+    if (client and client.get('extension_version') and client['extension_version'] not in {'1.1.21', '1.1.22', '1.1.23', '1.1.24'}
             and 'timing_settings_v1' not in client.get('capabilities', [])):
         seconds = max(seconds, CATALOG[key].default)
     return seconds

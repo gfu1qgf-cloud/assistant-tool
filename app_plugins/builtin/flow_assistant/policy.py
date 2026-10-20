@@ -66,28 +66,38 @@ def batch_wait(job, batches, cost=None):
     return ''
 
 
-def waiting_reason(row, clients, rows, preferences, observed, batches, *, paused=False, released=()):
+def admitted_queue(rows, batches, observed, *, paused=False, released=()):
+    """Only released, budget-admissible work may keep an image claim alive."""
+    return [row for row in rows if row['status'] == 'queued'
+            and (not paused or row['id'] in released)
+            and not batch_wait(row['payload'], batches, estimated_cost(row['payload'], observed))
+            and not (row['payload'].get('budget') and estimated_cost(row['payload'], observed) is not None
+                     and estimated_cost(row['payload'], observed) > row['payload']['budget'])]
+
+
+def waiting_reason(row, clients, rows, preferences, observed, batches, *, paused=False, released=(), affinity=None):
     if row['status'] != 'queued':
         return row['error']
     if paused and row['id'] not in released:
         return '队列已暂停，等待开始／只提交选中项'
-    from .image_affinity import active_image, preferred_owner
-    if active_image(row['payload'], rows):
-        return '同一参考图已有任务执行／核对中，等待原账号完成后继续；不同图片可并行'
+    from .image_affinity import allows_image, retained_pool
     waiting = row['remote'].get('small_balance_wait', {})
     if waiting.get('until', 0) > time.time():
         return '优先恢复小余额账号 ' + waiting['profile'] + '，高余额账号暂作备用'
     cost = estimated_cost(row['payload'], observed)
-    owner = preferred_owner(row['payload'], clients, preferences, cost)
-    if owner and not any(str(client.get('account') or '').strip().casefold() == owner['account'] and
-            capable(client, row['payload'], preferences, cost) for client in clients):
-        return '继续使用原账号 ' + owner['account'] + '；等待原浏览器恢复／空闲，积分不足后才更换账号'
+    eligible = [client for client in clients if capable(client, row['payload'], preferences, cost)]
+    if eligible and not any(allows_image(client, row['payload'], rows, preferences,
+            affinity['images'] if affinity is not None else None) for client in eligible):
+        return '账号正在独占处理其他参考图，完成该图剩余任务后再接本图；同一图片允许多个账号并行'
     if cost is not None and row['payload'].get('budget') and cost > row['payload']['budget']:
         source = '固定档位费用' if fixed_cost(row['payload']) is not None else '最近确认费用'
         return f'单条预算 {row["payload"]["budget"]} 低于{source} {cost:g}，请修改排队项预算'
     budget = batch_wait(row['payload'], batches, cost)
     if budget:
         return budget
+    pool = affinity['pool'] if affinity is not None else retained_pool(clients, rows, preferences)
+    if len(pool) >= max(1, min(8, int(preferences.get('concurrency', 2)))):
+        return '优先用完已选账号的积分，等待当前账号／图片完成或并行名额；不轮换仍有积分的账号'
     lane = [c for c in clients if dispatch_rank(c, row['payload'], preferences) is not None]
     duration = row['payload'].get('duration')
     label = f'{duration} 秒档' if duration else '通用档'

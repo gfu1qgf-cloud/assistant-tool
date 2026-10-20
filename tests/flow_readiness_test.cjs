@@ -42,11 +42,16 @@ function fixture({appear = 5000, hidden = false, navigate = false} = {}) {
   assert.equal(slow.preparations, 1);
   assert(slow.preparedAt[0] >= 6500, 'DOM appearing is not enough: controls must remain stable for 1.5 seconds');
   assert.equal(slow.events.find(e => e.request_id === 'prepare').success, true);
+  const identity = slow.events.find(e => e.request_id === 'prepare').data.page_instance;
+  assert.equal(typeof identity, 'string');
+  assert.equal(slow.events.find(e => e.type === 'snapshot').data.page_instance, identity);
   assert(slow.events.some(e => e.type === 'snapshot' && e.data.controls_ready === false));
   assert.equal(slow.api.readiness().controls_ready, true, 'background browser windows remain supported');
   slow.remount(); assert.equal(slow.api.readiness().controls_ready, false, 'Angular remount resets stabilization');
 
   const missing = fixture({appear: Infinity}); await missing.prepare();
+  assert.notEqual(missing.events.find(e => e.type === 'page_status').page_instance, identity,
+    'a new page controller cannot reuse the old document snapshot');
   assert.equal(missing.preparations, 0);
   assert.equal(missing.events.find(e => e.request_id === 'prepare').code, 'FLOW_PAGE_NOT_READY');
   const invisible = fixture({appear: 0, hidden: true}); await invisible.prepare();
