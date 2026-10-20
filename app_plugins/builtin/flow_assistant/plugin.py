@@ -2,6 +2,7 @@ from qt_compat import QtCore
 from app_plugins.api import MAIN_MENU, TASK_CONTEXT_MENU, PluginCommand, PluginSettingsPage
 from .timing import CONFIG_KEY, normalize, snapshot as timing_snapshot, validate
 import json
+import time
 import uuid
 
 
@@ -9,7 +10,7 @@ class FlowAssistantPlugin(QtCore.QObject):
     command = QtCore.pyqtSignal(object)
     plugin_id = 'flow_assistant'
     display_name = 'Flow 视频助手'
-    version = '0.4.24'
+    version = '0.4.25'
     upstream_version = '1.1.4'
     ui_api_version = 1
     manual_credit_check_api = 1
@@ -23,6 +24,7 @@ class FlowAssistantPlugin(QtCore.QObject):
         self.snapshot = {}
         self.busy = False
         self.launch_probes, self.stopping = {}, False
+        self.browser_launches = {}
         self.timing_request = ''
         self.pending_timing = None
 
@@ -76,6 +78,8 @@ class FlowAssistantPlugin(QtCore.QObject):
 
     def _changed(self, value):
         self.snapshot = value
+        connected = {client.get('profile') for client in value.get('clients', [])}
+        self.browser_launches = {key: at for key, at in self.browser_launches.items() if key[0] not in connected}
         if self.dialog:
             self.dialog.update_state(value)
 
@@ -129,6 +133,28 @@ class FlowAssistantPlugin(QtCore.QObject):
             self.context.log('Flow 时间设置已写入程序设置，但本次应用失败：' + str(result.get('error') or '未知错误') +
                 '；已保留当前运行参数，下次正常启动会重新应用。')
 
+    def launch_browser(self, directory, urls):
+        """Coalesce pending opens; Flow may reuse Chrome's existing window."""
+        from .timing import value as timing_value
+        launcher = getattr(self.context.parent_widget, 'chrome_plugin', None)
+        dialog = getattr(launcher, 'dialog', None)
+        profile = next((p for p in getattr(dialog, 'profiles', []) if p['directory'] == directory), None)
+        if not profile:
+            return False, 'Chrome 配置已不可用：' + directory
+        targets = tuple(str(url).strip() for url in urls if str(url).strip())
+        if not targets or any(not url.startswith('https://') for url in targets):
+            return False, '没有有效的 Flow 网页地址。'
+        now = time.monotonic()
+        wait = timing_value(self.snapshot.get('preferences', {}), 'browser_startup_seconds')
+        self.browser_launches = {key: at for key, at in self.browser_launches.items() if now - at < wait}
+        key = directory, targets
+        if key in self.browser_launches:
+            return True, None
+        ok, error = dialog.launch_profile(profile, urls=list(targets), new_window=False)
+        if ok:
+            self.browser_launches[key] = now
+        return ok, error
+
     def _launch(self, directory):
         launcher = getattr(self.context.parent_widget, 'chrome_plugin', None)
         dialog = getattr(launcher, 'dialog', None)
@@ -179,7 +205,12 @@ class FlowAssistantPlugin(QtCore.QObject):
             panel = self.open_dialog(); panel.open_setup(directory)
             panel.setup.prompt_project()
             return
-        ok, error = dialog.launch_profile(profile, urls=[project])
+        if live:
+            # The worker rechecks the current profile and guards paid work.
+            # Never turn an online page recovery into another Chrome launch.
+            self.command.emit({'action': 'open_browser', 'profile': directory})
+            return
+        ok, error = self.launch_browser(directory, [project])
         if not ok:
             self._failed('启动 Chrome 配置失败：' + str(error))
 

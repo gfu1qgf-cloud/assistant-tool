@@ -80,9 +80,10 @@ class UsabilityTests(unittest.TestCase):
         self.assertTrue(acks[-1]['connected']); self.assertNotIn('claim_url', acks[-1])
         self.assertFalse(client['setup_pending']); self.assertFalse(service.setup_requests)
         self.assertEqual(service.store.get(row['id'])['status'], 'generating')
-        self.assertEqual({request['action'] for request in service.pending.values()}, {'get_points', 'snapshot'})
-        self.assertFalse(any(request['action'] == 'open_project' for request in service.pending.values()),
-                         'the desktop acknowledgement, not an old extension worker, owns project navigation')
+        self.assertEqual({request['action'] for request in service.pending.values()}, {'get_points', 'snapshot', 'open_project'})
+        self.assertFalse(any(request['action'] in {'repair_project', 'refresh_project', 'run_tasks'}
+                             for request in service.pending.values()),
+                         'a busy project may only be activated and observed, never refreshed or regenerated')
 
     def test_changed_project_still_requires_pairing_not_silent_switch(self):
         service = self.service(); client = self.client(service, 'Profile 23')
@@ -135,14 +136,14 @@ class UsabilityTests(unittest.TestCase):
         self.assertEqual(service.setup_requests['Profile 23']['mode'], 'reload_only')
         self.assertFalse(any(p['action'] == 'run_tasks' for p in service.pending.values()))
 
-    def test_update_ack_opens_https_project_without_copying_secret(self):
+    def test_update_ack_preserves_existing_window_without_copying_secret(self):
         dialog, launcher, commands = self.ui(); setup = dialog.setup
         setup.project.setText(PROJECT); setup.begin(); request = commands[-1]
         with patch.object(setup, 'copy_bundle') as copy_bundle:
             setup.prepared({'request_id': request['request_id'], 'success': True, 'connected': True,
                             'needs_update': True, 'profile': 'Profile 23'})
         copy_bundle.assert_not_called()
-        self.assertEqual(launcher.launch_profile.call_args.kwargs['urls'], [PROJECT])
+        launcher.launch_profile.assert_not_called()
         self.assertIn('不用再复制配置', setup.status.text())
 
     def test_status_tracks_page_login_credits_ready_and_block(self):
@@ -180,7 +181,7 @@ class UsabilityTests(unittest.TestCase):
         with patch.object(setup, 'copy_bundle') as copy_bundle:
             setup.prepared({'request_id': request['request_id'], 'success': True, 'connected': True})
         copy_bundle.assert_not_called()
-        self.assertEqual(launcher.launch_profile.call_args.kwargs['urls'], [PROJECT])
+        launcher.launch_profile.assert_not_called()
         self.assertTrue(setup.connect_button.isEnabled()); self.assertIn('没有重新配对', setup.status.text())
 
     def test_batch_ui_default_is_submit_and_generate_but_save_only_is_explicit(self):

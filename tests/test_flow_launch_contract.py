@@ -56,39 +56,41 @@ class FlowLaunchContractTests(unittest.TestCase):
             ok, error = ChromeRunnerDialog.launch_profile(launcher, {'directory': 'Profile 23'}, urls=['  ', ''])
         self.assertFalse(ok); self.assertTrue(error); popen.assert_not_called()
 
-    def test_flow_and_next_browser_share_exact_launch_flags_and_do_not_add_empty_urls(self):
+    def test_flow_reuses_window_while_manual_next_browser_keeps_its_launch_flags(self):
         launcher = type('Launcher', (), {'chrome_path': r'C:\Program Files\Google\Chrome\Application\chrome.exe',
             'get_web_list': lambda _: [fixtures.PROJECT]})()
         with patch('PYUI.chrome_runner_pyui.subprocess.Popen') as popen:
             ChromeRunnerDialog.launch_profile(launcher, {'directory': 'Profile 23'})
-            ChromeRunnerDialog.launch_profile(launcher, {'directory': 'Profile 23'}, urls=[fixtures.PROJECT_ENTRY])
+            ChromeRunnerDialog.launch_profile(launcher, {'directory': 'Profile 23'}, urls=[fixtures.PROJECT_ENTRY], new_window=False)
         normal, flow = (call.args[0] for call in popen.call_args_list)
-        self.assertEqual(normal[:-1], flow[:-1])
+        self.assertEqual([arg for arg in normal[:-1] if arg != '--new-window'], flow[:-1])
         self.assertEqual(flow[-1], fixtures.PROJECT_ENTRY)
-        self.assertTrue(all(flow)); self.assertEqual(flow.count('--new-window'), 1)
+        self.assertTrue(all(flow)); self.assertNotIn('--new-window', flow)
+        self.assertEqual(normal.count('--new-window'), 1)
 
-    def test_already_connected_open_is_still_launched_by_desktop(self):
+    def test_already_connected_setup_ack_never_launches_chrome_again(self):
         dialog, launcher, commands = self.ui(); setup = dialog.setup
         setup.project.setText(fixtures.PROJECT); setup.begin()
         setup.prepared({'request_id': commands[-1]['request_id'], 'success': True,
             'connected': True, 'profile': 'Profile 23', 'project': fixtures.PROJECT})
-        self.assertEqual(launcher.launch_profile.call_args.kwargs['urls'], [fixtures.PROJECT])
+        launcher.launch_profile.assert_not_called()
 
-    def test_queue_open_browser_uses_desktop_even_when_extension_is_online(self):
+    def test_queue_open_browser_activates_online_project_without_desktop_launch(self):
         service = self.service()
         client = flow_fixtures.FlowTests.client(self, service, 'Profile 23')
         client['saved_project'] = fixtures.PROJECT
         launches = []; service.launch_requested.connect(launches.append)
         service.execute({'action': 'open_browser', 'profile': 'Profile 23'})
-        self.assertEqual(launches, ['Profile 23'])
-        self.assertFalse(any(request['action'] == 'open_project' for request in service.pending.values()))
+        self.assertFalse(launches)
+        self.assertTrue(any(request['action'] == 'open_project' for request in service.pending.values()))
 
     def test_live_bridge_overrides_stale_install_record_in_queue_launcher(self):
-        dialog, launcher, _ = self.ui(); plugin = dialog.plugin
+        dialog, launcher, commands = self.ui(); plugin = dialog.plugin
         plugin.snapshot = {'preferences': {'profile_projects': {'Profile 23': fixtures.PROJECT}},
             'clients': [{'profile': 'Profile 23', 'extension_version': EXTENSION_VERSION}]}
         plugin._launch_checked({'profile': 'Profile 23', 'status': 'missing', 'version': ''})
-        self.assertEqual(launcher.launch_profile.call_args.kwargs['urls'], [fixtures.PROJECT])
+        launcher.launch_profile.assert_not_called()
+        self.assertEqual(commands[-1], {'action': 'open_browser', 'profile': 'Profile 23'})
 
     def test_automatic_entry_needs_no_long_term_key_or_clipboard_operation(self):
         bundle = {'profile': 'Profile 23', 'project': fixtures.PROJECT,

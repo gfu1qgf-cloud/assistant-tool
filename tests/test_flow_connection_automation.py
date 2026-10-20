@@ -66,8 +66,8 @@ class ConnectionAutomationTests(unittest.TestCase):
         folder.assert_not_called()
         self.assertTrue(setup.connection_timer.isActive())
         setup.connection_expired()
-        self.assertIn('自动重试 1/3', setup.status.text())
-        self.assertTrue(commands[-1]['automatic'])
+        self.assertIn('自动等待 1/3', setup.status.text())
+        self.assertEqual(len(commands), 1, 'offline wait keeps the original claim entry and ticket')
         self.assertEqual(launcher.launch_profile.call_count, 1, 'retry must await the host guard before opening the configured project')
 
     def test_late_unknown_probe_uses_new_live_extension_connection(self):

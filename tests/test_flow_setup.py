@@ -309,7 +309,7 @@ class SetupTests(unittest.TestCase):
         deadline = time.monotonic() + 3
         while plugin.launch_probes and time.monotonic() < deadline: QtTest.QTest.qWait(10)
         self.assertEqual(launcher.launch_profile.call_args.args[0]['directory'], 'Profile 23')
-        self.assertEqual(launcher.launch_profile.call_args.kwargs, {'urls': [PROJECT]})
+        self.assertEqual(launcher.launch_profile.call_args.kwargs, {'urls': [PROJECT], 'new_window': False})
         self.assertFalse(any(item['action'] == 'setup_profile' for item in commands))
 
     def test_queue_probe_rechecks_project_before_launch_and_never_uses_generic_presets(self):

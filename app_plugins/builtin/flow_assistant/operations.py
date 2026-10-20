@@ -229,7 +229,13 @@ class FlowOperations(TransferRecovery):
                 saved = self.preferences.get('profile_projects', {}).get(profile) or (client or {}).get('saved_project')
                 if original and project_identity(original) != project_identity(saved):
                     raise ValueError('原任务的项目与此配置保存的地址不同，请在连接向导核对；没有打开其他项目。')
-                self.launch_requested.emit(profile)
+                if client:
+                    self.request(client, 'open_project', {'url': saved})
+                    if not client.get('page_ready'):
+                        from .connection_recovery import repair_idle
+                        repair_idle(self, client)
+                else:
+                    self.launch_requested.emit(profile)
             elif client:
                 # Legacy unlabelled clients can only activate an existing tab.
                 self.request(client, 'open_project', {'url': row['remote'].get('page') if row else ''})

@@ -241,7 +241,6 @@ class ConnectionSetup(QtWidgets.QGroupBox):
                 self.phase = 'auto_pair'; self.connection_timer.start(self.timer_ms('setup_pair_wait_seconds'))
                 self.status.setText('正在检查并自动恢复原项目页的扩展消息通道；等待页面重新确认。')
                 return
-            if not self.launch_urls([result.get('project') or self.project.text().strip()]): return
             client = next((c for c in self.dialog.state.get('clients', []) if c.get('profile') == self.profile.currentData()), {})
             if self.auto_retries or not client.get('page_ready'):
                 self.phase = 'auto_pair'
@@ -249,7 +248,7 @@ class ConnectionSetup(QtWidgets.QGroupBox):
             if result.get('needs_update'):
                 self.status.setText('扩展已连接且协议兼容，不用再复制配置，可以继续使用。有修复更新可用，空闲时再加载；无需重新配对。')
                 return
-            self.status.setText('扩展已经连接，已打开该配置的项目并刷新状态；没有重新配对，也没有暂停接单。')
+            self.status.setText('扩展已经连接，已定位原项目页并刷新状态；没有重新配对，也没有暂停接单。')
             return
         self.bundle = dict(result['pairing'])
         self.claim_url = result.get('claim_url', '')
@@ -320,9 +319,7 @@ class ConnectionSetup(QtWidgets.QGroupBox):
         profile = next((p for p in launcher.profiles if p['directory'] == result['profile']), None)
         if not profile:
             self.status.setText('这个 Chrome 配置已不存在，请刷新 Chrome 启动器。'); return
-        ok, error = launcher.launch_profile(profile, urls=[url])
-        if not ok:
-            self.status.setText('启动所选 Chrome 配置失败：' + str(error)); return
+        if not self.launch_urls([url]): return
         self.continue_button.hide()
         self.phase = 'auto_pair'
         self.connection_timer.start(self.retry_wait_ms())
@@ -338,7 +335,7 @@ class ConnectionSetup(QtWidgets.QGroupBox):
         profile = next((p for p in getattr(launcher, 'profiles', []) if p['directory'] == self.profile.currentData()), None)
         if not profile:
             self.status.setText('未找到这个 Chrome 配置，请刷新 Chrome 启动器。'); return False
-        ok, error = launcher.launch_profile(profile, urls=urls)
+        ok, error = self.dialog.plugin.launch_browser(profile['directory'], urls)
         if not ok: self.status.setText('打开浏览器失败：' + str(error))
         return ok
 
@@ -408,6 +405,14 @@ class ConnectionSetup(QtWidgets.QGroupBox):
             self.status.setText(f'自动连接已重试{limit}次仍未确认。请从“更多 → 检查／安装扩展”检查此配置，或处理浏览器中的登录／验证提示。')
             return
         self.auto_retries += 1
+        if not client:
+            # No worker can receive a recovery command yet. Keep the original
+            # one-time entry valid instead of replacing it and opening Chrome
+            # again on every timer tick.
+            self.phase = 'auto_pair'
+            self.connection_timer.start(self.retry_wait_ms())
+            self.status.setText(f'自动等待 {self.auto_retries}/{limit}：正在等待原浏览器的扩展恢复连接。')
+            return
         self.begin(automatic=True)
         self.status.setText(f'自动重试 {self.auto_retries}/{limit}：重新准备此配置的连接；等待确认后再调度。')
 

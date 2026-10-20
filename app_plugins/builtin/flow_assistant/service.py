@@ -901,13 +901,16 @@ class FlowService(QtCore.QObject, FlowOperations):
                     self.store.save_settings(preferences)
                     self.preferences = preferences
                     existing['setup_blocked'] = project_block(existing, preferences)
-                    # Navigation belongs to the desktop launcher. In particular,
-                    # an older worker must not create a hidden project tab here.
+                    # This client already owns a project window. Activate that
+                    # exact page and use the idle repair path when necessary.
+                    self.request(existing, 'open_project', {'url': existing['saved_project']})
+                    repairing = not existing.get('page_ready') and bool(repair_idle(self, existing))
                     if not existing.get('credits_local'):
                         self.request(existing, 'get_points')
                     self.request(existing, 'snapshot')
                     self.setup_ready.emit({'request_id': command.get('request_id'), 'success': True,
                                           'connected': True, 'profile': profile, 'project': project,
+                                          'repaired_pending': repairing,
                                           'pairing': {**self.pair, 'profile': profile, 'project': project,
                                               **({'setup_id': existing['setup_id']} if existing.get('setup_id') else {})},
                                           'needs_update': bool(existing.get('extension_version') and

@@ -1197,7 +1197,7 @@ class ChromeRunnerDialog(QtWidgets.QDialog,Ui_ChromeRunnerDialog):
 
         self.update_iterator_status(f'已批量启动 {launched_count} 个 profiles')
 
-    def launch_profile(self, profile, *, urls=None):
+    def launch_profile(self, profile, *, urls=None, new_window=True):
         if not self.chrome_path:
             return False, 'Chrome 可执行文件未找到'
         try:
@@ -1207,7 +1207,7 @@ class ChromeRunnerDialog(QtWidgets.QDialog,Ui_ChromeRunnerDialog):
             cmd = [
                 self.chrome_path,
                 f"--profile-directory={profile['directory']}",
-                '--new-window',
+                *(['--new-window'] if new_window else []),
                 '--start-maximized',
                 *targets,
             ]

@@ -98,6 +98,9 @@ class IdleRecoveryTests(unittest.TestCase):
         dialog,launcher,commands=self.ui(); setup=dialog.setup
         setup.project.setText(setups.PROJECT); setup.begin()
         setup.request_id=''; setup.phase='auto_pair'
+        dialog.state={'preferences':{},'clients':[{'id':'cold','profile':'Profile 23',
+            'saved_project':setups.PROJECT,'project':setups.PROJECT,'page_ready':False,
+            'extension_version':'1.1.18'}]}
         for count in range(1,4):
             setup.connection_expired()
             self.assertTrue(commands[-1]['automatic']); self.assertEqual(setup.auto_retries,count)
