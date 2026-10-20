@@ -15,7 +15,7 @@ TRANSPORT = '''    if (window.__lzxFlowTransport) {
         url: location.href, running: !!batchPromise,
         tasks: state.tasks.map(t => ({taskId: t.taskId, download_path: t.download_path,
           status: t.status, mediaBindings: t.mediaBindings, downloadIds: t.downloadIds}))
-      }), {prepare: syncPageVideoSettings,
+      }), {prepare: syncPageVideoSettings, initialized: () => bridgeUiReady,
         account: async () => {
           cachedEmail = ""; cachedPoints = null; lastProbeAt = 0;
           const points = await probePoints();
@@ -33,6 +33,15 @@ TRANSPORT = '''    if (window.__lzxFlowTransport) {
 
 def patch_ui(ui):
     ui = exact(ui, '  "use strict";', '  "use strict";\n' + QUIET)
+    ui = exact(ui, '  let state = {', '  let bridgeUiReady = false;\n  let state = {')
+    ui = exact(ui, '    if (state.isRunning && !batchPromise) {',
+        '    if (!window.__lzxFlowTransport && state.isRunning && !batchPromise) {')
+    ui = exact(ui, '    await loadState();\n    \n    // 如果网页刚才由于刷新中断',
+        '    await loadState();\n'
+        '    if (window.__lzxFlowTransport && !batchPromise) state.isRunning = false;\n'
+        '    bridgeUiReady = true;\n    \n    // 如果网页刚才由于刷新中断')
+    ui = exact(ui, '    if (state.isRunning) {\n      console.log("[FlowUI] 检测到批量运行状态为 TRUE',
+        '    if (!window.__lzxFlowTransport && state.isRunning) {\n      console.log("[FlowUI] 检测到批量运行状态为 TRUE')
     ui = exact(ui,
         '      onBatchFinished();\n      document.querySelectorAll("#flow-tasks-table input, #flow-tasks-table textarea, #flow-tasks-table select, #flow-tasks-table button").forEach(el => el.disabled = false);\n      batchPromise = null;',
         '      try {\n        onBatchFinished();\n'
@@ -145,6 +154,9 @@ def patch_ui(ui):
         '      item.duration = normalizeDuration(item.duration ?? item.duration_seconds ?? item.durationSeconds, window.__lzxFlowTransport ? null : 6);')
     ui = exact(ui, 'const duration = normalizeDuration(task.duration, calculateDuration(lineText));',
         'const duration = normalizeDuration(task.duration, window.__lzxFlowTransport ? null : calculateDuration(lineText));', 2)
+    ui = exact(ui, '  async function applyDurationSetting(value) {',
+        '  async function applyDurationSetting(value) {\n'
+        '    if (window.__lzxFlowTransport) return window.__lzxFlowTransport.applyDuration(value);')
     ui = exact(ui, '      if (panelOpen) {\n        console.warn(`[FlowUI] 当前模型设置面板中无时长选项',
         '      if (panelOpen) {\n        if (window.__lzxFlowTransport) throw durationError("当前模型没有可确认的时长选项，请使用模型默认时长");\n        console.warn(`[FlowUI] 当前模型设置面板中无时长选项')
     ui = exact(ui, '    if (!option) {\n      const availableOpts = options().map',

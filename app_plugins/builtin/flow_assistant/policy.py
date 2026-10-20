@@ -5,7 +5,7 @@ import math
 from pathlib import Path
 import time
 
-from .routing import cost_key, lane_key, dispatch_rank
+from .routing import cost_key, lane_key, dispatch_rank, parameter_block
 from .credit_policy import balance_ready
 from .connection_status import browser_keys, configured_profiles, browser_status
 from .pricing import fixed_cost
@@ -45,7 +45,9 @@ def capable(client, job, preferences, cost=None):
     return (not client.get('blocked') and not block_for(client, preferences)
             and not client.get('batch_running')
             and not (client.get('credit_check') or {}).get('hold_dispatch')
+            and (client.get('connection_recovery') or {}).get('state') != 'checking'
             and client.get('page_ready') is not False
+            and (client.get('prepare_wait') or {}).get('next_at', 0) <= time.time()
             and balance_ready(client)
             and (credits >= cost if cost is not None else credits > 0)
             and dispatch_rank(client, job, preferences) is not None)
@@ -76,6 +78,9 @@ def waiting_reason(row, clients, rows, preferences, observed, batches, *, paused
     duration = row['payload'].get('duration')
     label = f'{duration} 秒档' if duration else '通用档'
     if not lane:
+        limits = [parameter_block(c, row['payload'], preferences) for c in clients]
+        if limits and all(limits):
+            return '已连接浏览器暂不支持本条参数：' + str(limits[0]) + '；等待其他账号，可在恢复浏览器后重新检测'
         configured = configured_profiles(preferences)
         useful = [p for p in configured if dispatch_rank({'profile': p}, row['payload'], preferences) is not None]
         if not useful:

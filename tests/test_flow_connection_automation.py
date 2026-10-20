@@ -66,8 +66,9 @@ class ConnectionAutomationTests(unittest.TestCase):
         folder.assert_not_called()
         self.assertTrue(setup.connection_timer.isActive())
         setup.connection_expired()
-        self.assertIn('检查／安装扩展', setup.status.text())
-        self.assertEqual(launcher.launch_profile.call_count, 1, 'timeout cannot open more tabs')
+        self.assertIn('自动重试 1/3', setup.status.text())
+        self.assertTrue(commands[-1]['automatic'])
+        self.assertEqual(launcher.launch_profile.call_count, 1, 'retry must await the host guard before opening the configured project')
 
     def test_late_unknown_probe_uses_new_live_extension_connection(self):
         dialog, launcher, _ = self.ui(); setup = dialog.setup

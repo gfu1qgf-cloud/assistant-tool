@@ -1,13 +1,25 @@
 (() => {
   if (window.top !== window) return;
-  let ready = false;
+  let ready = false, lastPageAt = 0, running, bootReady;
   window.addEventListener('message', event => {
     if (event.source === window && event.origin === location.origin && event.data?.sender === 'lzx-flow-page') {
-      if (event.data.data?.type === 'page_status') ready = true;
+      if (['page_status', 'snapshot'].includes(event.data.data?.type)) {
+        ready = true; lastPageAt = Date.now();
+        if (typeof event.data.data?.data?.running === 'boolean') running = event.data.data.data.running;
+        const state = event.data.data.type === 'snapshot' ? event.data.data.data : event.data.data;
+        if (typeof state?.boot_ready === 'boolean') bootReady = state.boot_ready;
+      }
       chrome.runtime.sendMessage({action: 'lzxPageEvent', data: event.data.data}).catch(() => {});
     }
   });
   chrome.runtime.onMessage.addListener((message, sender, reply) => {
+    if (message.action === 'lzxPageHealth') {
+      window.postMessage({sender: 'lzx-flow-extension', message: {action: 'snapshot'}}, location.origin);
+      window.postMessage({sender: 'lzx-flow-extension', message: {action: 'ready'}}, location.origin);
+      setTimeout(() => reply({healthy: ready && bootReady !== false && Date.now() - lastPageAt < 1500 &&
+        !!document.getElementById('flow-batch-fab') && !!document.getElementById('flow-batch-overlay'), running}), 300);
+      return true;
+    }
     if (message.action !== 'lzxCommand') return;
     if (!ready) {
       window.postMessage({sender: 'lzx-flow-extension', message: {action: 'ready'}}, location.origin);

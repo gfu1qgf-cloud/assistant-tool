@@ -53,7 +53,8 @@ async function forward(message) {
     } catch {}
     await new Promise(resolve => setTimeout(resolve, 1000));
   }
-  throw new Error('主程序打开的 Flow 项目页尚未就绪，请检查登录／项目页面；扩展没有另外创建标签页。');
+  throw Object.assign(new Error('主程序打开的 Flow 项目页尚未就绪，请检查登录／项目页面；扩展没有另外创建标签页。'),
+    {code: 'FLOW_PAGE_NOT_READY'});
 }
 async function readyWorkTab(tabId) {
   const tab = await chrome.tabs.get(tabId);
@@ -96,8 +97,13 @@ async function receive(message) {
     return;
   }
   if (message.type === 'pong') return;
-  if (!['get_points', 'prepare', 'upload_images', 'run_tasks', 'snapshot', 'retry_download', 'open_project', 'refresh_project'].includes(message.action)) return;
+  if (!['get_points', 'prepare', 'upload_images', 'run_tasks', 'snapshot', 'retry_download', 'open_project', 'refresh_project', 'repair_project'].includes(message.action)) return;
   try {
+    if (message.action === 'repair_project') {
+      const result = await repairProject(message);
+      send({action:'repair_project_response',request_id:message.request_id,success:true,data:result});
+      return;
+    }
     if (message.action === 'refresh_project') {
       throw Error('提交生成后禁止自动刷新项目页；仅保留原任务并只读核对，不重新生成。');
     }
@@ -147,8 +153,38 @@ async function receive(message) {
     }
     await forward(message);
   } catch (error) {
-    send({action: message.action + '_response', request_id: message.request_id, success: false, error: String(error.message || error)});
+    send({action: message.action + '_response', request_id: message.request_id, success: false,
+      error: String(error.message || error), code: error.code || ''});
   }
+}
+const pageRepairs = new Map();
+async function repairProject(message) {
+  if (message.params?.idle !== true || message.params?.url !== config.project) throw Error('缺少本机软件的空闲确认，未刷新项目。');
+  const tabId = await ensureTab();
+  if (pageRepairs.has(tabId)) return pageRepairs.get(tabId);
+  const work = (async () => {
+    let health;
+    try {health = await chrome.tabs.sendMessage(tabId,{action:'lzxPageHealth'},{frameId:0});} catch {}
+    if (health?.running === true) throw Object.assign(Error('原网页队列仍在执行，保留原页面。'),{code:'FLOW_PAGE_REPAIR_BUSY'});
+    if (health?.healthy === true) return {reloaded:false,healthy:true};
+    const saved = await local();
+    const entry = saved.lzxBatches?.[activeBatch];
+    const downloads = Object.values(saved.lzxDownloads || {}).filter(item=>item.batch===activeBatch);
+    if (entry && entry.state !== 'rejected' && !(downloads.length && downloads.every(item=>item.reported==='complete'))) {
+      throw Object.assign(Error('网页仍保存未确认的提交记录，保留原任务，不自动刷新。'),{code:'FLOW_PAGE_REPAIR_BUSY'});
+    }
+    const {lzxPageRepair: previous} = await chrome.storage.local.get(['lzxPageRepair']);
+    if (previous?.project === config.project && Date.now()-previous.at < 30000) {
+      throw Error('本项目刚执行过页面恢复，等待加载完成后再检查。');
+    }
+    const tab = await chrome.tabs.get(tabId);
+    if (!sameProjectTab(tab,config.project)) throw Error('项目地址已变化，未刷新其他网页。');
+    await chrome.storage.local.set({lzxPageRepair:{project:config.project,at:Date.now(),tabId}});
+    await chrome.tabs.reload(tabId);
+    return {reloaded:true};
+  })();
+  pageRepairs.set(tabId,work);
+  try {return await work;} finally {pageRepairs.delete(tabId);}
 }
 async function retryBoundDownload(message) {
   const batch = message.params.batch_id, restore = message.params.restore;
@@ -414,9 +450,9 @@ async function projectSetupAction(entry, sender) {
         if (reply.type !== 'setup_reload_allowed') return;
         if (reply.ticket !== ticket || !reply.profile || new URL(reply.project).href.replace(/\/$/, '') !== project) throw Error('项目与本次连接请求不匹配。');
         receiving = true; clearTimeout(timer);
-        if (chrome.runtime.getManifest().version !== '1.1.17') {
+        if (chrome.runtime.getManifest().version !== '1.1.18') {
           await chrome.storage.local.set({lzxReloadSetup: {...entry, tabId: sender.tab.id,
-            mode: reply.mode || 'pair', profile: reply.profile, version: '1.1.17'}});
+            mode: reply.mode || 'pair', profile: reply.profile, version: '1.1.18'}});
           finish(null, {success: true, updating: true}); chrome.runtime.reload(); return;
         }
         if (action === 'options') {

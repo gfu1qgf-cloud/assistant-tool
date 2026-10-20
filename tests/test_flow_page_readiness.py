@@ -122,6 +122,7 @@ class PageReadinessTests(unittest.TestCase):
             row = service.store.get(row['id'])
             self.assertEqual(row['remote']['prepare_retry']['count'], count)
             recovery = {**row['remote']['prepare_retry'], 'next_at': 0}
+            client['prepare_wait'] = recovery
             service.store.update(row['id'], 'queued', remote={**row['remote'], 'prepare_retry': recovery})
             service._snapshot(client, {'url': PROJECT, 'tasks': [], 'controls_ready': True})
             service.paused = False; service._tick(); row = service.store.get(row['id'])

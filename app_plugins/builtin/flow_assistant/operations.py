@@ -87,9 +87,11 @@ class FlowOperations(TransferRecovery):
         blocks = dict(self.preferences.get('browser_blocks', {}))
         for key in keys:
             blocks.pop(key, None)
-        self.commit_preferences({**self.preferences, 'browser_blocks': blocks})
+        limits = {key: value for key, value in self.preferences.get('parameter_blocks', {}).items() if key not in keys}
+        self.commit_preferences({**self.preferences, 'browser_blocks': blocks, 'parameter_blocks': limits})
         for client in self.clients.values():
             if browser_keys(client) & keys:
+                client.pop('prepare_wait', None)
                 client['blocked'] = ''
                 from .setup_support import project_block
                 client['setup_blocked'] = project_block(client, self.preferences)

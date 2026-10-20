@@ -40,10 +40,21 @@ def automatic_lane(client, preferences):
             preferences.get(scope + '_lane_modes', {}).get(key) != 'fixed')
 
 
+def parameter_block(client, job, preferences):
+    scope, key = lane_key(client)
+    defaults = {'model': 'omni_1_1_flash', 'duration': None, 'aspect': '9:16', 'resolution': '720p'}
+    for entry in preferences.get('parameter_blocks', {}).get(scope + ':' + key, []):
+        if all(entry.get(field) == job.get(field, fallback) for field, fallback in defaults.items()):
+            return entry.get('reason') or '本条时长参数在此浏览器不可用'
+    return ''
+
+
 def dispatch_rank(client, job, preferences):
+    if parameter_block(client, job, preferences):
+        return None
     rank = lane_rank(client, job, preferences)
     if rank is not None:
         return rank
-    if job.get('duration') in DURATIONS and automatic_lane(client, preferences):
+    if job.get('duration') in (None, *DURATIONS) and automatic_lane(client, preferences):
         return 2  # Busy/account/credit checks happen before assignment.
     return None

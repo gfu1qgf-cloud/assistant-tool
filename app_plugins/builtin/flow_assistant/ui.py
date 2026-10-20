@@ -638,7 +638,10 @@ class FlowDialog(QtWidgets.QDialog):
         busy = sum(item['state'] == '执行中' for item in statuses)
         queued = [row for row in jobs if row['status'] == 'queued']
         reason = (queued[0].get('wait_reason') or queued[0].get('error') or '等待调度') if queued else ''
-        self.connection_summary.setText(f'浏览器：已连接 {len(statuses)} · 可接单 {ready} · 执行中 {busy}' +
+        active = sum(row['status'] in {'preparing', 'uploading', 'submitting', 'generating', 'downloading'} for row in jobs)
+        limit = int(state.get('preferences', {}).get('concurrency', 2))
+        attention = sum(item['state'] in {'需处理', '未就绪', '账号已隔离', '自动等待中'} for item in statuses)
+        self.connection_summary.setText(f'账号并行 {active}/{limit} · 浏览器：已连接 {len(statuses)} · 可接单 {ready} · 执行中 {busy} · 等待／需处理 {attention}' +
             (f'\n排队原因：{reason}' if reason else '\n提交并保存成功后自动调度；不必再点开始。'))
         self.update_browsers()
         self.setup.apply_state(state)
@@ -646,6 +649,7 @@ class FlowDialog(QtWidgets.QDialog):
         self.update_estimate()
 
     def closeEvent(self, event):
+        self.setup.cancel_auto_retry()
         self.setup.waiting_profile = ''; self.setup.capture_timer.stop()
         if hasattr(self.manual.recent, 'preview_dialog'): self.manual.recent.preview_dialog.close()
         self.manual.flush_draft()

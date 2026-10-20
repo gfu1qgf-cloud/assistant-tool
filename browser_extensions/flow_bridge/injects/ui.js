@@ -186,6 +186,7 @@
   // ----------------------------------------------------
   // 2. 状态管理与配置项
   // ----------------------------------------------------
+  let bridgeUiReady = false;
   let state = {
     tasks: [],             // 批量生成任务列表 (含 prompt, mode, image_name, local_image_path, duration, download_path, status, message, downloaded)
     taskRecord: {},        // mediaName -> 任务进度关联信息映射表
@@ -4034,6 +4035,7 @@
   }
 
   async function applyDurationSetting(value) {
+    if (window.__lzxFlowTransport) return window.__lzxFlowTransport.applyDuration(value);
     const target = normalizeDuration(value);
     if (target == null) return;
     let group;
@@ -6123,7 +6125,7 @@ ${presetAfter || ""}`.trim();
     saveState();
     showToast("安全限制挂起解除，继续批量生成...");
     
-    if (state.isRunning && !batchPromise) {
+    if (!window.__lzxFlowTransport && state.isRunning && !batchPromise) {
       startBatch();
     }
   }
@@ -6162,9 +6164,11 @@ ${presetAfter || ""}`.trim();
 
     // 加载先前保存的状态
     await loadState();
+    if (window.__lzxFlowTransport && !batchPromise) state.isRunning = false;
+    bridgeUiReady = true;
     
     // 如果网页刚才由于刷新中断且处于 Running 状态，则自动断点续跑启动批量任务
-    if (state.isRunning) {
+    if (!window.__lzxFlowTransport && state.isRunning) {
       console.log("[FlowUI] 检测到批量运行状态为 TRUE，自动恢复运行断点续传。任务索引:", state.currentIndex, "子行索引:", state.currentLineIndex);
       showToast("正在自动恢复未完成的生成任务，请保持浏览器窗口在前台...");
       
@@ -6722,7 +6726,7 @@ ${presetAfter || ""}`.trim();
         url: location.href, running: !!batchPromise,
         tasks: state.tasks.map(t => ({taskId: t.taskId, download_path: t.download_path,
           status: t.status, mediaBindings: t.mediaBindings, downloadIds: t.downloadIds}))
-      }), {prepare: syncPageVideoSettings,
+      }), {prepare: syncPageVideoSettings, initialized: () => bridgeUiReady,
         account: async () => {
           cachedEmail = ""; cachedPoints = null; lastProbeAt = 0;
           const points = await probePoints();

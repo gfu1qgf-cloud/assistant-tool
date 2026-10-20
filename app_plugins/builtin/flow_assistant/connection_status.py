@@ -37,11 +37,12 @@ def browser_status(client, preferences, jobs=(), now=None):
         environment_block = ''
     project_error = project_block(client, preferences, include_pending=False) if client.get('setup_pending') else ''
     account_error = hold_reason(client, preferences)
+    recovery = client.get('connection_recovery') or {}
     block = account_error or project_error or environment_block or client.get('setup_blocked') or client.get('blocked') or stored_block
     if (client.get('setup_pending') and not project_error and not environment_block
             and not client.get('blocked') and not stored_block):
         return {'connection': '已连接', 'project': project, 'state': '自动确认中',
-                'reason': str(client.get('setup_blocked') or '正在后台确认本配置，无需手动操作'), 'color': '#986100'}
+                'reason': str(recovery.get('message') or client.get('setup_blocked') or '正在后台确认本配置，无需手动操作'), 'color': '#986100'}
     if block:
         return {'connection': '已连接', 'project': project, 'state': '账号已隔离' if account_error else '需处理', 'reason': str(block), 'color': '#b03728'}
     active = next((row for row in jobs if row.get('status') in
@@ -57,8 +58,11 @@ def browser_status(client, preferences, jobs=(), now=None):
     if (client.get('credit_check') or {}).get('state') == 'checking':
         return {'connection': '已连接', 'project': project, 'state': '积分检测中',
                 'reason': '正在读取此浏览器的账号和积分，完成后自动恢复接单', 'color': '#986100'}
+    if (client.get('prepare_wait') or {}).get('next_at', 0) > now:
+        return {'connection': '已连接', 'project': project, 'state': '自动等待中',
+                'reason': '此浏览器的页面控件尚未稳定，短暂等待后自动重试；其他账号继续执行', 'color': '#986100'}
     if not client.get('page_ready'):
-        reason = client.get('ready_note') or client.get('page_error') or '扩展在线，正在自动等待 Flow 页面控件加载稳定'
+        reason = recovery.get('message') or client.get('ready_note') or client.get('page_error') or '扩展在线，正在自动等待 Flow 页面控件加载稳定'
     elif not client.get('account'):
         reason = client.get('note') or '页面已连接，正在首次读取 Flow 登录账号信息'
     elif not balance_ready(client, now):
@@ -66,6 +70,9 @@ def browser_status(client, preferences, jobs=(), now=None):
     elif client['credits'] <= 0:
         reason = '积分不足，等待补充积分或备用账号'
     else:
+        limits = [entry for key in browser_keys(client) for entry in preferences.get('parameter_blocks', {}).get(key, [])]
+        note = ('；部分参数不可用：' + '、'.join(dict.fromkeys(str(e.get('duration')) + ' 秒' for e in limits)) +
+                '，其他参数继续接单；修正后可恢复选中浏览器重新检测') if limits else ''
         return {'connection': '已连接', 'project': project, 'state': '可接单',
-                'reason': '已确认项目和账号；积分按已提交费用本地计算，不定时打开账号菜单', 'color': '#187747'}
+                'reason': '已确认项目和账号；积分按已提交费用本地计算' + note, 'color': '#187747'}
     return {'connection': '已连接', 'project': project, 'state': '未就绪', 'reason': reason, 'color': '#986100'}

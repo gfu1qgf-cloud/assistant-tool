@@ -25,7 +25,8 @@ const vm = require('node:vm');
   function group(label, ...nodes) {return {getAttribute() {return label;}, querySelectorAll() {return nodes;}};}
   function panel(model = 'Omni 1.1 Flash', count = 'x1', resolution = '720p', aspect = 'crop_9_16 9:16') {
     const groups = [group('Aspect ratio', node(aspect), node('16:9', false)),
-      group('Resolution', node(resolution), node('360p', false)), group('Outputs', node(count), node('x2', false))];
+      group('Resolution', node(resolution), node('360p', false)), group('Outputs', node(count), node('x2', false)),
+      group('Duration', node('8s'), node('10s', false))];
     return {querySelector(selector) {return selector === '.model-select-trigger-content' ? node(model) : null;}, querySelectorAll() {return groups;}, groups};
   }
   assert.throws(() => transport.verifySettings(settings), /比例.*分辨率.*x1/, 'model-only summary is insufficient by itself');
@@ -37,9 +38,9 @@ const vm = require('node:vm');
   }
   const ambiguous = panel(); ambiguous.groups[1] = group('Resolution', node('720p'), node('360p'));
   assert.throws(() => transport.verifySettings(settings, ambiguous), /分辨率/);
-  summary = 'Omni 1.1 Flash 720p crop_9_16 × 1';
+  summary = 'Omni 1.1 Flash 720p crop_9_16 × 1 8s';
   assert.equal(transport.verifySettings(settings), true, 'multiplication sign count is a supported display variant');
-  summary = 'Omni 1.1 Flash 720p 9:16 x10';
+  summary = 'Omni 1.1 Flash 720p 9:16 x10 8s';
   assert.throws(() => transport.verifySettings(settings), /x1/);
 
   const invoke = (id, params = settings) => hooks.message({source: window, origin: context.location.origin,
@@ -71,7 +72,7 @@ const vm = require('node:vm');
   const fresh = async value => {email = value; observe(); email = ''; observe();};
   await fresh('fresh@example.test');
   transport.send({action: 'get_points_response', data: {remaining_points: 50, email: 'fresh@example.test'}});
-  summary = 'Omni 1.1 Flash 720p 9:16 x1';
+  summary = 'Omni 1.1 Flash 720p 9:16 x1 8s';
   transport.attach(async () => {}, () => ({tasks: []}), {async prepare() {}, async account() {throw Error('known session must not probe');}});
   await invoke('closed-account-panel');
   assert.equal(messages.find(value => value.request_id === 'closed-account-panel').data.email, 'fresh@example.test');

@@ -5,6 +5,7 @@ import time
 from .connection_status import browser_keys
 from .setup_support import EXTENSION_VERSION, project_identity, compatible_extension
 from .account_policy import account_hold
+from .routing import lane_key
 
 
 def missing_window(error):
@@ -20,19 +21,49 @@ def defer_prepare(service, client, row, error, code=''):
         return True
     if not missing_window(error) and code not in {'FLOW_PAGE_NOT_READY', 'FLOW_SETTINGS_NOT_READY'}:
         return False
-    previous = row['remote'].get('prepare_retry', {})
+    previous = client.get('prepare_wait') or row['remote'].get('prepare_retry', {})
+    if previous.get('browser') != client['id']:
+        previous = {}
     count = int(previous.get('count', 0)) + 1
     if count > 3:
         service.quarantine(client, row, '页面或浏览器窗口连续未就绪，自动等待已达3次；未提交生成。')
         return True
     recovery = {'count': count, 'next_at': time.time() + (2, 5, 15)[count-1],
         'profile': client.get('profile', ''), 'browser': client['id'], 'reopen': missing_window(error)}
+    # A fresh snapshot may already show controls again. Keep the backoff on
+    # this browser so the next queue row cannot bypass it or reset its counter.
+    client['prepare_wait'] = recovery
     remote = {**row['remote'], 'prepare_retry': recovery}
     service.store.update(row['id'], 'queued', attempt='', browser='', remote=remote,
         error=f'正在等待页面控件／窗口就绪（自动重试{count}/3）；尚未提交生成')
     client['page_ready'] = False
     client['page_error'] = '页面或窗口尚未就绪，程序正在自动等待，不需要手动重新配对'
     service.request(client, 'snapshot')
+    return True
+
+
+def record_duration_limit(service, client, row, error, data):
+    duration = row['payload'].get('duration')
+    options = data.get('available_durations')
+    if (type(duration) is not int or data.get('duration') != duration or not isinstance(options, list)
+            or not options or any(type(item) is not int or not 1 <= item <= 60 for item in options)
+            or duration in options):
+        return False
+    scope, key = lane_key(client)
+    key = scope + ':' + key
+    fields = ('model', 'duration', 'aspect', 'resolution')
+    signature = {field: row['payload'].get(field) for field in fields}
+    blocks = dict(service.preferences.get('parameter_blocks', {}))
+    entries = [entry for entry in blocks.get(key, [])
+               if any(entry.get(field) != signature[field] for field in fields)]
+    entries.append({**signature, 'reason': str(error)[:500], 'available_durations': sorted(set(options)),
+                    'at': time.time()})
+    blocks[key] = entries[-16:]
+    service.commit_preferences({**service.preferences, 'parameter_blocks': blocks})
+    client.pop('prepare_wait', None)
+    remote = {key: value for key, value in row['remote'].items() if key != 'prepare_retry'}
+    service.store.update(row['id'], 'queued', attempt='', browser='', remote=remote,
+        error=f'此浏览器的 {duration} 秒参数不可用，等待其他可用账号；此浏览器仍可执行其他时长。')
     return True
 
 
@@ -44,7 +75,7 @@ def recover_preparation_block(service, client):
     clearing a block is never proof that the requested settings are selected.
     """
     if (not client.get('authorized') or not client.get('page_ready') or client.get('batch_running') is not False
-            or client.get('extension_version') != EXTENSION_VERSION or client.get('setup_blocked')
+            or client.get('extension_version') not in {'1.1.16', '1.1.17', '1.1.18'} or client.get('setup_blocked')
             or client.get('preparation_block_recovered')):
         return False
     expected = project_identity(service.preferences.get('profile_projects', {}).get(client.get('profile')))
@@ -59,6 +90,9 @@ def recover_preparation_block(service, client):
         return False
     legacy = {'无法确认页面已选中 Omni 1.1 Flash、比例、分辨率和 x1，未提交生成。',
               '浏览器响应超时，请检查页面后恢复；未发送新的生成请求。'}
+    if client.get('extension_version') == '1.1.18':
+        legacy.update(f'找不到视频时长选项，无法确认 {duration} 秒；请检查当前模型的设置面板'
+                      for duration in (4, 6, 8, 10))
     blocks = service.preferences.get('browser_blocks', {})
     keys = {key for key in browser_keys(client) if blocks.get(key) in legacy}
     if not keys:

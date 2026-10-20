@@ -29,12 +29,13 @@
     const prompt = document.querySelector("flow-rich-text-editor div.ProseMirror[contenteditable='true'], div.ProseMirror[contenteditable='true']");
     const settings = document.querySelector('button.settings-trigger-button') ||
       document.querySelector('div.submit-controls button:not(.generate-icon-button)');
-    const present = handler && helpers && document.readyState !== 'loading' && live(prompt) && live(settings);
+    const present = handler && helpers && (!helpers.initialized || helpers.initialized()) &&
+      document.readyState !== 'loading' && live(prompt) && live(settings);
     if (!present || prompt !== stablePrompt || settings !== stableSettings || url !== stableUrl) {
       stableSince = Date.now(); stablePrompt = prompt; stableSettings = settings; stableUrl = url;
     }
     const ready = !!present && Date.now() - attachedAt >= 2000 && Date.now() - stableSince >= 1500;
-    return {controls_ready: ready, ready_note: ready ? '' :
+    return {controls_ready: ready, boot_ready: !!handler && !!helpers && (!helpers.initialized || helpers.initialized()), ready_note: ready ? '' :
       present ? '页面控件已出现，正在自动等待加载稳定…' : '正在自动等待提示词框和模型设置控件加载…'};
   }
   async function waitForControls() {
@@ -97,9 +98,13 @@
     const email = String(value || '').trim().toLowerCase();
     return /^[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}$/.test(email) ? email : '';
   }
-  new MutationObserver(captureAccount)
-    .observe(document.documentElement, {subtree: true, childList: true, characterData: true,
-      attributes: true, attributeFilter: ['content']});
+  function observeAccount() {
+    if (!document.documentElement) return;
+    new MutationObserver(captureAccount).observe(document.documentElement,
+      {subtree:true,childList:true,characterData:true,attributes:true,attributeFilter:['content']});
+  }
+  if (document.documentElement) observeAccount();
+  else document.addEventListener('DOMContentLoaded', observeAccount, {once:true});
   function summary() {
     return document.querySelector('button.settings-trigger-button')?.textContent ||
       document.querySelector('div.submit-controls button:not(.generate-icon-button)')?.textContent || '';
@@ -109,6 +114,74 @@
   function settingsPanel() {
     return [...document.querySelectorAll('.cdk-overlay-pane flow-prompt-box-settings, flow-prompt-box-settings, .settings-content-overlay')]
       .find(live) || null;
+  }
+  const isSelected = node => node.selected === true || node.classList?.contains('mat-button-toggle-checked') ||
+    node.getAttribute?.('aria-checked') === 'true' || node.getAttribute?.('aria-pressed') === 'true' ||
+    node.querySelector?.('button')?.getAttribute('aria-checked') === 'true' ||
+    node.querySelector?.('button')?.getAttribute('aria-pressed') === 'true';
+  function durationSeconds(node) {
+    const clone = node.cloneNode?.(true);
+    clone?.querySelectorAll('mat-icon').forEach(icon => icon.remove());
+    const value = (clone?.textContent || node.textContent || node.getAttribute?.('aria-label') || '').trim();
+    const match = value.match(/^(\d+)\s*(?:秒|s|sec|seconds?)?$/i);
+    return match && Number(match[1]) > 0 ? Number(match[1]) : null;
+  }
+  function durationGroup(panel) {
+    const groups = [...panel.querySelectorAll('flow-toggles, mat-button-toggle-group, [role="radiogroup"], select[aria-label]')];
+    return groups.find(group => /时长|時長|秒数|秒數|长度|長度|duration|length/i.test(group.getAttribute('aria-label') || '')) ||
+      groups.find(group => {
+        const options = [...group.querySelectorAll('mat-button-toggle, [role="radio"], option')];
+        return options.length >= 2 && options.some(node => /^\s*\d+\s*(?:秒|s|sec|seconds?)\s*$/i.test(node.textContent || ''));
+      });
+  }
+  async function applyDuration(value) {
+    if (value == null) return;
+    const target = Number(value), url = location.href, until = Date.now() + 8000;
+    const clicked = new WeakSet();
+    let opens = 0, nextOpen = 0, previousGroup, optionsStamp = '', optionsAt = 0, selectedOnce = false;
+    while (Date.now() < until) {
+      if (location.href !== url) throw new Error('设置时长时项目地址发生变化，未提交生成。');
+      const panel = settingsPanel();
+      if (!panel && opens < 3 && Date.now() >= nextOpen) {
+        const trigger = document.querySelector('button.settings-trigger-button') ||
+          document.querySelector('div.submit-controls button:not(.generate-icon-button)');
+        if (live(trigger)) {trigger.click(); opens++; nextOpen = Date.now() + 2000;}
+      }
+      const group = panel && durationGroup(panel);
+      if (group) {
+        const options = [...group.querySelectorAll('mat-button-toggle, [role="radio"], option')];
+        const available = [...new Set(options.map(durationSeconds).filter(v => v != null))].sort((a,b) => a-b);
+        const stamp = JSON.stringify(available);
+        if (group !== previousGroup || stamp !== optionsStamp) {
+          previousGroup = group; optionsStamp = stamp; optionsAt = Date.now(); selectedOnce = false;
+        }
+        const option = options.find(node => durationSeconds(node) === target);
+        if (option && isSelected(option)) {
+          if (selectedOnce) return;
+          selectedOnce = true;
+        } else {
+          selectedOnce = false;
+          if (option && !clicked.has(option)) {
+            const button = option.querySelector?.('button') || option;
+            if (live(button)) {
+              clicked.add(option);
+              if (group.tagName === 'SELECT') {
+                group.value = option.value; group.dispatchEvent(new Event('change', {bubbles: true}));
+              } else button.click();
+            }
+          }
+        }
+        const model = panel.querySelector('.model-select-trigger-content');
+        if (!option && available.length && Date.now() - optionsAt >= 2000 &&
+            /omni.*1[._]?1.*flash/.test(compact(model?.textContent))) {
+          throw Object.assign(new Error(`当前 Omni 1.1 Flash 不支持 ${target} 秒；可选时长：${available.join('、')} 秒`),
+            {code: 'FLOW_DURATION_UNSUPPORTED', data: {duration: target, available_durations: available}});
+        }
+      } else {selectedOnce = false; previousGroup = null;}
+      await new Promise(resolve => setTimeout(resolve, 200));
+    }
+    throw Object.assign(new Error('时长设置面板尚未稳定，自动等待后重新核对；未提交生成。'),
+      {code: 'FLOW_SETTINGS_NOT_READY'});
   }
   async function waitForSettings(settings) {
     const url = location.href, until = Date.now() + 5000;
@@ -139,28 +212,36 @@
       for (const group of panel.querySelectorAll('flow-toggles, mat-button-toggle-group, [role="radiogroup"]')) {
         const label = compact(group.getAttribute('aria-label'));
         const category = /宽高比|顯示比例|長寬比|aspect/.test(label) ? 'aspect' :
-          /分辨率|解析度|resolution/.test(label) ? 'resolution' : /输出数量|生成數量|輸出數量|outputs|count/.test(label) ? 'count' : '';
+          /分辨率|解析度|resolution/.test(label) ? 'resolution' : /输出数量|生成數量|輸出數量|outputs|count/.test(label) ? 'count' :
+          /时长|時長|秒数|秒數|长度|長度|duration|length/.test(label) ? 'duration' : '';
         const seen = new Set();
         for (const node of group.querySelectorAll('mat-button-toggle, [role="radio"], button[aria-checked]')) {
           const button = node.querySelector('button');
-          if (!(node.classList.contains('mat-button-toggle-checked') || node.getAttribute('aria-checked') === 'true' ||
-              button?.getAttribute('aria-checked') === 'true')) continue;
+          if (!isSelected(node)) continue;
           const value = compact(node.textContent);
           if (seen.has(value)) continue;
           seen.add(value);
           const key = category || (/crop_\d|\d+:\d+/.test(value) ? 'aspect' :
             /\d+p/.test(value) ? 'resolution' : /^x\d+$/.test(value) ? 'count' : '');
-          if (key) put(key, value);
+          if (key) put(key, key === 'duration' ? String(durationSeconds(node) || '') : value);
         }
       }
+      const group = settings.duration != null && durationGroup(panel);
+      if (group) for (const node of group.querySelectorAll('mat-button-toggle, [role="radio"], option')) {
+        if (isSelected(node)) put('duration', String(durationSeconds(node) || ''));
+      }
     }
-    const text = compact(summary());
+    const displayed = summary(), text = compact(displayed);
     const ratio = settings.aspectRatio.includes('9_16') ? /9:16|crop_9_16/ : /16:9|crop_16_9/;
     const resolution = settings.resolution.includes('360') ? /360p/ : /720p/;
     const fields = [['model', 'Omni 1.1 Flash 模型', /omni.*1[._]?1.*flash/],
-      ['aspect', '画面比例', ratio], ['resolution', '分辨率', resolution], ['count', '单次输出 x1', /x1(?!\d)/]];
+      ['aspect', '画面比例', ratio], ['resolution', '分辨率', resolution], ['count', '单次输出 x1', /[x×✕]\s*1(?!\d)/i]];
+    if (settings.duration != null) fields.push(['duration', `${settings.duration} 秒时长`,
+      chosen.duration ? new RegExp('^' + Number(settings.duration) + '$') :
+        new RegExp('(?<![\\d.])' + Number(settings.duration) + '\\s*(?:秒|seconds?|sec|s)(?![a-z\\d])', 'i')]);
     const missing = fields.filter(([key, _label, matcher]) => chosen[key] ?
-      chosen[key].size !== 1 || !matcher.test([...chosen[key]][0]) : !matcher.test(text));
+      chosen[key].size !== 1 || !matcher.test([...chosen[key]][0]) :
+      !matcher.test(['count', 'duration'].includes(key) ? displayed : text));
     if (missing.length) {
       const wrong = missing.some(([key]) => chosen[key]);
       throw Object.assign(new Error('无法确认页面已选中的' + missing.map(([, label]) => label).join('、') +
@@ -230,7 +311,7 @@
       task.status?.[line] !== 'success'));
   }
   window.__lzxFlowTransport = {
-    verifySettings, settingsPanel, waitForSettings, activeEmail, captureAccount, locateResult, readiness, waitForControls,
+    verifySettings, settingsPanel, waitForSettings, applyDuration, activeEmail, captureAccount, locateResult, readiness, waitForControls,
     findSubmission, matchesSubmission, hasPendingResults,
     batchIdle() {snapshot(true);},
     sitePaused() {emit({type: 'site_pause', reason: 'Flow 网站提示安全限制，已暂停后续提交；保留当前页面，不自动刷新。'});},
@@ -316,7 +397,8 @@
       }
     } catch (error) {
       emit({action: message.action + '_response', request_id: message.request_id, success: false,
-        error: String(error.message || error), code: error.code || ''});
+        error: String(error.message || error), code: error.code || '',
+        ...(error.code === 'FLOW_DURATION_UNSUPPORTED' ? {data: error.data} : {})});
     }
   });
   setInterval(() => {accountIssue(); snapshot();}, 2000);

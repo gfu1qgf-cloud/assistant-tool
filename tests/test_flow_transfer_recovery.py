@@ -141,6 +141,7 @@ class TransferTests(unittest.TestCase):
         self.assertEqual(service.store.get(row['id'])['status'], 'uploading')
         self.due(service, row['id'], 'upload'); service.watch_transfer_retries()
         self.assertFalse(service.pending)
+        client.update(authorized=True, retired=False)
         service.clients[client['socket']] = client; service.watch_transfer_retries()
         service._response(client, {'request_id': old, 'success': True})
         self.assertNotIn('run_tasks', [v['action'] for v in self.actions(client)])

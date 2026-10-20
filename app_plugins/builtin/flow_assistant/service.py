@@ -9,6 +9,7 @@ import time
 import uuid
 
 from qt_compat import QtCore, QtNetwork
+from PyQt6 import sip
 from PyQt6.QtWebSockets import QWebSocketServer
 
 from .archive import archive_download
@@ -23,11 +24,16 @@ from .connection_status import configured_profiles, browser_keys
 from .pricing import fixed_cost
 from .transfer_policy import retry_info, retry_detail, ready_bindings
 from .setup_pairing import confirm_saved_connection
-from .page_readiness import defer_prepare, watch_preparation, recover_window_block, recover_preparation_block, retry_initial_credits, missing_window
+from .page_readiness import defer_prepare, watch_preparation, recover_window_block, recover_preparation_block, retry_initial_credits, missing_window, record_duration_limit
 from .account_policy import mark_account, reset_accounts, account_hold, park_unsubmitted_job
+from .connection_recovery import repair_idle, watch_connections
 
 DEFAULT_PORT = 18189
 PROTOCOL = 1
+
+
+def socket_alive(socket):
+    return socket is not None and (not isinstance(socket, QtCore.QObject) or not sip.isdeleted(socket))
 
 
 class FlowService(QtCore.QObject, FlowOperations):
@@ -57,6 +63,7 @@ class FlowService(QtCore.QObject, FlowOperations):
         self.drafts = {}
         self.setup_requests = {}
         self.credit_debits = {}
+        self.connection_recoveries = {}
         self.archive_result.connect(self._archived)
 
     @QtCore.pyqtSlot()
@@ -88,7 +95,33 @@ class FlowService(QtCore.QObject, FlowOperations):
             self.failed.emit(str(error))
 
     def send(self, client, message):
-        client['socket'].sendTextMessage(json.dumps(message, ensure_ascii=False))
+        socket = client.get('socket')
+        if client.get('retired') or not socket_alive(socket):
+            self._disconnected(socket)
+            return False
+        try:
+            sent = socket.sendTextMessage(json.dumps(message, ensure_ascii=False))
+        except RuntimeError:
+            if socket_alive(socket):
+                raise
+            self._disconnected(socket)
+            return False
+        if type(sent) is int and sent <= 0:
+            self._close_socket(socket)
+            self._disconnected(socket)
+            return False
+        return True
+
+    def _close_socket(self, socket):
+        if not socket_alive(socket):
+            self._disconnected(socket)
+            return
+        try:
+            socket.close()
+        except RuntimeError:
+            if socket_alive(socket):
+                raise
+            self._disconnected(socket)
 
     def request(self, client, action, params=None, job=None):
         if action == 'refresh_project':
@@ -107,29 +140,42 @@ class FlowService(QtCore.QObject, FlowOperations):
         params = dict(params or {})
         if action in {'prepare', 'upload_images', 'run_tasks'}:
             params['wait_for_ready'] = True
-        self.send(client, {'action': action, 'request_id': request_id, 'params': params})
+        if not self.send(client, {'action': action, 'request_id': request_id, 'params': params}):
+            self.pending.pop(request_id, None)
+            return False
+        return True
 
     def _accept(self):
         socket = self.server.nextPendingConnection()
+        if not socket_alive(socket):
+            return
+        # Keep the C++ connection owned by this worker until retirement. A
+        # Python reference alone does not guarantee a live Qt wrapper.
+        socket.setParent(self)
         if socket.origin() != f'chrome-extension://{EXTENSION_ID}':
             socket.abort()
-            socket.deleteLater()
+            if socket_alive(socket): socket.deleteLater()
             return
         socket.setMaxAllowedIncomingMessageSize(1024 * 1024)
         socket.setMaxAllowedIncomingFrameSize(1024 * 1024)
         self.clients[socket] = {'socket': socket, 'authorized': False, 'connected': time.time()}
         socket.textMessageReceived.connect(lambda text, s=socket: self._message(s, text))
         socket.disconnected.connect(lambda s=socket: self._disconnected(s))
+        socket.destroyed.connect(lambda _object=None, s=socket: self._disconnected(s))
 
     def _disconnected(self, socket):
-        client = self.clients.pop(socket, {})
+        client = self.clients.pop(socket, None)
+        if client is None:
+            return
+        client['retired'] = True
+        client['authorized'] = False
         if self.closing:
-            socket.deleteLater()
+            if socket_alive(socket): socket.deleteLater()
             return
         if client.get('id') and any(c.get('authorized') and c.get('id') == client['id'] for c in self.clients.values()):
             # A late disconnect from the replaced socket does not own the
             # new connection's attempt, even though the browser ID is stable.
-            socket.deleteLater()
+            if socket_alive(socket): socket.deleteLater()
             return
         for row in self.store.rows():
             if row['browser'] == client.get('id') and row['status'] in TRANSIENT:
@@ -138,13 +184,19 @@ class FlowService(QtCore.QObject, FlowOperations):
                     continue
                 status = 'failed' if row['status'] in {'preparing', 'uploading'} else 'uncertain'
                 self.store.update(row['id'], status, error='浏览器断开；已提交的任务会先核对，不自动重复生成。')
-        socket.deleteLater()
+        for request_id, request in list(self.pending.items()):
+            if request['client'] == client.get('id'):
+                self.pending.pop(request_id, None)
+        if socket_alive(socket): socket.deleteLater()
         if not self.closing:
             self.publish()
 
     def _message(self, socket, text):
         client = self.clients.get(socket)
         if not client:
+            return
+        if not socket_alive(socket):
+            self._disconnected(socket)
             return
         try:
             if len(text) > 1024 * 1024:
@@ -166,7 +218,7 @@ class FlowService(QtCore.QObject, FlowOperations):
                     claim_setup(self, client, message)
                     return
                 if message.get('type') != 'hello' or message.get('protocol') != PROTOCOL or not hmac.compare_digest(str(message.get('token', '')), self.pair['token']):
-                    socket.close()
+                    self._close_socket(socket)
                     return
                 browser_id = str(message.get('browser_id') or '')
                 if not browser_id or len(browser_id) > 100:
@@ -183,7 +235,7 @@ class FlowService(QtCore.QObject, FlowOperations):
                 for other, info in list(self.clients.items()):
                     if other is not socket and info.get('id') == browser_id:
                         info['authorized'] = False
-                        other.close()
+                        self._close_socket(other)
                 setup_request = self.setup_requests.get(client['profile'], {})
                 expected_setup = setup_request.get('id') if setup_request.get('mode') != 'reload_only' else None
                 if setup_request.get('mode') == 'reload_only' and client['extension_version'] == EXTENSION_VERSION:
@@ -199,8 +251,10 @@ class FlowService(QtCore.QObject, FlowOperations):
                     self.store.save_settings(preferences)
                     self.preferences = preferences
                 client['setup_blocked'] = project_block(client, self.preferences)
-                self.launching.pop(client['profile'], None)
-                self.send(client, {'type': 'welcome', 'protocol': PROTOCOL})
+                # A WebSocket hello is not a ready browser. Keep its startup
+                # slot until both the page and initial account probe finish.
+                if not self.send(client, {'type': 'welcome', 'protocol': PROTOCOL}):
+                    return
                 if not account_hold(client, self.preferences):
                     self.request(client, 'get_points')
                 self.request(client, 'snapshot')
@@ -229,6 +283,8 @@ class FlowService(QtCore.QObject, FlowOperations):
                 client['page_at'] = time.time()
                 client['page_error'] = ''
                 client['setup_blocked'] = project_block(client, self.preferences)
+                if client.get('page_ready') and client.get('credits_local'):
+                    self.launching.pop(client.get('profile'), None)
                 confirm_saved_connection(self, client)
                 recover_window_block(self, client)
                 retry_initial_credits(self, client)
@@ -256,6 +312,19 @@ class FlowService(QtCore.QObject, FlowOperations):
         self.pending.pop(request_id)
         action, job_id = request['action'], request['job']
         data = message.get('data') or {}
+        if action == 'repair_project':
+            current = dict(client.get('connection_recovery') or {})
+            current.update(state='waiting' if message.get('success') else 'failed',
+                message='页面已恢复，正在重新确认连接和积分' if message.get('success') else
+                    str(message.get('error') or '页面修复未完成')[:500])
+            client['connection_recovery'] = current
+            if message.get('code') == 'FLOW_PAGE_REPAIR_BUSY':
+                client['batch_running'] = True
+            if message.get('success'):
+                client.update(credits_ready_failures=0, credits_waiting_ready=True,
+                    credits_waiting_account=False, credits_retry_at=time.time() + 3)
+            self.request(client, 'snapshot')
+            return
         if action == 'get_points':
             if request['at'] < client.get('account_reset_at', 0):
                 self.request(client, 'get_points')
@@ -305,6 +374,7 @@ class FlowService(QtCore.QObject, FlowOperations):
                                        credits_estimated=spent > 0)
             client['note'] = message.get('error') or ('' if client['account'] else '尚未确认当前 Flow 登录账号')
             if message.get('success', True) and client['credits_local']:
+                if client.get('page_ready'): self.launching.pop(client.get('profile'), None)
                 client['credit_check'] = {'state': 'success', 'at': time.time(),
                     'message': '已读取当前账号和积分；后续按实际提交费用本地扣算'}
             if not message.get('success', True):
@@ -335,6 +405,11 @@ class FlowService(QtCore.QObject, FlowOperations):
                     error='自动刷新未执行：'+str(message.get('error') or '原页面未响应')+'；未重新生成。')
                 return
             if action == 'prepare':
+                if message.get('code') == 'FLOW_DURATION_UNSUPPORTED':
+                    if record_duration_limit(self, client, row, message.get('error') or '当前时长不可用', data):
+                        return
+                    defer_prepare(self, client, row, '时长选项尚未稳定，等待后重新核对；未提交生成。', 'FLOW_SETTINGS_NOT_READY')
+                    return
                 if defer_prepare(self, client, row, message.get('error') or '', message.get('code', '')):
                     return
                 self.quarantine(client, row, str(message.get('error') or '页面参数核对失败'))
@@ -363,6 +438,7 @@ class FlowService(QtCore.QObject, FlowOperations):
                     or row['remote'].get('account') and row['remote']['account'] != client['account']):
                 self.quarantine(client, row, '核对参数时登录账号发生变化或无法确认，请刷新账号并恢复。')
                 return
+            client.pop('prepare_wait', None)
             if cost is None:
                 batch = self.store.batches().get(row['payload'].get('batch_id'), {})
                 if batch.get('limit_total'):
@@ -455,6 +531,8 @@ class FlowService(QtCore.QObject, FlowOperations):
                 page_ready=data.get('controls_ready', True) is True, ready_note=str(data.get('ready_note') or '')[:300],
                 page_at=time.time(), page_error='')
             client['setup_blocked'] = project_block(client, self.preferences)
+            if client.get('page_ready') and client.get('credits_local'):
+                self.launching.pop(client.get('profile'), None)
             confirm_saved_connection(self, client)
             recover_window_block(self, client)
             if data.get('running') is False:
@@ -696,6 +774,23 @@ class FlowService(QtCore.QObject, FlowOperations):
                     raise ValueError('Flow 本地连接服务尚未启动，请检查端口或离线模式后重试。')
                 profile = profile_name(command.get('profile'))
                 project = project_url(command.get('project'), required=True)
+                if command.get('automatic'):
+                    current = [c for c in self.clients.values() if c.get('authorized') and c.get('profile') == profile]
+                    accounts = {str(c.get('account') or '').strip().casefold() for c in current} - {''}
+                    if account_hold({'profile': profile}, self.preferences) or any(account_hold(c, self.preferences) for c in current):
+                        self.setup_ready.emit({'request_id': command.get('request_id'), 'success': False,
+                            'account_blocked': True, 'error': '此账号已隔离，等待用户处理后手动重置；停止自动配置。'})
+                        return
+                    held = any(r['status'] in TRANSIENT | {'archiving', 'uncertain', 'download_failed'} and
+                        (r['remote'].get('profile') == profile or r['browser'] in {c['id'] for c in current} or
+                         str(r['remote'].get('account') or '').strip().casefold() in accounts) for r in self.store.rows())
+                    if held or any(c.get('batch_running') for c in current):
+                        self.setup_ready.emit({'request_id': command.get('request_id'), 'success': False,
+                            'deferred': True, 'error': '账号仍在执行／核对原任务，空闲后自动重试连接。'})
+                        return
+                    saved = self.preferences.get('profile_projects', {}).get(profile)
+                    if saved and project_identity(saved) != project_identity(project):
+                        raise ValueError('项目地址已经变化，停止旧连接的自动重试，请确认当前配置。')
                 if not command.get('force_pair'):
                     for current in self.clients.values():
                         if current.get('profile') == profile:
@@ -718,6 +813,12 @@ class FlowService(QtCore.QObject, FlowOperations):
                         'pairing': {**self.pair, 'profile': profile, 'project': project, 'setup_id': ticket}})
                     return
                 if existing and not command.get('force_pair') and compatible_extension(existing.get('extension_version')):
+                    if command.get('automatic') and not existing.get('page_ready'):
+                        repair_idle(self, existing)
+                        self.setup_ready.emit({'request_id': command.get('request_id'), 'success': True,
+                            'connected': True, 'repaired_pending': True, 'profile': profile, 'project': project})
+                        self.publish()
+                        return
                     preferences = {**self.preferences, 'profile_projects': {
                         **self.preferences.get('profile_projects', {}), profile: project}}
                     self.store.save_settings(preferences)
@@ -748,6 +849,7 @@ class FlowService(QtCore.QObject, FlowOperations):
                 self.preferences = preferences
                 previous_setup = self.setup_requests.get(profile, {})
                 reuse = (previous_setup.get('mode') != 'reload_only'
+                    and not (command.get('automatic') and previous_setup.get('claimed'))
                     and previous_setup.get('expires', 0) > time.time()
                     and project_identity(previous_setup.get('project')) == project_identity(project)
                     and (not command.get('force_pair') or command.get('request_id') and previous_setup.get('request') == command['request_id']))
@@ -830,7 +932,8 @@ class FlowService(QtCore.QObject, FlowOperations):
                 timer = getattr(self, 'timer', None)
                 if timer: timer.stop()
                 for socket in list(self.clients):
-                    socket.close()
+                    self._close_socket(socket)
+                    self._disconnected(socket)
                 server = getattr(self, 'server', None)
                 if server: server.close()
                 pool = getattr(self, 'pool', None)
@@ -869,8 +972,12 @@ class FlowService(QtCore.QObject, FlowOperations):
             if is_offline():
                 return
             for socket, client in list(self.clients.items()):
+                if not socket_alive(socket):
+                    self._disconnected(socket)
+                    continue
                 if not client['authorized'] and time.time() - client['connected'] > 5:
-                    socket.close()
+                    self._close_socket(socket)
+                    continue
                 if client.get('page_ready') and time.time() - client.get('page_at', 0) > 45:
                     client['page_ready'] = False
                     client['page_error'] = 'Flow 页面超过 45 秒未响应，请打开浏览器检查或刷新状态'
@@ -890,6 +997,9 @@ class FlowService(QtCore.QObject, FlowOperations):
                             if request['action'] == 'get_points':
                                 client['credit_check'] = {'state': 'failed', 'at': time.time(),
                                     'message': '积分检测响应超时，请检查该浏览器的登录和项目页面后重试'}
+                                failures = client.get('credits_ready_failures', 0) + 1
+                                client.update(credits_ready_failures=failures, credits_waiting_ready=failures < 3,
+                                    credits_waiting_account=False, credits_retry_at=time.time() + 5)
                 if request['job']:
                     row = self.store.get(request['job'])
                     # A disconnected request may outlive an explicit retry.
@@ -916,6 +1026,8 @@ class FlowService(QtCore.QObject, FlowOperations):
             if self.watch_stalled():
                 self.publish()
             if watch_preparation(self):
+                self.publish()
+            if watch_connections(self):
                 self.publish()
             if self.watch_transfer_retries():
                 self.publish()
@@ -988,7 +1100,19 @@ class FlowService(QtCore.QObject, FlowOperations):
                 useful_accounts = {c['account'] for c in clients if c.get('account') not in busy and any(
                     capable(c, row['payload'], self.preferences, estimated_cost(row['payload'], self.observed_costs)) for row in queued_rows)}
                 self.launching = {profile: at for profile, at in self.launching.items() if time.time() - at < 90}
-                occupied = sum(r['status'] in TRANSIENT for r in rows) + len(useful_accounts) + len(self.launching)
+                # Cold connected pages and extension hello packets do not
+                # justify opening the entire backup group while four pages
+                # are still initializing or undergoing bounded recovery.
+                starting = {c.get('profile') for c in clients if c.get('profile') and
+                    c.get('profile') not in held_profiles and c.get('account') not in useful_accounts and
+                    not block_for(c, self.preferences) and not c.get('blocked') and
+                    (not c.get('page_ready') or not c.get('credits_local')) and
+                    (time.time() - c.get('connected', 0) < 90 or
+                     (c.get('connection_recovery') or {}).get('state') == 'checking' or
+                     0 < (c.get('connection_recovery') or {}).get('count', 0) < 3)}
+                starting.update(p for p in self.launching if p not in held_profiles and
+                    not any(c.get('profile') == p and c.get('account') in useful_accounts for c in clients))
+                occupied = sum(r['status'] in TRANSIENT for r in rows) + len(useful_accounts) + len(starting)
                 if candidate and occupied < limit:
                     target_job = queued_rows[ranked[0][1]]['payload']
                     self.assign_lane({'profile': candidate, 'id': ''}, target_job)

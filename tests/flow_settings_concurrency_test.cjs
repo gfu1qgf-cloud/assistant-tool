@@ -10,7 +10,7 @@ function node(text, checked = true) {
     getAttribute: () => null, querySelector: () => null};
 }
 function panel(model = 'Omni 1.1 Flash', count = 'x1') {
-  const groups = [['Aspect ratio', '9:16'], ['Resolution', '720p'], ['Outputs', count]];
+  const groups = [['Aspect ratio', '9:16'], ['Resolution', '720p'], ['Outputs', count], ['Duration', '8s']];
   return {isConnected: true, getAttribute: () => null,
     querySelector: selector => selector === '.model-select-trigger-content' ? node(model) : null,
     querySelectorAll: () => groups.map(([label, value]) => ({getAttribute: () => label,
