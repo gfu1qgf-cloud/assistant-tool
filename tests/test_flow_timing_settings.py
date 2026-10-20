@@ -4,6 +4,7 @@ import json
 import os
 import time
 import unittest
+from flow_reference_fixtures import upload_receipt
 from unittest.mock import MagicMock, patch
 
 from qt_compat import QtWidgets, QtGui
@@ -132,7 +133,7 @@ class TimingSettingsTests(unittest.TestCase):
         seen = []
         client['socket'].sendTextMessage.side_effect = lambda _message: seen.append(
             service.store.settings()['credit_balances'][client['account']]['balance'])
-        service._response(client, {'request_id': key, 'success': True})
+        service._response(client, {'request_id': key, 'success': True, 'data': upload_receipt(service, row['id'])})
         self.assertEqual(seen, [38])
         restored = {'id': client['id'], 'profile': client['profile'], 'saved_project': PROJECT}
         self.assertTrue(restore_balance(restored, service.store.settings()))

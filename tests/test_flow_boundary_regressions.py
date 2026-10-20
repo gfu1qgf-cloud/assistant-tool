@@ -66,8 +66,11 @@ class FlowBoundaryTests(unittest.TestCase):
         for request in service.pending.values():
             request['at'] = time.time() - 200
         service._disconnected(client['socket'])
-        self.assertEqual(service.store.get(job_id)['status'], 'failed')
-        service.store.retry([job_id])
+        row = service.store.get(job_id)
+        self.assertEqual(row['status'], 'preparing', 'unsubmitted disconnect remains eligible for bounded recovery')
+        service.execute({'action': 'reset_tasks', 'ids': [job_id], 'versions': {
+            job_id: {key: row[key] for key in ('attempt', 'browser', 'status')}}})
+        self.assertEqual(service.store.get(job_id)['status'], 'queued')
         service.store.update(job_id, 'preparing', attempt='b' * 32, browser=client['id'])
         service._tick()
         self.assertEqual(service.store.get(job_id)['status'], 'preparing')

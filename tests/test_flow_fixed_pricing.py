@@ -1,5 +1,6 @@
 """The user's three tariffs apply end-to-end, without live Flow billing."""
 import unittest
+from flow_reference_fixtures import upload_receipt
 
 import test_flow_assistant as fixtures
 from app_plugins.builtin.flow_assistant.pricing import fixed_cost
@@ -66,7 +67,7 @@ class FixedPricingTests(unittest.TestCase):
         service = self.service(); service.store.enqueue(self.jobs(count=2, duration=10, budget=0), limit_total=20)
         client = self.client(service); service.paused = False; service._tick(); self.prepared(service, client)
         request = next(key for key, value in service.pending.items() if value['action'] == 'upload_images')
-        service._response(client, {'request_id': request, 'success': True})
+        service._response(client, {'request_id': request, 'success': True, 'data': upload_receipt(service, service.pending[request]['job'])})
         row = service.store.rows()[0]; batch = service.store.batches()[row['payload']['batch_id']]
         self.assertEqual(batch['reserved'], 15); self.assertEqual(batch['fixed'], 1); self.assertEqual(batch['estimated'], 0)
         request = next(key for key, value in service.pending.items() if value['action'] == 'run_tasks')

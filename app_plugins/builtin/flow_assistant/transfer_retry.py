@@ -9,6 +9,7 @@ from .transfer_policy import DELAYS, LABELS, retry_info, retry_limit, ready_bind
 from .timing import value as timing_value, delay
 from .media_identity import generated_bindings
 from .setup_support import compatible_extension
+from .reference_image import freeze_reference
 
 
 class TransferRecovery:
@@ -71,6 +72,7 @@ class TransferRecovery:
 
     def _wait_transfer(self, row, stage, reason):
         info = dict(retry_info(row, stage)); info.update(active=False, waiting=reason,
+            waiting_since=info.get('waiting_since') or time.time(),
             next_at=info.get('next_at') or time.time() + timing_value(self.preferences, 'transfer_wait_seconds'))
         return self._save_transfer(row, stage, info)
 
@@ -78,12 +80,15 @@ class TransferRecovery:
         client = next((client for client in self.clients.values() if client.get('authorized') and
                        client.get('id') == row['browser']), None)
         if not client:
-            self._wait_transfer(row, stage, '等待原浏览器重连，连接后自动继续')
+            self._wait_transfer(row, stage, '等待浏览器重连；提交前超时将自动重新调度，也可完全重置' if stage == 'upload' else
+                '等待原浏览器重连，连接后自动继续')
             return None
         if stage == 'upload':
             reason = block_for(client, self.preferences) or client.get('blocked')
-            if reason or client.get('page_ready') is False:
-                self._wait_transfer(row, stage, reason or '等待原 Flow 项目页面恢复')
+            if (reason or client.get('page_ready') is False or client.get('batch_running') or
+                    client.get('reset_wait_until', 0) > time.time() or
+                    (client.get('connection_recovery') or {}).get('state') == 'checking'):
+                self._wait_transfer(row, stage, reason or '等待原 Flow 项目页面恢复／空闲；提交前超时将重新调度')
                 return None
             if row['remote'].get('account') and client.get('account') and row['remote']['account'] != client['account']:
                 self.transfer_failed(row, stage, '原浏览器登录账号已变化，已停止自动上传；请确认账号。', permanent=True)
@@ -107,11 +112,21 @@ class TransferRecovery:
         except OSError: unchanged = False
         if not unchanged:
             return self.transfer_failed(row, 'upload', '参考图片已变化或丢失，已停止自动上传，请重新选择图片。', permanent=True)
+        try:
+            reference = freeze_reference(row, self.downloads_root)
+        except (OSError, ValueError) as error:
+            return self.transfer_failed(row, 'upload', str(error), permanent=True)
+        self.store.update(row['id'], row['status'], remote={**row['remote'], 'upload_reference': reference}, error=row['error'])
+        row = self.store.get(row['id'])
         info = dict(retry_info(row, 'upload'))
+        if row['remote'].get('connection_wait_at'):
+            self.store.update(row['id'], row['status'], remote={key: value for key, value in row['remote'].items()
+                if key != 'connection_wait_at'}, error=row['error'])
+            row = self.store.get(row['id'])
         info.update(count=info.get('count', 0) + int(retry), active=True, stopped=False,
-                    next_at=0, waiting='', last_error='')
+                    next_at=0, waiting='', waiting_since=0, last_error='')
         self._save_transfer(row, 'upload', info, status='uploading', error='')
-        self.request(client, 'upload_images', {'paths': [row['payload']['image']], 'upload_id': row['attempt']}, row['id'])
+        self.request(client, 'upload_images', {'paths': [reference['path']], 'upload_id': row['attempt'], 'reference': reference}, row['id'])
         return True
 
     def retry_download(self, row, *, automatic=False):

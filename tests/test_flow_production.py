@@ -6,6 +6,7 @@ from pathlib import Path
 import time
 from types import SimpleNamespace
 import unittest
+from flow_reference_fixtures import upload_receipt, distinct_jobs
 from unittest.mock import MagicMock, patch
 
 from qt_compat import QtCore, QtGui, QtWidgets
@@ -39,7 +40,7 @@ class ProductionTests(unittest.TestCase):
         self.assertIsNone(choose_client([client], service.store.rows(), 1, service.store.rows()[0]['payload'], {}))
 
     def test_duplicate_online_windows_of_a_busy_account_do_not_block_backup(self):
-        service = self.service(); service.store.enqueue(self.jobs(count=2))
+        service = self.service(); service.store.enqueue(distinct_jobs(self, 2))
         one = self.client(service, 'One'); two = self.client(service, 'Two'); two['account'] = one['account']
         row = service.store.rows()[0]
         service.store.update(row['id'], 'generating', browser=one['id'], remote={'account': one['account']})
@@ -114,7 +115,7 @@ class ProductionTests(unittest.TestCase):
             service.store.update(row['id'], 'uploading', attempt=f'{index:032x}', browser=client['id'], remote={'cost': 7, 'cost_source': 'page'})
             service.request(client, 'upload_images', job=row['id'])
             request_id = next(key for key, req in service.pending.items() if req['action'] == 'upload_images')
-            service._response(client, {'request_id': request_id, 'success': True})
+            service._response(client, {'request_id': request_id, 'success': True, 'data': upload_receipt(service, row['id'])})
         runs = [json.loads(call.args[0]) for call in client['socket'].sendTextMessage.call_args_list if json.loads(call.args[0]).get('action') == 'run_tasks']
         self.assertEqual(len(runs), 1)
         self.assertEqual(service.store.rows()[1]['status'], 'queued')
@@ -284,7 +285,7 @@ class ProductionTests(unittest.TestCase):
         service.store.update(row['id'], 'uploading', attempt='a' * 32, browser=client['id'], remote={'cost': 7, 'cost_source': 'page'})
         service.request(client, 'upload_images', job=row['id']); request = next(iter(service.pending))
         with patch('model.MediaStorage.require_media_output', side_effect=OSError('任务磁盘空间不足')):
-            service._response(client, {'request_id': request, 'success': True})
+            service._response(client, {'request_id': request, 'success': True, 'data': upload_receipt(service, row['id'])})
         self.assertTrue(service.paused); self.assertEqual(service.store.get(row['id'])['status'], 'queued')
         self.assertEqual(next(iter(service.store.batches().values()))['reserved'], 0)
         self.assertFalse(any(json.loads(c.args[0]).get('action') == 'run_tasks' for c in client['socket'].sendTextMessage.call_args_list))
@@ -354,7 +355,7 @@ class ProductionTests(unittest.TestCase):
         from app_plugins.builtin.flow_assistant.ui import FlowDialog
         image = QtGui.QImage(120, 200, QtGui.QImage.Format.Format_RGB32); image.fill(0xff40aabb)
         image.save(str(self.image)); second = self.target / 'second.png'; image.save(str(second))
-        plugin = SimpleNamespace(command=MagicMock(), context=SimpleNamespace(parent_widget=SimpleNamespace()))
+        plugin = SimpleNamespace(ui_api_version=2, command=MagicMock(), context=SimpleNamespace(parent_widget=SimpleNamespace()))
         dialog = FlowDialog(plugin); dialog.set_targets([self.args['target']]); self.addCleanup(dialog.close)
         return dialog, plugin
 

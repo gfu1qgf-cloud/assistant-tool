@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "FlowCue 插件",
-  "version": "1.1.4",
+  "version": "1.1.5",
   "description": "针对 Google Labs Flow 与 Google Vids 平台的批量视频生成、自动化状态监测与原生拖拽上传工具 (FlowCue 配套扩展)。",
   "permissions": [
     "storage",

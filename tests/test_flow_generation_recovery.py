@@ -3,6 +3,7 @@ import copy
 import json
 import time
 import unittest
+from flow_reference_fixtures import upload_receipt
 from unittest.mock import patch
 
 import test_flow_credit_cooldown as fixtures
@@ -77,7 +78,7 @@ class GenerationRecoveryTests(unittest.TestCase):
             service._response(client, {'request_id': key, 'success': True, 'data': {'verified': True,
                 'model': 'omni_1_1_flash', 'email': client['account'], 'cost': 12}})
             key = next(key for key, request in service.pending.items() if request['action'] == 'upload_images')
-            service._response(client, {'request_id': key, 'success': True})
+            service._response(client, {'request_id': key, 'success': True, 'data': upload_receipt(service, row['id'])})
         self.assertEqual(service.store.get(row['id'])['status'], 'submitting')
         self.assertEqual(service.store.batches()[row['payload']['batch_id']]['reserved'], 24)
         sent = [json.loads(call.args[0]) for call in client['socket'].sendTextMessage.call_args_list]

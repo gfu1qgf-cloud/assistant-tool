@@ -77,12 +77,13 @@ const vm = require('node:vm');
   await invoke('closed-account-panel');
   assert.equal(messages.find(value => value.request_id === 'closed-account-panel').data.email, 'fresh@example.test');
   let runs = 0, accountProbes = 0;
+  window.__lzxReferenceIdentity={init(){},resolve(task){assert.equal(task.reference.upload_id,'a'.repeat(32));}};
   transport.attach(async message => {if (message.action === 'run_tasks') runs++;}, () => ({tasks: []}), {
     async account() {accountProbes++; await fresh('fresh@example.test');}
   });
   const run = id => hooks.message({source: window, origin: context.location.origin,
     data: {sender: 'lzx-flow-extension', message: {action: 'run_tasks', request_id: id,
-      params: {expected_account: 'fresh@example.test'}}}});
+      params: {expected_account: 'fresh@example.test', batch_id:'a'.repeat(32), tasks:[{reference:{upload_id:'a'.repeat(32)}}]}}}});
   await run('fresh-submit'); assert.equal(runs, 1);
   await run('same-session'); assert.equal(runs, 2);
   assert.equal(accountProbes, 0, 'known session must not reopen the credit/account menu');

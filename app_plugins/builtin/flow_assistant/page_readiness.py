@@ -70,6 +70,15 @@ def record_duration_limit(service, client, row, error, data):
     return True
 
 
+def recoverable_prepare_reason(text, version):
+    if version not in {'1.1.16', '1.1.17', '1.1.18', '1.1.19', '1.1.20', '1.1.21', '1.1.22'}: return False
+    legacy = {'无法确认页面已选中 Omni 1.1 Flash、比例、分辨率和 x1，未提交生成。',
+              '浏览器响应超时，请检查页面后恢复；未发送新的生成请求。'}
+    return (text in legacy or bool(re.fullmatch(r'页面或浏览器窗口连续未就绪，自动等待已达\d+次；未提交生成。', str(text))) or
+        version not in {'1.1.16','1.1.17'} and text in {
+            f'找不到视频时长选项，无法确认 {duration} 秒；请检查当前模型的设置面板' for duration in (4,6,8,10)})
+
+
 def recover_preparation_block(service, client):
     """Re-enter preflight once for two audited, pre-submit legacy failures.
 
@@ -78,7 +87,7 @@ def recover_preparation_block(service, client):
     clearing a block is never proof that the requested settings are selected.
     """
     if (not client.get('authorized') or not client.get('page_ready') or client.get('batch_running') is not False
-            or client.get('extension_version') not in {'1.1.16', '1.1.17', '1.1.18', '1.1.19', '1.1.20', '1.1.21'} or client.get('setup_blocked')
+            or client.get('extension_version') not in {'1.1.16', '1.1.17', '1.1.18', '1.1.19', '1.1.20', '1.1.21', '1.1.22'} or client.get('setup_blocked')
             or client.get('preparation_block_recovered')):
         return False
     expected = project_identity(service.preferences.get('profile_projects', {}).get(client.get('profile')))
@@ -91,13 +100,8 @@ def recover_preparation_block(service, client):
            (row['browser'] == client['id'] or client.get('account') and
             row['remote'].get('account') == client['account']) for row in rows):
         return False
-    legacy = {'无法确认页面已选中 Omni 1.1 Flash、比例、分辨率和 x1，未提交生成。',
-              '浏览器响应超时，请检查页面后恢复；未发送新的生成请求。'}
-    if client.get('extension_version') in {'1.1.18', '1.1.19', '1.1.20', '1.1.21'}:
-        legacy.update(f'找不到视频时长选项，无法确认 {duration} 秒；请检查当前模型的设置面板'
-                      for duration in (4, 6, 8, 10))
     blocks = service.preferences.get('browser_blocks', {})
-    keys = {key for key in browser_keys(client) if blocks.get(key) in legacy}
+    keys = {key for key in browser_keys(client) if recoverable_prepare_reason(blocks.get(key), client.get('extension_version'))}
     if not keys:
         return False
     history = list(service.preferences.get('preparation_block_history', []))
@@ -106,11 +110,14 @@ def recover_preparation_block(service, client):
         'browser_blocks': {key: value for key, value in blocks.items() if key not in keys},
         'preparation_block_history': history[-32:]})
     client['preparation_block_recovered'] = True
+    client.pop('prepare_wait', None)
+    if client.get('blocked') in {blocks[key] for key in keys}:
+        client['blocked'] = ''
     for row in rows:
         remote = row['remote']
         identities = browser_keys({'profile': remote.get('profile'), 'id': remote.get('environment_browser')})
         if (row['status'] not in {'queued', 'failed'} or row['attempt'] or not identities & keys
-                or not remote.get('environment_error') or not any(message in row['error'] for message in legacy)
+                or not remote.get('environment_error') or not any(message in row['error'] for message in (blocks[key] for key in keys))
                 or any(remote.get(key) for key in ('bindings', 'upstream_task', 'generation_response',
                     'download', 'unverified_download', 'page_recovery', 'cloud_finished'))):
             continue

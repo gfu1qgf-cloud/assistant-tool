@@ -30,7 +30,7 @@ async function fixture({running=false,healthy=false,changed=false,pending=false,
   const scripts=f.injections.filter(r=>r.files?.some(p=>p.endsWith('.js')));
   assert.equal(scripts.length,2,'one injection per world despite concurrent recovery');
   assert.deepEqual(Array.from(scripts[0].files),['content-isolated.js','lzx-content.js']);
-  assert.deepEqual(Array.from(scripts[1].files),['lzx-page.js','injects/flow-proxy.js','injects/ui.js']);
+  assert.deepEqual(Array.from(scripts[1].files),['lzx-reference.js','lzx-page.js','injects/flow-proxy.js','injects/ui.js']);
   for(const r of f.injections.filter(r=>r.files)){assert.equal(r.target.tabId,7);assert.deepEqual(Array.from(r.target.documentIds),['doc-original']);}
   await f.api.forward({action:'snapshot'});assert(f.commands.some(m=>m.message?.action==='snapshot'));
   await f.api.bootstrapProject();assert.equal(f.injections.filter(r=>r.files?.some(p=>p.endsWith('.js'))).length,2,'a working page is left running');

@@ -5,6 +5,7 @@ import tempfile
 import time
 from types import SimpleNamespace
 import unittest
+from flow_reference_fixtures import upload_receipt, distinct_jobs
 from unittest.mock import MagicMock, patch
 
 from qt_compat import QtCore, QtWidgets
@@ -135,7 +136,7 @@ class FlowTests(unittest.TestCase):
         request_id = next(iter(service.pending))
         seen = []
         fake.sendTextMessage.side_effect = lambda _message: seen.append(service.store.get(row['id'])['status'])
-        service._response(client, {'request_id': request_id, 'success': True})
+        service._response(client, {'request_id': request_id, 'success': True, 'data': upload_receipt(service, row['id'])})
         self.assertEqual(seen, ['submitting'])
         request_id = next(iter(service.pending))
         service.store.update(row['id'], 'queued', attempt='b' * 32)
@@ -190,7 +191,7 @@ class FlowTests(unittest.TestCase):
 
     def test_ui_keeps_drafts_until_store_ack_and_uses_task_prompt(self):
         from app_plugins.builtin.flow_assistant.ui import FlowDialog
-        plugin = SimpleNamespace(command=MagicMock(), context=SimpleNamespace(parent_widget=SimpleNamespace()))
+        plugin = SimpleNamespace(ui_api_version=2, command=MagicMock(), context=SimpleNamespace(parent_widget=SimpleNamespace()))
         dialog = FlowDialog(plugin)
         try:
             dialog.set_targets([self.args['target']])
@@ -268,7 +269,7 @@ class FlowTests(unittest.TestCase):
                 runs.append(value)
                 batch = value['params']['batch_id']
                 source = self.root / 'downloads' / 'FlowBridge' / batch / downloaded_name
-                source.parent.mkdir(parents=True); shutil.copy2(sample, source); downloads.append(source)
+                source.parent.mkdir(parents=True, exist_ok=True); shutil.copy2(sample, source); downloads.append(source)
                 socket.sendTextMessage(json.dumps(response))
                 socket.sendTextMessage(json.dumps({'type': 'snapshot', 'data': {'batch_id': batch,
                     'running': True, 'tasks': [{'taskId': 'upstream-task', 'download_path': f'FlowBridge/{batch}/result.mp4',
@@ -279,7 +280,8 @@ class FlowTests(unittest.TestCase):
                     'data': {'filename': str(source), 'state': 'complete', 'mediaId': 'media', 'submissionId': 'submission',
                              'taskId': 'upstream-task', 'download_path': f'FlowBridge/{batch}/result.mp4'}}))
                 return
-            elif action != 'upload_images': return
+            elif action == 'upload_images': response['data'] = {'reference': {**value['params']['reference'], 'media_id': 'uploaded-reference', 'verified': True}}
+            else: return
             socket.sendTextMessage(json.dumps(response))
         socket.textMessageReceived.connect(message)
         socket.connected.connect(lambda: socket.sendTextMessage(json.dumps({'type': 'hello', 'protocol': 1,
@@ -361,7 +363,7 @@ class FlowTests(unittest.TestCase):
 
     def test_missing_lane_does_not_head_block_and_auto_launch_matches_lane(self):
         service = self.service()
-        service.store.enqueue(self.jobs(duration=10, budget=0) + self.jobs(duration=6, budget=0))
+        service.store.enqueue(distinct_jobs(self, 1, duration=10, budget=0) + distinct_jobs(self, 1, duration=6, budget=0))
         six = self.client(service, 'Profile 6')
         service.preferences.update({'profile_lanes': {'Profile 6': 6, 'Profile 8': 8, 'Profile 10': 10},
                                     'profiles': ['Profile 8', 'Profile 10'], 'allow_general': False,
@@ -447,7 +449,7 @@ class FlowTests(unittest.TestCase):
         second = self.target.parent / '8011'; second.mkdir()
         image.save(str(second / 'second.png'))
         other = {'target_dir': str(second), 'label': '8011', 'task': {'task_id': '8011', 'task_video_prompt': 'second prompt'}}
-        plugin = SimpleNamespace(command=MagicMock(), context=SimpleNamespace(parent_widget=SimpleNamespace()))
+        plugin = SimpleNamespace(ui_api_version=2, command=MagicMock(), context=SimpleNamespace(parent_widget=SimpleNamespace()))
         dialog = FlowDialog(plugin)
         try:
             dialog.set_targets([self.args['target'], other])
@@ -467,7 +469,7 @@ class FlowTests(unittest.TestCase):
 
     def test_browser_lane_editor_is_not_reset_by_stale_state(self):
         from app_plugins.builtin.flow_assistant.ui import FlowDialog
-        plugin = SimpleNamespace(command=MagicMock(), context=SimpleNamespace(parent_widget=SimpleNamespace()))
+        plugin = SimpleNamespace(ui_api_version=2, command=MagicMock(), context=SimpleNamespace(parent_widget=SimpleNamespace()))
         dialog = FlowDialog(plugin)
         try:
             state = {'jobs': [], 'clients': [{'id': 'browser', 'profile': 'Profile 8', 'credits': 40}],

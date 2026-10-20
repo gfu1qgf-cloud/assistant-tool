@@ -3,6 +3,7 @@ import './background.js';
 let socket, heartbeat, connecting = false, retryAt = 0, retryDelay = 1000, connectionEpoch = 0, authenticated = false, booting = true;
 let ownedTab = null, activeBatch = '', config = {}, browserId = '', opening, resumingSetup;
 let closingBrowser = false, commandsInFlight = 0;
+let connectionWatchdog, socketStartedAt = 0, lastServerAt = 0;
 let timingValues = {};
 const timingMs = (key, fallback) => Math.max(1, Math.min(86400000,
   (typeof timingValues[key] === 'number' && Number.isFinite(timingValues[key]) && timingValues[key] > 0 ? timingValues[key] : fallback) * 1000));
@@ -90,7 +91,7 @@ async function bootstrapProject(expectedTab = null) {
       files:proof.result.legacy_ui ? ['lzx-content.js'] : ['content-isolated.js','lzx-content.js']});
     if (epoch !== connectionEpoch) throw Error('连接配置已变化，取消脚本恢复。');
     await chrome.scripting.executeScript({target,world:'MAIN',injectImmediately:true,
-      files:['lzx-page.js','injects/flow-proxy.js','injects/ui.js']});
+      files:['lzx-reference.js','lzx-page.js','injects/flow-proxy.js','injects/ui.js']});
     await chrome.scripting.insertCSS({target,files:['injects/ui.css']});
     return {restored:true};
   })();
@@ -310,7 +311,7 @@ async function repairProject(message) {
   const work = (async () => {
     let health;
     try {health = await chrome.tabs.sendMessage(tabId,{action:'lzxPageHealth'},{frameId:0});} catch {}
-    if (health?.running === true) throw Object.assign(Error('原网页队列仍在执行，保留原页面。'),{code:'FLOW_PAGE_REPAIR_BUSY'});
+    if (health?.running === true || health?.native_busy === true) throw Object.assign(Error('原网页队列或图片操作仍在执行，保留原页面。'),{code:'FLOW_PAGE_REPAIR_BUSY'});
     if (health?.healthy === true) return {reloaded:false,healthy:true};
     if (chrome.scripting?.executeScript) {
       await bootstrapProject(tabId);
@@ -376,13 +377,27 @@ async function connect() {
     const saved = await local();
     if (epoch !== connectionEpoch) return;
     await applyTiming(saved.lzxTiming, false);
-    config = saved.lzxConfig || {}; browserId = saved.lzxBrowserId || crypto.randomUUID();
+    config = saved.lzxConfig || {};
     ownedTab = saved.lzxOwnedTab ?? null; activeBatch = saved.lzxBatch || '';
-    await chrome.storage.local.set({lzxBrowserId: browserId});
-    if (epoch !== connectionEpoch) return;
     if (!config.token || !Number.isInteger(config.port) || config.port < 1024 || config.port > 65535) return;
+    browserId = saved.lzxBrowserId || crypto.randomUUID();
+    if (!saved.lzxBrowserId) await chrome.storage.local.set({lzxBrowserId: browserId});
+    if (epoch !== connectionEpoch) return;
     const current = new WebSocket(`ws://127.0.0.1:${config.port}`);
     socket = current; authenticated = false;
+    socketStartedAt = lastServerAt = Date.now();
+    clearInterval(connectionWatchdog);
+    connectionWatchdog = setInterval(() => {
+      if (socket !== current) return;
+      const expired = !authenticated ? Date.now() - socketStartedAt >= timingMs('bridge_handshake_timeout_seconds',15) :
+        Date.now() - lastServerAt >= timingMs('bridge_heartbeat_timeout_seconds',90);
+      if (expired) {
+        // A hung CONNECTING socket or missing welcome/pong must not prevent
+        // every future alarm from reconnecting. This never reloads the page.
+        try {current.close();} catch {}
+        retireSocket(current);
+      }
+    }, 1000);
     current.onopen = () => {
       if (socket !== current || epoch !== connectionEpoch) {current.close(); return;}
       retryDelay = timingMs('bridge_reconnect_initial_seconds',1);
@@ -393,14 +408,21 @@ async function connect() {
       clearInterval(heartbeat);
       heartbeat = setInterval(() => send({type: 'ping'}), timingMs('bridge_heartbeat_seconds',20));
     };
-    current.onmessage = event => { if (socket !== current) return; try { receive(JSON.parse(event.data)).catch(error => console.error('[AssistantFlow]', error.message)); } catch {} };
-    current.onclose = () => {
-      if (socket !== current) return;
-      clearInterval(heartbeat); socket = null; authenticated = false; retryAt = Date.now() + retryDelay;
-      setTimeout(connect, retryDelay); retryDelay = Math.min(retryDelay * 2, timingMs('bridge_reconnect_max_seconds',20));
-    };
+    current.onmessage = event => { if (socket !== current) return; try {
+      const message = JSON.parse(event.data);
+      if (!message || typeof message !== 'object') return;
+      lastServerAt = Date.now();
+      receive(message).catch(error => console.error('[AssistantFlow]', error.message));
+    } catch {} };
+    current.onclose = () => retireSocket(current);
     current.onerror = () => {};
   } finally { connecting = false; if (epoch !== connectionEpoch) setTimeout(connect, 0); }
+}
+function retireSocket(current) {
+  if (socket !== current) return;
+  clearInterval(heartbeat); clearInterval(connectionWatchdog);
+  socket = null; authenticated = false; retryAt = Date.now() + retryDelay;
+  setTimeout(connect, retryDelay); retryDelay = Math.min(retryDelay * 2, timingMs('bridge_reconnect_max_seconds',20));
 }
 let serial = Promise.resolve();
 function serialize(work) {
@@ -507,7 +529,7 @@ chrome.storage.onChanged.addListener((changes, area) => {
   if (area === 'local' && changes.lzxConfig) {
     if (configSignature(changes.lzxConfig.oldValue) === configSignature(changes.lzxConfig.newValue) ||
         changes.lzxConfig.newValue && configSignature(changes.lzxConfig.newValue) === configSignature(config)) return;
-    connectionEpoch++; authenticated = false; retryAt = 0; clearInterval(heartbeat);
+    connectionEpoch++; authenticated = false; retryAt = 0; clearInterval(heartbeat); clearInterval(connectionWatchdog);
     const previous = socket; socket = null; previous?.close(); setTimeout(connect, timingMs('bridge_config_reload_seconds',.05));
   }
 });
@@ -612,9 +634,9 @@ async function projectSetupAction(entry, sender) {
         if (reply.type !== 'setup_reload_allowed') return;
         if (reply.ticket !== ticket || !reply.profile || new URL(reply.project).href.replace(/\/$/, '') !== project) throw Error('项目与本次连接请求不匹配。');
         receiving = true; clearTimeout(timer);
-        if (chrome.runtime.getManifest().version !== '1.1.21') {
+        if (chrome.runtime.getManifest().version !== '1.1.22') {
           await chrome.storage.local.set({lzxReloadSetup: {...entry, tabId: sender.tab.id,
-            mode: reply.mode || 'pair', profile: reply.profile, version: '1.1.21'}});
+            mode: reply.mode || 'pair', profile: reply.profile, version: '1.1.22'}});
           finish(null, {success: true, updating: true}); chrome.runtime.reload(); return;
         }
         if (action === 'options') {

@@ -5,22 +5,34 @@ from .account_policy import account_hold
 from .credit_cooldown import credit_hold
 from .setup_support import project_identity
 from .store import TRANSIENT
+from .store import submission_risk
 from .timing import value as timing_value, delay
+from .transfer_policy import retry_info
 
 
 def occupied(service, client):
     account = str(client.get('account') or '').strip().casefold()
-    return client.get('batch_running') or any(row['status'] in TRANSIENT | {
-        'archiving', 'uncertain', 'download_failed'} and
-        (row['browser'] == client.get('id') or row['remote'].get('profile') == client.get('profile') or
-         account and str(row['remote'].get('account') or '').strip().casefold() == account)
-        for row in service.store.rows())
+    if client.get('batch_running') or client.get('reset_wait_until', 0) > time.time(): return True
+    for row in service.store.rows():
+        if row['status'] not in TRANSIENT | {'archiving', 'uncertain', 'download_failed'}: continue
+        if not (row['browser'] == client.get('id') or row['remote'].get('profile') == client.get('profile') or
+                account and str(row['remote'].get('account') or '').strip().casefold() == account): continue
+        # An unpaid transfer waiting for this page must not block its own
+        # recovery. Live native operations and all paid/unknown results do.
+        waiting = (bool(row['attempt']) and (row['browser'] == client.get('id') or
+            row['remote'].get('profile') and row['remote']['profile'] == client.get('profile')) and
+            (row['status'] == 'uploading' and retry_info(row, 'upload').get('next_at') or
+             row['status'] == 'preparing' and row['remote'].get('connection_wait_at')) and not submission_risk(row,
+            service.store.attempt_charged(row['attempt'])) and not any(p['job'] == row['id'] and
+                p['attempt'] == row['attempt'] for p in service.pending.values()))
+        if not waiting: return True
+    return False
 
 
 def repair_idle(service, client):
     profile = client.get('profile')
     saved = project_identity(client.get('saved_project'))
-    if (not client.get('authorized') or client.get('extension_version') not in {'1.1.18', '1.1.19', '1.1.20', '1.1.21'}
+    if (not client.get('authorized') or client.get('extension_version') not in {'1.1.18', '1.1.19', '1.1.20', '1.1.21', '1.1.22'}
             or not profile or not saved or saved != project_identity(service.preferences.get('profile_projects', {}).get(profile))
             or account_hold(client, service.preferences) or credit_hold(client, service.preferences) or occupied(service, client)):
         return False

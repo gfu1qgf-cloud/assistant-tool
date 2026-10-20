@@ -2,6 +2,7 @@
 import json
 import time
 import unittest
+from flow_reference_fixtures import upload_receipt, distinct_jobs
 from unittest.mock import MagicMock, patch
 
 import test_flow_assistant as fixtures
@@ -160,7 +161,7 @@ class CreditCooldownTests(unittest.TestCase):
         observations = []
         client['socket'].sendTextMessage.side_effect = lambda text: observations.append((
             json.loads(text)['action'], credit_hold(client, service.store.settings()).get('balance')))
-        service._response(client, {'request_id': key, 'success': True})
+        service._response(client, {'request_id': key, 'success': True, 'data': upload_receipt(service, row['id'])})
         self.assertEqual(observations, [('run_tasks', 9)])
         self.assertEqual(service.store.get(row['id'])['status'], 'submitting')
         service._response(client, {'request_id': next(iter(service.pending)), 'success': True})
@@ -209,7 +210,7 @@ class CreditCooldownTests(unittest.TestCase):
         service = self.service(); low = self.browser(service); self.low(service, low)
         for index in range(4): self.browser(service, 'Funded' + str(index), points=20 + index)
         service.preferences['concurrency'] = 4
-        service.store.enqueue(self.jobs(count=4, duration=6, budget=0)); service.paused = False
+        service.store.enqueue(distinct_jobs(self, 4, duration=6, budget=0)); service.paused = False
         for _ in range(4): service._tick()
         rows = service.store.rows()
         self.assertEqual(len({row['browser'] for row in rows if row['status'] == 'preparing'}), 4)

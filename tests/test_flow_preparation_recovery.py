@@ -1,6 +1,7 @@
 """Stale pre-submit failures must not silently reduce account concurrency."""
 import time
 import unittest
+from flow_reference_fixtures import upload_receipt, distinct_jobs
 
 import test_flow_assistant as fixtures
 from app_plugins.builtin.flow_assistant.setup_support import EXTENSION_VERSION
@@ -35,7 +36,7 @@ class PreparationRecoveryTests(unittest.TestCase):
         clients = [self.browser(service, 'Profile ' + str(i)) for i in range(4)]
         service.preferences['browser_blocks'] = {
             ('browser:' + c['id']): LEGACY if i < 2 else TIMEOUT for i, c in enumerate(clients)}
-        service.store.enqueue(self.jobs(duration=8, count=6, budget=0))
+        service.store.enqueue(distinct_jobs(self, 6, duration=8, budget=0))
         for client in clients:
             self.page(service, client)
         self.assertFalse(service.preferences['browser_blocks'])
@@ -56,7 +57,7 @@ class PreparationRecoveryTests(unittest.TestCase):
             service._response(client, {'request_id': key, 'success': True,
                 'data': {'verified': True, 'model': 'omni_1_1_flash', 'email': client['account']}})
             key = next(k for k, p in service.pending.items() if p['client'] == client['id'] and p['action'] == 'upload_images')
-            service._response(client, {'request_id': key, 'success': True, 'data': {}})
+            service._response(client, {'request_id': key, 'success': True, 'data': upload_receipt(service, service.pending[key]['job'])})
             key = next(k for k, p in service.pending.items() if p['client'] == client['id'] and p['action'] == 'run_tasks')
             service._response(client, {'request_id': key, 'success': True, 'data': {}})
         self.assertEqual(sum(r['status'] == 'generating' for r in service.store.rows()), 4)
@@ -134,7 +135,7 @@ class PreparationRecoveryTests(unittest.TestCase):
     def test_missing_settings_retry_is_bounded_and_does_not_affect_other_accounts(self):
         service = self.service(); one = self.browser(service, 'Profile 1')
         two = self.browser(service, 'Profile 2')
-        service.store.enqueue(self.jobs(duration=8, count=2, budget=0))
+        service.store.enqueue(distinct_jobs(self, 2, duration=8, budget=0))
         service.paused = False; service._tick()
         key = next(k for k, p in service.pending.items() if p['action'] == 'prepare')
         owner = next(c for c in (one, two) if c['id'] == service.pending[key]['client'])

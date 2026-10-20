@@ -20,6 +20,12 @@ RECORD_DELETABLE = {'queued', 'completed', 'cancelled', 'failed', 'archive_faile
 RECORD_UNRESOLVED = {'uncertain', 'download_failed'}
 
 
+def submission_risk(row, charged=False):
+    return bool(charged or row['status'] not in {'queued', 'preparing', 'uploading', 'failed', 'cancelled'} or
+        any(row['remote'].get(key) for key in ('bindings', 'upstream_task', 'generation_response',
+            'download', 'unverified_download', 'page_recovery', 'cloud_finished')))
+
+
 def safe_name(value):
     return re.sub(r'[\\/:*?"<>|\x00-\x1f]', '_', str(value)).strip(' .')[:90] or 'image'
 
@@ -86,6 +92,8 @@ class QueueStore:
             db.execute('CREATE TABLE IF NOT EXISTS submissions (id TEXT PRIMARY KEY, batch TEXT)')
             db.execute('CREATE TABLE IF NOT EXISTS deleted_attempts (attempt TEXT, browser TEXT, '
                        'PRIMARY KEY (attempt,browser))')
+            db.execute('CREATE TABLE IF NOT EXISTS reset_holds (attempt TEXT, browser TEXT, profile TEXT, '
+                       'account TEXT, until REAL, PRIMARY KEY (attempt,browser))')
 
     @contextmanager
     def connection(self):
@@ -229,6 +237,87 @@ class QueueStore:
             return db.execute('SELECT 1 FROM deleted_attempts WHERE attempt=? AND browser=?',
                               (attempt, browser)).fetchone() is not None
 
+    def attempt_charged(self, attempt):
+        with self.connection() as db:
+            return db.execute('SELECT 1 FROM charges WHERE attempt=?', (attempt,)).fetchone() is not None
+
+    def reset_holds(self):
+        with self.connection() as db:
+            return [dict(zip(('attempt', 'browser', 'profile', 'account', 'until'), row)) for row in
+                db.execute('SELECT attempt,browser,profile,account,until FROM reset_holds WHERE until>?', (time.time(),))]
+
+    def finish_reset_hold(self, attempt, browser):
+        with self.connection() as db:
+            db.execute('DELETE FROM reset_holds WHERE attempt=? AND browser=?', (attempt, browser))
+
+    def reset_tasks(self, ids, *, versions, confirmed_submitted=False, busy_ids=(), holds=None, automatic=False):
+        if not isinstance(ids, (list, tuple, set)) or any(not isinstance(value, str) for value in ids):
+            raise ValueError('请选择有效的任务。')
+        result = {'reset': [], 'skipped': []}
+        with self.connection() as db:
+            db.execute('BEGIN IMMEDIATE')
+            raw = db.execute('SELECT id,payload,status,attempt,browser,remote,error,updated FROM jobs ORDER BY rowid').fetchall()
+            rows = [self._row(value) for value in raw]
+            used = {row['payload'].get('output') for row in rows}
+            charged = {value[0] for value in db.execute('SELECT attempt FROM charges')}
+            saved = db.execute('SELECT value FROM settings WHERE key="preferences"').fetchone()
+            preferences = json.loads(saved[0]) if saved else {}
+            affinities = dict(preferences.get('image_affinities', {}))
+            db.execute('DELETE FROM reset_holds WHERE until<=?', (time.time(),))
+            for row in rows:
+                if row['id'] not in ids: continue
+                expected = versions.get(row['id'])
+                risk = submission_risk(row, row['attempt'] in charged)
+                reason = ''
+                if row['id'] in busy_ids or row['status'] == 'archiving':
+                    reason = '正在保存文件，请保存结束后重置'
+                elif not expected or any(expected.get(key) != row[key] for key in ('attempt', 'browser', 'status')):
+                    reason = '执行状态已变化，请按当前状态重新选择重置'
+                elif risk and (automatic or not confirmed_submitted):
+                    reason = '可能已提交生成，需要确认重复扣费风险后重置'
+                elif automatic and row['status'] not in {'preparing', 'uploading'}:
+                    reason = '仅自动重置尚未提交的准备或上传任务'
+                if reason:
+                    result['skipped'].append({'id': row['id'], 'reason': reason})
+                    continue
+                now = time.time()
+                message = '提交前连接长时间未恢复，自动解除原浏览器绑定并重新调度' if automatic else '用户完全重置，解除原浏览器绑定并重新调度'
+                db.execute('INSERT INTO history VALUES (?,?,"reset_previous",?)', (row['id'], now,
+                    json.dumps({'reason': message, 'previous': row}, ensure_ascii=False)))
+                if row['attempt'] and row['browser']:
+                    db.execute('INSERT OR IGNORE INTO deleted_attempts VALUES (?,?)', (row['attempt'], row['browser']))
+                    until = (holds or {}).get(row['id'], 0)
+                    if until > now:
+                        db.execute('INSERT OR REPLACE INTO reset_holds VALUES (?,?,?,?,?)', (row['attempt'],
+                            row['browser'], row['remote'].get('profile', ''),
+                            str(row['remote'].get('account') or '').strip().casefold(), until))
+                payload = copy.deepcopy(row['payload'])
+                if not automatic:
+                    payload.pop('generation_recovery', None)
+                if risk or Path(payload['output']).exists():
+                    sequence = 1
+                    while True:
+                        output = str(Path(payload['directory']) / f'Flow_{sequence:03d}_{safe_name(Path(payload["image"]).stem)}.mp4')
+                        if output not in used and not Path(output).exists(): break
+                        sequence += 1
+                    payload['output'] = output
+                    used.add(output)
+                remote = {}
+                if automatic:
+                    remote['upload_recovery'] = {'count': row['remote'].get('upload_recovery', {}).get('count', 0) + 1,
+                        'at': now, 'previous_browser': row['browser']}
+                    if row['remote'].get('generation_retry'):
+                        remote['generation_retry'] = row['remote']['generation_retry']
+                db.execute('UPDATE jobs SET payload=?,status="queued",attempt="",browser="",remote=?,error=?,updated=? WHERE id=?',
+                    (json.dumps(payload, ensure_ascii=False), json.dumps(remote, ensure_ascii=False), message, now, row['id']))
+                db.execute('INSERT INTO history VALUES (?,?,"queued",?)', (row['id'], now, message))
+                result['reset'].append(row['id'])
+                affinities.pop(row['payload'].get('image_identity', {}).get('sha256'), None)
+            if result['reset'] and affinities != preferences.get('image_affinities', {}):
+                preferences['image_affinities'] = affinities
+                db.execute('INSERT OR REPLACE INTO settings VALUES ("preferences",?)', (json.dumps(preferences, ensure_ascii=False),))
+        return result
+
     def set_payload(self, job_id, payload):
         self.set_payloads([(job_id, payload)])
 
@@ -349,6 +438,8 @@ class QueueStore:
 
 
 def choose_client(clients, rows, limit, job=None, preferences=None, cost=None):
+    from .image_affinity import active_image, preferred_owner
+    if job and active_image(job, rows): return None
     active = [row for row in rows if row['status'] in TRANSIENT]
     if len(active) >= limit:
         return None
@@ -362,11 +453,16 @@ def choose_client(clients, rows, limit, job=None, preferences=None, cost=None):
     eligible = [client for client in clients if client.get('account') and client.get('credits') is not None
                 and balance_ready(client) and not client.get('blocked') and not client.get('batch_running')
                 and not block_for(client, preferences or {})
+                and client.get('reset_wait_until', 0) <= time.time()
                 and (client.get('prepare_wait') or {}).get('next_at', 0) <= time.time()
                 and client['id'] not in busy_browsers and account(client['account']) not in busy_accounts]
     if job is None:
         return min(eligible, key=credit_order, default=None)
     preferences = preferences or {}
+    owner = preferred_owner(job, clients, preferences, cost)
+    if owner:
+        eligible = [client for client in eligible if account(client.get('account')) == account(owner['account']) and
+            (not owner.get('profile') or client.get('profile') == owner['profile'])]
     ranked = [(dispatch_rank(client, job, preferences), client) for client in eligible if capable(client, job, preferences, cost)]
     ranked = [(rank, client) for rank, client in ranked if rank is not None
               and (cost is None or client['credits'] >= cost)]

@@ -1,4 +1,4 @@
-"""Exact bridge seams for pristine FlowCue 1.1.4; never edit vendor originals."""
+"""Exact bridge seams for pristine FlowCue 1.1.5; never edit vendor originals."""
 
 QUIET = '  const console = window.__lzxFlowTransport ? {log() {}, warn: globalThis.console.warn.bind(globalThis.console), error: globalThis.console.error.bind(globalThis.console)} : globalThis.console;'
 
@@ -16,6 +16,7 @@ TRANSPORT = '''    if (window.__lzxFlowTransport) {
         tasks: state.tasks.map(t => ({taskId: t.taskId, download_path: t.download_path,
           status: t.status, mediaBindings: t.mediaBindings, downloadIds: t.downloadIds}))
       }), {prepare: syncPageVideoSettings, initialized: () => bridgeUiReady,
+        upload: uploadPathsToFlow, images: getLoadedPageImages, click: simulateClick,
         failed: (taskId, submissionId, reason) => {
           const row = state.tasks.findIndex(t => t.taskId === taskId);
           const line = state.tasks[row]?.mediaBindings?.findIndex(b => b?.submissionId === submissionId);
@@ -41,6 +42,8 @@ TRANSPORT = '''    if (window.__lzxFlowTransport) {
 
 def patch_ui(ui):
     ui = exact(ui, '  "use strict";', '  "use strict";\n' + QUIET)
+    ui = exact(ui, '      const saved = parseInt(localStorage.getItem("flowcue_ws_ep") || "0", 10);',
+        '      const saved = window.__lzxFlowTransport ? 0 : parseInt(localStorage.getItem("flowcue_ws_ep") || "0", 10);')
     ui = exact(ui, '  if (window.top !== window) return;',
         '  if (window.top !== window || window.__lzxFlowUI || window.__flowAccountBridgeLoaded) return;\n'
         '  window.__lzxFlowUI = true;')
@@ -203,6 +206,32 @@ def patch_ui(ui):
         '      window.__lzxFlowTransport.sitePaused?.();\n'
         '      return;\n'
         '    }\n    alarmCountdown = 45;')
+    ui = exact(ui, '    const isPresent = (p, imgs) => imgs.some(img => isStrictImageMatch(nameOf(p), img.displayName));',
+        '    const isPresent = (p, imgs) => imgs.some(img => window.__lzxFlowTransport ?\n'
+        '      [nameOf(p), nameOf(p).replace(/\\.[^.]+$/, "")].map(n => n.toLowerCase()).includes(String(img.displayName || "").toLowerCase()) : isStrictImageMatch(nameOf(p), img.displayName));')
+    ui = exact(ui, '        if (isRegisteredInFlow(p, imgs.length, regEntries)) {',
+        '        if (!window.__lzxFlowTransport && isRegisteredInFlow(p, imgs.length, regEntries)) {')
+    ui = exact(ui, '        if (waiting.length && newTilesConfirmed(beforeKeys, beforeCount, imgs, dispatched.length)) {',
+        '        if (!window.__lzxFlowTransport && waiting.length && newTilesConfirmed(beforeKeys, beforeCount, imgs, dispatched.length)) {')
+    ui = exact(ui, '      const finalDisplayName = imageName || localFileName || (matchedImg ? matchedImg.displayName : "未命名素材");',
+        '      if (window.__lzxFlowTransport) matchedImg = window.__lzxReferenceIdentity.resolve(item);\n'
+        '      const finalDisplayName = imageName || localFileName || (matchedImg ? matchedImg.displayName : "未命名素材");')
+    ui = exact(ui, '  async function attachImageToPage(image, footageType) {',
+        '  async function attachImageToPage(image, footageType) {\n'
+        '    if (window.__lzxFlowTransport) return window.__lzxReferenceIdentity.attach(image, footageType);')
+    ui = exact(ui, '  function verifyImageAttached(image, footageType) {',
+        '  function verifyImageAttached(image, footageType) {\n'
+        '    if (window.__lzxFlowTransport) return window.__lzxReferenceIdentity.verify(image, footageType);')
+    ui = exact(ui, '        console.warn("[FlowUI] 注入图片原料异常 (继续执行):", imgErr);',
+        '        if (window.__lzxFlowTransport) throw imgErr;\n'
+        '        console.warn("[FlowUI] 注入图片原料异常 (继续执行):", imgErr);')
+    ui = exact(ui, '        console.warn(`[FlowUI] ⚠️ 挂载检测未直接捕获到芯片，继续执行发送...`);',
+        '        if (window.__lzxFlowTransport) throw new Error("本条参考图首帧未通过校验，未提交生成。");\n'
+        '        console.warn(`[FlowUI] ⚠️ 挂载检测未直接捕获到芯片，继续执行发送...`);')
+    ui = exact(ui, '    button.click();\n    await delay(1800);',
+        '    if (window.__lzxFlowTransport) window.__lzxReferenceIdentity.assert(image, targetFootage);\n'
+        '    button.click();\n    await delay(1800);')
+    ui = exact(ui, 'if (!task.image?.src) {', 'if (!window.__lzxFlowTransport && !task.image?.src) {', 2)
     return ui
 
 

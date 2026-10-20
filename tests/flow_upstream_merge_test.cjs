@@ -16,8 +16,8 @@ const provenance = JSON.parse(read('browser_extensions/flow_bridge/SOURCE.json')
 const derivedId = crypto.createHash('sha256').update(Buffer.from(manifest.key, 'base64')).digest('hex').slice(0, 32)
   .replace(/[0-9a-f]/g, ch => String.fromCharCode(97 + parseInt(ch, 16)));
 assert.equal(derivedId, 'pnjppjjfgiccpcfajkpooklgohgihdom', 'upstream merge must not create a new extension identity');
-assert.equal(provenance.upstream_version, '1.1.4');
-assert.equal(provenance.commit, 'e4e8f34ea6a0e0d7d9e0e87bbf7218e66d315ec2');
+assert.equal(provenance.upstream_version, '1.1.5');
+assert.equal(provenance.commit, '847c928d60114183e42f838ba82577ba10e46d0b');
 assert.equal(provenance.bridge_version, manifest.version);
 
 async function testDownloadLock() {
@@ -102,20 +102,25 @@ async function testOneClickAndEmptyBinding() {
   const button = {disabled: false, hasAttribute() {return false;}, getAttribute() {return null;},
     classList: {contains() {return false;}}, querySelectorAll() {return [];}, querySelector() {return null;},
     getBoundingClientRect() {return {left: 10, top: 10, width: 40, height: 40};}, click() {clicks++;}};
-  const context = {console: quiet, crypto, window: {__lzxFlowTransport: {}},
+  let referenceChecks=0;
+  const image={reference:{media_id:'exact-reference'}};
+  const context = {console: quiet, crypto, window: {__lzxFlowTransport: {},__lzxReferenceIdentity:{
+      assert(value){assert.equal(value,image);referenceChecks++;}}},
     state: {settings: {}, tasks: [{}]}, isStopRequested: false,
     document: {querySelector() {return editor;}},
     InputEvent: class {}, Event: class {}, MouseEvent: class {},
     async syncPageVideoSettings() {}, async cleanupPageOverlays() {}, async saveState() {}, async delay() {},
+    async attachImageToPage(){},verifyImageAttached:()=>true,
     findFlowGenerateButton: () => button, getStorageKey: () => 'project',
     resolveDownloadPath: value => value, async sendToExtension() {return {success: true};},
     snapshotCurrentDomMedia() {}, isFlowCurrentlyGenerating: () => false, updateLineStatus() {}};
   vm.createContext(context);
   const start = ui.indexOf('  async function submitTaskToPage(');
   vm.runInContext(ui.slice(start, ui.indexOf('  function getProjectTiles()', start)), context);
-  await context.submitTaskToPage({lineText: 'one prompt', rowIndex: 0, lineIndex: 0,
+  await context.submitTaskToPage({image,lineText: 'one prompt', rowIndex: 0, lineIndex: 0,
     download_path: 'FlowBridge/'+'a'.repeat(32)+'/result.mp4'});
   assert.equal(clicks, 1, 'even a missing network acknowledgement must not trigger another paid click');
+  assert.equal(referenceChecks,1,'the last action before generation must verify the exact reference');
   const task = context.state.tasks[0], binding = task.mediaBindings[0];
   const retryStart = ui.indexOf('  async function retrySavedVideo(');
   vm.runInContext(ui.slice(retryStart, ui.indexOf('  async function triggerAutoDownload(', retryStart)), context);
@@ -127,5 +132,5 @@ async function testOneClickAndEmptyBinding() {
 
 (async () => {
   await testDownloadLock(); testRpcAndSigning(); testMessageRetryRules(); await testOneClickAndEmptyBinding();
-  console.log('FlowCue 1.1.4 merge: stable extension ID, exact upstream metadata, saveAs=false, duplicate-download lock/retry, signing, equal-length RPC frames and single paid click passed.');
+  console.log('FlowCue 1.1.5 merge: stable extension ID, exact upstream metadata, saveAs=false, duplicate-download lock/retry, signing, equal-length RPC frames and single paid click passed.');
 })().catch(error => {console.error(error); process.exitCode = 1;});

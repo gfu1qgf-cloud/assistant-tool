@@ -1,6 +1,7 @@
 """Manual submissions must fill distinct accounts despite preflight failures."""
 import time
 import unittest
+from flow_reference_fixtures import upload_receipt, distinct_jobs
 
 import test_flow_assistant as fixtures
 from app_plugins.builtin.flow_assistant.store import choose_client
@@ -28,16 +29,16 @@ class ManualParallelismTests(unittest.TestCase):
             'controls_ready': True, 'tasks': []})
 
     def submit(self, service, duration=10, count=8):
-        for index in range(count):
+        for index, job in enumerate(distinct_jobs(self, count, duration=duration, budget=0)):
             service.execute({'action': 'enqueue', 'source': 'manual', 'request_id': 'manual-' + str(index),
-                'items': [{**self.args, 'prompt': f'manual fixture {index}', 'duration': duration, 'budget': 0}]})
+                'items': [{**self.args, 'images':[job['image']], 'prompt': f'manual fixture {index}', 'duration': duration, 'budget': 0}]})
 
     def acknowledge(self, service, client):
         for action in ('prepare', 'upload_images', 'run_tasks'):
             request = next(key for key, item in service.pending.items()
                 if item['client'] == client['id'] and item['action'] == action)
             service._response(client, {'request_id': request, 'success': True,
-                'data': {'verified': True, 'model': 'omni_1_1_flash', 'email': client['account']}})
+                'data': {'verified': True, 'model': 'omni_1_1_flash', 'email': client['account'], **(upload_receipt(service, service.pending[request]['job']) if action == 'upload_images' else {})}})
 
     def test_manual_submissions_fill_four_slots_after_compatible_settings_fix(self):
         service = self.service()

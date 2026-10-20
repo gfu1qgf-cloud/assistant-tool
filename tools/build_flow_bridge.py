@@ -6,16 +6,16 @@ from pathlib import Path
 import shutil
 
 ROOT = Path(__file__).resolve().parents[1]
-PIN = 'e4e8f34ea6a0e0d7d9e0e87bbf7218e66d315ec2'
-UPSTREAM_VERSION = '1.1.4'
-BRIDGE_VERSION = '1.1.21'
+PIN = '847c928d60114183e42f838ba82577ba10e46d0b'
+UPSTREAM_VERSION = '1.1.5'
+BRIDGE_VERSION = '1.1.22'
 KEY = 'MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAnvFDGkX5m/XE6cRqK89rmU6CkCtcOue7G3zgttpk45gF21Y9SQi4L6IvLh4SgLIPcU3Gm5MsXjB4UqmC03ssHqI9Q5SG4TqkGpS+LunJanIVy9Q7ak3IevqA1A3QgA28iAbMHsX9a8sEL/qhi13afdr7n42eF6A4XzJs3+9An6pjzAPNjK4AJLF7PytIzY9YxJ4eg7ANPQUPVTC233hvW5OGMXOxdo4QX1/qGe1npm6E8wwnGfp85NkRPLohy9t1cfJreXcqfswkRa1QlyeKsCfTIKQX2vclCDavsoddro3w98YS4SRb4Tz8NRnbJITsOoPqCbMtXyaWP2QIyy/S6QIDAQAB'
 HASHES = {
     'background.js': '756e503f5612b4f1218ea5b7f87ee7a3b17fdcd36009058d7442867df5b87139',
     'content-isolated.js': '7688010740c451e349d95d5bf9bde45c2cbfefe6e50e6e73ac255482936c1c5c',
     'injects/flow-proxy.js': '2d9a170f412a6d623f60a699265b1758b2e008c3338ba650855f87d272b4c4c1',
-    'injects/ui.js': '0745d98d5f4e5ef3979768833909327409978e81e012e9577b0505b157f4eaa5',
-    'manifest.json': '428f723a4b48bc5a7a220eed4e97fe109cf8183a25cc2a2c845f5223be9cd1f4',
+    'injects/ui.js': '420175ea88f0a907e7f908b4208b78581e378517091f7dbf8687af4c3afa5ef9',
+    'manifest.json': '2dd52e476959e9ba23c9a1f09bc26f40cfd1730f73f1d8b86df8f5368e7368da',
 }
 
 
@@ -37,7 +37,7 @@ def build(root=ROOT):
         (source / 'content-isolated.js').read_text('utf-8')), encoding='utf-8')
     adapter = root / 'browser_extensions/flow_adapter'
     for original, target in {'background.js': 'lzx-background.js', 'page.js': 'lzx-page.js',
-                             'content.js': 'lzx-content.js', 'options.js': 'lzx-options.js', 'options.html': 'options.html'}.items():
+                             'content.js': 'lzx-content.js', 'reference.js': 'lzx-reference.js', 'options.js': 'lzx-options.js', 'options.html': 'options.html'}.items():
         shutil.copy2(adapter / original, destination / target)
     manifest = json.loads((source / 'manifest.json').read_text('utf-8'))
     manifest.update(name='Flow 视频助手 · 辅助工具桥接', version=BRIDGE_VERSION, minimum_chrome_version='120', key=KEY,
@@ -48,7 +48,7 @@ def build(root=ROOT):
     manifest['background']['service_worker'] = 'lzx-background.js'
     for script in manifest['content_scripts']:
         if script.get('world') == 'MAIN':
-            script['js'].insert(0, 'lzx-page.js')
+            script['js'][0:0] = ['lzx-reference.js', 'lzx-page.js']
         elif script.get('world') == 'ISOLATED':
             bootstrap = {'matches': list(script['matches']), 'js': ['lzx-content.js'],
                 'run_at': 'document_start', 'world': 'ISOLATED', 'all_frames': True}
@@ -61,6 +61,9 @@ def build(root=ROOT):
         'upstream_version': UPSTREAM_VERSION, 'bridge_version': BRIDGE_VERSION, 'protocol': 1,
         'patch_module': 'tools/flow_bridge_patches.py',
         'patches': [
+            'FlowCue 1.1.5 dormant manual mode; no managed legacy badge timer or endpoint storage; stable bridge identity',
+            'frozen attempt-unique reference upload, exact media-ID first-frame checks and page-operation mutual exclusion',
+            'configurable socket handshake and silence watchdogs with no page navigation or paid replay',
             'creation RPC frame isolation and single output identity; no main-batch DOM/thumbnail adoption of historical videos',
             'document-pinned missing-script bootstrap with idempotent page/native controllers and no paid replay',
             'durable exact-media terminal-failure receipts and bounded re-generation after a fresh balance check',

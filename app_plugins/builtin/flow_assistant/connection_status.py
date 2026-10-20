@@ -60,6 +60,9 @@ def browser_status(client, preferences, jobs=(), now=None):
     if client.get('batch_running'):
         return {'connection': '已连接', 'project': project, 'state': '网页队列收尾中',
                 'reason': '上一批网页队列仍在收尾，结束后自动继续下一条，无需手动停止', 'color': '#986100'}
+    if client.get('reset_wait_until', 0) > now:
+        return {'connection': '已连接', 'project': project, 'state': '等待旧操作结束',
+                'reason': '任务已解除绑定；此浏览器暂等原操作结束，其他可用账号继续接单', 'color': '#986100'}
     if (client.get('credit_check') or {}).get('state') == 'checking':
         return {'connection': '已连接', 'project': project, 'state': '积分检测中',
                 'reason': '正在读取此浏览器的账号和积分，完成后自动恢复接单', 'color': '#986100'}

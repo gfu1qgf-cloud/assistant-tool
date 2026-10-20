@@ -37,6 +37,8 @@ SPECS = [Spec(*row) for row in (
     ('upload_retry_delays', '超时与重试', '图片上传各次重试等待', (5, 15, 30, 60, 120), 1, 86400, '秒序列', '只重试原图片上传；次数仍由连接与设置中的上传重试上限控制。'),
     ('download_retry_delays', '超时与重试', '视频下载各次重试等待', (5, 15, 30, 60, 120), 1, 86400, '秒序列', '只下载已绑定的原结果，不重新生成。'),
     ('transfer_wait_seconds', '超时与重试', '原浏览器离线或忙碌重查间隔', 5, 1, 3600, '秒', '等待原浏览器重连／空闲，继续原传输。'),
+    ('upload_reassign_wait_seconds', '超时与重试', '提交前连接卡住后重新调度等待', 60, 5, 3600, '秒', '仅准备／上传且没有扣费或生成证据时，超过此时间解除原浏览器绑定，让其他可用浏览器接单。'),
+    ('upload_reassign_attempts', '超时与重试', '提交前自动重新调度上限', 3, 0, 20, '次', '达到上限后保留记录，可手动完全重置；不会对结果不明的付费提交自动重新生成。0 关闭自动换浏览器。'),
     ('download_probe_seconds', '超时与重试', '下载绑定只读核对间隔', 15, 1, 3600, '秒', '等待原媒体绑定或签名地址时的快照检查间隔。'),
     ('download_stall_seconds', '超时与重试', '下载无进展判定时间', 120, 10, 86400, '秒', '进入原视频下载恢复流程，独立于生成无进展时间。'),
     ('stall_seconds', '超时与重试', '生成无进展后自动核对', 1200, 120, 86400, '分钟', '兼容原来的无进展设置。只读核对原任务，始终不自动重新生成。'),
@@ -45,6 +47,8 @@ SPECS = [Spec(*row) for row in (
     ('binding_probe_seconds', '超时与重试', '媒体归属缺失只读核对间隔', 15, 1, 3600, '秒', '只查询原提交的媒体身份，不刷新或重新生成。'),
     ('binding_probe_attempts', '超时与重试', '媒体归属只读核对上限', 3, 1, 20, '次', '达到上限仍接收原结果的后续通知。'),
     ('bridge_heartbeat_seconds', '扩展与页面', '扩展连接心跳间隔', 20, 1, 300, '秒', '扩展向主程序发送连接心跳；与页面快照分别计时。'),
+    ('bridge_handshake_timeout_seconds', '扩展与页面', '扩展等待主程序握手超时', 15, 1, 300, '秒', '连接停在建立中或主程序未确认时，重建本机连接；不刷新项目或重新提交生成。'),
+    ('bridge_heartbeat_timeout_seconds', '扩展与页面', '主程序心跳无响应超时', 90, 5, 3600, '秒', '扩展已连接但长期收不到主程序消息时自动重连；原任务及下载记录保留。'),
     ('bridge_reconnect_initial_seconds', '扩展与页面', '断线重连首次等待', 1, .1, 300, '秒', '失败后逐次加倍等待，最多等到下方上限。'),
     ('bridge_reconnect_max_seconds', '扩展与页面', '断线重连最大等待', 20, 1, 3600, '秒', '配置更新也不会清除最近一次有效余额。'),
     ('bridge_reconnect_alarm_seconds', '扩展与页面', '扩展后台唤醒检查间隔', 30, 30, 3600, '秒', 'Chrome 后台闹钟至少 30 秒，只检查连接，不启动生成。'),
@@ -132,7 +136,7 @@ def request_timeout(preferences, action, client=None):
     key = {'prepare': 'prepare_timeout_seconds', 'upload_images': 'upload_timeout_seconds',
            'retry_download': 'download_timeout_seconds', 'close_exhausted': 'credit_close_timeout_seconds'}.get(action, 'request_timeout_seconds')
     seconds = value(preferences, key)
-    if (client and client.get('extension_version') and client['extension_version'] != '1.1.21'
+    if (client and client.get('extension_version') and client['extension_version'] not in {'1.1.21', '1.1.22'}
             and 'timing_settings_v1' not in client.get('capabilities', [])):
         seconds = max(seconds, CATALOG[key].default)
     return seconds
@@ -142,6 +146,8 @@ def validate(preferences):
     values = snapshot(preferences)
     if values['bridge_reconnect_max_seconds'] < values['bridge_reconnect_initial_seconds']:
         raise ValueError('断线重连最大等待不能小于首次等待')
+    if values['bridge_heartbeat_timeout_seconds'] <= values['bridge_heartbeat_seconds']:
+        raise ValueError('主程序心跳无响应超时应大于扩展连接心跳间隔')
     if values['page_stale_seconds'] <= values['page_snapshot_seconds'] + values['page_poll_seconds']:
         raise ValueError('页面未响应判定时间应大于网页状态心跳间隔与检查间隔之和')
     if values['page_health_valid_seconds'] <= values['page_health_wait_seconds']:

@@ -12,10 +12,11 @@ from .store import make_jobs
 from .connection_status import browser_keys
 from .pricing import fixed_cost
 from .transfer_retry import TransferRecovery
+from .task_reset import TaskReset
 from .timing import value as timing_value
 
 
-class FlowOperations(TransferRecovery):
+class FlowOperations(TransferRecovery, TaskReset):
     def commit_preferences(self, preferences):
         # Publish only after SQLite commits; callers keep the previous snapshot
         # when the encrypted volume becomes unavailable or a write fails.
@@ -160,7 +161,9 @@ class FlowOperations(TransferRecovery):
 
     def extra_action(self, command):
         action = command['action']
-        if action == 'retry_download_selected':
+        if action == 'reset_tasks':
+            self.reset_tasks(command)
+        elif action == 'retry_download_selected':
             for row in self.store.rows():
                 if row['id'] in command.get('ids', []):
                     if row['status'] == 'archive_failed' and row['remote'].get('download', {}).get('state') == 'complete':

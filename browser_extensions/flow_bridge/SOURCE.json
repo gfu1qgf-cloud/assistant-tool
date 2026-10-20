@@ -1,11 +1,14 @@
 {
   "repository": "https://github.com/dedeyuyu/FlowCue",
-  "commit": "e4e8f34ea6a0e0d7d9e0e87bbf7218e66d315ec2",
-  "upstream_version": "1.1.4",
-  "bridge_version": "1.1.21",
+  "commit": "847c928d60114183e42f838ba82577ba10e46d0b",
+  "upstream_version": "1.1.5",
+  "bridge_version": "1.1.22",
   "protocol": 1,
   "patch_module": "tools/flow_bridge_patches.py",
   "patches": [
+    "FlowCue 1.1.5 dormant manual mode; no managed legacy badge timer or endpoint storage; stable bridge identity",
+    "frozen attempt-unique reference upload, exact media-ID first-frame checks and page-operation mutual exclusion",
+    "configurable socket handshake and silence watchdogs with no page navigation or paid replay",
     "creation RPC frame isolation and single output identity; no main-batch DOM/thumbnail adoption of historical videos",
     "document-pinned missing-script bootstrap with idempotent page/native controllers and no paid replay",
     "durable exact-media terminal-failure receipts and bounded re-generation after a fresh balance check",

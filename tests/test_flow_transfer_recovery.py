@@ -3,6 +3,7 @@ import copy
 import json
 import time
 import unittest
+from flow_reference_fixtures import upload_receipt
 from unittest.mock import patch
 
 from qt_compat import QtWidgets
@@ -86,8 +87,8 @@ class TransferTests(unittest.TestCase):
         request = self.request(service, 'upload_images')
         service._response(client, {'request_id': old, 'success': True})
         self.assertNotIn('run_tasks', [v['action'] for v in self.actions(client)])
-        service._response(client, {'request_id': request, 'success': True})
-        service._response(client, {'request_id': request, 'success': True})
+        service._response(client, {'request_id': request, 'success': True, 'data': upload_receipt(service, row['id'])})
+        service._response(client, {'request_id': request, 'success': True, 'data': upload_receipt(service, row['id'])})
         runs = [v for v in self.actions(client) if v['action'] == 'run_tasks']
         self.assertEqual(len(runs), 1); self.assertEqual(runs[0]['params']['batch_id'], row['attempt'])
         batch = service.store.batches()[row['payload']['batch_id']]

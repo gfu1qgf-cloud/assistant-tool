@@ -3,6 +3,7 @@ import copy
 import json
 import time
 import unittest
+from flow_reference_fixtures import upload_receipt
 from unittest.mock import patch
 
 import test_flow_assistant as fixtures
@@ -111,7 +112,7 @@ class AutomaticDispatchTests(unittest.TestCase):
         service.request(client, 'upload_images', job=row['id'])
         request = next(iter(service.pending)); seen = []
         client['socket'].sendTextMessage.side_effect = lambda text: seen.append(client['credits'])
-        service._response(client, {'request_id': request, 'success': True})
+        service._response(client, {'request_id': request, 'success': True, 'data': upload_receipt(service, row['id'])})
         self.assertEqual(seen, [35]); self.assertEqual(other['credits'], 35)
         service._response(client, {'request_id': request, 'success': True})
         run = next(key for key, value in service.pending.items() if value['action'] == 'run_tasks')

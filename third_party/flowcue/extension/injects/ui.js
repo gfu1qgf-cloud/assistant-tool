@@ -6171,7 +6171,15 @@ ${presetAfter || ""}`.trim();
       "ws://localhost:8765",
       "ws://[::1]:8765"
     ];
-    let endpointIdx = 0;
+    let preferredIdx = 0;
+    try {
+      const saved = parseInt(localStorage.getItem("flowcue_ws_ep") || "0", 10);
+      if (!isNaN(saved) && saved >= 0 && saved < WS_ENDPOINTS.length) preferredIdx = saved;
+    } catch (_) {}
+    let endpointIdx = preferredIdx;
+    // 休眠探测间隔：软件未点击「开始识别」时，插件每隔这么久只做一次极轻量的连接尝试，
+    // 不读 DOM、不改标题、不发心跳，对页面性能几乎零影响（手动模式完全不受干扰）
+    const DORMANT_PROBE_MS = 5000;
     const clientId = "flow_ext_" + Math.random().toString(36).substring(2, 9);
     let socket = null;
     let handshakeVerified = false;
@@ -6211,8 +6219,10 @@ ${presetAfter || ""}`.trim();
     const TITLE_BADGE_RE = /^\[FC-[0-9A-Z]{4,8}[^\]]*\]\s*/;
     const CLOSE_MARK_RE = /^\[FLOWCLOSE-[^\]]*\]\s*/;
     let locateFlashUntil = 0;
+    let badgeTimer = null;
+    let bridgeActive = false;  // 仅在桌面软件「开始识别」并握手成功后才为 true
     function applyTitleBadge() {
-      if (!identity.instance_id) return;
+      if (!bridgeActive || !identity.instance_id) return;
       try {
         const cur = document.title || "";
         const closeMark = (cur.match(CLOSE_MARK_RE) || [""])[0];
@@ -6223,7 +6233,18 @@ ${presetAfter || ""}`.trim();
         if (cur !== want) document.title = want;
       } catch (_) {}
     }
-    setInterval(applyTitleBadge, 3500);
+    function startBadge() {
+      applyTitleBadge();
+      if (!badgeTimer) badgeTimer = setInterval(applyTitleBadge, 10000);
+    }
+    function stopBadge() {
+      if (badgeTimer) { clearInterval(badgeTimer); badgeTimer = null; }
+      try {
+        const cur = document.title || "";
+        const cleaned = cur.replace(/^📍+\s*/, "").replace(TITLE_BADGE_RE, "");
+        if (cleaned !== cur) document.title = cleaned;
+      } catch (_) {}
+    }
 
     // 在页面上显示醒目的定位横幅
     function showLocateBanner(seconds) {
@@ -6476,7 +6497,11 @@ ${presetAfter || ""}`.trim();
         handshakeTimer = null;
       }
       retryDelay = 2000;
-      log(`✅ 已连接桌面软件 (${wsUrl})`);
+      bridgeActive = true;
+      try { localStorage.setItem("flowcue_ws_ep", String(endpointIdx % WS_ENDPOINTS.length)); } catch (_) {}
+      preferredIdx = endpointIdx % WS_ENDPOINTS.length;
+      startBadge();
+      log(`✅ 已连接桌面软件 (${wsUrl})，全局托管功能已启用`);
     }
 
     async function handleMessage(msg, wsUrl) {
@@ -6675,25 +6700,18 @@ ${presetAfter || ""}`.trim();
       handshakeVerified = false;
       const wsUrl = WS_ENDPOINTS[endpointIdx % WS_ENDPOINTS.length];
       let currentSocket = null;
+      let opened = false;
       try {
         currentSocket = new WebSocket(wsUrl);
         socket = currentSocket;
       } catch (e) {
-        endpointIdx = (endpointIdx + 1) % WS_ENDPOINTS.length;
-        scheduleReconnect(600);
+        nextDormantEndpoint();
+        scheduleReconnect(DORMANT_PROBE_MS);
         return;
       }
       currentSocket.onopen = () => {
         if (socket !== currentSocket) return;
-        send({ type: "online", client_id: clientId, email: readEmailCheap(), url: location.href });
-        send({ type: "ping", client_id: clientId });
-        if (!identity.instance_id) {
-          loadIdentity().then(() => {
-            if (identity.instance_id && socket === currentSocket && currentSocket.readyState === WebSocket.OPEN) {
-              send({ type: "online", client_id: clientId, email: readEmailCheap(), url: location.href });
-            }
-          });
-        }
+        opened = true;
         // 2.5秒握手验证：若多开浏览器的本地代理劫持了 127.0.0.1（假连接成功但未到达 FlowCue），立即切换至 localhost / [::1] / 备用端口
         handshakeTimer = setTimeout(() => {
           if (socket === currentSocket && !handshakeVerified) {
@@ -6702,22 +6720,29 @@ ${presetAfter || ""}`.trim();
             try { currentSocket.close(); } catch (_) {}
           }
         }, 2500);
-        // 检测插件后台是否为新版本（旧后台没有拖放上传/关闭浏览器等能力）
-        sendToExtension("getBgVersion", {}).then(r => {
-          const ok = !!(r && r.version);
-          send({ type: "bg_status", client_id: clientId, ok, version: (r && r.version) || "",
-                 native_drag: !!(r && r.nativeDrag), error: ok ? "" : String((r && r.error) || "插件后台无响应") });
-          if (!ok) log("⚠️ 插件后台不是最新版本，请在扩展管理页点击「刷新」重新加载插件");
+        // 只有真正连上桌面软件（软件已点击「开始识别」）后，才读取浏览器 ID / 邮箱并上报
+        const ready = identity.instance_id ? Promise.resolve() : loadIdentity();
+        ready.finally(() => {
+          if (socket !== currentSocket || currentSocket.readyState !== WebSocket.OPEN) return;
+          send({ type: "online", client_id: clientId, email: readEmailCheap(), url: location.href });
+          send({ type: "ping", client_id: clientId });
+          // 检测插件后台是否为新版本（旧后台没有拖放上传/关闭浏览器等能力）
+          sendToExtension("getBgVersion", {}).then(r => {
+            const ok = !!(r && r.version);
+            send({ type: "bg_status", client_id: clientId, ok, version: (r && r.version) || "",
+                   native_drag: !!(r && r.nativeDrag), error: ok ? "" : String((r && r.error) || "插件后台无响应") });
+            if (!ok) log("⚠️ 插件后台不是最新版本，请在扩展管理页点击「刷新」重新加载插件");
+          });
+          // 若首次连接时页面头像 DOM 尚未加载出邮箱，延迟补发一次邮箱识别
+          if (!cachedEmail) {
+            setTimeout(() => {
+              const em = readEmailCheap();
+              if (em && socket === currentSocket && currentSocket.readyState === WebSocket.OPEN) {
+                send({ type: "online", client_id: clientId, email: em, url: location.href });
+              }
+            }, 4000);
+          }
         });
-        // 若首次连接时页面头像 DOM 尚未加载出邮箱，延迟补发一次邮箱识别
-        if (!cachedEmail) {
-          setTimeout(() => {
-            const em = readEmailCheap();
-            if (em && socket === currentSocket && currentSocket.readyState === WebSocket.OPEN) {
-              send({ type: "online", client_id: clientId, email: em, url: location.href });
-            }
-          }, 4000);
-        }
       };
       currentSocket.onmessage = (ev) => {
         if (socket !== currentSocket) return;
@@ -6730,18 +6755,36 @@ ${presetAfter || ""}`.trim();
           clearTimeout(handshakeTimer);
           handshakeTimer = null;
         }
-        if (socket === currentSocket) {
-          socket = null;
-          if (!handshakeVerified) {
-            endpointIdx = (endpointIdx + 1) % WS_ENDPOINTS.length;
-            scheduleReconnect(600);
-          } else {
-            scheduleReconnect();
-          }
+        if (socket !== currentSocket) return;
+        socket = null;
+        if (handshakeVerified) {
+          // 软件点击了「停止识别」或软件已关闭 → 回到休眠，移除标题上的 ID 标记
+          bridgeActive = false;
+          stopBadge();
+          log("🔌 已与桌面软件断开，插件回到休眠状态（不影响手动模式）");
+          scheduleReconnect(3000);
+        } else if (opened) {
+          // 连上了但不是 FlowCue（被代理劫持）→ 快速换下一个通道
+          scheduleReconnect(600);
+        } else {
+          // 连接被拒绝 = 软件未开启识别 / 未运行 → 休眠，稍后再轻量探测一次
+          nextDormantEndpoint();
+          scheduleReconnect(DORMANT_PROBE_MS);
         }
       };
       currentSocket.onerror = () => { /* onclose 会负责重连 */ };
     }
+
+    // 休眠探测时交替尝试「上次成功的通道」和其他备用通道，保证软件开启识别后几秒内就能连上
+    function nextDormantEndpoint() {
+      if (endpointIdx !== preferredIdx) endpointIdx = preferredIdx;
+      else {
+        dormantRotate = (dormantRotate + 1) % WS_ENDPOINTS.length;
+        if (dormantRotate === preferredIdx) dormantRotate = (dormantRotate + 1) % WS_ENDPOINTS.length;
+        endpointIdx = dormantRotate;
+      }
+    }
+    let dormantRotate = preferredIdx;
 
     function scheduleReconnect(customDelay) {
       const waitMs = typeof customDelay === "number" ? customDelay : retryDelay;
@@ -6751,8 +6794,8 @@ ${presetAfter || ""}`.trim();
       }
     }
 
-    // 页面加载完成后再连接，避免影响页面初始化；连接前先取到本浏览器的唯一 ID
-    setTimeout(() => { loadIdentity().finally(connect); }, 1500);
+    // 页面加载完成后再开始休眠探测；在软件点击「开始识别」之前不读取任何浏览器 ID / 邮箱 / 积分
+    setTimeout(connect, 3000);
   })();
 
 })();

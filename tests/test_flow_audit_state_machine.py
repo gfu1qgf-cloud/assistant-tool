@@ -1,6 +1,7 @@
 """Exercise cross-stage failures without contacting Flow or spending credits."""
 import time
 import unittest
+from flow_reference_fixtures import upload_receipt
 
 import test_flow_assistant as fixtures
 from app_plugins.builtin.flow_assistant.store import choose_client
@@ -29,7 +30,7 @@ class FlowAuditStateTests(unittest.TestCase):
     def receipt(self, service, client, row, action, **updates):
         service.request(client, action, {}, row['id'])
         key = next(k for k, p in service.pending.items() if p['action'] == action and p['job'] == row['id'])
-        return {'request_id': key, 'success': True, 'data': {}, **updates}
+        return {'request_id': key, 'success': True, 'data': upload_receipt(service, row['id']) if action == 'upload_images' else {}, **updates}
 
     def test_wrong_browser_cannot_consume_the_owning_request(self):
         service = self.service(); one = self.browser(service); two = self.browser(service, 'Profile 2')

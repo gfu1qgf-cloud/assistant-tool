@@ -2,7 +2,7 @@ import uuid
 from pathlib import Path
 
 from qt_compat import QtCore, QtGui, QtWidgets
-from .store import IMAGE_SUFFIXES, RECORD_UNRESOLVED
+from .store import IMAGE_SUFFIXES, RECORD_UNRESOLVED, submission_risk
 from .submission_ui import ManualSubmitPanel
 from .routing import DURATIONS, lane_key, automatic_lane
 from .manual_panel import estimate_text
@@ -29,12 +29,13 @@ def open_path(path):
 
 class FlowDialog(QtWidgets.QDialog):
     def __init__(self, plugin, parent=None):
-        if (getattr(plugin, 'ui_api_version', 1) != 1
+        if (getattr(plugin, 'ui_api_version', 1) != 2
                 or not all(hasattr(plugin, name) for name in ('context', 'command'))):
             raise RuntimeError('Flow 源码已更新，本次运行仍是旧服务。请在当前任务结束后正常重启辅助工具，再使用新面板；现有队列不会重新提交。')
         super().__init__(parent)
         self.plugin, self.targets, self.state = plugin, [], {}
         self.delete_request = ''
+        self.reset_request = ''
         self.setWindowTitle('Flow 视频助手 · Omni 生成队列')
         self.resize(1160, 760)
         layout = QtWidgets.QVBoxLayout(self)
@@ -81,12 +82,15 @@ class FlowDialog(QtWidgets.QDialog):
         self.button('暂停后续任务', lambda: self.send('pause'), controls)
         self.button('重试选中', lambda: self.send('retry', ids=self.selected_ids()), controls)
         self.retry_download_button = self.button('重试下载', self.retry_selected_downloads, controls)
+        self.reset_button = self.button('完全重置并重新调度', self.reset_selected_tasks, controls)
+        self.reset_button.setToolTip('清除选中任务的原浏览器绑定及重试状态，重新选择可用浏览器；可能已提交的任务需先确认。')
         self.delete_button = self.button('删除记录…', lambda: self.delete_records(), controls)
         self.queue_menu_button = QtWidgets.QToolButton(self); self.queue_menu_button.setText('选中项操作…')
         self.queue_menu_button.setPopupMode(QtWidgets.QToolButton.ToolButtonPopupMode.InstantPopup)
         menu = QtWidgets.QMenu(self.queue_menu_button)
         menu.addAction('只提交选中项', lambda: self.send('submit_selected', ids=self.selected_ids()))
         menu.addAction('取消等待项', lambda: self.send('cancel', ids=self.selected_ids()))
+        menu.addAction('完全重置并重新调度…', self.reset_selected_tasks)
         menu.addAction('打开任务目录', self.open_directory)
         menu.addAction('播放成品', self.open_output)
         self.queue_menu_button.setMenu(menu); controls.addWidget(self.queue_menu_button)
@@ -412,7 +416,7 @@ class FlowDialog(QtWidgets.QDialog):
             online = bool(client.get('id'))
             status = browser_status(client, preferences, self.state.get('jobs', []))
             credit_text = ((f'{client["credits"]:g}' + ('（估算）' if client.get('credits_estimated') else ''))
-                           if client.get('credits') is not None else '未知')
+                           if client.get('credits') is not None else '未知（调度按 50 分排序）')
             hold = credit_hold(client, preferences)
             if hold and (not online or client.get('credits') is None):
                 credit_text = f'{hold["balance"]:g}（冷却记录）'
@@ -560,6 +564,37 @@ class FlowDialog(QtWidgets.QDialog):
         self.send('retry_download_selected', ids=ids)
         self.note.setText('已请求重试原视频下载；不会重新生成。正在下载的同一条不会重复启动。')
 
+    def reset_selected_tasks(self):
+        if self.reset_request: return
+        ids = set(self.selected_ids())
+        rows = [row for row in self.state.get('jobs', []) if row['id'] in ids]
+        if not rows:
+            self.note.setText('请先选中要完全重置的任务，支持多选。'); return
+        risky = any(row.get('reset_risk') or submission_risk(row) for row in rows)
+        if risky:
+            answer = QtWidgets.QMessageBox.warning(self, '完全重置并重新生成',
+                '选中项中有任务可能已经提交或扣费。完全重置会放弃当前结果的自动核对并重新生成，可能再次消耗积分。'
+                '\n原网页任务可能继续运行；旧记录、已用预算和现有文件保留，新结果使用新的文件名。\n仍然完全重置并重新调度？',
+                QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.Cancel,
+                QtWidgets.QMessageBox.StandardButton.Cancel)
+            if answer != QtWidgets.QMessageBox.StandardButton.Yes: return
+        self.reset_request = uuid.uuid4().hex
+        self.reset_button.setEnabled(False)
+        self.note.setText('正在解除原浏览器绑定并重置选中任务…')
+        self.send('reset_tasks', request_id=self.reset_request, ids=[row['id'] for row in rows],
+            versions={row['id']: {key: row[key] for key in ('attempt', 'browser', 'status')} for row in rows},
+            confirmed_submitted=risky)
+
+    def tasks_reset(self, result):
+        if result.get('request_id') != self.reset_request: return
+        self.reset_request = ''; self.reset_button.setEnabled(True)
+        if not result.get('success'):
+            self.note.setText('完全重置失败：' + result['error']); return
+        message = f'已完全重置 {len(result["reset"])} 条，已解除原浏览器绑定，可由其他可用浏览器接单。'
+        if result.get('held'): message += ' 安全暂停仍有效，请处理原因后继续队列。'
+        if result['skipped']: message += ' 未重置：' + '；'.join(sorted({row['reason'] for row in result['skipped']}))
+        self.note.setText(message)
+
     def delete_records(self, ids=None):
         if self.delete_request: return
         ids = self.selected_ids() if ids is None else ids
@@ -598,6 +633,7 @@ class FlowDialog(QtWidgets.QDialog):
         menu.addAction('只提交选中的等待项', lambda: self.send('submit_selected', ids=self.selected_ids()))
         menu.addAction('重试失败／仅重试已有结果下载', lambda: self.send('retry', ids=self.selected_ids()))
         menu.addAction('重试下载（不重新生成）', self.retry_selected_downloads)
+        menu.addAction('完全重置并重新调度…', self.reset_selected_tasks)
         menu.addAction('打开任务目录', self.open_directory)
         menu.addAction('播放成品', self.open_output)
         menu.addAction('删除选中记录…', lambda: self.delete_records())

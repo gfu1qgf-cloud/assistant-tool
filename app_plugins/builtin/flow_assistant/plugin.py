@@ -10,9 +10,9 @@ class FlowAssistantPlugin(QtCore.QObject):
     command = QtCore.pyqtSignal(object)
     plugin_id = 'flow_assistant'
     display_name = 'Flow 视频助手'
-    version = '0.4.26'
-    upstream_version = '1.1.4'
-    ui_api_version = 1
+    version = '0.4.27'
+    upstream_version = '1.1.5'
+    ui_api_version = 2
     manual_credit_check_api = 1
     account_state_api = 1
     timing_settings_api = 1
@@ -71,6 +71,7 @@ class FlowAssistantPlugin(QtCore.QObject):
         self.service.submission_failed.connect(self._submission_failed)
         self.service.setup_ready.connect(self._setup_ready)
         self.service.records_deleted.connect(self._records_deleted)
+        self.service.tasks_reset.connect(self._tasks_reset)
         self.service.preferences_saved.connect(self._preferences_saved)
         self.service.stopped.connect(self.thread.quit, QtCore.Qt.ConnectionType.DirectConnection)
         self.thread.finished.connect(self.service.deleteLater)
@@ -125,6 +126,10 @@ class FlowAssistantPlugin(QtCore.QObject):
     def _records_deleted(self, result):
         if self.dialog:
             self.dialog.records_deleted(result)
+
+    def _tasks_reset(self, result):
+        if self.dialog:
+            self.dialog.tasks_reset(result)
 
     def _preferences_saved(self, result):
         if result.get('request_id') != self.timing_request: return

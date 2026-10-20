@@ -45,6 +45,8 @@ def capable(client, job, preferences, cost=None):
     credits = client.get('credits')
     return (not client.get('blocked') and not block_for(client, preferences)
             and not client.get('batch_running')
+            and not client.get('native_busy')
+            and client.get('reset_wait_until', 0) <= time.time()
             and not (client.get('credit_check') or {}).get('hold_dispatch')
             and (client.get('connection_recovery') or {}).get('state') != 'checking'
             and client.get('page_ready') is not False
@@ -69,7 +71,17 @@ def waiting_reason(row, clients, rows, preferences, observed, batches, *, paused
         return row['error']
     if paused and row['id'] not in released:
         return '队列已暂停，等待开始／只提交选中项'
+    from .image_affinity import active_image, preferred_owner
+    if active_image(row['payload'], rows):
+        return '同一参考图已有任务执行／核对中，等待原账号完成后继续；不同图片可并行'
+    waiting = row['remote'].get('small_balance_wait', {})
+    if waiting.get('until', 0) > time.time():
+        return '优先恢复小余额账号 ' + waiting['profile'] + '，高余额账号暂作备用'
     cost = estimated_cost(row['payload'], observed)
+    owner = preferred_owner(row['payload'], clients, preferences, cost)
+    if owner and not any(str(client.get('account') or '').strip().casefold() == owner['account'] and
+            capable(client, row['payload'], preferences, cost) for client in clients):
+        return '继续使用原账号 ' + owner['account'] + '；等待原浏览器恢复／空闲，积分不足后才更换账号'
     if cost is not None and row['payload'].get('budget') and cost > row['payload']['budget']:
         source = '固定档位费用' if fixed_cost(row['payload']) is not None else '最近确认费用'
         return f'单条预算 {row["payload"]["budget"]} 低于{source} {cost:g}，请修改排队项预算'

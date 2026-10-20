@@ -3,6 +3,7 @@
   if (window.top !== window || window.__lzxFlowTransport) return;
   let handler, getSnapshot, helpers, lastSnapshot = '', lastIdentity = '', confirmedIdentity = '', lastSnapshotAt = 0, preparedProof = null;
   let timingValues = {}, statusTimer;
+  let nativeOperation = false;
   const timingMs = (key,fallback) => Math.max(1, (Number.isFinite(timingValues[key]) && timingValues[key] > 0 ? timingValues[key] : fallback)*1000);
   function applyTiming(raw) {
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return;
@@ -310,7 +311,7 @@
     const state = readiness();
     const stamp = JSON.stringify(state);
     if (stamp !== lastReadiness) {lastReadiness = stamp; pageStatus(state);}
-    const data = {...getSnapshot(), ...state};
+    const data = {...getSnapshot(), ...state, native_busy:nativeOperation};
     const encoded = JSON.stringify(data);
     if (force || encoded !== lastSnapshot || Date.now() - lastSnapshotAt > timingMs('page_snapshot_seconds',15)) {
       lastSnapshot = encoded;
@@ -391,6 +392,7 @@
     },
     attach(receive, state, api) {
       handler = receive; getSnapshot = state; helpers = api;
+      window.__lzxReferenceIdentity?.init(api, timingMs);
       attachedAt = Date.now(); stableSince = attachedAt;
       pageStatus();
       snapshot(true);
@@ -404,8 +406,12 @@
     if (!handler || !message) return;
     if (message.action === 'ready') {pageStatus(); return;}
     if (!['get_points', 'prepare', 'upload_images', 'run_tasks', 'snapshot', 'retry_download'].includes(message.action)) return;
+    let ownsOperation = false;
     try {
       if (message.action === 'snapshot') { snapshot(true); return; }
+      if (nativeOperation) throw Object.assign(Error('此页面仍在处理原操作，等待完成后再恢复；未提交本条生成。'), {code:'FLOW_BATCH_BUSY'});
+      nativeOperation = ownsOperation = true;
+      snapshot(true);
       if (['prepare', 'upload_images', 'run_tasks', 'get_points'].includes(message.action)) {
         const issue = accountIssue();
         if (issue) throw Object.assign(new Error(issue.error), {code: issue.code});
@@ -426,11 +432,21 @@
         const email = await confirmAccount();
         emit({action: 'prepare_response', request_id: message.request_id, success: true,
           data: {verified: true, model: 'omni_1_1_flash', cost: readCost(), summary: summary(), email}});
+      } else if (message.action === 'upload_images') {
+        if (!window.__lzxReferenceIdentity) throw Error('参考图校验脚本尚未就绪，未提交生成。');
+        const data = await window.__lzxReferenceIdentity.upload(message.params || {});
+        emit({action:'upload_images_response', request_id:message.request_id, success:true, data});
       } else if (message.action === 'retry_download') {
         const ok = await helpers.retry(message.params?.batch_id);
         emit({action: 'retry_download_response', request_id: message.request_id, success: !!ok,
           error: ok ? '' : '当前项目中没有可重试下载的绑定结果；未重新生成。'});
       } else {
+        if (message.action === 'run_tasks') {
+          const task = message.params?.tasks?.[0];
+          if (message.params?.tasks?.length !== 1 || task?.reference?.upload_id !== message.params?.batch_id || !window.__lzxReferenceIdentity)
+            throw Object.assign(Error('本条任务缺少准确参考图凭据，未提交生成。'), {code:'FLOW_REFERENCE_NOT_CONFIRMED'});
+          window.__lzxReferenceIdentity.resolve(task);
+        }
         if (message.action === 'run_tasks' && message.params?.expected_account &&
             await confirmAccount() !== message.params.expected_account.toLowerCase()) {
           throw new Error('提交前登录账号发生变化或无法确认，未发送新的生成请求；请刷新账号核对。');
@@ -441,6 +457,9 @@
       emit({action: message.action + '_response', request_id: message.request_id, success: false,
         error: String(error.message || error), code: error.code || '',
         ...(error.code === 'FLOW_DURATION_UNSUPPORTED' ? {data: error.data} : {})});
+    } finally {
+      if (ownsOperation) nativeOperation = false;
+      snapshot(true);
     }
   });
   statusTimer = setInterval(() => {accountIssue(); checkFailedCards(); snapshot();}, timingMs('page_poll_seconds',2));
