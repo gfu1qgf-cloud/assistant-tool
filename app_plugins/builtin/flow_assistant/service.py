@@ -16,6 +16,7 @@ from .archive import archive_download
 from .store import QueueStore, TRANSIENT, choose_client, fingerprint, make_jobs
 from .routing import cost_key, lane_for, lane_key, dispatch_rank, automatic_lane, normalize_lane
 from .credit_policy import debit_balance, credit_order
+from .credit_cooldown import credit_hold, credit_reason, remember_balance, refresh_expired, close_idle_exhausted, MIN_CREDITS
 from .media_identity import owns_download, generated_bindings, merge_snapshot_bindings
 from .operations import FlowOperations
 from .policy import capable, block_for, estimated_cost, batch_wait, waiting_reason
@@ -123,20 +124,39 @@ class FlowService(QtCore.QObject, FlowOperations):
                 raise
             self._disconnected(socket)
 
-    def request(self, client, action, params=None, job=None):
+    def request(self, client, action, params=None, job=None, *, manual_credit=False):
         if action == 'refresh_project':
             # A reload can cancel an accepted website generation. Even legacy
             # recovery plans may only query snapshots; never send this command.
             return
-        if action == 'get_points' and any(p['action'] == action and p['client'] == client['id'] for p in self.pending.values()):
-            return
+        if action == 'get_points':
+            previous = next((p for p in self.pending.values() if p['action'] == action and p['client'] == client['id']), None)
+            if previous:
+                # A click authorizes a NEW observation, not an automatic probe
+                # that may already contain a pre-debit or pre-reset balance.
+                if manual_credit and not previous.get('manual_credit'):
+                    client['manual_credit_pending'] = True
+                return
+            if not manual_credit and credit_hold(client, self.preferences):
+                client.update(credit_cooldown_waiting=True, credits_waiting_ready=False,
+                              credits_waiting_account=False, credits_retry_at=0)
+                if (client.get('credit_check') or {}).get('state') != 'success':
+                    client['credit_check'] = {'state': 'cooldown', 'at': time.time(),
+                        'message': credit_reason(client, self.preferences)}
+                self.launching.pop(client.get('profile'), None)
+                self.launched.discard(client.get('profile'))
+                return False
         request_id = uuid.uuid4().hex
         row = self.store.get(job) if job else None
         self.pending[request_id] = {'action': action, 'job': job, 'client': client['id'], 'at': time.time(),
                                     'attempt': row['attempt'] if row else ''}
         if action == 'get_points':
             self.pending[request_id]['credit_debits'] = dict(self.credit_debits)
+            self.pending[request_id]['manual_credit'] = manual_credit
             client['credit_check'] = {'state': 'checking', 'at': time.time(), 'message': '正在读取本浏览器当前账号和积分'}
+            if manual_credit:
+                client['credit_check']['hold_dispatch'] = True
+                client.pop('credit_close', None)
         params = dict(params or {})
         if action in {'prepare', 'upload_images', 'run_tasks'}:
             params['wait_for_ready'] = True
@@ -312,6 +332,16 @@ class FlowService(QtCore.QObject, FlowOperations):
         self.pending.pop(request_id)
         action, job_id = request['action'], request['job']
         data = message.get('data') or {}
+        if action == 'close_exhausted':
+            state = dict(client.get('credit_close') or {})
+            busy = message.get('code') == 'FLOW_CLOSE_BUSY'
+            state.update(state='closing' if message.get('success') else 'waiting' if busy else 'failed',
+                next_at=time.time() + 30,
+                count=max(0, state.get('count', 1) - int(busy)),
+                message='下载已核对完成，正在关闭此浏览器' if message.get('success') else
+                    str(message.get('error') or '浏览器关闭未完成')[:500])
+            client['credit_close'] = state
+            return
         if action == 'repair_project':
             current = dict(client.get('connection_recovery') or {})
             current.update(state='waiting' if message.get('success') else 'failed',
@@ -326,10 +356,14 @@ class FlowService(QtCore.QObject, FlowOperations):
             self.request(client, 'snapshot')
             return
         if action == 'get_points':
+            if client.pop('manual_credit_pending', False):
+                self.request(client, 'get_points', manual_credit=True)
+                return
             if request['at'] < client.get('account_reset_at', 0):
-                self.request(client, 'get_points')
+                self.request(client, 'get_points', manual_credit=True)
                 client['credit_check']['hold_dispatch'] = True
                 return
+            client['credits_retry_manual'] = bool(request.get('manual_credit'))
             if not message.get('success', True):
                 mark_account(self, client, message.get('error', ''), message.get('code', ''))
             client['credit_check'] = {'state': 'failed', 'at': time.time(),
@@ -368,10 +402,15 @@ class FlowService(QtCore.QObject, FlowOperations):
                 # Do not let its old balance undo an intervening local debit.
                 spent = self.credit_debits.get(client['account'], 0) - request.get('credit_debits', {}).get(client['account'], 0)
                 balance = max(0, client['credits'] - max(0, spent))
+                hold = credit_hold(client, self.preferences)
+                if hold and not request.get('manual_credit'):
+                    balance = min(balance, hold['balance'])
                 for current in self.clients.values():
                     if str(current.get('account') or '').casefold() == client['account']:
                         current.update(credits=balance, credits_local=True, credits_at=client['credits_at'],
                                        credits_estimated=spent > 0)
+                remember_balance(self, client, manual=bool(request.get('manual_credit')))
+                client['credits_retry_manual'] = False
             client['note'] = message.get('error') or ('' if client['account'] else '尚未确认当前 Flow 登录账号')
             if message.get('success', True) and client['credits_local']:
                 if client.get('page_ready'): self.launching.pop(client.get('profile'), None)
@@ -457,7 +496,7 @@ class FlowService(QtCore.QObject, FlowOperations):
                 self.store.update(job_id, 'queued', attempt='', browser='', remote={},
                     error=f'本条费用 {cost} 超出设置的预算 {budget}，等待修改预算；未提交。')
                 return
-            if client['credits'] is None or cost > client['credits']:
+            if client['credits'] is None or client['credits'] < MIN_CREDITS or cost > client['credits'] or credit_hold(client, self.preferences):
                 client['blocked'] = '积分不足'
                 self.store.update(job_id, 'queued', attempt='', browser='', remote={}, error='等待有足够积分的账号')
                 return
@@ -474,7 +513,7 @@ class FlowService(QtCore.QObject, FlowOperations):
             if row['remote'].get('account') and row['remote']['account'] != client['account']:
                 self.quarantine(client, row, '上传期间登录账号变化，请刷新账号并重新核对。')
                 return
-            if client.get('credits') is None or row['remote']['cost'] > client['credits']:
+            if client.get('credits') is None or client['credits'] < MIN_CREDITS or row['remote']['cost'] > client['credits'] or credit_hold(client, self.preferences):
                 client['blocked'] = '积分不足'
                 self.store.update(job_id, 'queued', attempt='', browser='', remote={},
                     error='图片上传完成，但原账号积分不足；等待备用账号，未提交生成。')
@@ -488,6 +527,7 @@ class FlowService(QtCore.QObject, FlowOperations):
             debit_balance(client, self.clients.values(), row['remote']['cost'])
             account_key = client['account'].casefold()
             self.credit_debits[account_key] = self.credit_debits.get(account_key, 0) + row['remote']['cost']
+            remember_balance(self, client, source='local_reservation')
             job = row['payload']
             params = {'batch_id': row['attempt'], 'clear_existing': True, 'expected_account': client['account'], 'tasks': [{
                 'prompt': ' '.join(job['prompt'].split()), 'local_image_path': job['image'],
@@ -777,6 +817,12 @@ class FlowService(QtCore.QObject, FlowOperations):
                 if command.get('automatic'):
                     current = [c for c in self.clients.values() if c.get('authorized') and c.get('profile') == profile]
                     accounts = {str(c.get('account') or '').strip().casefold() for c in current} - {''}
+                    cooldown = credit_reason({'profile': profile}, self.preferences) or next((
+                        credit_reason(c, self.preferences) for c in current if credit_hold(c, self.preferences)), '')
+                    if cooldown:
+                        self.setup_ready.emit({'request_id': command.get('request_id'), 'success': False,
+                            'account_blocked': True, 'error': cooldown})
+                        return
                     if account_hold({'profile': profile}, self.preferences) or any(account_hold(c, self.preferences) for c in current):
                         self.setup_ready.emit({'request_id': command.get('request_id'), 'success': False,
                             'account_blocked': True, 'error': '此账号已隔离，等待用户处理后手动重置；停止自动配置。'})
@@ -901,7 +947,7 @@ class FlowService(QtCore.QObject, FlowOperations):
                         client['credit_check'] = {'state': 'deferred', 'at': time.time(),
                             'message': '此账号正在处理任务，完成后可手动检测；已保留当前任务'}
                         continue
-                    self.request(client, 'get_points')
+                    self.request(client, 'get_points', manual_credit=bool(command.get('manual')))
                     if command.get('manual'):
                         client['credit_check']['hold_dispatch'] = True
                     self.request(client, 'snapshot')
@@ -995,11 +1041,20 @@ class FlowService(QtCore.QObject, FlowOperations):
                         if client.get('id') == request['client']:
                             client['page_error'] = '扩展已连接，但项目页面响应超时；请打开浏览器检查登录和项目'
                             if request['action'] == 'get_points':
+                                if client.pop('manual_credit_pending', False):
+                                    self.request(client, 'get_points', manual_credit=True)
+                                    continue
+                                client['credits_retry_manual'] = bool(request.get('manual_credit'))
                                 client['credit_check'] = {'state': 'failed', 'at': time.time(),
                                     'message': '积分检测响应超时，请检查该浏览器的登录和项目页面后重试'}
                                 failures = client.get('credits_ready_failures', 0) + 1
                                 client.update(credits_ready_failures=failures, credits_waiting_ready=failures < 3,
                                     credits_waiting_account=False, credits_retry_at=time.time() + 5)
+                if request['action'] == 'close_exhausted':
+                    client = next((c for c in self.clients.values() if c.get('id') == request['client']), None)
+                    if client:
+                        client['credit_close'] = {**client.get('credit_close', {}), 'state': 'failed',
+                            'next_at': time.time() + 30, 'message': '关闭浏览器响应超时，保留当前窗口'}
                 if request['job']:
                     row = self.store.get(request['job'])
                     # A disconnected request may outlive an explicit retry.
@@ -1031,6 +1086,8 @@ class FlowService(QtCore.QObject, FlowOperations):
                 self.publish()
             if self.watch_transfer_retries():
                 self.publish()
+            if close_idle_exhausted(self):
+                self.publish()
             from .page_recovery import watch
             if watch(self): self.publish()
             if time.time() - getattr(self, '_last_publish', 0) >= 15:
@@ -1050,6 +1107,8 @@ class FlowService(QtCore.QObject, FlowOperations):
             limit = max(1, min(8, int(self.preferences.get('concurrency', 2))))
             if sum(row['status'] in TRANSIENT for row in rows) >= limit:
                 return
+            if refresh_expired(self, queued_rows):
+                self.publish()
             client = queued = None
             # An unavailable 10-second lane must not block a ready 6-second job.
             matches = []
@@ -1137,6 +1196,7 @@ class FlowService(QtCore.QObject, FlowOperations):
                    for client in self.clients.values() if client['authorized']]
         for client in clients:
             client['account_state'] = account_hold(client, self.preferences)
+            client['credit_cooldown'] = credit_hold(client, self.preferences)
         for row in rows:
             row['wait_reason'] = waiting_reason(row, clients, rows, self.preferences, self.observed_costs, batches,
                 paused=self.paused, released=self.released)

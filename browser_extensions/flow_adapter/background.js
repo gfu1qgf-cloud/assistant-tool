@@ -2,6 +2,7 @@ import './background.js';
 
 let socket, heartbeat, connecting = false, retryAt = 0, retryDelay = 1000, connectionEpoch = 0, authenticated = false, booting = true;
 let ownedTab = null, activeBatch = '', config = {}, browserId = '', opening, resumingSetup;
+let closingBrowser = false, commandsInFlight = 0;
 const setupClaims = new Map();
 const configSignature = value => JSON.stringify(['token', 'port', 'profile', 'project', 'setup_id'].map(key => value?.[key] ?? null));
 const projectUrl = value => {
@@ -97,8 +98,15 @@ async function receive(message) {
     return;
   }
   if (message.type === 'pong') return;
-  if (!['get_points', 'prepare', 'upload_images', 'run_tasks', 'snapshot', 'retry_download', 'open_project', 'refresh_project', 'repair_project'].includes(message.action)) return;
+  if (!['get_points', 'prepare', 'upload_images', 'run_tasks', 'snapshot', 'retry_download', 'open_project', 'refresh_project', 'repair_project', 'close_exhausted'].includes(message.action)) return;
+  const tracked = !['snapshot', 'close_exhausted'].includes(message.action);
+  if (tracked) commandsInFlight++;
   try {
+    if (closingBrowser) throw Object.assign(Error('此浏览器正在核对关闭，暂不接收新操作。'), {code:'FLOW_CLOSE_BUSY'});
+    if (message.action === 'close_exhausted') {
+      await closeExhausted(message);
+      return;
+    }
     if (message.action === 'repair_project') {
       const result = await repairProject(message);
       send({action:'repair_project_response',request_id:message.request_id,success:true,data:result});
@@ -155,6 +163,84 @@ async function receive(message) {
   } catch (error) {
     send({action: message.action + '_response', request_id: message.request_id, success: false,
       error: String(error.message || error), code: error.code || ''});
+  } finally {
+    if (tracked) commandsInFlight--;
+  }
+}
+async function closeExhausted(message) {
+  const args = message.params || {}, epoch = connectionEpoch;
+  if (args.idle !== true || args.profile !== config.profile || args.url !== config.project ||
+      !Number.isFinite(args.balance) || args.balance < 0 || args.balance >= 10 ||
+      !Number.isFinite(args.until) || args.until * 1000 <= Date.now()) {
+    throw Error('缺少本配置的低积分冷却及任务完成确认，保留浏览器。');
+  }
+  const busy = text => Object.assign(Error(text), {code:'FLOW_CLOSE_BUSY'});
+  if (commandsInFlight || closingBrowser) throw busy('原浏览器仍在处理操作，稍后再核对关闭。');
+  closingBrowser = true;
+  let closing = false;
+  try {
+    const tabId = await ensureTab();
+    const saved = await local();
+    const downloads = Object.values(saved.lzxDownloads || {});
+    if (activeBatch && !saved.lzxBatches?.[activeBatch]) {
+      throw busy('当前批次的持久记录缺失，保留浏览器。');
+    }
+    const groups = new Map();
+    for (const item of downloads) {
+      if (!item.batch || !item.taskId || !item.submissionId || !item.mediaId || !item.download_path) {
+        throw busy('下载归属记录不完整，保留浏览器。');
+      }
+      const key = JSON.stringify([item.batch, item.taskId, item.submissionId, item.mediaId, item.download_path]);
+      groups.set(key, [...(groups.get(key) || []), item]);
+    }
+    const finished = items => items.some(item => item.reported === 'complete');
+    if (Object.values(saved.lzxOutbox || {}).some(event => event?.type === 'download')) {
+      throw busy('下载完成事件尚未获主程序确认，保留浏览器。');
+    }
+    for (const [batch, entry] of Object.entries(saved.lzxBatches || {})) {
+      if (entry?.state === 'rejected') continue;
+      const results = [...groups.values()].filter(items => items[0].batch === batch);
+      // Releases before 1.1.17 journaled the claim as a timestamp. Such a
+      // claim alone proves nothing; exact acknowledged downloads can settle it.
+      const legacy = typeof entry === 'number' && Number.isFinite(entry) && entry > 0;
+      if ((!legacy && entry?.state !== 'accepted') || !results.length || results.some(items => !finished(items))) {
+        throw busy('此配置仍有未确认提交或未完成下载，保留浏览器。');
+      }
+    }
+    // An interrupted download can have a later successful retry, but only
+    // completion of the exact same bound media can settle that old record.
+    if ([...groups.values()].some(items => !finished(items)) ||
+        (await chrome.downloads.search({state:'in_progress'})).length) {
+      throw busy('此浏览器仍有下载未完成，保留浏览器。');
+    }
+    // A background journal alone cannot prove a page is idle. Check every
+    // Flow project tab in this profile, including a second manually used tab.
+    const tabs = await chrome.tabs.query({});
+    if (!tabs.some(tab => tab.id === tabId && sameProjectTab(tab, config.project))) {
+      throw busy('原项目已切换，保留浏览器。');
+    }
+    for (const tab of tabs.filter(tab => projectUrl(tab.pendingUrl || tab.url))) {
+      let health;
+      try {health = await chrome.tabs.sendMessage(tab.id, {action:'lzxPageHealth'}, {frameId:0});} catch {}
+      if (health?.healthy !== true || health?.running !== false) {
+        throw busy('Flow 页面仍在执行或未确认空闲，保留浏览器。');
+      }
+    }
+    const windows = await chrome.windows.getAll({windowTypes:['normal','popup']});
+    if (!windows.length || windows.some(window => !Number.isInteger(window.id) || window.id < 0)) {
+      throw Error('无法确认本配置的浏览器窗口，保留浏览器。');
+    }
+    if ((await chrome.downloads.search({state:'in_progress'})).length || epoch !== connectionEpoch ||
+        !sameProjectTab(await chrome.tabs.get(tabId), config.project)) {
+      throw busy('下载、项目或配置状态已经变化，稍后重新核对。');
+    }
+    // chrome.windows is scoped to this Chrome profile. Never terminate a
+    // Chrome process, which can also own another account's browser windows.
+    send({action:'close_exhausted_response',request_id:message.request_id,success:true,data:{closing:true}});
+    await Promise.all(windows.map(window => chrome.windows.remove(window.id)));
+    closing = true;
+  } finally {
+    if (!closing) closingBrowser = false;
   }
 }
 const pageRepairs = new Map();
@@ -238,7 +324,7 @@ async function connect() {
       send({type: 'hello', protocol: 1, token: config.token, browser_id: browserId,
         profile: config.profile || '', project: config.project || '',
         extension_version: chrome.runtime.getManifest?.().version || '', setup_id: config.setup_id || '',
-        capabilities: ['idle_reload', 'project_setup_v1', 'generation_media_identity_v2']});
+        capabilities: ['idle_reload', 'project_setup_v1', 'generation_media_identity_v2', 'close_exhausted_v1']});
       clearInterval(heartbeat);
       heartbeat = setInterval(() => send({type: 'ping'}), 20000);
     };
@@ -450,9 +536,9 @@ async function projectSetupAction(entry, sender) {
         if (reply.type !== 'setup_reload_allowed') return;
         if (reply.ticket !== ticket || !reply.profile || new URL(reply.project).href.replace(/\/$/, '') !== project) throw Error('项目与本次连接请求不匹配。');
         receiving = true; clearTimeout(timer);
-        if (chrome.runtime.getManifest().version !== '1.1.18') {
+        if (chrome.runtime.getManifest().version !== '1.1.19') {
           await chrome.storage.local.set({lzxReloadSetup: {...entry, tabId: sender.tab.id,
-            mode: reply.mode || 'pair', profile: reply.profile, version: '1.1.18'}});
+            mode: reply.mode || 'pair', profile: reply.profile, version: '1.1.19'}});
           finish(null, {success: true, updating: true}); chrome.runtime.reload(); return;
         }
         if (action === 'options') {

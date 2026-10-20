@@ -5,6 +5,7 @@ import time
 from .connection_status import browser_keys
 from .setup_support import EXTENSION_VERSION, project_identity, compatible_extension
 from .account_policy import account_hold
+from .credit_cooldown import credit_hold
 from .routing import lane_key
 
 
@@ -75,7 +76,7 @@ def recover_preparation_block(service, client):
     clearing a block is never proof that the requested settings are selected.
     """
     if (not client.get('authorized') or not client.get('page_ready') or client.get('batch_running') is not False
-            or client.get('extension_version') not in {'1.1.16', '1.1.17', '1.1.18'} or client.get('setup_blocked')
+            or client.get('extension_version') not in {'1.1.16', '1.1.17', '1.1.18', '1.1.19'} or client.get('setup_blocked')
             or client.get('preparation_block_recovered')):
         return False
     expected = project_identity(service.preferences.get('profile_projects', {}).get(client.get('profile')))
@@ -90,7 +91,7 @@ def recover_preparation_block(service, client):
         return False
     legacy = {'无法确认页面已选中 Omni 1.1 Flash、比例、分辨率和 x1，未提交生成。',
               '浏览器响应超时，请检查页面后恢复；未发送新的生成请求。'}
-    if client.get('extension_version') == '1.1.18':
+    if client.get('extension_version') in {'1.1.18', '1.1.19'}:
         legacy.update(f'找不到视频时长选项，无法确认 {duration} 秒；请检查当前模型的设置面板'
                       for duration in (4, 6, 8, 10))
     blocks = service.preferences.get('browser_blocks', {})
@@ -124,7 +125,7 @@ def watch_preparation(service):
         if row['status'] != 'queued' or not recovery.get('reopen') or recovery.get('next_at', 0) > time.time():
             continue
         profile = recovery.get('profile')
-        if not profile:
+        if not profile or credit_hold({'profile': profile}, service.preferences):
             continue
         recovery = {**recovery, 'reopen': False}
         service.store.update(row['id'], 'queued', remote={**row['remote'], 'prepare_retry': recovery})
@@ -139,13 +140,13 @@ def watch_preparation(service):
 def retry_initial_credits(service, client):
     page_available = client.get('page_loaded') if client.get('credits_waiting_account') else client.get('page_ready')
     if (not client.get('authorized') or not page_available or account_hold(client, service.preferences)
+            or credit_hold(client, service.preferences) and not client.get('credits_retry_manual')
             or not client.get('credits_waiting_ready') or client.get('credits_ready_failures', 0) >= 3
             or client.get('credits_retry_at', 0) > time.time()
             or any(r['client'] == client['id'] and r['action'] == 'get_points' for r in service.pending.values())):
         return False
     client['credits_waiting_ready'] = False
-    service.request(client, 'get_points')
-    return True
+    return bool(service.request(client, 'get_points', manual_credit=bool(client.get('credits_retry_manual'))))
 
 
 def recover_window_block(service, client):

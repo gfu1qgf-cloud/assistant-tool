@@ -119,6 +119,6 @@ def reset_accounts(service, keys):
                 'message': '账号标记已重置；原任务仍待核对，空闲后再检测，不重新生成'}
             continue
         client.update(account='', credits=None, credits_local=False)
-        service.request(client, 'get_points')
+        service.request(client, 'get_points', manual_credit=True)
         client['credit_check']['hold_dispatch'] = True
         service.request(client, 'snapshot')

@@ -4,6 +4,7 @@ import time
 from .setup_support import project_identity, project_block
 from .credit_policy import balance_ready
 from .account_policy import hold_reason
+from .credit_cooldown import credit_reason, MIN_CREDITS
 
 
 def browser_keys(client):
@@ -22,10 +23,13 @@ def browser_status(client, preferences, jobs=(), now=None):
     online = bool(client.get('id'))
     saved = preferences.get('profile_projects', {}).get(client.get('profile')) or client.get('saved_project')
     project = '页面已响应' if online and client.get('page_ready') else ('地址已保存' if project_identity(saved) else '未设置地址')
+    cooldown = credit_reason(client, preferences, now)
     if not online:
         isolated = hold_reason(client, preferences)
         if isolated:
             return {'connection': '未连接', 'project': project, 'state': '账号已隔离', 'reason': isolated, 'color': '#b03728'}
+        if cooldown:
+            return {'connection': '未连接', 'project': project, 'state': '积分冷却', 'reason': cooldown, 'color': '#986100'}
         return {'connection': '未连接', 'project': project, 'state': '待连接' if project_identity(saved) else '待配置',
                 'reason': '等待打开此配置并连接扩展' if project_identity(saved) else '请先添加这个配置自己的 Flow 项目地址', 'color': '#986100'}
     blocks = preferences.get('browser_blocks', {})
@@ -33,12 +37,13 @@ def browser_status(client, preferences, jobs=(), now=None):
     environment_block = client.get('environment_block')
     # publish() includes the setup block in its aggregate environment field.
     # That alias is not a second independent failure of an auto-confirming page.
-    if environment_block == client.get('setup_blocked'):
+    if environment_block == client.get('setup_blocked') or environment_block == cooldown:
         environment_block = ''
     project_error = project_block(client, preferences, include_pending=False) if client.get('setup_pending') else ''
     account_error = hold_reason(client, preferences)
     recovery = client.get('connection_recovery') or {}
-    block = account_error or project_error or environment_block or client.get('setup_blocked') or client.get('blocked') or stored_block
+    blocked = '' if cooldown and client.get('blocked') == '积分不足' else client.get('blocked')
+    block = account_error or project_error or environment_block or client.get('setup_blocked') or blocked or stored_block
     if (client.get('setup_pending') and not project_error and not environment_block
             and not client.get('blocked') and not stored_block):
         return {'connection': '已连接', 'project': project, 'state': '自动确认中',
@@ -58,6 +63,10 @@ def browser_status(client, preferences, jobs=(), now=None):
     if (client.get('credit_check') or {}).get('state') == 'checking':
         return {'connection': '已连接', 'project': project, 'state': '积分检测中',
                 'reason': '正在读取此浏览器的账号和积分，完成后自动恢复接单', 'color': '#986100'}
+    if cooldown:
+        closing = (client.get('credit_close') or {}).get('message')
+        return {'connection': '已连接', 'project': project, 'state': '积分冷却',
+                'reason': cooldown + ('；' + closing if closing else ''), 'color': '#986100'}
     if (client.get('prepare_wait') or {}).get('next_at', 0) > now:
         return {'connection': '已连接', 'project': project, 'state': '自动等待中',
                 'reason': '此浏览器的页面控件尚未稳定，短暂等待后自动重试；其他账号继续执行', 'color': '#986100'}
@@ -67,8 +76,8 @@ def browser_status(client, preferences, jobs=(), now=None):
         reason = client.get('note') or '页面已连接，正在首次读取 Flow 登录账号信息'
     elif not balance_ready(client, now):
         reason = '等待本次连接首次读取积分；之后按提交费用本地计算'
-    elif client['credits'] <= 0:
-        reason = '积分不足，等待补充积分或备用账号'
+    elif client['credits'] < MIN_CREDITS:
+        reason = '积分低于 10，等待补充积分或备用账号'
     else:
         limits = [entry for key in browser_keys(client) for entry in preferences.get('parameter_blocks', {}).get(key, [])]
         note = ('；部分参数不可用：' + '、'.join(dict.fromkeys(str(e.get('duration')) + ' 秒' for e in limits)) +

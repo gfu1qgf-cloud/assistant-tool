@@ -9,7 +9,8 @@ const vm = require('node:vm');
   const saved = {lzxBatches: {[old]: 1, [active]: 2}, lzxDownloads: {}};
   const items = new Map(), session = {};
   let forwards = 0;
-  const context = {URL, ownedTab: 99, activeBatch: active, recentAutoDownloads:new Map(), console: {log() {}, warn() {}, error() {}},
+  const context = {URL, ownedTab: 99, activeBatch: active, closingBrowser:false, commandsInFlight:0,
+    recentAutoDownloads:new Map(), console: {log() {}, warn() {}, error() {}},
     local: async () => saved, send: value => events.push(value),
     forward: async () => {forwards++; throw Error('recovery must not enter a generation page handler');},
     serialize: async fn => fn(), reportDownload: async id => journal.push({reported: id}),

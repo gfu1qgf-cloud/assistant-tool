@@ -125,9 +125,9 @@ class ReportTests(unittest.TestCase):
         dialog.manual.recent.update_rows(rows)
         self.assertEqual(dialog.manual.recent.list.count(), 2)
 
-    def test_zero_cost_and_zero_balance_can_pass_verified_prepare(self):
+    def test_zero_cost_can_pass_verified_prepare_with_at_least_ten_credits(self):
         service = self.service(); service.store.enqueue(self.jobs(duration=None, budget=0))
-        client = self.client(service, credits=0); row = service.store.rows()[0]
+        client = self.client(service, credits=10); row = service.store.rows()[0]
         client['account'] = client['account'].casefold()
         service.store.update(row['id'], 'preparing', browser=client['id'], attempt='c'*32,
             remote={'account': client['account']})

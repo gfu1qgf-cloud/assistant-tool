@@ -8,6 +8,7 @@ from .routing import DURATIONS, lane_key, automatic_lane
 from .manual_panel import estimate_text
 from .task_ui import TaskSelector
 from .connection_status import browser_status
+from .credit_cooldown import credit_hold
 from .pricing import RULE_NOTE
 
 STATUS = {'queued': '等待执行', 'preparing': '核对模型／费用', 'uploading': '上传参考图',
@@ -169,7 +170,7 @@ class FlowDialog(QtWidgets.QDialog):
         self.browser_page = page
         layout = QtWidgets.QVBoxLayout(page)
         row = QtWidgets.QHBoxLayout()
-        self.button('刷新账号积分／核对中断任务', lambda: self.send('credits'), row)
+        self.button('刷新账号积分／核对中断任务', lambda: self.send('credits', manual=True), row)
         self.button('打开选中浏览器', self.open_selected_browser, row)
         self.button('修正后恢复选中浏览器', self.resume_selected_browsers, row)
         self.button('连接／安装扩展…', self.open_setup, row)
@@ -406,6 +407,9 @@ class FlowDialog(QtWidgets.QDialog):
             status = browser_status(client, preferences, self.state.get('jobs', []))
             credit_text = ((f'{client["credits"]:g}' + ('（估算）' if client.get('credits_estimated') else ''))
                            if client.get('credits') is not None else '未知')
+            hold = credit_hold(client, preferences)
+            if hold and client.get('credits') is None:
+                credit_text = f'{hold["balance"]:g}（冷却记录）'
             check = client.get('credit_check') or {}
             if check.get('state') == 'checking':
                 credit_text += '\n检测中…'
@@ -417,6 +421,8 @@ class FlowDialog(QtWidgets.QDialog):
                 credit_text += '\n检测失败：' + str(check.get('message') or '读取未完成')[:80]
             elif check.get('state') == 'deferred':
                 credit_text += '\n暂未检测：执行中，完成后再检测'
+            elif check.get('state') == 'cooldown':
+                credit_text += '\n冷却中，未自动检测'
             values = {0: client.get('profile') or ('浏览器 ' + identifier[:8]),
                       1: (client.get('account') or '待确认') if online else '未连接',
                       2: credit_text,

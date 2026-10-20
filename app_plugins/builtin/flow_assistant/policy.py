@@ -10,6 +10,7 @@ from .credit_policy import balance_ready
 from .connection_status import browser_keys, configured_profiles, browser_status
 from .pricing import fixed_cost
 from .account_policy import hold_reason
+from .credit_cooldown import credit_reason, MIN_CREDITS
 
 FAILURES = {'failed', 'uncertain', 'download_failed', 'archive_failed'}
 ACTIVE = {'queued', 'preparing', 'uploading', 'submitting', 'generating', 'downloading'}
@@ -37,7 +38,7 @@ def estimated_cost(job, observed):
 
 def block_for(client, preferences):
     blocks = preferences.get('browser_blocks', {})
-    return hold_reason(client, preferences) or client.get('setup_blocked') or next((blocks[key] for key in sorted(browser_keys(client)) if blocks.get(key)), '')
+    return hold_reason(client, preferences) or credit_reason(client, preferences) or client.get('setup_blocked') or next((blocks[key] for key in sorted(browser_keys(client)) if blocks.get(key)), '')
 
 
 def capable(client, job, preferences, cost=None):
@@ -49,6 +50,7 @@ def capable(client, job, preferences, cost=None):
             and client.get('page_ready') is not False
             and (client.get('prepare_wait') or {}).get('next_at', 0) <= time.time()
             and balance_ready(client)
+            and credits >= MIN_CREDITS
             and (credits >= cost if cost is not None else credits > 0)
             and dispatch_rank(client, job, preferences) is not None)
 
@@ -87,6 +89,8 @@ def waiting_reason(row, clients, rows, preferences, observed, batches, *, paused
             if not configured:
                 return '尚无可启动的项目配置：请为一个浏览器保存项目地址；时长由程序自动分配，无需手动分档'
             return f'{label}暂无匹配浏览器：当前配置为手动固定档；可切回“自动分配”后由程序接单'
+        holds = [credit_reason({'profile': p}, preferences) for p in useful]
+        if holds and all(holds): return '对应浏览器积分冷却中：' + holds[0]
         return f'{label}等待浏览器自动启动／空闲后自动分配时长，无需手动分档'
     if not any(capable(c, row['payload'], preferences, cost) for c in lane):
         funded = [c for c in lane if balance_ready(c)

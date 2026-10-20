@@ -2,6 +2,7 @@
 import time
 
 from .account_policy import account_hold
+from .credit_cooldown import credit_hold
 from .setup_support import project_identity
 from .store import TRANSIENT
 
@@ -18,9 +19,9 @@ def occupied(service, client):
 def repair_idle(service, client):
     profile = client.get('profile')
     saved = project_identity(client.get('saved_project'))
-    if (not client.get('authorized') or client.get('extension_version') != '1.1.18'
+    if (not client.get('authorized') or client.get('extension_version') not in {'1.1.18', '1.1.19'}
             or not profile or not saved or saved != project_identity(service.preferences.get('profile_projects', {}).get(profile))
-            or account_hold(client, service.preferences) or occupied(service, client)):
+            or account_hold(client, service.preferences) or credit_hold(client, service.preferences) or occupied(service, client)):
         return False
     if any(p['client'] == client['id'] and p['action'] == 'repair_project' for p in service.pending.values()):
         return False
