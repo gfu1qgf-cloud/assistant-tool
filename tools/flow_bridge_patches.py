@@ -2,6 +2,26 @@
 
 QUIET = '  const console = window.__lzxFlowTransport ? {log() {}, warn: globalThis.console.warn.bind(globalThis.console), error: globalThis.console.error.bind(globalThis.console)} : globalThis.console;'
 
+RESULT_RECEIPTS = r'''
+  const managedReadyReceipts = new Map();
+  function reconcileResultReceipts() {
+    if (!window.__lzxFlowTransport) return;
+    for (const [mediaId, url] of managedReadyReceipts) {
+      const matches = state.tasks.flatMap(task =>
+        /^FlowBridge\/[a-f0-9]{32}\/result\.mp4$/.test(task.download_path || "") ?
+          (task.mediaBindings || []).map((binding, line) => ({task, binding, line})).filter(({binding}) =>
+            binding?.schema === 2 && binding.source === "generation_response" && binding.taskId === task.taskId &&
+            binding.submissionId && binding.mediaIds?.includes(mediaId)) : []);
+      if (matches.length !== 1) continue;
+      const {task, binding, line} = matches[0];
+      if (binding.readyIds?.includes(mediaId) || binding.failedIds?.includes(mediaId) ||
+          binding.downloading || binding.downloadInitiated || task.downloaded?.[line] || task.downloadIds?.[line]) continue;
+      managedReadyReceipts.delete(mediaId);
+      window.dispatchEvent(new CustomEvent("flow-task-media-ready", {detail: {mediaId, url, source: "receipt_replay"}}));
+    }
+  }
+'''
+
 
 def exact(text, before, after, count=1):
     if text.count(before) != count:
@@ -16,6 +36,7 @@ TRANSPORT = '''    if (window.__lzxFlowTransport) {
         tasks: state.tasks.map(t => ({taskId: t.taskId, download_path: t.download_path,
           status: t.status, mediaBindings: t.mediaBindings, downloadIds: t.downloadIds}))
       }), {prepare: syncPageVideoSettings, initialized: () => bridgeUiReady,
+        reconcileResults: reconcileResultReceipts,
         upload: uploadPathsToFlow, images: getLoadedPageImages, click: simulateClick,
         failed: (taskId, submissionId, reason) => {
           const row = state.tasks.findIndex(t => t.taskId === taskId);
@@ -47,7 +68,7 @@ def patch_ui(ui):
     ui = exact(ui, '  if (window.top !== window) return;',
         '  if (window.top !== window || window.__lzxFlowUI || window.__flowAccountBridgeLoaded) return;\n'
         '  window.__lzxFlowUI = true;')
-    ui = exact(ui, '  let state = {', '  let bridgeUiReady = false;\n  let state = {')
+    ui = exact(ui, '  let state = {', '  let bridgeUiReady = false;\n' + RESULT_RECEIPTS + '\n  let state = {')
     ui = exact(ui, '    if (state.isRunning && !batchPromise) {',
         '    if (!window.__lzxFlowTransport && state.isRunning && !batchPromise) {')
     ui = exact(ui, '    await loadState();\n    \n    // 如果网页刚才由于刷新中断',
@@ -111,7 +132,14 @@ def patch_ui(ui):
         '        binding.source = "generation_response";\n'
         '        binding.readyIds = (binding.readyIds || []).filter(id => mediaIds.includes(id));\n'
         '        binding.urls = Object.fromEntries(Object.entries(binding.urls || {}).filter(([id]) => mediaIds.includes(id)));\n'
-        '      }\n' + binding_line)
+        '      }\n' + binding_line + '\n      reconcileResultReceipts();')
+    ui = exact(ui, '      if (mediaId) discoveredVideoUrlsById.set(mediaId, cleanUrl);',
+        '      if (window.__lzxFlowTransport && mediaId && parsedId === mediaId &&\n'
+        '          !["url_discovery", "receipt_replay"].includes(event.detail?.source)) {\n'
+        '        managedReadyReceipts.set(mediaId, cleanUrl);\n'
+        '        while (managedReadyReceipts.size > 64) managedReadyReceipts.delete(managedReadyReceipts.keys().next().value);\n'
+        '      }\n'
+        '      if (mediaId) discoveredVideoUrlsById.set(mediaId, cleanUrl);')
     missing = '''      if (!state.isRunning || !process || process.submissionId !== event.detail?.submissionId) {
         return;
       }

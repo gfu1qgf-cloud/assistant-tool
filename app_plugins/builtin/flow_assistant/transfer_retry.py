@@ -53,7 +53,7 @@ class TransferRecovery:
                    request['attempt'] == row['attempt'] and request['client'] == row['browser']
                    for request in self.pending.values())
 
-    def transfer_failed(self, row, stage, error, *, permanent=False):
+    def transfer_failed(self, row, stage, error, *, permanent=False, stop_code=''):
         if row['status'] in {'completed', 'needs_review', 'cancelled', 'archiving', 'archive_failed', 'download_parked'}:
             return False
         action = 'upload_images' if stage == 'upload' else 'retry_download'
@@ -66,7 +66,7 @@ class TransferRecovery:
         # Duplicate snapshots/error notifications must not postpone a scheduled retry.
         next_at = 0 if stopped else info.get('next_at') or time.time() + delay(self.preferences, stage + '_retry_delays', count)
         info.update(count=count, stopped=stopped, active=False, next_at=next_at,
-                    last_error=str(error)[:1000], waiting='')
+                    last_error=str(error)[:1000], waiting='', stop_code=stop_code)
         status = ('failed' if stopped else 'uploading') if stage == 'upload' else 'download_failed'
         return self._save_transfer(row, stage, info, status=status, error=str(error)[:1000])
 
@@ -148,11 +148,16 @@ class TransferRecovery:
             # No media-ID guessing or regenerated tasks: first ask the original
             # page for its saved snapshot. These probes are bounded too.
             if time.time() >= info.get('probe_at', 0) + timing_value(self.preferences, 'download_probe_seconds'):
-                if info.get('probes', 0) >= 10:
-                    return self.transfer_failed(row, 'download', '未找到原媒体绑定，已停止自动探测；请核对原项目。', permanent=True)
+                limit = timing_value(self.preferences, 'download_probe_attempts')
+                if info.get('probes', 0) >= limit:
+                    return self.transfer_failed(row, 'download', '原视频结果核对已达上限；保留原任务，收到准确结果后自动恢复下载。',
+                        permanent=True, stop_code='binding_probe_limit')
+                if any(request['action'] == 'snapshot' and request['client'] == client['id'] for request in self.pending.values()):
+                    return False
                 self.request(client, 'snapshot')
                 info.update(probe_at=time.time(), probes=info.get('probes', 0) + 1,
-                            waiting='正在从原项目恢复媒体绑定；不会重新生成')
+                            probe_limit=limit, waiting=('已确认本次视频编号，等待原视频就绪地址' if any(b['mediaIds'] for b in verified)
+                                else '尚未取得本次视频编号，正在核对原提交回执'))
                 return self._save_transfer(row, 'download', info)
             return False
         params = {'batch_id': row['attempt'], 'restore': {
@@ -164,6 +169,20 @@ class TransferRecovery:
         self._save_transfer(row, 'download', info, status='downloading', error='')
         self.request(client, 'retry_download', params, row['id'])
         return True
+
+    def resume_download_binding(self, row):
+        """Late, verified results can resume a probe-only stop, never a retry limit."""
+        info = dict(retry_info(row, 'download'))
+        probe_stop = info.get('stop_code') == 'binding_probe_limit' or (
+            info.get('last_error') == '未找到原媒体绑定，已停止自动探测；请核对原项目。')
+        if (row['status'] != 'download_failed' or not info.get('stopped') or not probe_stop or
+                info.get('count', 0) >= retry_limit(self.preferences, 'download')):
+            return False
+        verified = generated_bindings(row['remote'])
+        if not any(b in verified and b['taskId'] == row['remote'].get('upstream_task') for b in ready_bindings(row['remote'])):
+            return False
+        info.update(stopped=False, active=False, next_at=time.time(), stop_code='', waiting='已收到原视频准确结果，自动恢复下载')
+        return self._save_transfer(row, 'download', info, error='')
 
     def watch_transfer_retries(self):
         changed = False

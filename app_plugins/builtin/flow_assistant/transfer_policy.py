@@ -34,6 +34,8 @@ def retry_detail(row, preferences, now=None):
         if not limit: return f'{label}自动重试已关闭：' + info.get('last_error', '')
         return f'{label}自动重试已停止（{count}/{limit}）：' + info.get('last_error', '')
     if info.get('waiting'):
+        if stage == 'download' and info.get('probes') and not info.get('active'):
+            return f'视频结果核对 {info["probes"]}/{info.get("probe_limit", 10)} · ' + info['waiting']
         return f'{label}重试 {count}/{limit} · ' + info['waiting']
     if info.get('next_at'):
         seconds = max(0, math.ceil(info['next_at'] - (time.time() if now is None else now)))

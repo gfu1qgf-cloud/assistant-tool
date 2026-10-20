@@ -11,4 +11,7 @@ exports.installDownloadHelpers = (context, source) => {
   const end = source.indexOf('  function videoIdentity(', start);
   if (start < 0 || end < start) throw Error('upstream video validation seam missing');
   vm.runInContext(source.slice(start, end), context);
+  const receiptsStart = source.indexOf('  const managedReadyReceipts = new Map();');
+  const receiptsEnd = source.indexOf('  let state = {', receiptsStart);
+  if (receiptsStart >= 0) vm.runInContext(source.slice(receiptsStart, receiptsEnd), context);
 };

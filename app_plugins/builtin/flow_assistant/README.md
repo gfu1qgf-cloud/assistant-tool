@@ -117,3 +117,16 @@ FlowCue 1.1.5 调整手动／托管模式：没有托管连接时减少读取浏
 使用说明：`docs/Flow视频助手.md`。
 
 扩展更新使用 Chrome 官方 `runtime.reload()`，内容脚本只传消息，不能直接调用后台专属接口；启动顺序和权限边界参照 [runtime 文档](https://developer.chrome.com/docs/extensions/reference/api/runtime#method-reload) 与 [内容脚本能力说明](https://developer.chrome.com/docs/extensions/develop/concepts/content-scripts)。
+
+
+### 被其他窗口完全遮挡时的运行（0.4.28／扩展 1.1.23）
+
+Windows Chrome 会把完全遮挡的窗口当成后台，可能停止渲染并降低脚本执行频率。此前仅恢复最小化窗口，未处理遮挡；现在主程序打开 Flow 首页、项目或配对入口，以及 Chrome 启动器预设包含 Flow 页面时，增加 Chrome 原生后台运行参数，保持遮挡窗口的渲染、计时和进程优先级。普通非 Flow 启动保持原参数。
+
+这些参数只在 Chrome 主进程首次启动时生效，同一用户数据目录的多个 Profile 通常共用主进程。首次升级后，请等所有生成和下载结束，再正常完整退出 Chrome，并从程序重新打开 Flow；仅刷新页面、重载扩展或只关闭一个 Profile 窗口不能补齐已运行主进程的参数。程序不会自动结束浏览器进程或重开付费任务。正常使用允许窗口被其他窗口盖住，不要求逐个置前。休眠、断网、锁屏和切到其他标签不属于同一运行保证。
+
+成品地址早于对应生成编号到达时，扩展现在缓存有限的准确视频回执，编号确认后自动重新匹配；只读快照也会复核缓存，不依赖视频元素重新渲染。只接受原生成响应的任务、提交和媒体编号，不从旧视频、模糊文件名或单纯地址发现建立归属。
+
+下载前界面改为“视频结果核对 n/上限”，区分尚未取得本次视频编号和已有编号但就绪地址未到，不再把这一步显示为下载重试 0/5。已有只读请求未结束时不重复消耗核对次数。核对上限位于“程序设置 → 插件设置 → Flow 视频助手 · 时间与重试 → 下载结果只读核对上限”，默认 10 次；停止主动探测后仍接收迟到结果，准确结果到达时自动恢复原下载，不重置实际下载失败次数，也不自动重新生成。
+
+参考：[Chromium 窗口遮挡说明](https://chromium.googlesource.com/chromium/src/+/main/docs/windows_native_window_occlusion_tracking.md)、[Chrome 官方工具启动参数](https://github.com/GoogleChrome/chrome-launcher/blob/main/docs/chrome-flags-for-tools.md#task-throttling)。本次离线检查不使用真实账号生成；无法据此保证所有线上等待都由遮挡造成。

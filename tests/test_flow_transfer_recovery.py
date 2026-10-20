@@ -194,6 +194,7 @@ class TransferTests(unittest.TestCase):
         service.store.update(row['id'], 'download_failed', remote={**row['remote'], 'bindings': []})
         service.watch_transfer_retries(); self.due(service, row['id'], 'download')
         for _ in range(11):
+            service._snapshot(client, {'tasks': []})
             current = service.store.get(row['id']); info = {**retry_info(current, 'download'), 'probe_at': 0}
             service._save_transfer(current, 'download', info); service.watch_transfer_retries()
         self.assertTrue(retry_info(service.store.get(row['id']), 'download')['stopped'])

@@ -188,6 +188,25 @@
   // 2. 状态管理与配置项
   // ----------------------------------------------------
   let bridgeUiReady = false;
+
+  const managedReadyReceipts = new Map();
+  function reconcileResultReceipts() {
+    if (!window.__lzxFlowTransport) return;
+    for (const [mediaId, url] of managedReadyReceipts) {
+      const matches = state.tasks.flatMap(task =>
+        /^FlowBridge\/[a-f0-9]{32}\/result\.mp4$/.test(task.download_path || "") ?
+          (task.mediaBindings || []).map((binding, line) => ({task, binding, line})).filter(({binding}) =>
+            binding?.schema === 2 && binding.source === "generation_response" && binding.taskId === task.taskId &&
+            binding.submissionId && binding.mediaIds?.includes(mediaId)) : []);
+      if (matches.length !== 1) continue;
+      const {task, binding, line} = matches[0];
+      if (binding.readyIds?.includes(mediaId) || binding.failedIds?.includes(mediaId) ||
+          binding.downloading || binding.downloadInitiated || task.downloaded?.[line] || task.downloadIds?.[line]) continue;
+      managedReadyReceipts.delete(mediaId);
+      window.dispatchEvent(new CustomEvent("flow-task-media-ready", {detail: {mediaId, url, source: "receipt_replay"}}));
+    }
+  }
+
   let state = {
     tasks: [],             // 批量生成任务列表 (含 prompt, mode, image_name, local_image_path, duration, download_path, status, message, downloaded)
     taskRecord: {},        // mediaName -> 任务进度关联信息映射表
@@ -5852,6 +5871,7 @@ ${presetAfter || ""}`.trim();
         binding.urls = Object.fromEntries(Object.entries(binding.urls || {}).filter(([id]) => mediaIds.includes(id)));
       }
       binding.mediaIds = [...new Set(mediaIds.filter(id => typeof id === "string" && /^[a-zA-Z0-9_-]+$/.test(id)))];
+      reconcileResultReceipts();
       console.log(`[FlowUI] ✅ [media-bound] 成功绑定媒体 ID 到任务: Row=${process.rowIndex}, Line=${process.lineIndex}, mediaIds=`, binding.mediaIds);
       saveState();
     });
@@ -5875,6 +5895,11 @@ ${presetAfter || ""}`.trim();
       if (parsedId && parsedId !== mediaId) {
         console.warn(`[FlowUI] [media-ready] URL 解析出的 ID (${parsedId}) 与 mediaId (${mediaId}) 不一致! 忽略此事件`);
         return;
+      }
+      if (window.__lzxFlowTransport && mediaId && parsedId === mediaId &&
+          !["url_discovery", "receipt_replay"].includes(event.detail?.source)) {
+        managedReadyReceipts.set(mediaId, cleanUrl);
+        while (managedReadyReceipts.size > 64) managedReadyReceipts.delete(managedReadyReceipts.keys().next().value);
       }
       if (mediaId) discoveredVideoUrlsById.set(mediaId, cleanUrl);
       let match = findMediaBinding(mediaId);
@@ -6762,6 +6787,7 @@ ${presetAfter || ""}`.trim();
         tasks: state.tasks.map(t => ({taskId: t.taskId, download_path: t.download_path,
           status: t.status, mediaBindings: t.mediaBindings, downloadIds: t.downloadIds}))
       }), {prepare: syncPageVideoSettings, initialized: () => bridgeUiReady,
+        reconcileResults: reconcileResultReceipts,
         upload: uploadPathsToFlow, images: getLoadedPageImages, click: simulateClick,
         failed: (taskId, submissionId, reason) => {
           const row = state.tasks.findIndex(t => t.taskId === taskId);

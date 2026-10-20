@@ -308,10 +308,12 @@
   window.addEventListener('flow-task-media-failed',event=>generationFailed(event.detail?.mediaId,event.detail?.source,event.detail?.reason));
   function snapshot(force = false) {
     if (!getSnapshot) return;
+    if (force) helpers?.reconcileResults?.();
     const state = readiness();
     const stamp = JSON.stringify(state);
     if (stamp !== lastReadiness) {lastReadiness = stamp; pageStatus(state);}
-    const data = {...getSnapshot(), ...state, native_busy:nativeOperation};
+    const data = {...getSnapshot(), ...state, native_busy:nativeOperation,
+      page_visibility:document.visibilityState || 'unknown', page_focused:document.hasFocus?.() === true};
     const encoded = JSON.stringify(data);
     if (force || encoded !== lastSnapshot || Date.now() - lastSnapshotAt > timingMs('page_snapshot_seconds',15)) {
       lastSnapshot = encoded;

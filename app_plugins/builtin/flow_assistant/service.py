@@ -610,6 +610,7 @@ class FlowService(QtCore.QObject, FlowOperations):
                 client['native_busy'] = data.get('native_busy') is True
             client.update(project=data['url'], page_loaded=True,
                 page_ready=data.get('controls_ready', True) is True, ready_note=str(data.get('ready_note') or '')[:300],
+                page_visibility=str(data.get('page_visibility') or 'unknown')[:20], page_focused=data.get('page_focused') is True,
                 page_at=time.time(), page_error='')
             client['setup_blocked'] = project_block(client, self.preferences)
             if client.get('page_ready') and client.get('credits_local'):
@@ -673,6 +674,7 @@ class FlowService(QtCore.QObject, FlowOperations):
                 status = 'download_failed'
         if remote != row['remote'] or status != row['status']:
             self.store.update(row['id'], status, remote=remote, error=row['error'] if status in {'uncertain', 'download_failed'} else '')
+        self.resume_download_binding(self.store.get(row['id']))
         pending = remote.get('unverified_download')
         if pending and owns_download(self.store.get(row['id']), pending):
             self._download(client, {'batch_id': row['attempt'], 'event_id': remote.get('unverified_download_event'), 'data': pending})

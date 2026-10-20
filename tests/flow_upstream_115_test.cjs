@@ -1,6 +1,7 @@
 const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),vm=require('node:vm'),crypto=require('node:crypto');
 const root=path.join(__dirname,'..'),read=name=>fs.readFileSync(path.join(root,name),'utf8');
 const quiet={log(){},warn(){},error(){}};
+const {installDownloadHelpers}=require('./flow_test_support.cjs');
 
 function page(managed) {
   const source=read('browser_extensions/flow_bridge/injects/ui.js');
@@ -16,7 +17,7 @@ function page(managed) {
     sendToExtension(action){native.push(action);return new Promise(()=>{});},
     setTimeout(fn,ms){timers.push({fn,ms});return timers.length;},clearTimeout(){},
     setInterval(fn,ms){intervals.push({fn,ms});return intervals.length;},clearInterval(){}};
-  vm.createContext(context);vm.runInContext(bridge,context);
+  vm.createContext(context);installDownloadHelpers(context,source);vm.runInContext(bridge,context);
   return {context,timers,intervals,sockets,native,storage,attachments,dom:()=>dom};
 }
 

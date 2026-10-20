@@ -40,6 +40,7 @@ SPECS = [Spec(*row) for row in (
     ('upload_reassign_wait_seconds', '超时与重试', '提交前连接卡住后重新调度等待', 60, 5, 3600, '秒', '仅准备／上传且没有扣费或生成证据时，超过此时间解除原浏览器绑定，让其他可用浏览器接单。'),
     ('upload_reassign_attempts', '超时与重试', '提交前自动重新调度上限', 3, 0, 20, '次', '达到上限后保留记录，可手动完全重置；不会对结果不明的付费提交自动重新生成。0 关闭自动换浏览器。'),
     ('download_probe_seconds', '超时与重试', '下载绑定只读核对间隔', 15, 1, 3600, '秒', '等待原媒体绑定或签名地址时的快照检查间隔。'),
+    ('download_probe_attempts', '超时与重试', '下载结果只读核对上限', 10, 1, 50, '次', '达到上限后等待原结果通知；准确结果迟到仍自动恢复下载，不重置实际下载重试次数。'),
     ('download_stall_seconds', '超时与重试', '下载无进展判定时间', 120, 10, 86400, '秒', '进入原视频下载恢复流程，独立于生成无进展时间。'),
     ('stall_seconds', '超时与重试', '生成无进展后自动核对', 1200, 120, 86400, '分钟', '兼容原来的无进展设置。只读核对原任务，始终不自动重新生成。'),
     ('generation_probe_seconds', '超时与重试', '生成无进展只读核对间隔', 60, 1, 3600, '秒', '无进展达到判定时间后，隔多久再检查原任务。'),
@@ -136,7 +137,7 @@ def request_timeout(preferences, action, client=None):
     key = {'prepare': 'prepare_timeout_seconds', 'upload_images': 'upload_timeout_seconds',
            'retry_download': 'download_timeout_seconds', 'close_exhausted': 'credit_close_timeout_seconds'}.get(action, 'request_timeout_seconds')
     seconds = value(preferences, key)
-    if (client and client.get('extension_version') and client['extension_version'] not in {'1.1.21', '1.1.22'}
+    if (client and client.get('extension_version') and client['extension_version'] not in {'1.1.21', '1.1.22', '1.1.23'}
             and 'timing_settings_v1' not in client.get('capabilities', [])):
         seconds = max(seconds, CATALOG[key].default)
     return seconds

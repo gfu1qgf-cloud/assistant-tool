@@ -1204,11 +1204,13 @@ class ChromeRunnerDialog(QtWidgets.QDialog,Ui_ChromeRunnerDialog):
             targets = self.get_web_list() if urls is None else [str(url).strip() for url in urls if str(url).strip()]
             if urls is not None and not targets:
                 return False, '没有可打开的网址，未启动空白标签页。'
+            from model.ChromeFlowRuntime import background_flags
             cmd = [
                 self.chrome_path,
                 f"--profile-directory={profile['directory']}",
                 *(['--new-window'] if new_window else []),
                 '--start-maximized',
+                *background_flags(targets),
                 *targets,
             ]
             subprocess.Popen(cmd)
