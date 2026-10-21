@@ -39,6 +39,7 @@ from .image_affinity import remember_owner, allows_image, retained, affinity_con
 from .prepare_snapshot import remember as remember_prepare, reuse as reuse_prepare
 from .browser_slots import request_start as start_browser, can_start as can_start_browser, summary as browser_capacity
 from .high_credit import allowed as high_credit_allowed
+from .browser_options import normalize as normalize_browser_options, snapshot as browser_options_snapshot
 
 DEFAULT_PORT = 18189
 PROTOCOL = 1
@@ -75,10 +76,11 @@ class FlowService(QtCore.QObject, FlowOperations):
     stopped = QtCore.pyqtSignal()
     archive_result = QtCore.pyqtSignal(object)
 
-    def __init__(self, namespace, downloads_root, *, program_timing=None):
+    def __init__(self, namespace, downloads_root, *, program_timing=None, program_browser_options=None):
         super().__init__()
         self.namespace, self.downloads_root = namespace, downloads_root
         self.program_timing = None if program_timing is None else validate_timing({'timing': normalize_timing(program_timing)})
+        self.program_browser_options = None if program_browser_options is None else normalize_browser_options(program_browser_options)
         self.clients, self.pending = {}, {}
         self.paused, self.closing, self.last_launch = True, False, 0
         self.launched, self.archiving = set(), set()
@@ -111,6 +113,8 @@ class FlowService(QtCore.QObject, FlowOperations):
                                       'high_credit_accounts': entries})
             if self.program_timing is not None:
                 self.commit_preferences({**self.preferences, **timing_changes(self.preferences, self.program_timing)})
+            if self.program_browser_options is not None:
+                self.commit_preferences({**self.preferences, 'browser_options': self.program_browser_options})
             self.store.recover()
             self.drafts = self.store.drafts()
             self.observed_costs = {tuple(item['key']): item['cost'] for item in self.preferences.get('observed_costs', [])}
@@ -202,7 +206,8 @@ class FlowService(QtCore.QObject, FlowOperations):
         params = dict(params or {})
         if action in {'prepare', 'upload_images', 'run_tasks'}:
             params['wait_for_ready'] = True
-        if not self.send(client, {'action': action, 'request_id': request_id, 'params': params}):
+        if not self.send(client, {'action': action, 'request_id': request_id, 'params': params,
+                'browser_options': browser_options_snapshot(self.preferences)}):
             self.pending.pop(request_id, None)
             return False
         return True
@@ -338,7 +343,8 @@ class FlowService(QtCore.QObject, FlowOperations):
                 # and automatic balance probes; this never proves a new login.
                 cached = restore_balance(client, self.preferences)
                 if credit_record(client, self.preferences): cached = False
-                if not self.send(client, {'type': 'welcome', 'protocol': PROTOCOL, 'timing': timing_snapshot(self.preferences)}):
+                if not self.send(client, {'type': 'welcome', 'protocol': PROTOCOL, 'timing': timing_snapshot(self.preferences),
+                        'browser_options': browser_options_snapshot(self.preferences)}):
                     return
                 if not cached and not account_hold(client, self.preferences):
                     self.request(client, 'get_points')
@@ -1093,6 +1099,8 @@ class FlowService(QtCore.QObject, FlowOperations):
                     changes['timing'] = {**self.preferences['timing'], 'stall_seconds': changes['stall_seconds']}
                     normalize_timing(changes['timing'])
                 if 'timing' in changes: validate_timing(changes)
+                if 'browser_options' in changes:
+                    changes['browser_options'] = normalize_browser_options(changes['browser_options'])
                 self.commit_preferences({**self.preferences, **changes})
                 self.downloads_root = self.preferences.get('downloads_root') or self.downloads_root
                 self.timer.setInterval(max(1, round(timing_value(self.preferences, 'queue_tick_seconds') * 1000)))
@@ -1101,7 +1109,8 @@ class FlowService(QtCore.QObject, FlowOperations):
                         'timing': timing_snapshot(self.preferences)})
                 for current in list(self.clients.values()):
                     if current.get('authorized'):
-                        self.send(current, {'type': 'timing_settings', 'timing': timing_snapshot(self.preferences)})
+                        self.send(current, {'type': 'timing_settings', 'timing': timing_snapshot(self.preferences),
+                            'browser_options': browser_options_snapshot(self.preferences)})
             elif action == 'reset_account_state':
                 reset_accounts(self, command.get('keys', []))
             elif action == 'mark_account_unavailable':

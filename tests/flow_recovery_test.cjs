@@ -11,7 +11,7 @@ const vm = require('node:vm');
   let forwards = 0;
   const context = {URL, ownedTab: 99, activeBatch: active, closingBrowser:false, commandsInFlight:0,
     recentAutoDownloads:new Map(), console: {log() {}, warn() {}, error() {}},
-    local: async () => saved, send: value => events.push(value),
+    local: async () => saved, send: value => events.push(value), applyBrowserOptions: async () => {},
     forward: async () => {forwards++; throw Error('recovery must not enter a generation page handler');},
     serialize: async fn => fn(), reportDownload: async id => journal.push({reported: id}),
     async notifyDownload() {},

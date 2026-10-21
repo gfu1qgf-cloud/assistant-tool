@@ -261,7 +261,8 @@ class TimingSettingsTests(unittest.TestCase):
         self.assertEqual(panel.property('settings_plugin_id'), 'flow_assistant')
         index = dialog.settingTabWidget.indexOf(panel)
         item = dialog.settings_navigation.items[index]
-        self.assertEqual(item.parent().text(0), '插件设置')
+        self.assertEqual(item.parent().text(0), 'Flow 视频助手')
+        self.assertEqual(item.parent().parent().text(0), '插件设置')
         self.assertIn('Flow 视频助手', item.text(0))
         self.assertFalse(hasattr(panel, 'save_button'), 'use the host settings transaction')
         before = file.read_json(); commands = []; plugin.command.connect(commands.append)

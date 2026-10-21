@@ -6,6 +6,17 @@ let closingBrowser = false, commandsInFlight = 0;
 let absenceReportedAt = 0;
 let connectionWatchdog, socketStartedAt = 0, lastServerAt = 0;
 let timingValues = {};
+let browserOptions = {focus_before_action:false};
+async function applyBrowserOptions(raw, persist = true) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw) || typeof raw.focus_before_action !== 'boolean') return;
+  const next = {focus_before_action:raw.focus_before_action};
+  if (next.focus_before_action === browserOptions.focus_before_action) return;
+  browserOptions = next;
+  if (persist) {
+    try {await chrome.storage.local.set({lzxBrowserOptions:next});}
+    catch (error) {console.warn('[AssistantFlow] 窗口操作设置未缓存：', error.message || error);}
+  }
+}
 const timingMs = (key, fallback) => Math.max(1, Math.min(86400000,
   (typeof timingValues[key] === 'number' && Number.isFinite(timingValues[key]) && timingValues[key] > 0 ? timingValues[key] : fallback) * 1000));
 function reconnectAlarm() {chrome.alarms.create?.('lzxReconnect', {periodInMinutes:Math.max(.5, timingMs('bridge_reconnect_alarm_seconds',30)/60000)});}
@@ -46,7 +57,7 @@ async function findProjectTab(url) {
   // the user has brought a newer tab to the foreground.
   return matches.find(tab => tab.id === ownedTab) || matches.find(tab => tab.active) || matches[0];
 }
-async function local() { return chrome.storage.local.get(['lzxConfig', 'lzxBrowserId', 'lzxOwnedTab', 'lzxBatch', 'lzxOutbox', 'lzxDownloads', 'lzxBatches', 'lzxTiming']); }
+async function local() { return chrome.storage.local.get(['lzxConfig', 'lzxBrowserId', 'lzxOwnedTab', 'lzxBatch', 'lzxOutbox', 'lzxDownloads', 'lzxBatches', 'lzxTiming', 'lzxBrowserOptions']); }
 function send(message) { if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify(message)); }
 async function ensureTab() {
   if (opening) return opening;
@@ -100,7 +111,7 @@ async function bootstrapProject(expectedTab = null) {
   try {return await work;} finally {pageBootstraps.delete(tabId);}
 }
 async function forward(message) {
-  const usesPageUi = ['get_points', 'prepare', 'upload_images', 'run_tasks'].includes(message.action);
+  const usesPageUi = ['get_points', 'prepare', 'upload_images', 'run_tasks', 'retry_download'].includes(message.action);
   const attempts = Math.max(1, Math.ceil(timingMs('bridge_forward_wait_seconds',45) / timingMs('bridge_forward_retry_seconds',1)));
   for (let attempt = 0; attempt < attempts; attempt++) {
     try {
@@ -121,14 +132,22 @@ async function readyWorkTab(tabId) {
   // Upstream drives visible page controls. Match that normal manual path,
   // rather than adding a persistent debugger or overriding page visibility.
   if (!tab.active && typeof chrome.tabs.update === 'function') await chrome.tabs.update(tabId, {active: true});
-  if (Number.isInteger(tab.windowId) && typeof chrome.windows?.get === 'function') {
-    const window = await chrome.windows.get(tab.windowId);
-    if (window.state === 'minimized') await chrome.windows.update(tab.windowId, {state: 'normal', focused: false});
+  if (Number.isInteger(tab.windowId) && tab.windowId >= 0 && typeof chrome.windows?.get === 'function') {
+    try {
+      const window = await chrome.windows.get(tab.windowId);
+      const focus = browserOptions.focus_before_action === true;
+      if (window.state === 'minimized') await chrome.windows.update(tab.windowId, {state:'normal', focused:focus});
+      else if (focus && window.focused !== true) await chrome.windows.update(tab.windowId, {focused:true});
+    } catch (error) {
+      // Optional foreground activation must not reject or replay a paid action.
+      console.warn('[AssistantFlow] 窗口激活未完成，继续原网页操作：', error.message || error);
+    }
   }
 }
 async function receive(message) {
   if (message.type === 'welcome') {
     authenticated = true;
+    await applyBrowserOptions(message.browser_options || {focus_before_action:false});
     await applyTiming(message.timing);
     await serialize(async () => {
       const saved = await local();
@@ -142,7 +161,7 @@ async function receive(message) {
     try {await bootstrapProject();} catch (error) {console.warn('[AssistantFlow] 页面脚本恢复等待：',error.message);}
     return;
   }
-  if (message.type === 'timing_settings') {await applyTiming(message.timing); return;}
+  if (message.type === 'timing_settings') {await applyBrowserOptions(message.browser_options); await applyTiming(message.timing); return;}
   if (message.type === 'ack') {
     await serialize(async () => {
       const saved = await local();
@@ -160,6 +179,7 @@ async function receive(message) {
   }
   if (message.type === 'pong') return;
   if (!['get_points', 'prepare', 'upload_images', 'run_tasks', 'snapshot', 'retry_download', 'open_project', 'refresh_project', 'repair_project', 'close_exhausted'].includes(message.action)) return;
+  await applyBrowserOptions(message.browser_options);
   const tracked = !['snapshot', 'close_exhausted'].includes(message.action);
   if (tracked) commandsInFlight++;
   try {
@@ -390,6 +410,7 @@ async function connect() {
     const saved = await local();
     if (epoch !== connectionEpoch) return;
     await applyTiming(saved.lzxTiming, false);
+    await applyBrowserOptions(saved.lzxBrowserOptions, false);
     config = saved.lzxConfig || {};
     ownedTab = saved.lzxOwnedTab ?? null; activeBatch = saved.lzxBatch || '';
     if (!config.token || !Number.isInteger(config.port) || config.port < 1024 || config.port > 65535) return;
@@ -431,7 +452,7 @@ async function connect() {
         profile: config.profile || '', project: config.project || '',
         extension_version: chrome.runtime.getManifest?.().version || '', setup_id: config.setup_id || '',
         capabilities: ['idle_reload', 'project_setup_v1', 'generation_media_identity_v2', 'close_exhausted_v1',
-          'close_idle_backup_v1', 'close_released_batches_v1', 'window_inventory_v1', 'timing_settings_v1']});
+          'close_idle_backup_v1', 'close_released_batches_v1', 'window_inventory_v1', 'timing_settings_v1', 'focus_before_action_v1']});
       clearInterval(heartbeat);
       heartbeat = setInterval(() => send({type: 'ping'}), timingMs('bridge_heartbeat_seconds',20));
     };
@@ -674,9 +695,9 @@ async function projectSetupAction(entry, sender) {
         if (reply.type !== 'setup_reload_allowed') return;
         if (reply.ticket !== ticket || !reply.profile || new URL(reply.project).href.replace(/\/$/, '') !== project) throw Error('项目与本次连接请求不匹配。');
         receiving = true; clearTimeout(timer);
-        if (chrome.runtime.getManifest().version !== '1.1.28') {
+        if (chrome.runtime.getManifest().version !== '1.1.29') {
           await chrome.storage.local.set({lzxReloadSetup: {...entry, tabId: sender.tab.id,
-            mode: reply.mode || 'pair', profile: reply.profile, version: '1.1.28'}});
+            mode: reply.mode || 'pair', profile: reply.profile, version: '1.1.29'}});
           finish(null, {success: true, updating: true}); chrome.runtime.reload(); return;
         }
         if (action === 'options') {

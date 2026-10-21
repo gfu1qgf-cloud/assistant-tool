@@ -1,6 +1,7 @@
 from qt_compat import QtCore
 from app_plugins.api import MAIN_MENU, TASK_CONTEXT_MENU, PluginCommand, PluginSettingsPage
 from .timing import CONFIG_KEY, normalize, snapshot as timing_snapshot, validate
+from .browser_options import CONFIG_KEY as BROWSER_CONFIG_KEY, normalize as normalize_browser_options, snapshot as browser_options_snapshot
 import json
 import time
 import uuid
@@ -13,7 +14,7 @@ class FlowAssistantPlugin(QtCore.QObject):
     command = QtCore.pyqtSignal(object)
     plugin_id = 'flow_assistant'
     display_name = 'Flow 视频助手'
-    version = '0.4.41'
+    version = '0.4.42'
     upstream_version = '1.1.5'
     ui_api_version = 2
     manual_credit_check_api = 1
@@ -44,6 +45,11 @@ class FlowAssistantPlugin(QtCore.QObject):
         context.register_command(PluginCommand('generate', '生成 Flow 视频…', self.open_tasks,
             frozenset({TASK_CONTEXT_MENU}), order=34, enabled=lambda rows: bool(rows)))
         context.register_settings_page(PluginSettingsPage('timing', 'Flow 视频助手 · 时间与重试', self.create_timing_settings, order=212))
+        context.register_settings_page(PluginSettingsPage('browser', 'Flow 视频助手 · 浏览器操作', self.create_browser_settings, order=213))
+
+    def create_browser_settings(self, parent=None):
+        from .browser_options_ui import BrowserOptionsSettings
+        return BrowserOptionsSettings(parent, preferences=self.snapshot.get('preferences'))
 
     def create_timing_settings(self, parent=None):
         from .timing_ui import TimingSettings
@@ -67,7 +73,8 @@ class FlowAssistantPlugin(QtCore.QObject):
         downloads = QtCore.QStandardPaths.writableLocation(QtCore.QStandardPaths.StandardLocation.DownloadLocation)
         config = self.context.load_config()
         timing = validate({'timing': normalize(config[CONFIG_KEY])}) if CONFIG_KEY in config else None
-        self.service = FlowService(self.context.storage, downloads, program_timing=timing)
+        browser = normalize_browser_options(config[BROWSER_CONFIG_KEY]) if BROWSER_CONFIG_KEY in config else None
+        self.service = FlowService(self.context.storage, downloads, program_timing=timing, program_browser_options=browser)
         self.service.moveToThread(self.thread)
         self.thread.started.connect(self.service.start)
         self.command.connect(self.service.execute)
@@ -172,7 +179,7 @@ class FlowAssistantPlugin(QtCore.QObject):
         if result.get('request_id') != self.timing_request: return
         self.timing_request, self.pending_timing = '', None
         if not result.get('success'):
-            self.context.log('Flow 时间设置已写入程序设置，但本次应用失败：' + str(result.get('error') or '未知错误') +
+            self.context.log('Flow 设置已写入程序设置，但本次应用失败：' + str(result.get('error') or '未知错误') +
                 '；已保留当前运行参数，下次正常启动会重新应用。')
 
     def launch_browser(self, directory, urls, *, completed=None, guard=None):
@@ -374,16 +381,20 @@ class FlowAssistantPlugin(QtCore.QObject):
         dialog.set_targets(self._snapshots(targets), preferred_directory=targets[0]['target_dir'])
 
     def apply_settings(self, config):
-        if CONFIG_KEY not in config: return True
-        timing = validate({'timing': normalize(config[CONFIG_KEY])})
+        changes = {}
+        if CONFIG_KEY in config:
+            changes['timing'] = validate({'timing': normalize(config[CONFIG_KEY])})
+        if BROWSER_CONFIG_KEY in config:
+            changes['browser_options'] = normalize_browser_options(config[BROWSER_CONFIG_KEY])
+        if not changes: return True
         if self.service is not None and self.thread is not None and self.thread.isRunning():
-            if self.pending_timing == timing: return True
-            if (self.pending_timing is None and isinstance(self.snapshot.get('preferences'), dict)
-                    and timing_snapshot(self.snapshot['preferences']) == timing):
-                return True
-            self.timing_request, self.pending_timing = uuid.uuid4().hex, timing
-            self.command.emit({'action': 'preferences', 'request_id': self.timing_request,
-                'value': {'timing': timing}})
+            if self.pending_timing == changes: return True
+            preferences = self.snapshot.get('preferences')
+            if self.pending_timing is None and isinstance(preferences, dict):
+                current = {'timing': timing_snapshot(preferences), 'browser_options': browser_options_snapshot(preferences)}
+                if all(current[key] == item for key, item in changes.items()): return True
+            self.timing_request, self.pending_timing = uuid.uuid4().hex, changes
+            self.command.emit({'action': 'preferences', 'request_id': self.timing_request, 'value': changes})
         return True
 
     def can_close(self):

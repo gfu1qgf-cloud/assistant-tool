@@ -212,10 +212,12 @@ class FlowTests(unittest.TestCase):
         parent = QtWidgets.QWidget()
         context = SimpleNamespace(storage=self.namespace, parent_widget=parent, log=MagicMock(),
             register_command=MagicMock(), register_settings_page=MagicMock(), load_config=MagicMock(return_value={
-                'flow_assistant_timing': {'credit_validity_seconds': 43200, 'queue_tick_seconds': 2}}))
+                'flow_assistant_timing': {'credit_validity_seconds': 43200, 'queue_tick_seconds': 2},
+                'flow_assistant_browser_options': {'focus_before_action': False}}))
         plugin = FlowAssistantPlugin(); plugin.register(context)
         self.assertEqual(context.register_command.call_count, 2)
-        self.assertEqual(context.register_settings_page.call_count, 1)
+        self.assertEqual({call.args[0].page_id for call in context.register_settings_page.call_args_list},
+                         {'timing', 'browser'})
         plugin.start()
         try:
             for _ in range(100):
@@ -223,11 +225,14 @@ class FlowTests(unittest.TestCase):
                 if plugin.snapshot: break
             self.assertIn('jobs', plugin.snapshot)
             self.assertEqual(plugin.snapshot['preferences']['timing']['credit_validity_seconds'], 43200)
-            plugin.apply_settings({'flow_assistant_timing': {'credit_validity_seconds': 21600}})
+            self.assertFalse(plugin.snapshot['preferences']['browser_options']['focus_before_action'])
+            plugin.apply_settings({'flow_assistant_timing': {'credit_validity_seconds': 21600},
+                                   'flow_assistant_browser_options': {'focus_before_action': True}})
             for _ in range(100):
                 QtTest.QTest.qWait(10)
                 if plugin.snapshot['preferences']['timing']['credit_validity_seconds'] == 21600: break
             self.assertEqual(plugin.snapshot['preferences']['timing']['credit_validity_seconds'], 21600)
+            self.assertTrue(plugin.snapshot['preferences']['browser_options']['focus_before_action'])
             self.assertTrue(plugin.stop())
             self.assertFalse(plugin.thread.isRunning())
         finally:
