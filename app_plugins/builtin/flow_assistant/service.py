@@ -89,6 +89,8 @@ class FlowService(QtCore.QObject, FlowOperations):
         try:
             self.store = QueueStore(self.namespace)
             self.preferences = self.store.settings()
+            from .browser_slots import recover_legacy_probe_failures
+            self.preferences = recover_legacy_probe_failures(self.preferences)
             # Consent from a previous application process never authorizes a new run.
             from .high_credit import new_session_entries
             entries = new_session_entries(self.preferences)

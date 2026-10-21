@@ -1,5 +1,7 @@
 """Read-only Chrome extension inspection and per-profile setup validation."""
 import json
+import base64
+import hashlib
 from pathlib import Path
 import re
 from urllib.parse import parse_qs, urlencode, urlsplit, urlunsplit
@@ -108,7 +110,7 @@ def inspect_extension(root, profile):
         versions = {str(row['manifest']['version']) for row in records
                     if isinstance(row.get('manifest'), dict) and row['manifest'].get('version')}
         result['version'] = next(iter(versions)) if len(versions) == 1 else ''
-        states = {str(row.get('state')) for row in records}
+        states = {str(row['state']) for row in records if row.get('state') is not None}
         if len(states) > 1 or len(versions) > 1:
             result['reason'] = '检测到相互矛盾的安装记录，请在此配置的扩展页确认。'
             return result
@@ -116,6 +118,31 @@ def inspect_extension(root, profile):
             result.update(status='disabled', reason='检测到安装记录，但扩展被停用；请在扩展页启用。')
         elif all(row.get('state') == 1 for row in records):
             result.update(status='enabled', reason='检测到已启用的安装记录；尚未连接不等于没安装。')
+        # Chrome may omit both state and manifest for unpacked extensions.
+        # Check the exact recorded path and identity, then let the live
+        # handshake confirm readiness. Missing flags do not prove disabled.
+        if result['status'] != 'disabled' and all(row.get('state') in (None, 1) for row in records):
+            disk_versions = set()
+            for row in records:
+                path = Path(str(row.get('path') or ''))
+                if not str(row.get('path') or '') or str(path).startswith(('\\\\', '//')):
+                    continue
+                if not path.is_absolute(): path = directory / 'Extensions' / path
+                try:
+                    with (path / 'manifest.json').open('rb') as stream:
+                        raw = stream.read(1024 * 1024 + 1)
+                    if len(raw) > 1024 * 1024: continue
+                    manifest = json.loads(raw.decode('utf-8-sig'))
+                    key = base64.b64decode(manifest.get('key', ''), validate=True)
+                    identifier = ''.join(chr(ord('a') + int(c, 16)) for c in hashlib.sha256(key).hexdigest()[:32])
+                    if key and identifier == EXTENSION_ID:
+                        disk_versions.add(str(manifest.get('version') or ''))
+                except (OSError, ValueError, TypeError, AttributeError):
+                    continue
+            if len(disk_versions) == 1:
+                result['version'] = next(iter(disk_versions))
+                result['can_launch'] = compatible_extension(result['version'])
+                result['reason'] = '已核对本配置安装路径及扩展身份；启动后等待扩展在线确认。'
     elif parsed and not unreadable and not (directory / 'Extensions' / EXTENSION_ID).exists():
         result.update(status='missing', reason='本地记录中未检测到桥接扩展；若刚安装，可能尚未落盘。')
     return result

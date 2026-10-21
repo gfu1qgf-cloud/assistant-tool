@@ -90,6 +90,43 @@ class SetupTests(unittest.TestCase):
         for root in ('', 'relative-folder'):
             with self.subTest(root=root), self.assertRaises(ValueError): inspect_extension(root, 'Profile 23')
 
+    def test_modern_unpacked_record_opens_saved_project_without_state_or_cached_manifest(self):
+        # Exact shape observed in the user's Chrome Secure Preferences.
+        manifest = json.loads((Path(__file__).resolve().parents[1] / 'browser_extensions/flow_bridge/manifest.json').read_text('utf-8'))
+        unpacked = self.root / 'unpacked'; unpacked.mkdir()
+        (unpacked / 'manifest.json').write_text(json.dumps(manifest), encoding='utf-8')
+        path = self.preferences({'extensions': {'settings': {EXTENSION_ID: {
+            'path': str(unpacked), 'location': 4, 'disable_reasons': []}}}}, name='Secure Preferences')
+        before = path.read_bytes()
+        result = inspect_extension(self.root / 'Chrome', 'Profile 23')
+        self.assertEqual(result['status'], 'unknown')  # Disk hints do not prove live readiness.
+        self.assertTrue(result['can_launch']); self.assertEqual(result['version'], EXTENSION_VERSION)
+        dialog, launcher, commands = self.ui()
+        dialog.plugin.snapshot = {'preferences': {'profile_projects': {'Profile 23': PROJECT}}}
+        dialog.plugin._launch_checked(result)
+        self.assertEqual(launcher.launch_profile.call_count, 1)
+        self.assertEqual(launcher.launch_profile.call_args.kwargs['urls'], [PROJECT])
+        self.assertIs(commands[-1]['opened'], True)
+        self.assertEqual(path.read_bytes(), before)
+
+    def test_unpacked_path_cannot_override_disabled_or_wrong_identity_or_conflicting_records(self):
+        manifest = json.loads((Path(__file__).resolve().parents[1] / 'browser_extensions/flow_bridge/manifest.json').read_text('utf-8'))
+        unpacked = self.root / 'unpacked'; unpacked.mkdir()
+        target = unpacked / 'manifest.json'
+        for variant in ('disabled', 'wrong_key', 'incompatible', 'conflicting'):
+            with self.subTest(variant=variant):
+                data = dict(manifest)
+                row = {'path': str(unpacked), 'location': 4}
+                if variant == 'disabled': row['disable_reasons'] = [1]
+                if variant == 'wrong_key': data['key'] = 'YWJjZA=='
+                if variant == 'incompatible': data['version'] = '99.0.0'
+                if variant == 'conflicting': row['state'] = 0
+                target.write_text(json.dumps(data), encoding='utf-8')
+                self.preferences({'extensions': {'settings': {EXTENSION_ID: row}}}, name='Secure Preferences')
+                self.preferences(self.installed() if variant == 'conflicting' else {})
+                result = inspect_extension(self.root / 'Chrome', 'Profile 23')
+                self.assertFalse(result.get('can_launch'))
+
     def test_contradictory_records_are_unknown_not_a_reinstall_verdict(self):
         self.preferences(self.installed(state=1)); self.preferences(self.installed(state=0), name='Secure Preferences')
         self.assertEqual(inspect_extension(self.root / 'Chrome', 'Profile 23')['status'], 'unknown')

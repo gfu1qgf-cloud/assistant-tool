@@ -5,6 +5,16 @@ from .connection_status import configured_profiles
 from .store import TRANSIENT
 
 
+def recover_legacy_probe_failures(preferences):
+    """Recheck old false negatives once, without losing real launch failures."""
+    if preferences.get('extension_probe_revision', 0) >= 2:
+        return preferences
+    prefix = '扩展未启用或版本无法确认，请在连接向导修正后恢复；自动调度未打开此配置：'
+    failures = {profile: entry for profile, entry in preferences.get('browser_launch_failures', {}).items()
+                if entry.get('kind') or not str(entry.get('message') or '').startswith(prefix)}
+    return {**preferences, 'extension_probe_revision': 2, 'browser_launch_failures': failures}
+
+
 def occupied_profiles(service):
     slots = set(service.preferences.get('browser_slots', {}))
     configured = set(configured_profiles(service.preferences))
@@ -120,6 +130,7 @@ def launch_result(service, command):
         service.launched.discard(profile)
         return
     failures = {**service.preferences.get('browser_launch_failures', {}), profile: {
-        'at': time.time(), 'message': str(command.get('error') or '浏览器未成功启动')[:500]}}
+        'at': time.time(), 'message': str(command.get('error') or '浏览器未成功启动')[:500],
+        'kind': command.get('kind', 'launch')}}
     service.commit_preferences({**service.preferences, 'browser_slots': slots, 'browser_launch_failures': failures})
     service.launching.pop(profile, None)

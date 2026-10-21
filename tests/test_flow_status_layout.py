@@ -17,16 +17,15 @@ class StatusLayoutTests(unittest.TestCase):
         QtTest.QTest.qWait(20)
 
     def area(self, label):
-        parent = label.parentWidget()
-        while parent and not isinstance(parent, QtWidgets.QScrollArea): parent = parent.parentWidget()
-        self.assertIsNotNone(parent)
-        return parent
+        self.assertFalse(isinstance(label.parentWidget(), QtWidgets.QScrollArea))
+        self.assertTrue(hasattr(label, '_status_text'))
+        return label
 
     def test_long_and_short_status_updates_keep_controls_in_place_on_every_page(self):
         dialog, _launcher, _commands = self.ui()
         dialog.resize(1200, 940); dialog.show(); self.settle()
         labels = (dialog.note, dialog.connection_summary, dialog.progress, dialog.queue_tools.summary,
-                  dialog.setup.connection_label, dialog.setup.status, dialog.manual.route_note,
+                  dialog.manual.route_note,
                   dialog.manual.estimate, dialog.manual.status, dialog.batch_estimate)
         pages = ((0, (dialog.queue, dialog.queue_tools.search, dialog.queue_menu_button)),
                  (1, (dialog.manual.prompt, dialog.manual.submit, dialog.manual.picker)),
@@ -51,7 +50,12 @@ class StatusLayoutTests(unittest.TestCase):
         long_message = '\n'.join('状态详情 ' + str(i) for i in range(30))
         dialog.note.setText(long_message); self.settle()
         self.assertEqual(dialog.note.text(), long_message)
-        self.assertGreater(self.area(dialog.note).verticalScrollBar().maximum(), 0)
+        self.assertEqual(dialog.note.toolTip(), long_message)
+        self.assertFalse(dialog.findChildren(QtWidgets.QScrollArea))
+        # The connection guide retains its original inline, wrapped labels.
+        self.assertTrue(dialog.setup.connection_label.wordWrap())
+        self.assertFalse(hasattr(dialog.setup.connection_label, '_status_text'))
+        self.assertLess(dialog.setup.connection_label.y(), dialog.setup.connect_button.y())
         screenshot = os.environ.get('LZX_FLOW_STATUS_SCREENSHOT')
         if screenshot:
             dialog.tabs.setCurrentIndex(0)

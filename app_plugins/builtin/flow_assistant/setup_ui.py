@@ -9,7 +9,6 @@ from .setup_support import (inspect_extension, project_url, project_identity,
 from .connection_status import browser_status
 from .account_policy import account_hold
 from .timing import value as timing_value, delay
-from .status_ui import status_area
 
 
 class _Signals(QtCore.QObject):
@@ -46,8 +45,10 @@ class ConnectionSetup(QtWidgets.QGroupBox):
         self.connection_label = QtWidgets.QLabel(self)
         self.connection_label.setWordWrap(True)
         self.connection_label.setTextFormat(QtCore.Qt.TextFormat.PlainText)
+        layout.addWidget(self.connection_label)
         self.status = QtWidgets.QLabel('选择 Chrome 配置，点击“打开浏览器并连接”；已有地址会直接进入项目。', self)
         self.status.setWordWrap(True); self.status.setTextFormat(QtCore.Qt.TextFormat.PlainText)
+        layout.addWidget(self.status)
         row = QtWidgets.QHBoxLayout()
         self.connect_button = QtWidgets.QPushButton('① 打开浏览器并连接', self)
         self.connect_button.clicked.connect(lambda: self.begin())
@@ -78,8 +79,6 @@ class ConnectionSetup(QtWidgets.QGroupBox):
         self.hint = QtWidgets.QLabel('已有项目地址：点①，主程序打开项目，扩展后台自动领取并保存连接凭据，再通过 WebSocket 连接。'
             '无需复制 Token 或配对信息。首次未设置项目时，才需要在 Flow 中复制一次项目地址；下次直接使用已保存的地址。', self)
         self.hint.setWordWrap(True); layout.addWidget(self.hint)
-        layout.addWidget(status_area(self.connection_label, 2))
-        layout.addWidget(status_area(self.status, 2))
         self.profile.currentIndexChanged.connect(self.changed_profile)
         self.project.textEdited.connect(lambda: self.dirty_profiles.add(self.active_profile))
         self.project.textChanged.connect(self.project_changed)

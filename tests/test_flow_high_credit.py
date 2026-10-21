@@ -110,6 +110,38 @@ class HighCreditTests(unittest.TestCase):
         self.assertEqual(launched, ['Unknown']); self.assertIsNone(service.high_credit_pending)
         self.assertEqual(service.store.get(rows[0]['id'])['status'], 'queued')
 
+    def test_restart_rechecks_legacy_probe_failures_and_launches_small_after_high_decline(self):
+        from app_plugins.builtin.flow_assistant.browser_slots import recover_legacy_probe_failures
+        service = self.service()
+        rich = self.browser(service, 'Rich', points=1038)
+        self.observe(service, rich, 1038)
+        small = self.browser(service, 'Small', points=50)
+        self.observe(service, small, 50)
+        entries = copy.deepcopy(service.preferences['high_credit_accounts'])
+        entries[rich['account']].update(decision='skipped', decision_source='user_declined', asked_cycle=0)
+        prefix = '扩展未启用或版本无法确认，请在连接向导修正后恢复；自动调度未打开此配置：'
+        prefs = {**service.preferences, 'profiles': ['Rich', 'Small'], 'concurrency': 4,
+                 'high_credit_accounts': entries,
+                 'browser_launch_failures': {'Small': {'at': time.time(), 'message': prefix + 'Small'},
+                    'Broken': {'message': 'Chrome executable missing', 'kind': 'launch'}}}
+        prefs.pop('extension_probe_revision', None)
+        service.commit_preferences(prefs)
+        queued_ids = [row['id'] for row in self.queue(service)]
+        service.execute({'action': 'stop'})
+        restarted = self.service()
+        restarted.paused = False
+        launches = []; restarted.launch_requested.connect(launches.append)
+        restarted._tick()
+        self.assertEqual(launches, ['Small'])
+        self.assertIsNone(restarted.high_credit_pending)
+        self.assertFalse(allowed(rich, restarted.preferences))
+        self.assertEqual(len(restarted.store.rows()), 4)
+        self.assertEqual([row['id'] for row in restarted.store.rows()], queued_ids)
+        self.assertTrue(all(row['status'] == 'queued' for row in restarted.store.rows()))
+        self.assertIn('Broken', restarted.preferences['browser_launch_failures'])
+        restarted.preferences['browser_launch_failures']['Small'] = {'message': prefix + 'Small', 'kind': 'extension_probe_v2'}
+        self.assertIn('Small', recover_legacy_probe_failures(restarted.preferences)['browser_launch_failures'])
+
     def test_unknown_online_profile_still_confirming_is_not_skipped_early(self):
         service = self.service(); self.browser(service, 'Rich', points=1038)
         small = self.browser(service, 'Small', points=50)

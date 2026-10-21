@@ -13,7 +13,7 @@ class FlowAssistantPlugin(QtCore.QObject):
     command = QtCore.pyqtSignal(object)
     plugin_id = 'flow_assistant'
     display_name = 'Flow 视频助手'
-    version = '0.4.36'
+    version = '0.4.37'
     upstream_version = '1.1.5'
     ui_api_version = 2
     manual_credit_check_api = 1
@@ -284,9 +284,10 @@ class FlowAssistantPlugin(QtCore.QObject):
         live = next((c for c in self.snapshot.get('clients', []) if c.get('profile') == directory), None)
         if live:
             result = {**result, 'status': 'enabled', 'version': live.get('extension_version', '')}
-        if result['status'] != 'enabled' or not compatible_extension(result.get('version')):
+        if (result['status'] != 'enabled' and not result.get('can_launch')) or not compatible_extension(result.get('version')):
             error = '扩展未启用或版本无法确认，请在连接向导修正后恢复；自动调度未打开此配置：' + directory
-            self.command.emit({'action': 'browser_launch_result', 'profile': directory, 'opened': False, 'error': error})
+            self.command.emit({'action': 'browser_launch_result', 'profile': directory, 'opened': False,
+                               'error': error, 'kind': 'extension_probe_v2'})
             self._failed(error)
             return
         launcher = getattr(self.context.parent_widget, 'chrome_plugin', None)
