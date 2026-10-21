@@ -232,18 +232,18 @@ async function receive(message) {
     return;
   }
   if (message.type === 'pong') return;
-  if (!['get_points', 'prepare', 'upload_images', 'run_tasks', 'snapshot', 'retry_download', 'open_project', 'refresh_project', 'repair_project', 'close_exhausted', 'focus_window'].includes(message.action)) return;
+  if (!['get_points', 'prepare', 'upload_images', 'run_tasks', 'snapshot', 'retry_download', 'open_project', 'refresh_project', 'repair_project', 'close_exhausted', 'close_browser', 'focus_window'].includes(message.action)) return;
   await applyBrowserOptions(message.browser_options);
-  const tracked = !['snapshot', 'close_exhausted'].includes(message.action);
+  const tracked = !['snapshot', 'close_exhausted', 'close_browser'].includes(message.action);
   if (tracked) commandsInFlight++;
   try {
+    if (closingBrowser) throw Object.assign(Error('此浏览器正在核对关闭，暂不接收新操作。'), {code:'FLOW_CLOSE_BUSY'});
     if (message.action === 'focus_window') {
       const state = await readyWorkTab(await ensureTab(),message);
       send({action:'focus_window_response',request_id:message.request_id,success:true,data:{state:state || 'Chrome 已请求聚焦，等待 Windows 前台校验'}});
       return;
     }
-    if (closingBrowser) throw Object.assign(Error('此浏览器正在核对关闭，暂不接收新操作。'), {code:'FLOW_CLOSE_BUSY'});
-    if (message.action === 'close_exhausted') {
+    if (message.action === 'close_exhausted' || message.action === 'close_browser') {
       await closeExhausted(message);
       return;
     }
@@ -317,9 +317,10 @@ async function closeExhausted(message) {
   const backup = args.reason === 'high_credit_backup' && typeof args.account === 'string' && !!args.account.trim();
   const low = !args.reason && Number.isFinite(args.balance) && args.balance >= 0 && args.balance < 10 &&
     Number.isFinite(args.until) && args.until * 1000 > Date.now();
+  const validReason = message.action === 'close_browser' ? args.reason === 'manual_runtime' : (backup || low);
   if (args.idle !== true || args.profile !== config.profile || args.url !== config.project ||
-      !(backup || low)) {
-    throw Error('缺少本配置的低积分冷却或千分备用确认，保留浏览器。');
+      !validReason) {
+    throw Error('缺少本配置的关闭授权或原项目确认，保留浏览器。');
   }
   const busy = text => Object.assign(Error(text), {code:'FLOW_CLOSE_BUSY'});
   if (commandsInFlight || closingBrowser) throw busy('原浏览器仍在处理操作，稍后再核对关闭。');
@@ -385,10 +386,11 @@ async function closeExhausted(message) {
     }
     // chrome.windows is scoped to this Chrome profile. Never terminate a
     // Chrome process, which can also own another account's browser windows.
-    send({action:'close_exhausted_response',request_id:message.request_id,success:true,data:{closing:true}});
-    await Promise.all(windows.map(window => chrome.windows.remove(window.id)));
-    if ((await chrome.windows.getAll({windowTypes:['normal','popup']})).length) throw Error('浏览器仍有窗口未关闭，保留启动名额。');
-    send({action:'close_exhausted_response',request_id:message.request_id,success:true,data:{closed:true}});
+    send({action:message.action+'_response',request_id:message.request_id,success:true,data:{closing:true}});
+    const removals = await Promise.allSettled(windows.map(window => chrome.windows.remove(window.id)));
+    if (removals.some(result => result.status === 'rejected')) throw Error('部分浏览器窗口未关闭，请检查此配置后重试。');
+    if ((await chrome.windows.getAll({windowTypes:['normal','popup']})).length) throw Error('浏览器仍有窗口未关闭，请检查此配置。');
+    send({action:message.action+'_response',request_id:message.request_id,success:true,data:{closed:true}});
     closing = true;
     socket?.close();
   } finally {
@@ -514,7 +516,7 @@ async function connect() {
         profile: config.profile || '', project: config.project || '',
         extension_version: chrome.runtime.getManifest?.().version || '', setup_id: config.setup_id || '',
         capabilities: ['idle_reload', 'project_setup_v1', 'generation_media_identity_v2', 'close_exhausted_v1',
-          'close_idle_backup_v1', 'close_released_batches_v1', 'window_inventory_v1', 'timing_settings_v1', 'focus_before_action_v1', 'native_foreground_v1', 'site_pause_evidence_v1', 'runtime_controls_v1']});
+          'close_idle_backup_v1', 'close_released_batches_v1', 'window_inventory_v1', 'timing_settings_v1', 'focus_before_action_v1', 'native_foreground_v1', 'site_pause_evidence_v1', 'runtime_controls_v1', 'manual_browser_close_v1']});
       clearInterval(heartbeat);
       heartbeat = setInterval(() => send({type: 'ping'}), timingMs('bridge_heartbeat_seconds',20));
     };
@@ -757,9 +759,9 @@ async function projectSetupAction(entry, sender) {
         if (reply.type !== 'setup_reload_allowed') return;
         if (reply.ticket !== ticket || !reply.profile || new URL(reply.project).href.replace(/\/$/, '') !== project) throw Error('项目与本次连接请求不匹配。');
         receiving = true; clearTimeout(timer);
-        if (chrome.runtime.getManifest().version !== '1.1.33') {
+        if (chrome.runtime.getManifest().version !== '1.1.34') {
           await chrome.storage.local.set({lzxReloadSetup: {...entry, tabId: sender.tab.id,
-            mode: reply.mode || 'pair', profile: reply.profile, version: '1.1.33'}});
+            mode: reply.mode || 'pair', profile: reply.profile, version: '1.1.34'}});
           finish(null, {success: true, updating: true}); chrome.runtime.reload(); return;
         }
         if (action === 'options') {

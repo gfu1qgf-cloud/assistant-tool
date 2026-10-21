@@ -86,6 +86,13 @@ class FlowOperations(TransferRecovery, TaskReset):
         for client in self.clients.values():
             if browser_keys(client) & keys:
                 keys.update(browser_keys(client))
+        closing_ids = {p['client'] for p in self.pending.values() if p['action'] == 'close_browser'}
+        closing_profiles = {c.get('profile') for c in self.clients.values() if c.get('id') in closing_ids}
+        for client in self.clients.values():
+            if (client.get('id') in closing_ids or client.get('profile') in closing_profiles) and browser_keys(client) & keys:
+                keys.difference_update(browser_keys(client))
+                client['runtime_note'] = '关闭操作尚在执行，等待关闭结果后再恢复此配置。'
+        if not keys: return
         blocks = dict(self.preferences.get('browser_blocks', {}))
         for key in keys:
             blocks.pop(key, None)
@@ -107,6 +114,7 @@ class FlowOperations(TransferRecovery, TaskReset):
             if browser_keys(client) & keys:
                 client.pop('prepare_wait', None)
                 client.pop('reuse_recovery',None)
+                client.pop('runtime_close', None)
                 self.connection_recoveries.pop(client.get('profile'),None)
                 client.pop('connection_recovery',None)
                 client['blocked'] = ''

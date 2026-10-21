@@ -28,6 +28,9 @@ def browser_status(client, preferences, jobs=(), now=None):
     from .high_credit import reason as high_credit_reason
     high_reason = high_credit_reason(client, preferences)
     if not online:
+        from .runtime_close import PAUSED
+        if any(preferences.get('browser_blocks', {}).get(key) == PAUSED for key in browser_keys(client)):
+            return {'connection': '未连接', 'project': project, 'state': '手动关闭／暂停', 'reason': PAUSED, 'color': '#986100'}
         failure = preferences.get('browser_launch_failures', {}).get(client.get('profile'), {})
         slot = preferences.get('browser_slots', {}).get(client.get('profile'), {})
         isolated = hold_reason(client, preferences)

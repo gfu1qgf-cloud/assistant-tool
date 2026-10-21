@@ -109,5 +109,35 @@ async function refused(options, mutate) {
   for(const invalid of [{},'not-an-array',['invalid-id'],[null]]) {
     await refused({},message=>message.params.released_batches=invalid);
   }
+  const manualCommand=()=>({action:'close_browser',request_id:'manual-close',params:{idle:true,
+    profile:'Profile 1',url:project,reason:'manual_runtime'}});
+  const manual=await fixture();
+  assert.equal(manual.closed.length,0,'startup alone never closes a browser');
+  await manual.api.receive(manualCommand());
+  assert.deepEqual(manual.closed,[1,2],'manual close shuts all windows of this Chrome profile without credit requirements');
+  assert.equal(manual.messages.at(-1).action,'close_browser_response');
+  assert.equal(manual.messages.at(-1).data.closed,true);
+  const manualEmpty=await fixture({data:{lzxBatch:null,lzxBatches:{},lzxDownloads:{}}});
+  await manualEmpty.api.receive(manualCommand());assert.deepEqual(manualEmpty.closed,[1,2]);
+  for(const options of [{progress:()=>true},{data:{lzxDownloads:{1:binding('interrupted')}}},
+      {data:{lzxOutbox:{pending:{type:'download'}}}}, {changedProject:true},
+      {health:()=>undefined},{health:()=>({healthy:true,running:true,native_busy:false})},
+      {health:()=>({healthy:true,running:false,native_busy:true})},
+      {extraTabs:[{id:8,url:project+'-second'}],health:id=>({healthy:true,running:id===8,native_busy:false})},
+      {data:{lzxBatches:{[batch]:{state:'unknown'}}}}]) {
+    const blocked=await fixture(options);await blocked.api.receive(manualCommand());
+    assert.equal(blocked.closed.length,0);assert.equal(blocked.messages.at(-1).success,false);
+  }
+  for(const params of [{profile:'Other'},{url:project+'-other'},{idle:false},{reason:'high_credit_backup'}]) {
+    const invalid=await fixture();const message=manualCommand();Object.assign(message.params,params);
+    await invalid.api.receive(message);assert.equal(invalid.closed.length,0);
+    assert.equal(invalid.messages.at(-1).success,false);
+  }
+  const working=await fixture();working.api.setBusy();await working.api.receive(manualCommand());
+  assert.equal(working.closed.length,0);assert.equal(working.messages.at(-1).code,'FLOW_CLOSE_BUSY');
+  const failedManual=await fixture({removeFailure:true});await failedManual.api.receive(manualCommand());
+  assert.equal(failedManual.messages.at(-1).success,false);
+  await failedManual.api.receive(manualCommand());
+  assert.notEqual(failedManual.messages.at(-1).code,'FLOW_CLOSE_BUSY','manual native failure releases its lock');
   console.log('Flow low-credit close: profile binding, idle pages, all batch receipts, exact-result retry, download acknowledgement, in-flight operations and failure recovery passed.');
 })().catch(error=>{console.error(error);process.exitCode=1;});

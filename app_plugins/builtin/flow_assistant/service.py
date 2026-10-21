@@ -168,9 +168,13 @@ class FlowService(QtCore.QObject, FlowOperations):
                 raise
             self._disconnected(socket)
 
-    def request(self, client, action, params=None, job=None, *, manual_credit=False):
+    def request(self, client, action, params=None, job=None, *, manual_credit=False, manual_close=False):
         if action == 'close_exhausted':
             return False  # Automatic closure was disabled; never send a native close.
+        if action == 'close_browser' and not manual_close:
+            return False  # Only the explicit runtime menu may request closure.
+        if action != 'close_browser' and client.get('runtime_close', {}).get('state') in {'checking', 'closing', 'closed'}:
+            return False
         if action == 'refresh_project':
             # A reload can cancel an accepted website generation. Even legacy
             # recovery plans may only query snapshots; never send this command.
@@ -373,8 +377,11 @@ class FlowService(QtCore.QObject, FlowOperations):
                 client['credit_close'] = {**client.get('credit_close', {}), 'state': 'closed',
                     'message': '已确认此配置所有浏览器窗口退出，启动名额已释放'}
                 for key, pending in list(self.pending.items()):
-                    if pending['client'] == client['id'] and pending['action'] == 'close_exhausted':
+                    if pending['client'] == client['id'] and pending['action'] in {'close_exhausted', 'close_browser'}:
                         self.pending.pop(key)
+                if client.get('runtime_close'):
+                    from .runtime_close import response as close_response
+                    close_response(self, client, {'success': True, 'data': {'closed': True}})
                 from .browser_slots import closed as browser_closed
                 browser_closed(self, client.get('profile'))
                 self.publish()
@@ -441,6 +448,10 @@ class FlowService(QtCore.QObject, FlowOperations):
         request_id = str(message.get('request_id'))
         request = self.pending.get(request_id)
         if not request or request['client'] != client['id']:
+            return
+        if request['action'] == 'close_browser':
+            from .runtime_close import response as close_response
+            if close_response(self, client, message): self.pending.pop(request_id, None)
             return
         if (request['action'] == 'close_exhausted' and message.get('success') and
                 (message.get('data') or {}).get('closing') and not (message.get('data') or {}).get('closed')):
@@ -1300,6 +1311,11 @@ class FlowService(QtCore.QObject, FlowOperations):
                     if client:
                         client['credit_close'] = {**client.get('credit_close', {}), 'state': 'failed',
                             'next_at': time.time() + timing_value(self.preferences, 'credit_close_retry_seconds'), 'message': '关闭浏览器响应超时，保留当前窗口'}
+                if request['action'] == 'close_browser':
+                    client = next((c for c in self.clients.values() if c.get('id') == request['client']), None)
+                    if client:
+                        from .runtime_close import timeout as close_timeout
+                        close_timeout(client)
                 if request['job']:
                     row = self.store.get(request['job'])
                     # A disconnected request may outlive an explicit retry.

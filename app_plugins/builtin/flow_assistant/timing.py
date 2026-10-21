@@ -142,7 +142,8 @@ def delay(preferences, key, index):
 def request_timeout(preferences, action, client=None):
     from .setup_support import compatible_extension
     key = {'prepare': 'prepare_timeout_seconds', 'upload_images': 'upload_timeout_seconds',
-           'retry_download': 'download_timeout_seconds', 'close_exhausted': 'credit_close_timeout_seconds'}.get(action, 'request_timeout_seconds')
+           'retry_download': 'download_timeout_seconds', 'close_exhausted': 'credit_close_timeout_seconds',
+           'close_browser': 'credit_close_timeout_seconds'}.get(action, 'request_timeout_seconds')
     seconds = value(preferences, key)
     if action == 'upload_images':
         controls = value(preferences, 'page_controls_wait_seconds')

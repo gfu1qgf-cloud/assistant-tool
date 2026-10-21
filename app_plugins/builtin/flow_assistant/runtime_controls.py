@@ -32,12 +32,15 @@ def refresh(service, client, *, automatic=False):
 
 def execute(service, command):
     operation = command.get('operation')
-    if operation not in {'focus','refresh','credits','snapshot'}: raise ValueError('未知运行时操作')
+    if operation not in {'focus','refresh','credits','snapshot','close'}: raise ValueError('未知运行时操作')
     keys = set(command.get('keys', [])); found = False
     for client in service.clients.values():
         if not client.get('authorized') or not browser_keys(client) & keys: continue
         found = True
-        if operation == 'refresh': refresh(service, client)
+        if operation == 'close':
+            from .runtime_close import request_close
+            request_close(service, client)
+        elif operation == 'refresh': refresh(service, client)
         elif operation == 'focus':
             if 'runtime_controls_v1' not in client.get('capabilities',[]):
                 client['runtime_note']='当前扩展尚未加载运行时激活支持；相关浏览器正常重启后可用。'

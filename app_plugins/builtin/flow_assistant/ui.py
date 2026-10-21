@@ -534,14 +534,21 @@ class FlowDialog(QtWidgets.QDialog):
         online = {client.get('id'):client for client in self.state.get('clients',[]) if client.get('id')}
         runtime.setEnabled(bool(selected) and all(item.get('browser') in online for item in selected))
         for text, operation in (('激活窗口（切到前台）','focus'),('F5 刷新原项目页面','refresh'),
-                                ('检测当前积分','credits'),('读取页面状态','snapshot')):
+                                ('检测当前积分','credits'),('读取页面状态','snapshot'),('关闭此配置浏览器','close')):
             action = runtime.addAction(text,lambda _checked=False, op=operation:self.send('browser_runtime',
                 operation=op,keys=[item['key'] for item in self.browser_selections()]))
             if operation in {'focus','refresh'}:
                 supported = bool(selected) and all('runtime_controls_v1' in online.get(item.get('browser'),{}).get('capabilities',[]) for item in selected)
                 action.setEnabled(supported)
                 if not supported: action.setToolTip('当前扩展尚未加载此操作支持；相关浏览器正常重启加载 1.1.33 后可用。')
-        runtime.setToolTip('只对当前已连接的所选浏览器执行；未连接时禁用。F5 会再次核对无生成、下载或待确认结果。')
+            if operation == 'close':
+                supported = bool(selected) and all('manual_browser_close_v1' in online.get(item.get('browser'),{}).get('capabilities',[]) for item in selected)
+                action.setEnabled(supported)
+                action.setToolTip('仅关闭所选 Chrome 配置的所有窗口；先核对无操作、生成、下载或待确认结果。关闭后暂停此配置自动调度，可通过“修正后恢复”恢复。' if supported else
+                    '关闭需要桥接扩展 1.1.34；当前运行的扩展尚未加载此功能。')
+                if not supported: action.setText('关闭此配置浏览器（需扩展 1.1.34）')
+        runtime.setToolTipsVisible(True)
+        runtime.setToolTip('只对当前已连接的所选浏览器执行；未连接时禁用。F5 和关闭会再次核对无生成、下载或待确认结果。')
         return runtime
 
     def detect_selected_credits(self):
