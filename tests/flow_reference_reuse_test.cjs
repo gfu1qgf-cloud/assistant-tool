@@ -82,7 +82,7 @@ function fixture() {
   {
     const f=fixture();await f.upload(1);f.state.images=[];f.state.mounted='';
     const restored=await f.upload(2);
-    assert.equal(restored.reused,false);assert.equal(f.state.uploads,2);assert.equal(f.state.cleanups,1);
+    assert.equal(restored.reused,false);assert.equal(f.state.uploads,2);assert.equal(f.state.picker,false);
     assert(f.api.verify(f.api.resolve(f.task(restored))),'a deleted cached image must get a newly verified upload');
   }
   {

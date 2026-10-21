@@ -1440,6 +1440,7 @@ class FlowService(QtCore.QObject, FlowOperations):
                 # Cold connected pages and extension hello packets do not
                 # justify opening the entire backup group while four pages
                 # are still initializing or undergoing bounded recovery.
+                from .credit_cache import pending_balance_profiles
                 starting = {c.get('profile') for c in clients if c.get('profile') and
                     c.get('profile') not in held_profiles and c.get('account') not in useful_accounts and
                     not block_for(c, self.preferences) and not c.get('blocked') and
@@ -1447,6 +1448,8 @@ class FlowService(QtCore.QObject, FlowOperations):
                     (time.time() - c.get('connected', 0) < timing_value(self.preferences, 'browser_startup_seconds') or
                      (c.get('connection_recovery') or {}).get('state') == 'checking' or
                      0 < (c.get('connection_recovery') or {}).get('count', 0) < timing_value(self.preferences, 'connection_repair_attempts'))}
+                starting.update(profile for profile in pending_balance_profiles(self, queued_rows, affinity)
+                    if profile not in held_profiles)
                 starting.update(p for p in self.launching if p not in held_profiles and
                     not any(c.get('profile') == p and c.get('account') in useful_accounts for c in clients))
                 occupied = sum(r['status'] in TRANSIENT for r in rows) + len(useful_accounts) + len(starting)

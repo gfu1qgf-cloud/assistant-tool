@@ -127,6 +127,7 @@ class TransferRecovery:
         self._save_transfer(row, 'upload', info, status='uploading', error='')
         self.request(client, 'upload_images', {'paths': [reference['path']], 'upload_id': row['attempt'],
             'reference': reference, 'expected_account': client.get('account'),
+            'recover_reference': bool(retry),
             'reference_reset': row['payload'].get('reference_reset', '')}, row['id'])
         return True
 

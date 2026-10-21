@@ -83,7 +83,7 @@ const vm = require('node:vm');
   await invoke('closed-account-panel');
   assert.equal(messages.find(value => value.request_id === 'closed-account-panel').data.email, 'fresh@example.test');
   let runs = 0, accountProbes = 0;
-  window.__lzxReferenceIdentity={init(){},resolve(task){assert.equal(task.reference.upload_id,'a'.repeat(32));}};
+  window.__lzxReferenceIdentity={init(){},ready:()=>true,resolve(task){assert.equal(task.reference.upload_id,'a'.repeat(32));}};
   transport.attach(async message => {if (message.action === 'run_tasks') runs++;}, () => ({tasks: []}), {
     async account() {accountProbes++; await fresh('fresh@example.test');}
   });
@@ -122,6 +122,9 @@ const vm = require('node:vm');
   await upload('changed-during-reference');
   assert.equal(messages.find(value=>value.request_id==='changed-during-reference').success,false);
   assert.equal(invalidations,2,'both wrong-account cases must discard old asset proofs');
+  window.__lzxReferenceIdentity.ready=()=>false;
+  await upload('uninitialized-reference');
+  assert.equal(messages.find(value=>value.request_id==='uninitialized-reference').code,'FLOW_REFERENCE_SCRIPT_NOT_READY');
 
   const built = fs.readFileSync(path.join(__dirname, '../browser_extensions/flow_bridge/injects/ui.js'), 'utf8');
   const check = built.indexOf('await window.__lzxFlowTransport.waitForSettings(settings)');

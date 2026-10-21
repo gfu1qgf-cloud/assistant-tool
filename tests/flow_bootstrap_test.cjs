@@ -1,7 +1,7 @@
 const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),vm=require('node:vm'),crypto=require('node:crypto');
 const project='https://flow.google.com/project/cold',extension='pnjppjjfgiccpcfajkpooklgohgihdom';
 const source=fs.readFileSync(path.join(__dirname,'../browser_extensions/flow_adapter/background.js'),'utf8');
-async function fixture({running=false,healthy=false,changed=false,pending=false,nativeMissing=false}={}) {
+async function fixture({running=false,healthy=false,changed=false,pending=false,nativeMissing=false,referenceMissing=false}={}) {
   const data={lzxConfig:{token:'x'.repeat(40),port:18189,profile:'Profile 1',project}};
   const hooks={},injections=[],reloads=[],commands=[],errors=[],sent=[];let installed=false;
   const event=name=>({addListener:fn=>hooks[name]=fn});
@@ -12,7 +12,7 @@ async function fixture({running=false,healthy=false,changed=false,pending=false,
       set:async value=>Object.assign(data,structuredClone(value)),remove:async key=>delete data[key]}},
     tabs:{query:async()=>[tab,{id:8,url:'https://flow.google.com/project/other'}],get:async()=>({...tab}),onUpdated:event('updated'),onCreated:event('created'),
       sendMessage:async(id,message)=>{commands.push(message);assert.equal(id,7);
-        if(message.action==='lzxPageHealth') return installed||healthy?{healthy:true,running}:nativeMissing?{healthy:false,native_bridge:false}:undefined;
+        if(message.action==='lzxPageHealth') return installed||healthy?{healthy:true,running,...(referenceMissing?{reference_ready:installed}: {})}:nativeMissing?{healthy:false,native_bridge:false}:undefined;
         if(!installed&&!healthy) throw Error('Receiving end does not exist');return {accepted:true};},reload:async id=>reloads.push(id)},
     scripting:{executeScript:async request=>{injections.push(request);
       if(request.func) return [{frameId:0,documentId:'doc-original',result:{url:changed?'https://flow.google.com/project/other':project}}];
@@ -35,6 +35,12 @@ async function fixture({running=false,healthy=false,changed=false,pending=false,
   await f.api.forward({action:'snapshot'});assert(f.commands.some(m=>m.message?.action==='snapshot'));
   await f.api.bootstrapProject();assert.equal(f.injections.filter(r=>r.files?.some(p=>p.endsWith('.js'))).length,2,'a working page is left running');
   const busy=await fixture({healthy:true,running:true});await busy.api.bootstrapProject();assert.equal(busy.injections.length,0);assert.equal(busy.reloads.length,0);
+  const missingReference=await fixture({healthy:true,referenceMissing:true});
+  await missingReference.api.forward({action:'upload_images',params:{recover_reference:true}});
+  assert(missingReference.injections.some(r=>r.files?.includes('lzx-reference.js')),'upload retry must repair a missing reference controller even when other page scripts are healthy');
+  assert.equal(missingReference.reloads.length,0);
+  assert.equal(missingReference.commands.filter(m=>m.message?.action==='upload_images').length,1);
+  assert(!missingReference.commands.some(m=>m.message?.action==='run_tasks'));
   const other=await fixture({changed:true});await assert.rejects(()=>other.api.bootstrapProject(),/项目/);assert(!other.injections.some(r=>r.files));
   const navigation=await fixture({pending:true});await navigation.api.bootstrapProject();assert.equal(navigation.injections.length,0,'wait for committed navigation before injecting');
   const startup=await fixture();await startup.api.receive({type:'welcome'});assert(startup.injections.some(r=>r.files));

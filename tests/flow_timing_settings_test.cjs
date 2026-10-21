@@ -53,6 +53,11 @@ async function background(saved={}) {
   hooks.message({source:window,origin:location.origin,data:{sender:'lzx-flow-page',data:{type:'snapshot',data:{running:false,boot_ready:true}}}});
   let health;hooks.runtime({action:'lzxPageHealth'},{},value=>health=value);
   assert.equal(timers.at(-1).ms,800);now+=1000;timers.at(-1).fn();assert.equal(health.healthy,true);
+  for (const reference_ready of [false,true]) {
+    hooks.message({source:window,origin:location.origin,data:{sender:'lzx-flow-page',data:{type:'page_status',boot_ready:true,reference_ready}}});
+    hooks.runtime({action:'lzxPageHealth'},{},value=>health=value);timers.at(-1).fn();
+    assert.equal(health.healthy,reference_ready);assert.equal(health.reference_ready,reference_ready);
+  }
 
   const pageHooks={},polls=[];let pageNow=0;
   const prompt={isConnected:true},button={isConnected:true};

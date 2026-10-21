@@ -9,7 +9,7 @@ from .page_readiness import recoverable_prepare_reason
 from .policy import block_for, estimated_cost, admitted_queue
 from .routing import dispatch_rank
 from .timing import value as timing_value
-from .image_affinity import retained, allows_image, cached_profile, dispatch_order, affinity_context
+from .image_affinity import allows_image, cached_profile, dispatch_order, affinity_context
 from .browser_slots import request_start, can_start
 
 
@@ -45,10 +45,8 @@ def can_fund(client, job, preferences, observed):
 
 def prefer_smaller(service, row, selected, *, affinity=None):
     from .high_credit import allowed, is_high
-    ordinary = not is_high(selected, service.preferences)
-    # A healthy member of the selected image pool keeps taking work until
-    # it cannot fund the next task. Historical owners are not extra lanes.
-    if ordinary and retained(selected, service.preferences): return False
+    # A usable open ordinary account takes precedence over reopening history.
+    if not is_high(selected, service.preferences): return False
     selected_order = dispatch_order(selected, service.preferences)
     now = time.time(); cost = estimated_cost(row['payload'], service.observed_costs)
     probes = getattr(service, 'small_balance_probes', {})
@@ -71,7 +69,6 @@ def prefer_smaller(service, row, selected, *, affinity=None):
     profiles = list(dict.fromkeys(configured_profiles(service.preferences) + [p for p in online if p]))
     for profile in profiles:
         client = online.get(profile) or cached_profile(profile, service.preferences)
-        if ordinary and not retained(client, service.preferences): continue
         if (len(affinity['pool']) >= int(service.preferences.get('concurrency', 2)) and
                 str(client.get('account') or '').strip().casefold() not in affinity['pool']): continue
         if profile not in online and profile in service.preferences.get('browser_launch_failures', {}): continue

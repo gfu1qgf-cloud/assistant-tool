@@ -2,7 +2,7 @@
   if (window.top !== window) return;
   if (window.__lzxFlowContent) return;
   window.__lzxFlowContent = true;
-  let ready = false, lastPageAt = 0, running, bootReady, nativeBusy;
+  let ready = false, lastPageAt = 0, running, bootReady, nativeBusy, referenceReady;
   let timingValues = {};
   const timingMs = (key,fallback) => Math.max(1, (Number.isFinite(timingValues[key]) && timingValues[key] > 0 ? timingValues[key] : fallback)*1000);
   function applyTiming(raw) {
@@ -19,6 +19,7 @@
         if (typeof event.data.data?.data?.running === 'boolean') running = event.data.data.data.running;
         const state = event.data.data.type === 'snapshot' ? event.data.data.data : event.data.data;
         if (typeof state?.boot_ready === 'boolean') bootReady = state.boot_ready;
+        if (typeof state?.reference_ready === 'boolean') referenceReady = state.reference_ready;
         if (typeof state?.native_busy === 'boolean') nativeBusy = state.native_busy;
       }
       chrome.runtime.sendMessage({action: 'lzxPageEvent', data: event.data.data}).catch(() => {});
@@ -29,9 +30,9 @@
     if (message.action === 'lzxPageHealth') {
       window.postMessage({sender: 'lzx-flow-extension', message: {action: 'snapshot'}}, location.origin);
       window.postMessage({sender: 'lzx-flow-extension', message: {action: 'ready'}}, location.origin);
-      setTimeout(() => reply({healthy: !!window.__lzxFlowNativeBridge && ready && bootReady !== false && Date.now() - lastPageAt < timingMs('page_health_valid_seconds',1.5) &&
+      setTimeout(() => reply({healthy: !!window.__lzxFlowNativeBridge && ready && bootReady !== false && referenceReady !== false && Date.now() - lastPageAt < timingMs('page_health_valid_seconds',1.5) &&
         !!document.getElementById('flow-batch-fab') && !!document.getElementById('flow-batch-overlay'),
-        native_bridge:!!window.__lzxFlowNativeBridge, running, native_busy:nativeBusy}), timingMs('page_health_wait_seconds',.3));
+        native_bridge:!!window.__lzxFlowNativeBridge, reference_ready:referenceReady, running, native_busy:nativeBusy}), timingMs('page_health_wait_seconds',.3));
       return true;
     }
     if (message.action !== 'lzxCommand') return;

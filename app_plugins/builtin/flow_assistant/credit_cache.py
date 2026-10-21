@@ -67,3 +67,32 @@ def refresh_needed(service, queued_rows):
         if not any(dispatch_rank(client, row['payload'], service.preferences) is not None for row in queued_rows): continue
         changed |= bool(service.request(client, 'get_points'))
     return changed
+
+
+def pending_balance_profiles(service, queued_rows, affinity):
+    """Reserve only a live, bounded read that could supply an admitted job."""
+    from .account_policy import account_hold
+    from .credit_cooldown import credit_hold
+    from .high_credit import allowed
+    from .image_affinity import allows_image
+    from .policy import block_for
+    from .routing import dispatch_rank
+    from .timing import request_timeout
+    now = time.time(); rows = service.store.rows()
+    result = set()
+    for client in service.clients.values():
+        if (not client.get('authorized') or not client.get('profile') or not client.get('page_ready')
+                or client.get('blocked') or block_for(client, service.preferences)
+                or account_hold(client, service.preferences) or credit_hold(client, service.preferences)
+                or not allowed(client, service.preferences) or client.get('setup_blocked')
+                or client.get('batch_running')
+                or client.get('reset_wait_until', 0) > now): continue
+        if (len(affinity['pool']) >= int(service.preferences.get('concurrency', 2)) and
+                str(client.get('account') or '').strip().casefold() not in affinity['pool']): continue
+        if not any(request['client'] == client['id'] and request['action'] == 'get_points' and
+                   now - request['at'] < request_timeout(service.preferences, 'get_points', client)
+                   for request in service.pending.values()): continue
+        if any(dispatch_rank(client, row['payload'], service.preferences) is not None and
+               allows_image(client, row['payload'], rows, service.preferences, affinity['images'])
+               for row in queued_rows): result.add(client['profile'])
+    return result

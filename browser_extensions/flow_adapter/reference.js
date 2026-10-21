@@ -65,6 +65,8 @@
   }
   async function attach(image, footage='VIDEO_FRAMES', waitMs=ms('page_controls_wait_seconds',45)) {
     if (!trusted(image) || footage !== 'VIDEO_FRAMES') throw error('本条参考图没有本次上传的素材凭据，未提交生成。');
+    if (verify(image, footage)) return;
+    await helpers.cleanup?.();
     await clearEnds();
     if (verify(image, footage)) return;
     let start = slots().start;
@@ -77,14 +79,25 @@
       !/remove|clear|移除|删除|刪除|清除/i.test((node.getAttribute('aria-label') || '') + ' ' + (node.textContent || '') + ' ' + node.className));
     if (!trigger) throw error('找不到首帧选择入口；未使用页面已有的其他图片。');
     helpers.click(trigger);
-    const deadline = Date.now() + waitMs;
+    const deadline = Date.now() + waitMs, scanned = new Map();
     while (Date.now() < deadline) {
       const panels = Array.from(document.querySelectorAll('.cdk-overlay-pane,[role="dialog"],[role="menu"],mat-dialog-container'))
         .filter(node => node.offsetWidth > 0 && node.offsetHeight > 0 && !node.closest('#flow-batch-overlay'));
       for (const panel of panels) {
-        const candidates = Array.from(panel.querySelectorAll('flow-grid-tile-container,flow-image-tile,[data-tile-id],[data-media-id],button:has(img)'));
-        const match = candidates.find(node => mediaIds(node).has(image.reference.media_id));
-        if (!match) continue;
+        const candidates = Array.from(panel.querySelectorAll('flow-grid-tile-container,flow-image-tile,flow-tile,flow-media-tile,.media-item,[role="option"],mat-option,[data-tile-id],[data-media-id],button:has(img),img'));
+        const match = candidates.find(node => {const ids=mediaIds(node);return ids.size===1 && ids.has(image.reference.media_id);});
+        if (!match) {
+          // Only scroll the picker itself. Virtualized tiles outside its
+          // viewport do not exist in the DOM until that viewport moves.
+          for (const viewport of panel.querySelectorAll('cdk-virtual-scroll-viewport,.cdk-virtual-scroll-viewport,.virtual-scroll-container,.tiles-container,[role="listbox"]')) {
+            if (!(viewport.scrollHeight > viewport.clientHeight && viewport.clientHeight > 0)) continue;
+            const next = scanned.has(viewport) ? Math.min(viewport.scrollHeight-viewport.clientHeight,
+              viewport.scrollTop + Math.max(1, Math.floor(viewport.clientHeight*.8))) : 0;
+            scanned.set(viewport,true);
+            if (next !== viewport.scrollTop) {viewport.scrollTop=next;viewport.dispatchEvent?.(new Event('scroll'));}
+          }
+          continue;
+        }
         helpers.click(match.querySelector('button,img') || match);
         await sleep(ms('page_control_poll_seconds',.25));
         const confirm = Array.from(panel.querySelectorAll('button')).find(node => !node.disabled &&
@@ -147,6 +160,8 @@
       }
     }
     await guard();
+    await helpers.cleanup?.();
+    await guard();
     const result = await helpers.upload(params.paths, {timeoutMs:ms('page_controls_wait_seconds',45)});
     await guard();
     if (result.failed?.length) throw error('本条参考图上传未确认：' + Object.values(result.errors || {}).join('；'));
@@ -156,7 +171,11 @@
     if (ids.size !== 1) throw error('未找到唯一对应本条独立副本的图片素材；不按同名旧图或图块数量放行。');
     const media_id = [...ids][0], image = matches.find(item => (item.primaryMediaKey || item.id) === media_id);
     const bound = bind(reference, image, media_id, url, reference.upload_id, false);
-    try {await attach(bound); await guard();} catch (failure) {bindings.delete(reference.upload_id);throw failure;}
+    try {await attach(bound); await guard();} catch (failure) {
+      bindings.delete(reference.upload_id);
+      try {await helpers.cleanup?.();} catch {}
+      throw failure;
+    }
     if (scope) {
       assets.delete(reference.sha256);
       assets.set(reference.sha256, {image:{...image}, media_id, source:reference.upload_id, reset:params.reference_reset || ''});
@@ -164,6 +183,7 @@
     }
     return {...result, reference:bound.reference, upload_id:reference.upload_id, reused:false};
   }
-  window.__lzxReferenceIdentity = {init(api, timing) {helpers=api; ms=timing;}, upload, resolve, attach, verify, invalidate,
+  window.__lzxReferenceIdentity = {init(api, timing) {helpers=api; ms=timing;}, ready:()=>!!helpers, upload, resolve, attach, verify, invalidate,
     assert(image, footage) {if (!verify(image, footage)) throw error('点击生成前首帧已变化或无法确认，未提交生成。');}, mediaIds};
+  window.__lzxFlowTransport?.initReference?.();
 })();

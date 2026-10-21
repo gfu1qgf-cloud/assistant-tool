@@ -67,18 +67,15 @@ class ImageAffinityTests(unittest.TestCase):
         self.browser(service,'Profile 2',points=38); service._tick()
         self.assertEqual(service.store.get(row['id'])['browser'],'Profile 2-id')
 
-    def test_offline_selected_account_is_tried_once_before_starting_a_new_account(self):
+    def test_ready_ordinary_account_is_used_before_reopening_an_offline_owner(self):
         service=self.service(); owner=self.browser(service,'Profile 1',points=50); rows=self.queue(service,count=2)
         service.preferences.update(concurrency=1, profiles=['Profile 1','Profile 2'])
         service._tick(); service.store.update(rows[0]['id'],'completed')
         service.preferences=with_balance(service.preferences,owner,list(service.clients.values()))
         service.clients.clear(); backup=self.browser(service,'Profile 2',points=26)
         launched=[];service.launch_requested.connect(launched.append);service._tick();service._tick()
-        self.assertEqual(launched,['Profile 1'])
-        deadline=service.small_balance_probes['Profile 1'];backup['page_at']=deadline+1
-        with patch('time.time',return_value=deadline+.1):service._tick()
         self.assertEqual(service.store.get(rows[1]['id'])['browser'],backup['id'])
-        self.assertEqual(launched,['Profile 1'])
+        self.assertEqual(launched,[])
 
     def test_unsupported_remaining_image_variant_does_not_trap_account(self):
         service=self.service(); owner=self.browser(service,'Profile 1',points=26); rows=self.queue(service,count=2)

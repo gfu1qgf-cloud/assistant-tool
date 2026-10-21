@@ -73,7 +73,8 @@
     }
     const ready = !!present && Date.now() - attachedAt >= timingMs('page_initial_settle_seconds',2) &&
       Date.now() - stableSince >= timingMs('page_dom_stable_seconds',1.5);
-    return {controls_ready: ready, boot_ready: !!handler && !!helpers && (!helpers.initialized || helpers.initialized()), ready_note: ready ? '' :
+    return {controls_ready: ready, reference_ready:window.__lzxReferenceIdentity?.ready?.() === true,
+      boot_ready: !!handler && !!helpers && (!helpers.initialized || helpers.initialized()), ready_note: ready ? '' :
       present ? '页面控件已出现，正在自动等待加载稳定…' : '正在自动等待提示词框和模型设置控件加载…'};
   }
   async function waitForControls() {
@@ -379,6 +380,7 @@
       task.status?.[line] !== 'success'));
   }
   window.__lzxFlowTransport = {
+    initReference() {if (helpers) window.__lzxReferenceIdentity?.init(helpers, timingMs);},
     verifySettings, settingsPanel, waitForSettings, applyDuration, activeEmail, captureAccount, locateResult, readiness, waitForControls,
     findSubmission, matchesSubmission, hasPendingResults,
     batchIdle() {snapshot(true);},
@@ -466,7 +468,7 @@
         emit({action: 'prepare_response', request_id: message.request_id, success: true,
           data: {verified: true, model: 'omni_1_1_flash', cost: readCost(), summary: summary(), email, page_instance:pageInstance}});
       } else if (message.action === 'upload_images') {
-        if (!window.__lzxReferenceIdentity) throw Error('参考图校验脚本尚未就绪，未提交生成。');
+        if (!window.__lzxReferenceIdentity?.ready?.()) throw Object.assign(Error('参考图校验脚本尚未就绪，未提交生成。'), {code:'FLOW_REFERENCE_SCRIPT_NOT_READY'});
         const email = await confirmAccount();
         const guardAccount = async () => {
           if (await confirmAccount() !== email || message.params?.expected_account && email !== message.params.expected_account.toLowerCase()) {

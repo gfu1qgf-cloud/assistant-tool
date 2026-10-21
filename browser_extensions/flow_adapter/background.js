@@ -128,7 +128,7 @@ async function bootstrapProject(expectedTab = null) {
     if (tab.pendingUrl) return {waiting:true};
     let health;
     try {health = await chrome.tabs.sendMessage(tabId,{action:'lzxPageHealth'},{frameId:0});} catch {}
-    if (health?.healthy === true) return {healthy:true};
+    if (health?.healthy === true && health.reference_ready !== false) return {healthy:true};
     const proof = (await chrome.scripting.executeScript({target:{tabId,frameIds:[0]},world:'MAIN',
       injectImmediately:true,func:()=>({url:location.href,legacy_ui:!!window.__flowAccountBridgeLoaded && !window.__lzxFlowUI})}))[0];
     if (!proof?.documentId || !sameProjectTab({url:proof.result?.url}, project) || epoch !== connectionEpoch) {
@@ -155,6 +155,9 @@ async function forward(message) {
   for (let attempt = 0; attempt < attempts; attempt++) {
     try {
       const tabId = await ensureTab();
+      if (attempt === 0 && message.action === 'upload_images' && message.params?.recover_reference === true) {
+        await bootstrapProject(tabId);
+      }
       if (usesPageUi) {
         await readyWorkTab(tabId, {...message,foreground_skip:foregroundAttempted});
         foregroundAttempted = true;
@@ -746,9 +749,9 @@ async function projectSetupAction(entry, sender) {
         if (reply.type !== 'setup_reload_allowed') return;
         if (reply.ticket !== ticket || !reply.profile || new URL(reply.project).href.replace(/\/$/, '') !== project) throw Error('项目与本次连接请求不匹配。');
         receiving = true; clearTimeout(timer);
-        if (chrome.runtime.getManifest().version !== '1.1.31') {
+        if (chrome.runtime.getManifest().version !== '1.1.32') {
           await chrome.storage.local.set({lzxReloadSetup: {...entry, tabId: sender.tab.id,
-            mode: reply.mode || 'pair', profile: reply.profile, version: '1.1.31'}});
+            mode: reply.mode || 'pair', profile: reply.profile, version: '1.1.32'}});
           finish(null, {success: true, updating: true}); chrome.runtime.reload(); return;
         }
         if (action === 'options') {
