@@ -237,6 +237,13 @@ class QueueStore:
             return db.execute('SELECT 1 FROM deleted_attempts WHERE attempt=? AND browser=?',
                               (attempt, browser)).fetchone() is not None
 
+    def released_attempts(self, browser):
+        """Explicit deletion/reset receipts, scoped to the original browser."""
+        with self.connection() as db:
+            return [attempt for (attempt,) in db.execute(
+                'SELECT attempt FROM deleted_attempts WHERE browser=? ORDER BY rowid DESC LIMIT 512', (browser,))
+                if isinstance(attempt, str) and re.fullmatch(r'[a-f0-9]{32}', attempt)]
+
     def attempt_charged(self, attempt):
         with self.connection() as db:
             return db.execute('SELECT 1 FROM charges WHERE attempt=?', (attempt,)).fetchone() is not None

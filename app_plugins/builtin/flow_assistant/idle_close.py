@@ -34,6 +34,14 @@ def request_close(service, client, params, message, *, grace=True):
     check = client.get('credit_check') or {}
     if grace and now - check.get('at', 0) < timing_value(service.preferences, 'credit_close_grace_seconds'):
         return False
+    released = service.store.released_attempts(client['id'])
+    if released:
+        if 'close_released_batches_v1' not in client.get('capabilities', []):
+            from .setup_support import EXTENSION_VERSION
+            client['credit_close'] = {**state, 'state': 'needs_update',
+                'message': f'旧任务已删除／重置；需要加载扩展 {EXTENSION_VERSION} 后自动释放其窗口占位'}
+            return False
+        params = {**params, 'released_batches': released}
     client['credit_close'] = {'state': 'checking', 'count': state.get('count', 0) + 1,
         'next_at': now + timing_value(service.preferences, 'credit_close_timeout_seconds'),
         'reason': params.get('reason', 'low_credit'), 'message': message}

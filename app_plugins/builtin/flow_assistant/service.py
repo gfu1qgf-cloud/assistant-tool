@@ -333,10 +333,11 @@ class FlowService(QtCore.QObject, FlowOperations):
                 browser_seen(self, client)
                 # A WebSocket hello is not a ready browser. Keep its startup
                 # slot until both the page and initial account probe finish.
-                cached = False
-                if not credit_hold(client, self.preferences):
-                    cached = restore_balance(client, self.preferences)
-                    if credit_record(client, self.preferences): cached = False
+                # Restore the held balance as well: it is needed to retire an
+                # idle cooled-down profile. The hold still forbids all spending
+                # and automatic balance probes; this never proves a new login.
+                cached = restore_balance(client, self.preferences)
+                if credit_record(client, self.preferences): cached = False
                 if not self.send(client, {'type': 'welcome', 'protocol': PROTOCOL, 'timing': timing_snapshot(self.preferences)}):
                     return
                 if not cached and not account_hold(client, self.preferences):

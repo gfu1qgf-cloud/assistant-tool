@@ -96,5 +96,18 @@ async function refused(options, mutate) {
   assert.equal(inventory.messages.some(m=>m.type==='windows_closed'),false,'a partial close is not a vacancy');
   inventory.windows.clear();await inventory.hooks.windowRemoved();
   assert.equal(inventory.messages.at(-1).type,'windows_closed');
+  const removedBatch='b'.repeat(32);
+  const retired=await fixture({data:{lzxBatches:{[batch]:{state:'accepted'},[removedBatch]:{state:'accepted'}}}});
+  const removalProof=command();removalProof.params.released_batches=[removedBatch];
+  await retired.api.receive(removalProof);
+  assert.deepEqual(retired.closed,[1,2],'a host-confirmed removed task must not hold a window forever');
+  assert.equal(retired.data.lzxBatches[removedBatch].state,'accepted','keep durable replay guards and task history');
+  const unknown=await fixture({data:{lzxBatches:{[batch]:{state:'accepted'},[removedBatch]:{state:'accepted'},['c'.repeat(32)]:{state:'accepted'}}}});
+  await unknown.api.receive(removalProof);assert.equal(unknown.closed.length,0,'an unrelated unknown paid batch stays protected');
+  const downloading=await fixture({progress:()=>true});await downloading.api.receive(removalProof);
+  assert.equal(downloading.closed.length,0,'removed task proofs cannot bypass live Chrome downloads');
+  for(const invalid of [{},'not-an-array',['invalid-id'],[null]]) {
+    await refused({},message=>message.params.released_batches=invalid);
+  }
   console.log('Flow low-credit close: profile binding, idle pages, all batch receipts, exact-result retry, download acknowledgement, in-flight operations and failure recovery passed.');
 })().catch(error=>{console.error(error);process.exitCode=1;});

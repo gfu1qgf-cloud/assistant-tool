@@ -230,6 +230,11 @@ async function receive(message) {
 }
 async function closeExhausted(message) {
   const args = message.params || {}, epoch = connectionEpoch;
+  if (args.released_batches !== undefined && (!Array.isArray(args.released_batches) ||
+      args.released_batches.length > 512 || args.released_batches.some(id => typeof id !== 'string' || !/^[a-f0-9]{32}$/.test(id)))) {
+    throw Error('旧任务释放凭据格式无效，保留浏览器。');
+  }
+  const released = new Set(args.released_batches || []);
   const backup = args.reason === 'high_credit_backup' && typeof args.account === 'string' && !!args.account.trim();
   const low = !args.reason && Number.isFinite(args.balance) && args.balance >= 0 && args.balance < 10 &&
     Number.isFinite(args.until) && args.until * 1000 > Date.now();
@@ -245,11 +250,12 @@ async function closeExhausted(message) {
     const tabId = await ensureTab();
     const saved = await local();
     const downloads = Object.values(saved.lzxDownloads || {});
-    if (activeBatch && !saved.lzxBatches?.[activeBatch]) {
+    if (activeBatch && !released.has(activeBatch) && !saved.lzxBatches?.[activeBatch]) {
       throw busy('当前批次的持久记录缺失，保留浏览器。');
     }
     const groups = new Map();
     for (const item of downloads) {
+      if (released.has(item.batch)) continue;
       if (!item.batch || !item.taskId || !item.submissionId || !item.mediaId || !item.download_path) {
         throw busy('下载归属记录不完整，保留浏览器。');
       }
@@ -257,10 +263,11 @@ async function closeExhausted(message) {
       groups.set(key, [...(groups.get(key) || []), item]);
     }
     const finished = items => items.some(item => item.reported === 'complete');
-    if (Object.values(saved.lzxOutbox || {}).some(event => event?.type === 'download')) {
+    if (Object.values(saved.lzxOutbox || {}).some(event => event?.type === 'download' && !released.has(event.batch_id))) {
       throw busy('下载完成事件尚未获主程序确认，保留浏览器。');
     }
     for (const [batch, entry] of Object.entries(saved.lzxBatches || {})) {
+      if (released.has(batch)) continue; // Host retains the explicit delete/reset receipt; keep this replay guard.
       if (entry?.state === 'rejected') continue;
       const results = [...groups.values()].filter(items => items[0].batch === batch);
       // Releases before 1.1.17 journaled the claim as a timestamp. Such a
@@ -424,7 +431,7 @@ async function connect() {
         profile: config.profile || '', project: config.project || '',
         extension_version: chrome.runtime.getManifest?.().version || '', setup_id: config.setup_id || '',
         capabilities: ['idle_reload', 'project_setup_v1', 'generation_media_identity_v2', 'close_exhausted_v1',
-          'close_idle_backup_v1', 'window_inventory_v1', 'timing_settings_v1']});
+          'close_idle_backup_v1', 'close_released_batches_v1', 'window_inventory_v1', 'timing_settings_v1']});
       clearInterval(heartbeat);
       heartbeat = setInterval(() => send({type: 'ping'}), timingMs('bridge_heartbeat_seconds',20));
     };
@@ -667,9 +674,9 @@ async function projectSetupAction(entry, sender) {
         if (reply.type !== 'setup_reload_allowed') return;
         if (reply.ticket !== ticket || !reply.profile || new URL(reply.project).href.replace(/\/$/, '') !== project) throw Error('项目与本次连接请求不匹配。');
         receiving = true; clearTimeout(timer);
-        if (chrome.runtime.getManifest().version !== '1.1.27') {
+        if (chrome.runtime.getManifest().version !== '1.1.28') {
           await chrome.storage.local.set({lzxReloadSetup: {...entry, tabId: sender.tab.id,
-            mode: reply.mode || 'pair', profile: reply.profile, version: '1.1.27'}});
+            mode: reply.mode || 'pair', profile: reply.profile, version: '1.1.28'}});
           finish(null, {success: true, updating: true}); chrome.runtime.reload(); return;
         }
         if (action === 'options') {
