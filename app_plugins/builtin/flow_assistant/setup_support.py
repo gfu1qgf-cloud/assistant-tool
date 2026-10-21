@@ -10,8 +10,10 @@ EXTENSION_ID = 'pnjppjjfgiccpcfajkpooklgohgihdom'
 EXTENSION_VERSION = '1.1.27'
 # Reviewed bridge releases with the same protocol and no automatic page reload.
 # A patch update is available, but is not a reason to disable a working client.
-def compatible_extension(version):
-    return str(version or '') in {'1.1.8', '1.1.9', '1.1.10', '1.1.11', '1.1.12', '1.1.13', '1.1.14', '1.1.15', '1.1.16', '1.1.17', '1.1.18', '1.1.19', '1.1.20', '1.1.21', '1.1.22', '1.1.23', '1.1.24', '1.1.25', '1.1.26', '1.1.27'}
+def compatible_extension(version, *, minimum_patch=8):
+    match = re.fullmatch(r'1\.1\.(0|[1-9][0-9]*)', str(version or ''))
+    current = re.fullmatch(r'1\.1\.(0|[1-9][0-9]*)', EXTENSION_VERSION)
+    return bool(match and current and minimum_patch <= int(match[1]) <= int(current[1]))
 OPTIONS_URL = f'chrome-extension://{EXTENSION_ID}/options.html'
 EXTENSIONS_URL = 'chrome://extensions/'
 

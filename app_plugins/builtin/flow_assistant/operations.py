@@ -100,6 +100,7 @@ class FlowOperations(TransferRecovery, TaskReset):
         for identity in keys:
             if identity.startswith('profile:'):
                 getattr(self, 'launch_attempts', set()).discard(identity.split(':', 1)[1])
+                getattr(self, 'small_balance_probes', {}).pop(identity.split(':', 1)[1], None)
         for client in self.clients.values():
             if browser_keys(client) & keys:
                 client.pop('prepare_wait', None)

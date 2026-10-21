@@ -13,6 +13,15 @@ from .image_affinity import retained, allows_image, cached_profile, dispatch_ord
 from .browser_slots import request_start, can_start
 
 
+def refresh_probe_cycle(service, rows):
+    from .image_affinity import PENDING
+    batches = {row['payload'].get('batch_id') or row['id'] for row in rows if row['status'] in PENDING}
+    previous = getattr(service, '_probe_batches', None)
+    if previous is not None and batches != previous and not batches & previous:
+        service.small_balance_probes.clear()
+    service._probe_batches = batches
+
+
 def profile_order(profile, preferences):
     client = cached_profile(profile, preferences)
     return scheduling_order(client)

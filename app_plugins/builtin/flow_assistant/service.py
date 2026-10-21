@@ -5,6 +5,7 @@ import json
 import math
 from pathlib import Path
 import secrets
+import sqlite3
 import time
 import uuid
 import weakref
@@ -47,6 +48,16 @@ def socket_alive(socket):
     return socket is not None and (not isinstance(socket, QtCore.QObject) or not sip.isdeleted(socket))
 
 
+def temporary_database_lock(error):
+    if not isinstance(error, sqlite3.OperationalError):
+        return False
+    code = getattr(error, 'sqlite_errorcode', None)
+    if isinstance(code, int):
+        return (code & 0xff) in {getattr(sqlite3, 'SQLITE_BUSY', 5), getattr(sqlite3, 'SQLITE_LOCKED', 6)}
+    return str(error).split(':', 1)[0].strip().casefold() in {
+        'database is locked', 'database table is locked', 'database schema is locked', 'database is busy'}
+
+
 class FlowService(QtCore.QObject, FlowOperations):
     changed = QtCore.pyqtSignal(object)
     failed = QtCore.pyqtSignal(str)
@@ -72,6 +83,8 @@ class FlowService(QtCore.QObject, FlowOperations):
         self.paused, self.closing, self.last_launch = True, False, 0
         self.launched, self.archiving = set(), set()
         self.launching = {}
+        self.launch_attempts, self.small_balance_probes = set(), {}
+        self._probe_batches, self._database_lock_reported = None, False
         # Explicit per-item releases are session-local: restarting never submits
         # a paid request until the user resumes it. The jobs themselves persist.
         self.released, self.observed_costs = set(), {}
@@ -512,6 +525,7 @@ class FlowService(QtCore.QObject, FlowOperations):
                         current.update(credits=balance, credits_local=True, credits_at=client['credits_at'],
                                        credits_estimated=spent > 0, credits_cached=False, identity_unconfirmed=False)
                         current.pop('credit_last_request_observed_at', None)
+                        self.small_balance_probes.pop(current.get('profile'), None)
                 remember_balance(self, client, manual=bool(request.get('manual_credit')))
                 client['credits_retry_manual'] = False
             client['note'] = message.get('error') or ('' if client['account'] else '尚未确认当前 Flow 登录账号')
@@ -611,7 +625,6 @@ class FlowService(QtCore.QObject, FlowOperations):
                     error=f'本条费用 {cost} 超出设置的预算 {budget}，等待修改预算；未提交。')
                 return
             if client['credits'] is None or client['credits'] < MIN_CREDITS or cost > client['credits'] or credit_hold(client, self.preferences):
-                client['blocked'] = '积分不足'
                 self.store.update(job_id, 'queued', attempt='', browser='', remote={}, error='等待有足够积分的账号')
                 return
             remote = {key: value for key, value in row['remote'].items() if key != 'prepare_retry'}
@@ -641,7 +654,6 @@ class FlowService(QtCore.QObject, FlowOperations):
                     error='千分账号尚未获准或小额账号已可用，已跳过；图片已上传但未提交生成。')
                 return
             if client.get('credits') is None or client['credits'] < MIN_CREDITS or row['remote']['cost'] > client['credits'] or credit_hold(client, self.preferences):
-                client['blocked'] = '积分不足'
                 self.store.update(job_id, 'queued', attempt='', browser='', remote={},
                     error='图片上传完成，但原账号积分不足；等待备用账号，未提交生成。')
                 return
@@ -1189,6 +1201,7 @@ class FlowService(QtCore.QObject, FlowOperations):
             self.set_lane(scope, key, job['duration'], automatic=True)
 
     def _tick(self):
+        tick_ok = True
         try:
             from model.OfflineMode import is_offline
             if is_offline():
@@ -1197,6 +1210,10 @@ class FlowService(QtCore.QObject, FlowOperations):
                 if not socket_alive(socket):
                     self._disconnected(socket)
                     continue
+                if client.get('authorized') and client.get('blocked') == '积分不足':
+                    from .credit_policy import balance_ready
+                    if balance_ready(client, preferences=self.preferences) and client['credits'] >= MIN_CREDITS and not credit_hold(client, self.preferences):
+                        client['blocked'] = ''  # Old per-task affordability failures are not account bans.
                 if not client['authorized'] and time.time() - client['connected'] > timing_value(self.preferences, 'handshake_timeout_seconds'):
                     self._close_socket(socket)
                     continue
@@ -1288,6 +1305,8 @@ class FlowService(QtCore.QObject, FlowOperations):
             batches = self.store.batches()
             retire_exhausted(self)
             admitted = admitted_queue(rows, batches, self.observed_costs, paused=self.paused, released=self.released)
+            from .balance_dispatch import refresh_probe_cycle
+            refresh_probe_cycle(self, rows)
             queued_rows = sorted([row for row in admitted if row['remote'].get('prepare_retry', {}).get('next_at', 0) <= time.time()],
                            key=lambda row: -row['payload'].get('priority', 0))
             from .high_credit import watch as watch_high_credit
@@ -1405,10 +1424,19 @@ class FlowService(QtCore.QObject, FlowOperations):
                     target_job = queued_rows[ranked[0][1]]['payload']
                     if start_browser(self, candidate, target_job): self.publish()
         except Exception as error:
+            tick_ok = False
+            if temporary_database_lock(error):
+                if not self._database_lock_reported:
+                    self._database_lock_reported = True
+                    self.failed.emit('Flow 本地队列暂时被占用，下次调度自动重试；原任务与手动放行项保持不变。')
+                return
             self.paused = True
             self.released.clear()
             self.safety_paused = True
             self.failed.emit('Flow 队列已暂停：' + str(error))
+        finally:
+            if tick_ok:
+                self._database_lock_reported = False
 
     def publish(self):
         self._last_publish = time.time()
