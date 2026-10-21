@@ -101,9 +101,13 @@ def waiting_reason(row, clients, rows, preferences, observed, batches, *, paused
         return '优先用完已选账号的积分，等待当前账号／图片完成或并行名额；不轮换仍有积分的账号'
     lane = [c for c in clients if dispatch_rank(c, row['payload'], preferences) is not None]
     from .high_credit import reason as high_credit_reason
+    from .high_credit import allowed as high_credit_allowed
     high_reasons = [high_credit_reason(c, preferences) for c in lane]
+    if any((c.get('credit_close') or {}).get('reason') == 'high_credit_backup' and
+           c['credit_close'].get('state') in {'checking', 'closing'} for c in clients):
+        return '任务保持排队：正在核对并关闭已跳过的千分账号，释放名额后自动换账号'
     if high_reasons and all(high_reasons):
-        return high_reasons[0]
+        return '排队等待其他可用账号；千分账号未获准使用，仅跳过该账号'
     duration = row['payload'].get('duration')
     label = f'{duration} 秒档' if duration else '通用档'
     if not lane:
@@ -120,7 +124,7 @@ def waiting_reason(row, clients, rows, preferences, observed, batches, *, paused
         if holds and all(holds): return '对应浏览器积分冷却中：' + holds[0]
         return f'{label}等待浏览器自动启动／空闲后自动分配时长，无需手动分档'
     if not any(capable(c, row['payload'], preferences, cost) for c in lane):
-        funded = [c for c in lane if balance_ready(c, preferences=preferences)
+        funded = [c for c in lane if high_credit_allowed(c, preferences) and balance_ready(c, preferences=preferences)
                   and (c['credits'] >= cost if cost is not None else c['credits'] > 0)]
         if funded:
             # A funded browser may still be pairing, loading or quarantined.

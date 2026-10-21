@@ -146,7 +146,7 @@ def request_timeout(preferences, action, client=None):
         reuse = controls if (client or {}).get('extension_version') == '1.1.25' else value(preferences, 'page_reference_reuse_wait_seconds')
         floor = value(preferences, 'bridge_forward_wait_seconds') + 3 * controls + reuse + 20 * value(preferences, 'page_control_poll_seconds') + 5
         seconds = max(seconds, floor)
-    if (client and client.get('extension_version') and client['extension_version'] not in {'1.1.21', '1.1.22', '1.1.23', '1.1.24', '1.1.25', '1.1.26'}
+    if (client and client.get('extension_version') and client['extension_version'] not in {'1.1.21', '1.1.22', '1.1.23', '1.1.24', '1.1.25', '1.1.26', '1.1.27'}
             and 'timing_settings_v1' not in client.get('capabilities', [])):
         seconds = max(seconds, CATALOG[key].default)
     return seconds

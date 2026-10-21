@@ -21,7 +21,7 @@ async function fixture(options = {}) {
       sendMessage:async id => options.health ? options.health(id) : {healthy:true, running:false, native_busy:false}},
     downloads:{onChanged:event('download'), search:async query=>query.state ?
       (options.progress?.(++searches) ? [{id:99,state:'in_progress'}] : []) : []},
-    windows:{getAll:async()=>{options.onWindows?.(hooks); return [...windows].map(id=>({id}));},
+    windows:{onRemoved:event('windowRemoved'), getAll:async()=>{options.onWindows?.(hooks); return [...windows].map(id=>({id}));},
       remove:async id=>{if(options.removeFailure) throw Error('window unavailable'); closed.push(id);windows.delete(id);}},
     alarms:{onAlarm:event('alarm')}, action:{onClicked:event('action')}};
   const context={chrome, WebSocket:Socket, URL, URLSearchParams, crypto, Date, console,
@@ -29,7 +29,7 @@ async function fixture(options = {}) {
   vm.createContext(context);
   vm.runInContext(source.replace("import './background.js';", '') + '\nglobalThis.api={receive,connect,setBusy:()=>commandsInFlight=1};', context);
   await new Promise(resolve=>setImmediate(resolve));
-  return {api:context.api, data, messages, closed, sockets};
+  return {api:context.api, data, messages, closed, sockets, hooks, windows};
 }
 async function refused(options, mutate) {
   const f = await fixture(options); const message=command(); mutate?.(message);
@@ -42,8 +42,14 @@ async function refused(options, mutate) {
   const done=await fixture(); await done.api.receive(command());
   assert.deepEqual(done.closed,[1,2]); assert.equal(done.messages.at(-1).success,true);
   assert.equal(done.messages.at(-1).data.closed,true);
-  await done.api.connect();assert.equal(done.sockets.length,1,'a closed profile background must not reconnect as another occupied browser');
+  await done.api.connect();await done.sockets.at(-1).onopen?.();
+  assert.equal(done.messages.at(-1).type,'window_absence','a closed background reports absence without registering another occupied browser');
   const empty=await fixture({noWindows:true});await empty.api.connect();assert.equal(empty.sockets.length,0);
+  const remembered=await fixture({noWindows:true,data:{lzxBrowserId:'known-browser'}});
+  await remembered.sockets.at(-1).onopen();
+  assert.equal(remembered.messages.at(-1).type,'window_absence');
+  assert.equal(remembered.messages.at(-1).browser_id,'known-browser');
+  await remembered.api.connect();assert.equal(remembered.sockets.length,1,'absence reporting is rate limited');
   const legacy=await fixture({data:{lzxBatches:{[batch]:Date.now()}}});
   await legacy.api.receive(command());assert.deepEqual(legacy.closed,[1,2],'old timestamp claims need exact completed downloads, not a guessed accepted state');
   await refused({data:{lzxBatches:{[batch]:Date.now()},lzxDownloads:{1:binding('interrupted')}}});
@@ -76,5 +82,19 @@ async function refused(options, mutate) {
   assert.equal(failure.messages.at(-1).success,false);
   await failure.api.receive(command());
   assert.notEqual(failure.messages.at(-1).code,'FLOW_CLOSE_BUSY','a failed native close must release its operation lock');
+  const backupCommand=()=>({...command(),params:{idle:true,profile:'Profile 1',url:project,
+    reason:'high_credit_backup',account:'rich@example.test'}});
+  const backup=await fixture();await backup.api.receive(backupCommand());
+  assert.deepEqual(backup.closed,[1,2],'an explicitly skipped rich backup can close without a forged low balance');
+  for(const options of [{progress:()=>true},{data:{lzxDownloads:{1:binding('interrupted')}}},
+      {health:()=>({healthy:true,running:true,native_busy:false})},{removeFailure:true}]) {
+    const busyBackup=await fixture(options);await busyBackup.api.receive(backupCommand());
+    assert.equal(busyBackup.messages.at(-1).success,false,'rich backups retain every download/native guard');
+  }
+  const inventory=await fixture();await inventory.api.receive({type:'welcome'});
+  await inventory.hooks.windowRemoved();
+  assert.equal(inventory.messages.some(m=>m.type==='windows_closed'),false,'a partial close is not a vacancy');
+  inventory.windows.clear();await inventory.hooks.windowRemoved();
+  assert.equal(inventory.messages.at(-1).type,'windows_closed');
   console.log('Flow low-credit close: profile binding, idle pages, all batch receipts, exact-result retry, download acknowledgement, in-flight operations and failure recovery passed.');
 })().catch(error=>{console.error(error);process.exitCode=1;});

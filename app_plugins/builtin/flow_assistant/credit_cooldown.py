@@ -101,7 +101,6 @@ def refresh_expired(service, queued_rows):
 
 def close_idle_exhausted(service):
     """The browser also checks its page, durable receipts and Chrome downloads."""
-    rows = service.store.rows()
     changed = False
     now = time.time()
     for client in list(service.clients.values()):
@@ -114,33 +113,7 @@ def close_idle_exhausted(service):
                 or client.get('setup_pending') or account_hold(client, service.preferences)
                 or client.get('reset_wait_until', 0) > now):
             continue
-        related = [row for row in rows if row['browser'] == client['id'] or
-                   row['remote'].get('profile') == client['profile'] or
-                   str(row['remote'].get('account') or '').strip().casefold() == client['account'].casefold()]
-        if any(row['id'] in service.archiving for row in related): continue
-        if any(row['status'] not in {'completed', 'needs_review', 'queued', 'cancelled', 'failed'} for row in related):
-            continue
-        unconfirmed = [row for row in related if row['status'] in {'queued', 'cancelled', 'failed'}]
-        if any(any(row['remote'].get(key) for key in ('bindings', 'upstream_task', 'generation_response',
-                    'download', 'unverified_download', 'page_recovery')) for row in unconfirmed):
-            continue
-        with service.store.connection() as db:
-            if any(row['attempt'] and db.execute('SELECT 1 FROM charges WHERE attempt=?',
-                (row['attempt'],)).fetchone() for row in unconfirmed):
-                continue
-        if any(p['client'] == client['id'] for p in service.pending.values()):
-            continue
-        state = client.get('credit_close') or {}
-        if state.get('count', 0) >= timing_value(service.preferences, 'credit_close_attempts') or state.get('next_at', 0) > now:
-            continue
-        # Leave a manual probe's result visible and let a user inspect it.
-        check = client.get('credit_check') or {}
-        if now - check.get('at', 0) < timing_value(service.preferences, 'credit_close_grace_seconds'):
-            continue
-        client['credit_close'] = {'state': 'checking', 'count': state.get('count', 0) + 1,
-            'next_at': now + timing_value(service.preferences, 'credit_close_timeout_seconds'),
-            'message': '积分低于 10，没有未完成任务，正在核对下载后关闭此浏览器'}
-        changed |= bool(service.request(client, 'close_exhausted', {'idle': True,
-            'profile': client['profile'], 'url': client.get('saved_project'),
-            'balance': hold['balance'], 'until': hold['until']}))
+        from .idle_close import request_close
+        changed |= request_close(service, client, {'balance': hold['balance'], 'until': hold['until']},
+            '积分低于 10，没有未完成任务，正在核对下载后关闭此浏览器')
     return changed

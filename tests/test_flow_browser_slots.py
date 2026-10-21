@@ -124,9 +124,16 @@ class BrowserSlotsTests(unittest.TestCase):
     def test_explicit_successful_idle_close_disconnect_releases_the_slot(self):
         service,profiles=self.configured();client=self.browser(service,profiles[0]);seen(service,client)
         for profile in profiles[1:4]:request_start(service,profile)
-        client['credit_close']={'state':'closing'}
+        client['credit_close']={'state':'closed'}
         service.clients.clear();disconnected(service,client)
         self.assertTrue(can_start(service,profiles[4]))
+
+    def test_socket_drop_during_unconfirmed_close_does_not_prove_a_vacancy(self):
+        service, profiles = self.configured(); client = self.browser(service, profiles[0]); seen(service, client)
+        for profile in profiles[1:4]: request_start(service, profile)
+        client['credit_close'] = {'state': 'closing'}
+        service.clients.clear(); disconnected(service, client)
+        self.assertFalse(can_start(service, profiles[4]))
 
     def test_stale_page_readiness_does_not_prevent_the_extension_from_checking_low_credit_close(self):
         service,profiles=self.configured();client=self.browser(service,profiles[0],close=True)

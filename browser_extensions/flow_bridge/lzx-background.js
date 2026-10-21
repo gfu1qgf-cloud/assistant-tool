@@ -3,6 +3,7 @@ import './background.js';
 let socket, heartbeat, connecting = false, retryAt = 0, retryDelay = 1000, connectionEpoch = 0, authenticated = false, booting = true;
 let ownedTab = null, activeBatch = '', config = {}, browserId = '', opening, resumingSetup;
 let closingBrowser = false, commandsInFlight = 0;
+let absenceReportedAt = 0;
 let connectionWatchdog, socketStartedAt = 0, lastServerAt = 0;
 let timingValues = {};
 const timingMs = (key, fallback) => Math.max(1, Math.min(86400000,
@@ -229,10 +230,12 @@ async function receive(message) {
 }
 async function closeExhausted(message) {
   const args = message.params || {}, epoch = connectionEpoch;
+  const backup = args.reason === 'high_credit_backup' && typeof args.account === 'string' && !!args.account.trim();
+  const low = !args.reason && Number.isFinite(args.balance) && args.balance >= 0 && args.balance < 10 &&
+    Number.isFinite(args.until) && args.until * 1000 > Date.now();
   if (args.idle !== true || args.profile !== config.profile || args.url !== config.project ||
-      !Number.isFinite(args.balance) || args.balance < 0 || args.balance >= 10 ||
-      !Number.isFinite(args.until) || args.until * 1000 <= Date.now()) {
-    throw Error('缺少本配置的低积分冷却及任务完成确认，保留浏览器。');
+      !(backup || low)) {
+    throw Error('缺少本配置的低积分冷却或千分备用确认，保留浏览器。');
   }
   const busy = text => Object.assign(Error(text), {code:'FLOW_CLOSE_BUSY'});
   if (commandsInFlight || closingBrowser) throw busy('原浏览器仍在处理操作，稍后再核对关闭。');
@@ -373,7 +376,7 @@ async function retryBoundDownload(message) {
   send({action: 'retry_download_response', request_id: message.request_id, success: true, data: {downloadId: result.downloadId}});
 }
 async function connect() {
-  if (booting || closingBrowser || connecting || socket && [0, 1].includes(socket.readyState) || Date.now() < retryAt) return;
+  if (booting || connecting || socket && [0, 1].includes(socket.readyState) || Date.now() < retryAt) return;
   connecting = true;
   const epoch = connectionEpoch;
   try {
@@ -383,7 +386,9 @@ async function connect() {
     config = saved.lzxConfig || {};
     ownedTab = saved.lzxOwnedTab ?? null; activeBatch = saved.lzxBatch || '';
     if (!config.token || !Number.isInteger(config.port) || config.port < 1024 || config.port > 65535) return;
-    if (chrome.windows?.getAll && !(await chrome.windows.getAll({windowTypes:['normal','popup']})).length) return;
+    const noWindows = chrome.windows?.getAll && !(await chrome.windows.getAll({windowTypes:['normal','popup']})).length;
+    if (closingBrowser && !noWindows) return;
+    if (noWindows && (!saved.lzxBrowserId || Date.now() - absenceReportedAt < timingMs('bridge_reconnect_max_seconds',20))) return;
     browserId = saved.lzxBrowserId || crypto.randomUUID();
     if (!saved.lzxBrowserId) await chrome.storage.local.set({lzxBrowserId: browserId});
     if (epoch !== connectionEpoch) return;
@@ -402,13 +407,24 @@ async function connect() {
         retireSocket(current);
       }
     }, 1000);
-    current.onopen = () => {
+    current.onopen = async () => {
       if (socket !== current || epoch !== connectionEpoch) {current.close(); return;}
+      if (noWindows) {
+        try {
+          if (!(await chrome.windows.getAll({windowTypes:['normal','popup']})).length && epoch === connectionEpoch && socket === current) {
+            send({type:'window_absence', protocol:1, token:config.token, browser_id:browserId,
+              profile:config.profile, project:config.project});
+            absenceReportedAt = Date.now();
+          }
+        } catch {} finally {current.close();}
+        return;
+      }
       retryDelay = timingMs('bridge_reconnect_initial_seconds',1);
       send({type: 'hello', protocol: 1, token: config.token, browser_id: browserId,
         profile: config.profile || '', project: config.project || '',
         extension_version: chrome.runtime.getManifest?.().version || '', setup_id: config.setup_id || '',
-        capabilities: ['idle_reload', 'project_setup_v1', 'generation_media_identity_v2', 'close_exhausted_v1', 'timing_settings_v1']});
+        capabilities: ['idle_reload', 'project_setup_v1', 'generation_media_identity_v2', 'close_exhausted_v1',
+          'close_idle_backup_v1', 'window_inventory_v1', 'timing_settings_v1']});
       clearInterval(heartbeat);
       heartbeat = setInterval(() => send({type: 'ping'}), timingMs('bridge_heartbeat_seconds',20));
     };
@@ -538,6 +554,16 @@ chrome.storage.onChanged.addListener((changes, area) => {
   }
 });
 chrome.runtime.onStartup.addListener(connect);
+chrome.windows?.onRemoved?.addListener(async () => {
+  try {
+    if ((await chrome.windows.getAll({windowTypes:['normal','popup']})).length || !authenticated) return;
+    // A socket drop alone proves nothing. This report follows a fresh native
+    // inventory of this exact profile, including every popup and normal window.
+    send({type:'windows_closed', profile:config.profile, project:config.project});
+    closingBrowser = true;
+    socket?.close();
+  } catch {} // Keep the host reservation when absence cannot be proved.
+});
 chrome.runtime.onInstalled.addListener(() => { reconnectAlarm(); connect(); });
 chrome.alarms.onAlarm.addListener(alarm => { if (alarm.name === 'lzxReconnect') connect(); });
 chrome.action.onClicked.addListener(() => chrome.runtime.openOptionsPage());
@@ -641,9 +667,9 @@ async function projectSetupAction(entry, sender) {
         if (reply.type !== 'setup_reload_allowed') return;
         if (reply.ticket !== ticket || !reply.profile || new URL(reply.project).href.replace(/\/$/, '') !== project) throw Error('项目与本次连接请求不匹配。');
         receiving = true; clearTimeout(timer);
-        if (chrome.runtime.getManifest().version !== '1.1.26') {
+        if (chrome.runtime.getManifest().version !== '1.1.27') {
           await chrome.storage.local.set({lzxReloadSetup: {...entry, tabId: sender.tab.id,
-            mode: reply.mode || 'pair', profile: reply.profile, version: '1.1.26'}});
+            mode: reply.mode || 'pair', profile: reply.profile, version: '1.1.27'}});
           finish(null, {success: true, updating: true}); chrome.runtime.reload(); return;
         }
         if (action === 'options') {

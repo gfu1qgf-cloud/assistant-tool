@@ -1,5 +1,6 @@
 """A launch timeout is not evidence that a Chrome window has gone away."""
 import time
+import hmac
 
 from .connection_status import configured_profiles
 from .store import TRANSIENT
@@ -46,8 +47,8 @@ def can_start(service, profile, occupied=None):
 def summary(service):
     profiles = sorted(occupied_profiles(service))
     return {'profiles': profiles, 'used': len(profiles), 'limit': limit(service),
-            'message': (f'浏览器启动名额 {len(profiles)}/{limit(service)}：未就绪、断线或等待关闭的原窗口仍占位；'
-                        '先恢复原窗口或确认低积分窗口关闭，再启用新配置') if len(profiles) >= limit(service) else ''}
+            'message': (f'浏览器启动名额 {len(profiles)}/{limit(service)}：等待真实窗口退出确认；'
+                        '有可用替代账号时，核对空闲备用窗口退出后自动换号') if len(profiles) >= limit(service) else ''}
 
 
 def request_start(service, profile, job=None):
@@ -94,9 +95,9 @@ def disconnected(service, client):
     if not profile or (profile not in configured_profiles(service.preferences)
                        and profile not in service.preferences.get('browser_slots', {})):
         return
-    if (client.get('credit_close') or {}).get('state') in {'closing', 'closed'}:
-        # Only a successful explicit idle/low-credit close can release a slot
-        # on disconnect. An ordinary socket drop never proves Chrome exited.
+    if (client.get('credit_close') or {}).get('state') == 'closed':
+        # Only a final native-close receipt proves the vacancy. An interrupted
+        # close or a socket drop may leave other windows in this profile open.
         closed(service, profile)
         return
     slots = dict(service.preferences.get('browser_slots', {}))
@@ -111,6 +112,22 @@ def closed(service, profile):
     getattr(service, 'launch_attempts', set()).discard(profile)
     service.launching.pop(profile, None)
     service.launched.discard(profile)
+
+
+def confirm_absence(service, message):
+    """A restarted background reports zero native windows without taking a slot."""
+    from .setup_support import project_identity
+    profile = message.get('profile')
+    slot = service.preferences.get('browser_slots', {}).get(profile, {})
+    if (message.get('protocol') != 1 or not hmac.compare_digest(str(message.get('token') or ''), service.pair['token']) or
+            not slot.get('browser') or slot['browser'] != message.get('browser_id') or
+            not project_identity(message.get('project')) or
+            project_identity(message['project']) != project_identity(service.preferences.get('profile_projects', {}).get(profile)) or
+            any(c.get('authorized') and c.get('profile') == profile and
+                (c.get('credit_close') or {}).get('state') != 'closed' for c in service.clients.values())):
+        return False
+    closed(service, profile)
+    return True
 
 
 def launch_result(service, command):

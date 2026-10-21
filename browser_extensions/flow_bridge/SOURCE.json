@@ -2,10 +2,11 @@
   "repository": "https://github.com/dedeyuyu/FlowCue",
   "commit": "847c928d60114183e42f838ba82577ba10e46d0b",
   "upstream_version": "1.1.5",
-  "bridge_version": "1.1.26",
+  "bridge_version": "1.1.27",
   "protocol": 1,
   "patch_module": "tools/flow_bridge_patches.py",
   "patches": [
+    "idle skipped-backup rotation and authenticated native zero-window proofs; queued tasks and paid results retained",
     "durable bounded automatic browser reservations; live low-credit close checks and final native-close acknowledgement",
     "reuse SHA-256-proven reference assets per page/account/project with new per-attempt proofs and explicit reset invalidation",
     "page-instance-bound verified preflight snapshots; live settings/account/reference checks retained at submission",

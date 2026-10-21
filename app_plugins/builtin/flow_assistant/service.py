@@ -151,6 +151,8 @@ class FlowService(QtCore.QObject, FlowOperations):
             self._disconnected(socket)
 
     def request(self, client, action, params=None, job=None, *, manual_credit=False):
+        if action != 'close_exhausted' and (client.get('credit_close') or {}).get('state') in {'checking', 'closing', 'closed'}:
+            return False  # Do not clear a close lease or submit work during native closure.
         if action == 'refresh_project':
             # A reload can cancel an accepted website generation. Even legacy
             # recovery plans may only query snapshots; never send this command.
@@ -263,6 +265,11 @@ class FlowService(QtCore.QObject, FlowOperations):
             if not isinstance(message, dict):
                 raise ValueError('消息格式无效')
             if not client['authorized']:
+                if message.get('type') == 'window_absence':
+                    from .browser_slots import confirm_absence
+                    if confirm_absence(self, message): self.publish()
+                    self._close_socket(socket)
+                    return
                 if message.get('type') == 'setup_lookup':
                     from .setup_pairing import lookup_setup
                     lookup_setup(self, client, message)
@@ -327,6 +334,20 @@ class FlowService(QtCore.QObject, FlowOperations):
                 return
             if message.get('type') == 'ping':
                 self.send(client, {'type': 'pong'})
+                return
+            if message.get('type') == 'windows_closed':
+                if ('window_inventory_v1' not in client.get('capabilities', []) or
+                        message.get('profile') != client.get('profile') or
+                        project_identity(message.get('project')) != project_identity(client.get('saved_project'))):
+                    return
+                client['credit_close'] = {**client.get('credit_close', {}), 'state': 'closed',
+                    'message': '已确认此配置所有浏览器窗口退出，启动名额已释放'}
+                for key, pending in list(self.pending.items()):
+                    if pending['client'] == client['id'] and pending['action'] == 'close_exhausted':
+                        self.pending.pop(key)
+                from .browser_slots import closed as browser_closed
+                browser_closed(self, client.get('profile'))
+                self.publish()
                 return
             if message.get('type') == 'download':
                 self._download(client, message)
@@ -1273,6 +1294,8 @@ class FlowService(QtCore.QObject, FlowOperations):
             before_high_credit = self.preferences, self.high_credit_pending
             watch_high_credit(self, queued_rows)
             if before_high_credit != (self.preferences, self.high_credit_pending): self.publish()
+            from .browser_rotation import watch as rotate_backups
+            if rotate_backups(self, queued_rows): self.publish()
             if not queued_rows or self.safety_paused:
                 return
             clients = [client for client in self.clients.values() if client['authorized']]

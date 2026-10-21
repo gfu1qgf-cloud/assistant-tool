@@ -80,7 +80,9 @@ def browser_status(client, preferences, jobs=(), now=None):
         return {'connection': '已连接', 'project': project, 'state': '积分冷却',
                 'reason': cooldown + ('；' + closing if closing else ''), 'color': '#986100'}
     if high_reason:
-        return {'connection': '已连接', 'project': project, 'state': '千分账号备用', 'reason': high_reason, 'color': '#986100'}
+        note = (client.get('credit_close') or {}).get('message') or client.get('backup_rotation_note')
+        return {'connection': '已连接', 'project': project, 'state': '千分账号备用',
+                'reason': high_reason + ('；' + note if note else ''), 'color': '#986100'}
     if (client.get('prepare_wait') or {}).get('next_at', 0) > now:
         return {'connection': '已连接', 'project': project, 'state': '自动等待中',
                 'reason': '此浏览器的页面控件尚未稳定，短暂等待后自动重试；其他账号继续执行', 'color': '#986100'}
