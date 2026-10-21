@@ -14,7 +14,8 @@ class BrowserOptionsSettings(QtWidgets.QWidget):
         layout.addWidget(self.focus_before_action)
         hint = QtWidgets.QLabel('参数设置、图片上传、生成提交、积分检测和网页下载恢复前，切到该账号的 Flow 窗口。'
             '生成等待、心跳和后台状态查询不切换窗口。多账号生成仍可并行。\n'
-            '开启后会切换当前使用的窗口；关闭后沿用原来的后台操作方式。', self)
+            '开启后由主程序调用 Windows 激活对应窗口，并核实实际前台窗口；不会永久置顶。'
+            'Windows 拒绝时会在“浏览器与时长分档”的等待原因中显示。关闭后沿用后台操作方式。', self)
         hint.setWordWrap(True)
         layout.addWidget(hint)
         layout.addStretch()

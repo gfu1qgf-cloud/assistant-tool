@@ -206,7 +206,15 @@ class FlowService(QtCore.QObject, FlowOperations):
         params = dict(params or {})
         if action in {'prepare', 'upload_images', 'run_tasks'}:
             params['wait_for_ready'] = True
+        from .foreground import UI_ACTIONS
+        foreground = {}
+        if (action in UI_ACTIONS and not (action == 'retry_download' and params.get('restore')) and
+                browser_options_snapshot(self.preferences)['focus_before_action'] and
+                'native_foreground_v1' in client.get('capabilities', [])):
+            foreground['foreground_token'] = uuid.uuid4().hex
+            self.pending[request_id].update(foreground)
         if not self.send(client, {'action': action, 'request_id': request_id, 'params': params,
+                **foreground,
                 'browser_options': browser_options_snapshot(self.preferences)}):
             self.pending.pop(request_id, None)
             return False
@@ -369,7 +377,10 @@ class FlowService(QtCore.QObject, FlowOperations):
                 browser_closed(self, client.get('profile'))
                 self.publish()
                 return
-            if message.get('type') == 'download':
+            if message.get('type') in {'foreground_request', 'foreground_cancel'}:
+                from .foreground import receive
+                receive(self, client, message)
+            elif message.get('type') == 'download':
                 self._download(client, message)
             elif message.get('type') == 'generation_response':
                 from .page_recovery import record_response
@@ -1149,6 +1160,9 @@ class FlowService(QtCore.QObject, FlowOperations):
                 for row in self.store.rows():
                     if row['id'] in command['ids'] and row['status'] in {'queued', 'failed'}:
                         self.store.update(row['id'], 'cancelled')
+            elif action == 'retry_now':
+                from .retry_now import request_now
+                request_now(self, command)
             elif action in {'retry', 'regenerate'}:
                 if action == 'retry' and command.get('only_failed'):
                     from .policy import FAILURES
@@ -1400,7 +1414,8 @@ class FlowService(QtCore.QObject, FlowOperations):
                           can_fund(cached[profile], row['payload'], self.preferences, self.observed_costs) and
                           high_credit_allowed(cached[profile], self.preferences) and
                           allows_image(cached[profile], row['payload'], rows, self.preferences, affinity['images']) and
-                          (retained(cached[profile], self.preferences) or len(affinity['pool']) < limit)]
+                          (str(cached[profile].get('account') or '').strip().casefold() in affinity['pool'] or
+                           len(affinity['pool']) < limit)]
                 ranked = sorted((((*dispatch_order(cached[profile], self.preferences), rank), index, profile)
                     for rank, index, profile in ranked if rank is not None),
                     key=lambda item:(item[0],item[1],available.index(item[2])))

@@ -80,7 +80,8 @@ class FlowDialog(QtWidgets.QDialog):
         controls = QtWidgets.QHBoxLayout()
         self.button('开始／继续等待项', self.start_queue, controls)
         self.button('暂停后续任务', lambda: self.send('pause'), controls)
-        self.button('重试选中', lambda: self.send('retry', ids=self.selected_ids()), controls)
+        self.retry_now_button = self.button('立即重试', self.retry_selected_now, controls)
+        self.retry_now_button.setToolTip('跳过选中任务的自动重试倒计时；保留重试次数、账号限制和原视频绑定。普通失败项沿用手动重试。')
         self.retry_download_button = self.button('重试下载', self.retry_selected_downloads, controls)
         self.reset_button = self.button('完全重置并重新调度', self.reset_selected_tasks, controls)
         self.reset_button.setToolTip('清除选中任务的原浏览器绑定及重试状态，重新选择可用浏览器；可能已提交的任务需先确认。')
@@ -485,6 +486,9 @@ class FlowDialog(QtWidgets.QDialog):
                       BC.CREDITS: credit_text, BC.LANE: combo.currentText(),
                       BC.CONNECTION: status['connection'], BC.PROJECT: status['project'],
                       BC.STATE: status['state'], BC.REASON: status['reason']}
+            if online:
+                from .foreground import description
+                values[BC.REASON] += '\n' + description(client, preferences)
             for column, text in values.items():
                 item = self.browsers.item(row, column)
                 number = credit_number if column == BC.CREDITS else (current_lane if value == 'automatic' else value)
@@ -601,6 +605,22 @@ class FlowDialog(QtWidgets.QDialog):
         self.send('retry_download_selected', ids=ids)
         self.note.setText('已请求重试原视频下载；不会重新生成。正在下载的同一条不会重复启动。')
 
+    def retry_selected_now(self):
+        from .retry_now import retry_kind
+        ids = set(self.selected_ids())
+        rows = [row for row in self.state.get('jobs', []) if row['id'] in ids]
+        if not rows:
+            self.note.setText('请先选中要立即重试的任务，支持多选。'); return
+        automatic = [row for row in rows if retry_kind(row)]
+        if automatic:
+            if not getattr(self.plugin, 'retry_now_api', 0):
+                self.note.setText('正在运行的 Flow 服务尚未加载立即重试功能；正常重启辅助工具后生效。'); return
+            self.send('retry_now', ids=[row['id'] for row in automatic],
+                versions={row['id']: {key: row[key] for key in ('attempt', 'browser', 'status')} for row in automatic})
+        manual = [row['id'] for row in rows if row not in automatic]
+        if manual: self.send('retry', ids=manual)
+        self.note.setText('已请求立即重试选中项；正在执行的操作不会重复启动，账号限制和安全暂停仍有效。')
+
     def reset_selected_tasks(self):
         if self.reset_request: return
         ids = set(self.selected_ids())
@@ -667,6 +687,7 @@ class FlowDialog(QtWidgets.QDialog):
 
     def queue_menu(self, point):
         menu = QtWidgets.QMenu(self)
+        menu.addAction('立即重试（跳过自动等待）', self.retry_selected_now)
         menu.addAction('只提交选中的等待项', lambda: self.send('submit_selected', ids=self.selected_ids()))
         menu.addAction('重试失败／仅重试已有结果下载', lambda: self.send('retry', ids=self.selected_ids()))
         menu.addAction('重试下载（不重新生成）', self.retry_selected_downloads)

@@ -44,7 +44,11 @@ def can_fund(client, job, preferences, observed):
 
 
 def prefer_smaller(service, row, selected, *, affinity=None):
-    from .high_credit import allowed
+    from .high_credit import allowed, is_high
+    ordinary = not is_high(selected, service.preferences)
+    # A healthy member of the selected image pool keeps taking work until
+    # it cannot fund the next task. Historical owners are not extra lanes.
+    if ordinary and retained(selected, service.preferences): return False
     selected_order = dispatch_order(selected, service.preferences)
     now = time.time(); cost = estimated_cost(row['payload'], service.observed_costs)
     probes = getattr(service, 'small_balance_probes', {})
@@ -67,6 +71,9 @@ def prefer_smaller(service, row, selected, *, affinity=None):
     profiles = list(dict.fromkeys(configured_profiles(service.preferences) + [p for p in online if p]))
     for profile in profiles:
         client = online.get(profile) or cached_profile(profile, service.preferences)
+        if ordinary and not retained(client, service.preferences): continue
+        if (len(affinity['pool']) >= int(service.preferences.get('concurrency', 2)) and
+                str(client.get('account') or '').strip().casefold() not in affinity['pool']): continue
         if profile not in online and profile in service.preferences.get('browser_launch_failures', {}): continue
         fresh = balance_ready(client, preferences=service.preferences)
         if (not allowed(client, service.preferences) or profile in held or str(client.get('account') or '').strip().casefold() in held_accounts or

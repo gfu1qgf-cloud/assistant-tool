@@ -7,22 +7,35 @@ const project = 'https://flow.google.com/project/ours';
 const source = fs.readFileSync(path.join(__dirname,'../browser_extensions/flow_adapter/background.js'),'utf8')
   .replace("import './background.js';",'');
 
-async function fixture({active=false, state='minimized', pendingUrl, focused=false, focusFailure=false, storageFailure=false}={}) {
+async function fixture({active=false, state='minimized', pendingUrl, focused=false, focusFailure=false, storageFailure=false,
+    native=false,nativeState='focused',scriptFailure=false,ignoreNative=false}={}) {
   const data={lzxConfig:{project,token:'test',port:18189,profile:'Profile 7'},lzxBatch:'a'.repeat(32)};
   const tab={id:7,windowId:42,url:project,active,pendingUrl};
-  const sent=[],updates=[],windows=[],forwarded=[],hooks={};
+  const sent=[],updates=[],windows=[],forwarded=[],hooks={},scripts=[];
+  const document={title:'Original Flow title'};
+  let context;
   const event=name=>({addListener(fn){hooks[name]=fn;}});
-  class Socket {static OPEN=1; constructor(){this.readyState=1;} send(s){sent.push(JSON.parse(s));} close(){}}
+  class Socket {static OPEN=1; constructor(){this.readyState=1;} send(s){
+    const value=JSON.parse(s);sent.push(value);
+    if(native&&value.type==='foreground_request'&&!ignoreNative)queueMicrotask(()=>context.api.receive({
+      type:'foreground_result',request_id:value.request_id,token:value.token,state:nativeState}));
+  } close(){}}
   const chrome={runtime:{onMessage:event('message'),onStartup:event('start'),onInstalled:event('installed')},
     storage:{onChanged:event('storage'),local:{async get(keys){return Object.fromEntries(keys.filter(k=>k in data).map(k=>[k,data[k]]));},async set(v){if(storageFailure&&v.lzxBrowserOptions)throw Error('test cache failure');Object.assign(data,v);}}},
     tabs:{async query(){return [tab];},async get(){return tab;},async update(id,value){updates.push({id,...value});Object.assign(tab,value);return tab;},
       async sendMessage(id,value){forwarded.push({id,action:value.message.action,active:tab.active,state,focused});return {accepted:true};}},
     windows:{async get(){return {id:42,state,focused};},async update(id,value){windows.push({id,...value});if(focusFailure)throw Error('test focus denied');state=value.state||state;focused=value.focused??focused;return {id,state,focused};}},
     downloads:{onChanged:event('download')},alarms:{onAlarm:event('alarm')},action:{onClicked:event('action')}};
-  const context={chrome,crypto,URL,WebSocket:Socket,console,setTimeout(fn){queueMicrotask(fn);},clearTimeout(){},setInterval(){},clearInterval(){}};
+  if(native)chrome.scripting={async executeScript(value){
+    scripts.push(value);if(scriptFailure)throw Error('test document changed');
+    return [{documentId:'our-document',result:value.func(...value.args)}];
+  }};
+  context={chrome,crypto,URL,WebSocket:Socket,console,document,location:{href:project},
+    setTimeout(fn,ms){if(native){const timer=setTimeout(fn,ms);if(ms===2500)timer.unref();return timer;}queueMicrotask(fn);},
+    clearTimeout(timer){if(native)clearTimeout(timer);},setInterval(){},clearInterval(){}};
   vm.createContext(context);vm.runInContext(source+'\nglobalThis.api={receive};',context);
   await new Promise(r=>setImmediate(r));
-  return {api:context.api,updates,windows,forwarded,sent,data};
+  return {api:context.api,updates,windows,forwarded,sent,data,document,scripts};
 }
 
 (async()=>{
@@ -81,5 +94,26 @@ async function fixture({active=false, state='minimized', pendingUrl, focused=fal
   const malformed=await fixture({active:true,state:'normal'});
   await malformed.api.receive({type:'timing_settings',browser_options:{focus_before_action:'false'}});
   await malformed.api.receive({action:'prepare',params:{}});assert.equal(malformed.windows.length,0);
+  const nativeCommand={action:'run_tasks',request_id:'operation',foreground_token:'c'.repeat(32),
+    params:{batch_id:'a'.repeat(32),tasks:[{}]}};
+  for(const nativeState of ['focused','denied']){
+    const f=await fixture({native:true,nativeState,active:true,state:'normal'});await enable(f);
+    await f.api.receive(nativeCommand);
+    assert.equal(f.sent.filter(v=>v.type==='foreground_request').length,1);
+    assert.equal(f.windows.length,0,'native focus is performed by the Windows host, not a Chrome focus request');
+    assert.equal(f.forwarded.length,1,'Windows denial must not duplicate the paid action');
+    assert.equal(f.document.title,'Original Flow title','always restore title');
+    assert.equal(f.scripts[1].target.documentIds[0],'our-document','cleanup only touches the original document');
+  }
+  const nativeOff=await fixture({native:true,active:true,state:'normal'});
+  await nativeOff.api.receive({...nativeCommand,browser_options:{focus_before_action:false}});
+  assert.equal(nativeOff.scripts.length,0);assert.equal(nativeOff.sent.filter(v=>v.type==='foreground_request').length,0);
+  const documentFailure=await fixture({native:true,scriptFailure:true,active:true,state:'normal'});await enable(documentFailure);
+  await documentFailure.api.receive(nativeCommand);
+  assert.equal(documentFailure.forwarded.length,1);assert(documentFailure.sent.some(v=>v.unavailable===true));
+  const missingHost=await fixture({native:true,ignoreNative:true,active:true,state:'normal'});await enable(missingHost);
+  await missingHost.api.receive(nativeCommand);
+  assert.equal(missingHost.forwarded.length,1,'bounded native timeout must not hang the queue');
+  assert.equal(missingHost.document.title,'Original Flow title');
   console.log('Flow upstream UI path: exact project, optional foreground focus, off-state persistence, denied-focus fallback, no reload or polling churn passed.');
 })().catch(e=>{console.error(e);process.exitCode=1;});

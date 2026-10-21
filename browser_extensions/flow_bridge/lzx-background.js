@@ -78,6 +78,44 @@ async function openTab() {
   return ownedTab;
 }
 const pageBootstraps = new Map();
+const foregroundReplies = new Map();
+async function nativeForeground(tabId, message) {
+  const token = message.foreground_token;
+  const marker = `[AssistantFlowFocus ${token}]`;
+  let proof;
+  try {
+    proof = (await chrome.scripting.executeScript({target:{tabId,frameIds:[0]},world:'MAIN',
+      func:(project, marker)=> {
+        const expected=new URL(project), current=new URL(location.href);
+        if (current.origin!==expected.origin || current.pathname.replace(/\/$/,'')!==expected.pathname.replace(/\/$/,'')) return null;
+        const previous=document.title;
+        document.title=marker;
+        // Also restore after an interrupted extension worker; never replace a
+        // subsequent title written by the page itself.
+        setTimeout(()=>{if(document.title===marker)document.title=previous;},2500);
+        return {previous};
+      },args:[config.project,marker]}))[0];
+    if (!proof?.documentId || !proof.result) throw Error('原项目文档未确认');
+    await new Promise(resolve=>{
+      const timer=setTimeout(()=>{
+        foregroundReplies.delete(token);
+        send({type:'foreground_cancel',request_id:message.request_id,token});
+        resolve('timeout');
+      },2000);
+      foregroundReplies.set(token,{request:message.request_id,resolve:state=>{clearTimeout(timer);resolve(state);}});
+      send({type:'foreground_request',request_id:message.request_id,token});
+    });
+  } catch (error) {
+    console.warn('[AssistantFlow] Windows 窗口激活未完成：',error.message || error);
+    send({type:'foreground_request',request_id:message.request_id,token,unavailable:true});
+  } finally {
+    foregroundReplies.delete(token);
+    if (proof?.documentId && proof.result) {
+      try {await chrome.scripting.executeScript({target:{tabId,documentIds:[proof.documentId]},world:'MAIN',
+        func:(marker, previous)=>{if(document.title===marker)document.title=previous;},args:[marker,proof.result.previous]});} catch {}
+    }
+  }
+}
 async function bootstrapProject(expectedTab = null) {
   if (!projectUrl(config.project) || !chrome.scripting?.executeScript) return {supported:false};
   const tabId = await ensureTab();
@@ -112,11 +150,15 @@ async function bootstrapProject(expectedTab = null) {
 }
 async function forward(message) {
   const usesPageUi = ['get_points', 'prepare', 'upload_images', 'run_tasks', 'retry_download'].includes(message.action);
+  let foregroundAttempted = false;
   const attempts = Math.max(1, Math.ceil(timingMs('bridge_forward_wait_seconds',45) / timingMs('bridge_forward_retry_seconds',1)));
   for (let attempt = 0; attempt < attempts; attempt++) {
     try {
       const tabId = await ensureTab();
-      if (usesPageUi) await readyWorkTab(tabId);
+      if (usesPageUi) {
+        await readyWorkTab(tabId, {...message,foreground_skip:foregroundAttempted});
+        foregroundAttempted = true;
+      }
       const response = await chrome.tabs.sendMessage(tabId, {action: 'lzxCommand', message:{...message,timing:timingValues}}, {frameId: 0});
       if (response?.accepted) return;
     } catch {}
@@ -126,7 +168,7 @@ async function forward(message) {
   throw Object.assign(new Error('主程序打开的 Flow 项目页尚未就绪，请检查登录／项目页面；扩展没有另外创建标签页。'),
     {code: 'FLOW_PAGE_NOT_READY'});
 }
-async function readyWorkTab(tabId) {
+async function readyWorkTab(tabId, message = {}) {
   const tab = await chrome.tabs.get(tabId);
   if (!sameProjectTab(tab, config.project)) throw Error('原 Flow 项目已切换，未操作其他页面。');
   // Upstream drives visible page controls. Match that normal manual path,
@@ -135,7 +177,8 @@ async function readyWorkTab(tabId) {
   if (Number.isInteger(tab.windowId) && tab.windowId >= 0 && typeof chrome.windows?.get === 'function') {
     try {
       const window = await chrome.windows.get(tab.windowId);
-      const focus = browserOptions.focus_before_action === true;
+      const native = browserOptions.focus_before_action === true && /^[a-f0-9]{32}$/.test(message.foreground_token || '');
+      const focus = browserOptions.focus_before_action === true && !native && !message.foreground_skip;
       if (window.state === 'minimized') await chrome.windows.update(tab.windowId, {state:'normal', focused:focus});
       else if (focus && window.focused !== true) await chrome.windows.update(tab.windowId, {focused:true});
     } catch (error) {
@@ -143,8 +186,16 @@ async function readyWorkTab(tabId) {
       console.warn('[AssistantFlow] 窗口激活未完成，继续原网页操作：', error.message || error);
     }
   }
+  if (!message.foreground_skip && browserOptions.focus_before_action === true && /^[a-f0-9]{32}$/.test(message.foreground_token || '')) {
+    await nativeForeground(tabId, message);
+  }
 }
 async function receive(message) {
+  if (message.type === 'foreground_result') {
+    const pending = foregroundReplies.get(message.token);
+    if (pending?.request === message.request_id) {foregroundReplies.delete(message.token);pending.resolve(message.state);}
+    return;
+  }
   if (message.type === 'welcome') {
     authenticated = true;
     await applyBrowserOptions(message.browser_options || {focus_before_action:false});
@@ -452,7 +503,7 @@ async function connect() {
         profile: config.profile || '', project: config.project || '',
         extension_version: chrome.runtime.getManifest?.().version || '', setup_id: config.setup_id || '',
         capabilities: ['idle_reload', 'project_setup_v1', 'generation_media_identity_v2', 'close_exhausted_v1',
-          'close_idle_backup_v1', 'close_released_batches_v1', 'window_inventory_v1', 'timing_settings_v1', 'focus_before_action_v1']});
+          'close_idle_backup_v1', 'close_released_batches_v1', 'window_inventory_v1', 'timing_settings_v1', 'focus_before_action_v1', 'native_foreground_v1']});
       clearInterval(heartbeat);
       heartbeat = setInterval(() => send({type: 'ping'}), timingMs('bridge_heartbeat_seconds',20));
     };
@@ -695,9 +746,9 @@ async function projectSetupAction(entry, sender) {
         if (reply.type !== 'setup_reload_allowed') return;
         if (reply.ticket !== ticket || !reply.profile || new URL(reply.project).href.replace(/\/$/, '') !== project) throw Error('项目与本次连接请求不匹配。');
         receiving = true; clearTimeout(timer);
-        if (chrome.runtime.getManifest().version !== '1.1.29') {
+        if (chrome.runtime.getManifest().version !== '1.1.30') {
           await chrome.storage.local.set({lzxReloadSetup: {...entry, tabId: sender.tab.id,
-            mode: reply.mode || 'pair', profile: reply.profile, version: '1.1.29'}});
+            mode: reply.mode || 'pair', profile: reply.profile, version: '1.1.30'}});
           finish(null, {success: true, updating: true}); chrome.runtime.reload(); return;
         }
         if (action === 'options') {

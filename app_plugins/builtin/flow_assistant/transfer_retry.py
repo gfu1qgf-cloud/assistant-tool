@@ -104,7 +104,6 @@ class TransferRecovery:
         if not client: return False
         cost = row['remote'].get('cost')
         if retry and cost is not None and (client.get('credits') is None or client['credits'] < cost):
-            client['blocked'] = '积分不足'
             self.store.update(row['id'], 'queued', attempt='', browser='', remote={},
                               error='原账号积分不足，等待可承担本条费用的备用账号；未提交生成。')
             return True
