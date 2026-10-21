@@ -7,7 +7,7 @@ import re
 from urllib.parse import parse_qs, urlencode, urlsplit, urlunsplit
 
 EXTENSION_ID = 'pnjppjjfgiccpcfajkpooklgohgihdom'
-EXTENSION_VERSION = '1.1.30'
+EXTENSION_VERSION = '1.1.31'
 # Reviewed bridge releases with the same protocol and no automatic page reload.
 # A patch update is available, but is not a reason to disable a working client.
 def compatible_extension(version, *, minimum_patch=8):

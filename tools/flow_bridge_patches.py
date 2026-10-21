@@ -225,6 +225,9 @@ def patch_ui(ui):
     ui = exact(ui, '        console.warn("[FlowUI] ⚠️ 生成按钮超时未就绪，强制解除 disabled 限制触发点击");',
         '        if (window.__lzxFlowTransport) throw durationError("生成按钮未就绪，请检查网站提示后重试");\n'
         '        console.warn("[FlowUI] ⚠️ 生成按钮超时未就绪，强制解除 disabled 限制触发点击");')
+    ui = exact(ui, '  function checkForUnusualActivity() {',
+        '  function checkForUnusualActivity() {\n'
+        '    if (window.__lzxFlowTransport) return window.__lzxFlowTransport.unusualActivity?.() === true;')
     ui = exact(ui, '    alarmCountdown = 45;',
         '    if (window.__lzxFlowTransport) {\n'
         '      if (alarmTimer) clearInterval(alarmTimer);\n'

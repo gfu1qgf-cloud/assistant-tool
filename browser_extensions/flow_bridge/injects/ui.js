@@ -6044,6 +6044,7 @@ ${presetAfter || ""}`.trim();
   let activityCheckInterval = null;
 
   function checkForUnusualActivity() {
+    if (window.__lzxFlowTransport) return window.__lzxFlowTransport.unusualActivity?.() === true;
     // 使用 textContent 替代 innerText，避免每轮检查触发全页面同步 Layout 重排
     const text = (document.body && document.body.textContent) || "";
     return text.includes("异常活动") || text.includes("異常活動") || text.includes("不尋常的活動") || text.includes("Unusual activity") || text.includes("unusual activity");

@@ -100,7 +100,10 @@ def potential(service, client, queued):
             client.get('credit_last_request_observed_at') != client.get('credits_at', 0)):
         return True  # Let the ordinary one-shot balance refresh start before considering a backup.
     if not online and profile in preferences.get('browser_launch_failures', {}):
-        return False
+        failure = preferences['browser_launch_failures'][profile]
+        retry = preferences.get('browser_probe_retries', {}).get(profile, {})
+        return bool(failure.get('kind') == 'extension_probe_v3' and failure.get('retryable') and
+            retry.get('count', timing_value(preferences, 'browser_probe_attempts')) < timing_value(preferences, 'browser_probe_attempts'))
     probe = getattr(service, 'small_balance_probes', {}).get(profile)
     if probe and probe <= now:
         return False

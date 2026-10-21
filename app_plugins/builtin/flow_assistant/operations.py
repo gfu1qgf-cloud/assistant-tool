@@ -96,7 +96,9 @@ class FlowOperations(TransferRecovery, TaskReset):
                  if 'profile:' + profile in keys else entry
                  for profile,entry in self.preferences.get('browser_slots', {}).items()}
         self.commit_preferences({**self.preferences, 'browser_blocks': blocks, 'parameter_blocks': limits,
-                                  'browser_launch_failures': launch_failures, 'browser_slots':slots})
+                                  'browser_launch_failures': launch_failures, 'browser_slots':slots,
+                                  'browser_probe_retries': {profile:value for profile,value in self.preferences.get('browser_probe_retries',{}).items()
+                                      if 'profile:' + profile not in keys}})
         for identity in keys:
             if identity.startswith('profile:'):
                 getattr(self, 'launch_attempts', set()).discard(identity.split(':', 1)[1])

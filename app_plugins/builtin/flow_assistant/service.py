@@ -413,6 +413,13 @@ class FlowService(QtCore.QObject, FlowOperations):
                 if message.get('event_id'):
                     self.send(client, {'type': 'ack', 'event_id': message['event_id']})
             elif message.get('type') == 'site_pause':
+                if 'site_pause_evidence_v1' in client.get('capabilities', []) and (
+                        message.get('source') != 'visible_site_alert' or message.get('code') != 'FLOW_SITE_UNUSUAL_ACTIVITY' or
+                        not project_identity(message.get('url')) or
+                        project_identity(message.get('url')) != project_identity(client.get('saved_project')) or
+                        not message.get('page_instance') or client.get('page_instance') and
+                        message['page_instance'] != client['page_instance']):
+                    return
                 self.paused = self.safety_paused = True
                 self.released.clear()
                 client['blocked'] = 'Flow 网站提示安全限制，后续提交已暂停；保留当前生成页面，不自动刷新。'
@@ -1331,6 +1338,9 @@ class FlowService(QtCore.QObject, FlowOperations):
             refresh_probe_cycle(self, rows)
             queued_rows = sorted([row for row in admitted if row['remote'].get('prepare_retry', {}).get('next_at', 0) <= time.time()],
                            key=lambda row: -row['payload'].get('priority', 0))
+            if queued_rows and not self.safety_paused:
+                from .browser_slots import watch_probe_retries
+                if watch_probe_retries(self): self.publish()
             from .high_credit import watch as watch_high_credit
             before_high_credit = self.preferences, self.high_credit_pending
             watch_high_credit(self, queued_rows)

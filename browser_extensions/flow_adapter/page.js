@@ -18,11 +18,35 @@
   const emit = data => window.postMessage({sender: 'lzx-flow-page', data}, location.origin);
   let attachedAt = 0, stableSince = 0, stablePrompt, stableSettings, stableUrl = '', lastReadiness = '';
   let lastAccountIssue = '';
+  const ignoredAlertContent = '#flow-batch-overlay, #flow-import-dialog, #flow-alarm-dialog, #flow-batch-fab, input, textarea, [contenteditable="true"], .ProseMirror, [data-prompt], [hidden], [aria-hidden="true"], script, style, template, pre, code';
+  function siteAlertVisible(node) {
+    if (!live(node) || node.closest?.(ignoredAlertContent)) return false;
+    if (typeof getComputedStyle === 'function') {
+      for (let current=node; current; current=current.parentElement) {
+        const style=getComputedStyle(current);
+        if (style.display==='none' || style.visibility==='hidden' || style.visibility==='collapse' || style.opacity==='0') return false;
+      }
+    }
+    return true;
+  }
+  function visibleSiteAlerts() {
+    return [...document.querySelectorAll('[role="alert"], [role="alertdialog"], [data-sonner-toast], flow-error-page, flow-account-error')]
+      .filter(siteAlertVisible).map(node => {
+        const copy = node.cloneNode?.(true);
+        if (!copy) return String(node.textContent || '').slice(0, 2000);
+        const originals=[...(node.querySelectorAll?.('*') || [])], copies=[...copy.querySelectorAll('*')];
+        originals.forEach((child,index)=>{if(!siteAlertVisible(child))copies[index]?.remove();});
+        for (const ignored of copy.querySelectorAll(ignoredAlertContent)) ignored.remove();
+        return String(copy.textContent || '').slice(0, 2000);
+      }).filter(Boolean);
+  }
+  function unusualActivity() {
+    return visibleSiteAlerts().some(text => /异常活动|異常活動|不尋常的活動|unusual\s+activity/i.test(text));
+  }
   function accountIssue() {
     // Inspect explicit site alerts only. Prompts and arbitrary page text can
     // contain these words without describing the signed-in account.
-    const text = [...document.querySelectorAll('[role="alert"], flow-error-page, flow-account-error')]
-      .filter(live).map(node => node.textContent || '').join(' ').slice(0, 2000);
+    const text = visibleSiteAlerts().join(' ').slice(0, 2000);
     const code = /account\s+(?:(?:has\s+been|is|was)\s+)?(?:disabled|suspended|banned)\b|账号(?:已被|已经|已|被)?(?:停用|封禁|封停)|帳號(?:已遭|已被|已|被)?(?:停用|封鎖)/i.test(text) ? 'FLOW_ACCOUNT_DISABLED' :
       /please\s+(?:sign|log)\s*in|sign\s*in\s+to\s+continue|authentication\s+required|登录(?:已过期|已失效|失效)|需要登录|请先登录|請先登入/i.test(text) ? 'FLOW_ACCOUNT_SIGNED_OUT' :
       /captcha|unusual\s+activity|verify\s+your\s+identity|需要验证|验证码|異常活動|异常活动/i.test(text) ? 'FLOW_ACCOUNT_VERIFICATION' : '';
@@ -358,7 +382,13 @@
     verifySettings, settingsPanel, waitForSettings, applyDuration, activeEmail, captureAccount, locateResult, readiness, waitForControls,
     findSubmission, matchesSubmission, hasPendingResults,
     batchIdle() {snapshot(true);},
-    sitePaused() {emit({type: 'site_pause', reason: 'Flow 网站提示安全限制，已暂停后续提交；保留当前页面，不自动刷新。'});},
+    unusualActivity,
+    sitePaused() {
+      if (!unusualActivity()) return false;
+      emit({type: 'site_pause', source:'visible_site_alert', url:location.href, page_instance:pageInstance,
+        code:'FLOW_SITE_UNUSUAL_ACTIVITY', reason: 'Flow 网站可见警告提示异常活动，已暂停后续提交；保留当前页面，不自动刷新。'});
+      return true;
+    },
     recordGenerationResponse(process, response) {
       const task = getSnapshot?.()?.tasks?.[process.rowIndex];
       if (!task || task.mediaBindings?.[process.lineIndex]?.submissionId !== process.submissionId) return;

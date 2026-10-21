@@ -4,16 +4,38 @@ import hmac
 
 from .connection_status import configured_profiles
 from .store import TRANSIENT
+from .timing import value as timing_value
 
 
 def recover_legacy_probe_failures(preferences):
     """Recheck old false negatives once, without losing real launch failures."""
-    if preferences.get('extension_probe_revision', 0) >= 2:
+    if preferences.get('extension_probe_revision', 0) >= 3:
         return preferences
     prefix = '扩展未启用或版本无法确认，请在连接向导修正后恢复；自动调度未打开此配置：'
     failures = {profile: entry for profile, entry in preferences.get('browser_launch_failures', {}).items()
-                if entry.get('kind') or not str(entry.get('message') or '').startswith(prefix)}
-    return {**preferences, 'extension_probe_revision': 2, 'browser_launch_failures': failures}
+                if entry.get('kind') != 'extension_probe_v2' and
+                (entry.get('kind') or not str(entry.get('message') or '').startswith(prefix))}
+    # This only re-admits a preflight check. The GUI must still verify the
+    # exact installed extension before it can open a browser.
+    return {**preferences, 'extension_probe_revision': 3, 'browser_launch_failures': failures}
+
+
+def watch_probe_retries(service):
+    failures = service.preferences.get('browser_launch_failures', {})
+    retries = service.preferences.get('browser_probe_retries', {})
+    limit = timing_value(service.preferences, 'browser_probe_attempts')
+    due = {profile for profile, entry in failures.items() if entry.get('kind') == 'extension_probe_v3' and
+        entry.get('retryable') and retries.get(profile, {}).get('count', limit) < limit and
+        retries.get(profile, {}).get('next_at', float('inf')) <= time.time()}
+    if not due: return False
+    service.commit_preferences({**service.preferences, 'browser_launch_failures':
+        {profile: entry for profile, entry in failures.items() if profile not in due}})
+    for profile in due:
+        service.launch_attempts.discard(profile)
+        service.launched.discard(profile)
+        service.launching.pop(profile, None)
+        service.small_balance_probes.pop(profile, None)
+    return True
 
 
 def occupied_profiles(service):
@@ -100,7 +122,9 @@ def seen(service, client):
     slots[profile] = {**slots.get(profile, {}), 'state': 'online', 'browser': client.get('id'),
                       'at': slots.get(profile, {}).get('at', time.time())}
     failures = {key: value for key, value in service.preferences.get('browser_launch_failures', {}).items() if key != profile}
-    service.commit_preferences({**service.preferences, 'browser_slots': slots, 'browser_launch_failures': failures})
+    retries = {key: value for key, value in service.preferences.get('browser_probe_retries', {}).items() if key != profile}
+    service.commit_preferences({**service.preferences, 'browser_slots': slots, 'browser_launch_failures': failures,
+                                'browser_probe_retries': retries})
 
 
 def disconnected(service, client):
@@ -159,8 +183,15 @@ def launch_result(service, command):
         service.launching.pop(profile, None)
         service.launched.discard(profile)
         return
+    retryable = command.get('kind') == 'extension_probe_v3' and command.get('retryable') is True
+    retries = dict(service.preferences.get('browser_probe_retries', {}))
+    if retryable:
+        previous = retries.get(profile, {})
+        retries[profile] = {'count': previous.get('count', 0) + 1,
+            'next_at': time.time() + timing_value(service.preferences, 'browser_probe_retry_seconds')}
     failures = {**service.preferences.get('browser_launch_failures', {}), profile: {
         'at': time.time(), 'message': str(command.get('error') or '浏览器未成功启动')[:500],
-        'kind': command.get('kind', 'launch')}}
-    service.commit_preferences({**service.preferences, 'browser_slots': slots, 'browser_launch_failures': failures})
+        'kind': command.get('kind', 'launch'), 'retryable': retryable}}
+    service.commit_preferences({**service.preferences, 'browser_slots': slots, 'browser_launch_failures': failures,
+                                'browser_probe_retries': retries})
     service.launching.pop(profile, None)

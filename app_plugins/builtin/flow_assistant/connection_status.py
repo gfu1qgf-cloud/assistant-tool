@@ -5,6 +5,7 @@ from .setup_support import project_identity, project_block
 from .credit_policy import balance_ready
 from .account_policy import hold_reason
 from .credit_cooldown import credit_reason, MIN_CREDITS
+from .timing import value as timing_value
 
 
 def browser_keys(client):
@@ -37,8 +38,13 @@ def browser_status(client, preferences, jobs=(), now=None):
         if high_reason:
             return {'connection': '未连接', 'project': project, 'state': '千分账号备用', 'reason': high_reason, 'color': '#986100'}
         if failure or slot:
+            retry = preferences.get('browser_probe_retries', {}).get(client.get('profile'), {})
+            rechecking = failure.get('retryable') and retry.get('count', 0) < timing_value(preferences, 'browser_probe_attempts')
             return {'connection': '未连接', 'project': project, 'state': '启动待处理' if failure else '等待原连接',
-                    'reason': failure.get('message') or '保留原配置连接记录，等待扩展重连；不因空闲窗口阻止其他账号', 'color': '#986100'}
+                    'reason': (('启动检查等待自动复查' if rechecking else '启动检查自动复查已达上限，可修正后恢复') +
+                        f'（{retry.get("count",0)}/{timing_value(preferences,"browser_probe_attempts")}）；'
+                        if failure.get('retryable') else '') +
+                        (failure.get('message') or '保留原配置连接记录，等待扩展重连；不因空闲窗口阻止其他账号'), 'color': '#986100'}
         return {'connection': '未连接', 'project': project, 'state': '待连接' if project_identity(saved) else '待配置',
                 'reason': '等待打开此配置并连接扩展' if project_identity(saved) else '请先添加这个配置自己的 Flow 项目地址', 'color': '#986100'}
     blocks = preferences.get('browser_blocks', {})
