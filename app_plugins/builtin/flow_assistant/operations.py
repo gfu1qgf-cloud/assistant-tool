@@ -92,8 +92,11 @@ class FlowOperations(TransferRecovery, TaskReset):
         limits = {key: value for key, value in self.preferences.get('parameter_blocks', {}).items() if key not in keys}
         launch_failures = {key: value for key, value in self.preferences.get('browser_launch_failures', {}).items()
                            if 'profile:' + key not in keys}
+        slots = {profile: {key:value for key,value in entry.items() if key != 'project_startup'}
+                 if 'profile:' + profile in keys else entry
+                 for profile,entry in self.preferences.get('browser_slots', {}).items()}
         self.commit_preferences({**self.preferences, 'browser_blocks': blocks, 'parameter_blocks': limits,
-                                  'browser_launch_failures': launch_failures})
+                                  'browser_launch_failures': launch_failures, 'browser_slots':slots})
         for identity in keys:
             if identity.startswith('profile:'):
                 getattr(self, 'launch_attempts', set()).discard(identity.split(':', 1)[1])

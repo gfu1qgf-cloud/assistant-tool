@@ -10,7 +10,7 @@ class FlowAssistantPlugin(QtCore.QObject):
     command = QtCore.pyqtSignal(object)
     plugin_id = 'flow_assistant'
     display_name = 'Flow 视频助手'
-    version = '0.4.33'
+    version = '0.4.34'
     upstream_version = '1.1.5'
     ui_api_version = 2
     manual_credit_check_api = 1
@@ -65,6 +65,7 @@ class FlowAssistantPlugin(QtCore.QObject):
         self.service.changed.connect(self._changed)
         self.service.failed.connect(self._failed)
         self.service.launch_requested.connect(self._launch)
+        self.service.project_open_requested.connect(self._open_missing_project)
         self.service.running_changed.connect(self._running)
         self.service.finished_job.connect(lambda path: self.context.log('Flow 视频已保存：' + path))
         self.service.submitted.connect(self._submitted)
@@ -159,6 +160,14 @@ class FlowAssistantPlugin(QtCore.QObject):
         if ok:
             self.browser_launches[key] = now
         return ok, error
+
+    def _open_missing_project(self, command):
+        from .project_startup import launch_allowed
+        if self.stopping or not launch_allowed(self.snapshot, command):
+            self.command.emit({**command, 'opened':False, 'cancelled':True})
+            return
+        ok, error = self.launch_browser(command['profile'], [command['project']])
+        self.command.emit({**command, 'opened':ok, 'error':error})
 
     def _launch(self, directory):
         launcher = getattr(self.context.parent_widget, 'chrome_plugin', None)

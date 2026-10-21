@@ -32,6 +32,10 @@ def occupied(service, client):
 def repair_idle(service, client):
     profile = client.get('profile')
     saved = project_identity(client.get('saved_project'))
+    startup = service.preferences.get('browser_slots', {}).get(profile, {}).get('project_startup', {})
+    if (startup.get('session') == service.project_startup_session and startup.get('state') in {'opening','waiting'} and
+            time.time() - startup.get('at', 0) < timing_value(service.preferences, 'browser_startup_seconds')):
+        return False  # Let the requested original browser/project finish opening.
     if (not client.get('authorized') or client.get('extension_version') not in {'1.1.18', '1.1.19', '1.1.20', '1.1.21', '1.1.22', '1.1.23', '1.1.24', '1.1.25', '1.1.26'}
             or not profile or not saved or saved != project_identity(service.preferences.get('profile_projects', {}).get(profile))
             or account_hold(client, service.preferences) or credit_hold(client, service.preferences) or occupied(service, client)):

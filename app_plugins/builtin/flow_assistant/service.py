@@ -50,6 +50,7 @@ class FlowService(QtCore.QObject, FlowOperations):
     changed = QtCore.pyqtSignal(object)
     failed = QtCore.pyqtSignal(str)
     launch_requested = QtCore.pyqtSignal(str)
+    project_open_requested = QtCore.pyqtSignal(object)
     running_changed = QtCore.pyqtSignal(bool)
     finished_job = QtCore.pyqtSignal(str)
     submitted = QtCore.pyqtSignal(object)
@@ -77,6 +78,7 @@ class FlowService(QtCore.QObject, FlowOperations):
         self.setup_requests = {}
         self.credit_debits = {}
         self.connection_recoveries = {}
+        self.project_startup_session = uuid.uuid4().hex
         self.archive_result.connect(self._archived)
 
     @QtCore.pyqtSlot()
@@ -332,6 +334,8 @@ class FlowService(QtCore.QObject, FlowOperations):
                 client['note'] = message.get('note') or ''
                 client['page_loaded'] = bool(project_identity(client['project']))
                 client['page_ready'] = client['page_loaded'] and message.get('controls_ready', True) is True
+                from .project_startup import ready as project_ready
+                project_ready(self, client)
                 note_readiness(client)
                 client['ready_note'] = str(message.get('ready_note') or '')[:300]
                 client['page_at'] = time.time()
@@ -404,6 +408,9 @@ class FlowService(QtCore.QObject, FlowOperations):
             if message.get('success'):
                 client.update(credits_ready_failures=0, credits_waiting_ready=True,
                     credits_waiting_account=False, credits_retry_at=time.time() + timing_value(self.preferences, 'credit_after_repair_seconds'))
+            else:
+                from .project_startup import note_missing
+                note_missing(self, client, message.get('error', ''), message.get('code', ''))
             self.request(client, 'snapshot')
             return
         if action == 'get_points':
@@ -650,6 +657,8 @@ class FlowService(QtCore.QObject, FlowOperations):
                 page_at=time.time(), page_error='')
             note_readiness(client)
             client['setup_blocked'] = project_block(client, self.preferences)
+            from .project_startup import ready as project_ready
+            project_ready(self, client)
             if client.get('page_ready') and client.get('credits_local'):
                 self.launching.pop(client.get('profile'), None)
             confirm_saved_connection(self, client)
@@ -882,6 +891,9 @@ class FlowService(QtCore.QObject, FlowOperations):
             elif action == 'browser_launch_result':
                 from .browser_slots import launch_result
                 launch_result(self, command)
+            elif action == 'project_open_result':
+                from .project_startup import result
+                result(self, command)
             elif action == 'submit_selected':
                 self.released.update(row['id'] for row in self.store.rows()
                                      if row['id'] in command['ids'] and row['status'] == 'queued')
@@ -1202,6 +1214,8 @@ class FlowService(QtCore.QObject, FlowOperations):
                 self.publish()
             if watch_connections(self):
                 self.publish()
+            from .project_startup import watch as watch_project_startup
+            if watch_project_startup(self): self.publish()
             if self.watch_unsubmitted():
                 self.publish()
             if watch_generation_retries(self):

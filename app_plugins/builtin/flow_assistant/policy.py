@@ -126,6 +126,10 @@ def waiting_reason(row, clients, rows, preferences, observed, batches, *, paused
     if all(block_for(c, preferences) or c.get('blocked') for c in lane):
         return '对应浏览器已暂停：' + str(next((block_for(c, preferences) or c.get('blocked') for c in lane), ''))
     if all(c.get('page_ready') is False for c in lane):
+        recovering = next((c for c in lane if c.get('project_missing') and
+            (c.get('connection_recovery') or {}).get('message')), None)
+        if recovering:
+            return str(recovering.get('profile') or '原浏览器') + '：' + recovering['connection_recovery']['message']
         return '扩展已连接，但 Flow 项目页面未响应；请打开对应浏览器检查'
     if not any(c.get('account') for c in lane):
         return '需要登录／确认当前 Flow 账号，请打开对应浏览器'
