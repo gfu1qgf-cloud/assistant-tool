@@ -85,10 +85,11 @@ class DeletedSlotReleaseTests(unittest.TestCase):
                 if not any(c.get('profile')==profile for c in service.clients.values()):
                     self.browser(service,profile,points=40)
             if len([r for r in service.store.rows() if r['status']=='preparing'])==3:break
-        self.assertEqual(len({r['browser'] for r in service.store.rows() if r['status']=='preparing'}),3)
+        self.assertEqual(len({r['browser'] for r in service.store.rows() if r['status']=='preparing'}),1)
+        self.assertEqual(len(launches),1,'reuse the funded replacement before opening two more')
         self.assertEqual(service.store.get(original['id'])['status'],'uncertain')
         self.assertEqual(service.store.get(original['id'])['attempt'],'f'*32)
-        self.assertEqual(len(occupied_profiles(service)), 7)
+        self.assertEqual(len(occupied_profiles(service)), 5)
         self.assertFalse(any(p['action'] == 'close_exhausted' for p in service.pending.values()))
         self.assertFalse(any(r['status']=='cancelled' for r in service.store.rows()))
 

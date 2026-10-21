@@ -39,20 +39,23 @@ class ExistingBalanceTests(unittest.TestCase):
         self.assertEqual(service.store.rows()[0]['browser'],client['id'])
         self.assertFalse(launches)
 
-    def test_one_pending_read_does_not_serialize_other_parallel_lanes(self):
+    def test_pending_read_of_existing_window_does_not_admit_more_profiles(self):
         service,client,launches=self.waiting(concurrency=2)
-        service._tick();self.assertEqual(launches,['Offline'])
+        service._tick();self.assertEqual(launches,[])
 
-    def test_failed_read_releases_reservation_and_starts_backup(self):
+    def test_one_failed_read_retries_existing_window_before_backup(self):
         service,client,launches=self.waiting();service._tick()
         request=next(k for k,p in service.pending.items() if p['action']=='get_points')
         service._response(client,{'request_id':request,'success':False,'error':'temporary read failure'})
-        service._tick();self.assertEqual(launches,['Offline'])
+        service._tick();self.assertEqual(launches,[])
+        self.assertEqual(client['reuse_recovery']['credit_count'],1)
 
-    def test_expired_pending_read_does_not_reserve_forever(self):
+    def test_expired_read_is_retired_then_uses_existing_window_retry_budget(self):
         service,client,launches=self.waiting();service._tick()
+        old=set(service.pending)
         for request in service.pending.values():request['at']-=3600
-        service._tick();self.assertEqual(launches,['Offline'])
+        service._tick();self.assertEqual(launches,[])
+        self.assertFalse(old & set(service.pending));self.assertEqual(client['credits_ready_failures'],1)
 
     def test_blocked_window_does_not_reserve_backup_lane(self):
         service,client,launches=self.waiting();service.request(client,'get_points')

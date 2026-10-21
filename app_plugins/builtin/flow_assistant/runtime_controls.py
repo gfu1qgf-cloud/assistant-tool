@@ -21,6 +21,7 @@ def refresh(service, client, *, automatic=False):
     if automatic and (info.get('count', 0) >= value(service.preferences, 'connection_repair_attempts') or
                       now < info.get('next_at', 0)): return False
     if not service.request(client, 'repair_project', {'idle': True, 'url':client.get('saved_project'), 'force_reload':True}): return False
+    if not automatic: client.pop('reuse_recovery',None)
     client['f5_recovery'] = {'count':info.get('count',0)+int(automatic),
         'next_at':now+value(service.preferences,'connection_repair_wait_seconds')}
     client['runtime_note'] = '已请求 F5 刷新原项目，等待扩展再次核对空闲及原页面。'

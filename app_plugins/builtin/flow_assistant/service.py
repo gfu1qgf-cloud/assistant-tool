@@ -176,6 +176,7 @@ class FlowService(QtCore.QObject, FlowOperations):
             # recovery plans may only query snapshots; never send this command.
             return
         if action == 'get_points':
+            if manual_credit: client.pop('reuse_recovery',None)
             previous = next((p for p in self.pending.values() if p['action'] == action and p['client'] == client['id']), None)
             if previous:
                 # A click authorizes a NEW observation, not an automatic probe
@@ -1378,6 +1379,8 @@ class FlowService(QtCore.QObject, FlowOperations):
             if selected and not prefer_smaller(self, candidate, selected, affinity=affinity):
                 queued, client = candidate, selected
             if client:
+                self.browser_reuse_wait = {}
+                client.pop('reuse_recovery',None)
                 if not self.media_disks_ready(queued):
                     return
                 try:
@@ -1409,6 +1412,8 @@ class FlowService(QtCore.QObject, FlowOperations):
                     'resolution': 'VIDEO_RESOLUTION_' + job['resolution'].upper(), 'footageType': 'VIDEO_FRAMES', 'count': 1}, queued['id'])
                 self.publish()
             else:  # Actual Chrome opens share the GUI's single-shot spacing timer.
+                from .browser_reuse import defer_launch
+                if defer_launch(self,queued_rows[0]['payload']): return
                 profiles = configured_profiles(self.preferences)
                 online = {c.get('profile') for c in clients}
                 held_profiles = {r['remote'].get('profile') for r in rows if r['status'] in TRANSIENT | {'uncertain', 'download_failed'}}
@@ -1495,6 +1500,10 @@ class FlowService(QtCore.QObject, FlowOperations):
                 paused=self.paused, released=self.released, affinity=affinity)
             detail = retry_detail(row, self.preferences)
             if detail: row['wait_reason'] = detail
+            reuse_wait = getattr(self,'browser_reuse_wait',{})
+            if (row['status'] == 'queued' and row['id'] == reuse_wait.get('job') and not self.safety_paused and
+                    (not self.paused or row['id'] in self.released)):
+                row['wait_reason'] = reuse_wait['message']
             if row['status'] == 'queued' and first and row['id'] != first and (not self.paused or row['id'] in self.released):
                 row['wait_reason'] = '按提交顺序等待前序任务派发；'+row['wait_reason']
         self.changed.emit({'jobs': rows, 'clients': clients, 'paused': self.paused,

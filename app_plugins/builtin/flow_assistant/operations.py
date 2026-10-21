@@ -106,6 +106,9 @@ class FlowOperations(TransferRecovery, TaskReset):
         for client in self.clients.values():
             if browser_keys(client) & keys:
                 client.pop('prepare_wait', None)
+                client.pop('reuse_recovery',None)
+                self.connection_recoveries.pop(client.get('profile'),None)
+                client.pop('connection_recovery',None)
                 client['blocked'] = ''
                 from .setup_support import project_block
                 client['setup_blocked'] = project_block(client, self.preferences)

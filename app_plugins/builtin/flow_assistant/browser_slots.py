@@ -98,6 +98,9 @@ def request_start(service, profile, job=None):
         from .connection_recovery import repair_idle
         repair_idle(service, online)
         return False
+    if job is not None:
+        from .browser_reuse import defer_launch
+        if defer_launch(service,job): return False
     if not can_start(service, profile):
         return False
     slots = dict(service.preferences.get('browser_slots', {}))

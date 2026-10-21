@@ -85,7 +85,11 @@ class LaunchRecheckTests(unittest.TestCase):
         service.execute({'action':'stop'});restarted=self.service();restarted.paused=False
         launches=[];restarted.launch_requested.connect(launches.append)
         for _ in range(30):restarted._tick()
-        self.assertEqual(len(launches),4);self.assertEqual(len(set(launches)),4)
+        self.assertEqual(len(launches),1,'confirm each new browser before queueing the next')
+        start=time.time()
+        for step in range(1,12):
+            with patch('time.time',return_value=start+step*100):restarted._tick()
+        self.assertEqual(len(launches),4);self.assertEqual(len(set(launches)),4,'expired handshakes still cannot open all 27 profiles')
         self.assertFalse(any(p['action']=='run_tasks' for p in restarted.pending.values()))
 
     def test_probe_limit_survives_worker_restart(self):

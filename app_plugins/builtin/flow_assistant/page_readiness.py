@@ -151,7 +151,7 @@ def watch_preparation(service):
                     for c in service.clients.values())
         if not ready:
             from .browser_slots import request_start
-            request_start(service, profile)
+            request_start(service, profile, row['payload'])
         changed = True
     return changed
 
