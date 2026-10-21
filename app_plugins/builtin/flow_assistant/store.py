@@ -451,16 +451,20 @@ def choose_client(clients, rows, limit, job=None, preferences=None, cost=None, *
     held = active + [r for r in rows if r['status'] in {'uncertain', 'download_failed'}]
     account = lambda value: str(value or '').strip().casefold()
     busy_accounts = {account(row['remote'].get('account')) for row in held} | {
-        account(client.get('account')) for client in clients if client.get('batch_running') or
+        account(client.get('account')) for client in clients if client.get('batch_running') or client.get('native_busy') or
+        client.get('reset_wait_until', 0) > time.time() or
+        (client.get('credit_close') or {}).get('state') in {'checking', 'closing', 'closed'} or
         (client.get('connection_recovery') or {}).get('state') == 'checking' or
         (client.get('credit_check') or {}).get('hold_dispatch')}
     busy_browsers = {row['browser'] for row in held}
+    busy_profiles = {row['remote']['profile'] for row in held if row['remote'].get('profile')}
     eligible = [client for client in clients if client.get('account') and client.get('credits') is not None
-                and balance_ready(client) and not client.get('blocked') and not client.get('batch_running')
+                and balance_ready(client, preferences=preferences) and not client.get('blocked') and not client.get('batch_running')
                 and not block_for(client, preferences or {})
                 and client.get('reset_wait_until', 0) <= time.time()
                 and (client.get('prepare_wait') or {}).get('next_at', 0) <= time.time()
-                and client['id'] not in busy_browsers and account(client['account']) not in busy_accounts]
+                and client['id'] not in busy_browsers and client.get('profile') not in busy_profiles
+                and account(client['account']) not in busy_accounts]
     if job is None:
         return min(eligible, key=credit_order, default=None)
     preferences = preferences or {}

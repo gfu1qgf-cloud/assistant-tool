@@ -141,8 +141,9 @@ class BrowserSlotsTests(unittest.TestCase):
         for profile in profiles[1:4]:self.browser(service,profile,points=1000)
         service.store.enqueue(self.jobs(duration=8,budget=0));row=service.store.rows()[0]
         launches=[];service.launch_requested.connect(launches.append)
-        self.assertTrue(prefer_smaller(service,row,rich))
-        self.assertFalse(launches);self.assertIn('启动名额',service.store.get(row['id'])['error'])
+        self.assertFalse(prefer_smaller(service,row,rich),'a blocked backup probe must allow funded work in an already open window')
+        self.assertFalse(launches)
+        self.assertFalse(can_start(service,profiles[4]))
 
     def test_preparation_recovery_repairs_an_online_profile_without_launching_chrome_again(self):
         service,profiles=self.configured();client=self.browser(service,profiles[0])

@@ -1,13 +1,15 @@
 """Exercise real Qt wrapper destruction without opening a network connection."""
 import json
+import gc
 import time
 import unittest
+import weakref
 from unittest.mock import MagicMock, patch
 
 from PyQt6 import sip
 from PyQt6.QtWebSockets import QWebSocket
 import test_flow_assistant as fixtures
-from app_plugins.builtin.flow_assistant.service import EXTENSION_ID, PROTOCOL
+from app_plugins.builtin.flow_assistant.service import EXTENSION_ID, PROTOCOL, FlowService
 
 
 class SocketLifecycleTests(unittest.TestCase):
@@ -75,6 +77,21 @@ class SocketLifecycleTests(unittest.TestCase):
         self.assertNotIn(socket, service.clients)
         service._disconnected(socket)
         service.execute({'action': 'stop'})
+
+    def test_late_socket_signals_do_not_retain_or_call_a_collected_coordinator(self):
+        service = FlowService(self.namespace, str(self.root / 'downloads'))
+        service.server = MagicMock()
+        socket = QWebSocket(origin=f'chrome-extension://{EXTENSION_ID}')
+        service.server.nextPendingConnection.return_value = socket
+        service._accept()
+        socket.setParent(None)
+        owner = weakref.ref(service)
+        del service
+        gc.collect()
+        self.assertIsNone(owner(), 'socket handlers must not keep a retired coordinator alive')
+        socket.textMessageReceived.emit('{}')
+        socket.disconnected.emit()
+        sip.delete(socket)
 
 
 if __name__ == '__main__':

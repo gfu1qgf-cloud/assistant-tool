@@ -7,6 +7,7 @@ from pathlib import Path
 import secrets
 import time
 import uuid
+import weakref
 
 from qt_compat import QtCore, QtNetwork
 from PyQt6 import sip
@@ -32,7 +33,7 @@ from .account_policy import mark_account, reset_accounts, account_hold, park_uns
 from .connection_recovery import repair_idle, watch_connections
 from .generation_recovery import confirmed_failure, watch as watch_generation_retries, fresh_clients
 from .reference_image import verified_receipt
-from .balance_dispatch import prefer_smaller, profile_order
+from .balance_dispatch import prefer_smaller, profile_order, can_fund
 from .image_affinity import remember_owner, allows_image, retained, affinity_context, cached_profile, dispatch_order, retire_exhausted
 from .prepare_snapshot import remember as remember_prepare, reuse as reuse_prepare
 from .browser_slots import request_start as start_browser, can_start as can_start_browser, occupied_profiles, summary as browser_capacity
@@ -193,9 +194,18 @@ class FlowService(QtCore.QObject, FlowOperations):
         socket.setMaxAllowedIncomingMessageSize(1024 * 1024)
         socket.setMaxAllowedIncomingFrameSize(1024 * 1024)
         self.clients[socket] = {'socket': socket, 'authorized': False, 'connected': time.time()}
-        socket.textMessageReceived.connect(lambda text, s=socket: self._message(s, text))
-        socket.disconnected.connect(lambda s=socket: self._disconnected(s))
-        socket.destroyed.connect(lambda _object=None, s=socket: self._disconnected(s))
+        # Qt can emit destruction signals while cyclic Python closures are
+        # being cleared. Do not retain/call a retired coordinator via a cell.
+        owner = weakref.ref(self)
+        def received(text, s=socket, owner=owner):
+            coordinator = owner()
+            if socket_alive(coordinator): coordinator._message(s, text)
+        def retired(_object=None, s=socket, owner=owner):
+            coordinator = owner()
+            if socket_alive(coordinator): coordinator._disconnected(s)
+        socket.textMessageReceived.connect(received)
+        socket.disconnected.connect(retired)
+        socket.destroyed.connect(retired)
 
     def _disconnected(self, socket):
         client = self.clients.pop(socket, None)
@@ -1230,11 +1240,20 @@ class FlowService(QtCore.QObject, FlowOperations):
                     rank = (-candidate['payload'].get('priority', 0), *dispatch_order(selected, self.preferences),
                             dispatch_rank(selected, candidate['payload'], self.preferences), index)
                     matches.append((rank, candidate, selected))
-            if matches:
-                _rank, queued, client = min(matches, key=lambda item: item[0])
+            deferred_choices = set()
+            for _rank, candidate, selected in sorted(matches, key=lambda item: item[0]):
+                choice = (selected['id'], candidate['payload'].get('image_identity', {}).get('sha256'),
+                          cost_key(candidate['payload']))
+                if choice in deferred_choices:
+                    continue
+                if prefer_smaller(self, candidate, selected, affinity=affinity):
+                    # Many clips can await the same account/image/settings.
+                    # Probe once per tick while still considering other lanes.
+                    deferred_choices.add(choice)
+                    continue
+                queued, client = candidate, selected
+                break
             if client:
-                if prefer_smaller(self, queued, client):
-                    return
                 if not self.media_disks_ready(queued):
                     return
                 try:
@@ -1278,6 +1297,7 @@ class FlowService(QtCore.QObject, FlowOperations):
                 ranked = [(dispatch_rank({'profile': profile, 'id': ''}, row['payload'], self.preferences), index, profile)
                           for index, row in enumerate(queued_rows) for profile in available
                           if (not cached[profile].get('account') or str(cached[profile]['account']).strip().casefold() not in held_accounts) and
+                          can_fund(cached[profile], row['payload'], self.preferences, self.observed_costs) and
                           allows_image(cached[profile], row['payload'], rows, self.preferences, affinity['images']) and
                           (retained(cached[profile], self.preferences) or len(affinity['pool']) < limit)]
                 ranked = sorted(((((0 if retained(cached[profile], self.preferences) else 1),
