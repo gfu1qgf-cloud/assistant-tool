@@ -1,5 +1,6 @@
 """Explicit user closure; never a scheduler action or a physical-window gate."""
 import time
+import uuid
 
 from .setup_support import project_identity
 from .store import TRANSIENT
@@ -59,6 +60,7 @@ def response(service, client, message):
     elif message.get('success') and data.get('closing'):
         state['state'] = 'closing'
         client['runtime_note'] = '空闲及下载已核对，正在关闭此配置的浏览器窗口。'
+        update_batch(service, client)
         return False  # Keep the request until an actual close acknowledgement.
     else:
         state['state'] = 'failed'
@@ -67,9 +69,58 @@ def response(service, client, message):
             if blocks.get(key) == PAUSED: blocks.pop(key)
         service.commit_preferences({**service.preferences, 'browser_blocks': blocks})
         client['runtime_note'] = '关闭未完成：' + str(message.get('error') or '扩展未确认关闭')[:500]
+    update_batch(service, client)
     return True
 
 
-def timeout(client):
+def timeout(client, service=None):
     client.setdefault('runtime_close', {})['state'] = 'unconfirmed'
     client['runtime_note'] = '关闭响应超时，未确认窗口退出；此配置保留暂停，可重新关闭或手动恢复。'
+    if service is not None: update_batch(service, client)
+
+
+def low_balance(client, preferences):
+    """Unknown/expired observations never count as exhausted accounts."""
+    from .credit_policy import balance_ready
+    from .credit_cooldown import credit_hold, MIN_CREDITS
+    hold = credit_hold(client, preferences)
+    points = hold.get('balance') if hold else client.get('credits')
+    return (type(points) in (int, float) and 0 <= points < MIN_CREDITS and
+            (bool(hold) or balance_ready(client, preferences=preferences)))
+
+
+def close_all_low(service):
+    previous = getattr(service, 'runtime_close_batch', {})
+    if any(p['action'] == 'close_browser' and p['client'] in previous.get('entries', {})
+           for p in service.pending.values()): return
+    batch = {'id': uuid.uuid4().hex, 'entries': {}}
+    service.runtime_close_batch = batch
+    profiles = set()
+    for client in list(service.clients.values()):
+        if (not client.get('authorized') or not low_balance(client, service.preferences) or
+                client.get('profile') in profiles or client.get('runtime_close', {}).get('state') == 'closed'): continue
+        profiles.add(client.get('profile'))
+        sent = request_close(service, client)
+        batch['entries'][client['id']] = {'profile': str(client.get('profile') or client['id']),
+            'state': 'checking' if sent else 'skipped', 'message': client.get('runtime_note', '')}
+
+
+def update_batch(service, client):
+    entry = getattr(service, 'runtime_close_batch', {}).get('entries', {}).get(client.get('id'))
+    if entry is not None:
+        entry.update(state=client.get('runtime_close', {}).get('state', 'unconfirmed'),
+                     message=client.get('runtime_note', ''))
+
+
+def batch_summary(service):
+    batch = getattr(service, 'runtime_close_batch', {})
+    if not batch: return {}
+    entries = list(batch.get('entries', {}).values())
+    count = lambda states: sum(e['state'] in states for e in entries)
+    closed = count({'closed'}); waiting = count({'checking','closing'})
+    skipped = count({'skipped'}); failed = count({'failed','unconfirmed'})
+    message = (f'批量关闭低于10分浏览器：已关闭 {closed}；核对／关闭中 {waiting}；跳过 {skipped}；失败／未确认 {failed}。'
+               if entries else '没有发现已连接且积分有效、低于10分的浏览器；未知或过期余额不会被关闭。')
+    detail = '\n'.join(e['profile']+'：'+e['message'] for e in entries)
+    return {'id': batch['id'], 'message': message, 'detail': detail, 'closed':closed,
+            'waiting':waiting,'skipped':skipped,'failed':failed}

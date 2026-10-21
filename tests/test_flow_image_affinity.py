@@ -96,17 +96,18 @@ class ImageAffinityTests(unittest.TestCase):
         self.assertEqual(service.store.get(rows[1]['id'])['browser'],owner['id'])
         self.assertEqual(service.store.get(other_row['id'])['status'],'queued')
 
-    def test_free_member_waits_for_its_image_last_result_instead_of_starting_fifth_account(self):
+    def test_image_owner_waits_for_its_last_result_while_ready_open_spare_uses_free_lane(self):
         service=self.service(); clients=[self.browser(service,'Profile '+str(i),points=50+i*10) for i in range(4)]
         rows=self.queue(service,count=4)
         for _ in range(4):service._tick()
         service.store.update(rows[0]['id'],'completed')
-        self.browser(service,'Fresh',points=15)
+        spare=self.browser(service,'Fresh',points=15)
         other=self.target/'other.png';other.write_bytes(b'other reference')
         service.store.enqueue(self.jobs(images=[other],duration=8,budget=0)); target=service.store.rows()[-1]
-        service._tick();self.assertEqual(service.store.get(target['id'])['status'],'queued')
+        service._tick();self.assertEqual(service.store.get(target['id'])['browser'],spare['id'])
+        self.assertEqual(service.preferences['account_images'][clients[0]['account']]['image'],image_key(rows[0]['payload']))
         for row in rows[1:]:service.store.update(row['id'],'completed')
-        service._tick();self.assertEqual(service.store.get(target['id'])['browser'],clients[0]['id'])
+        self.assertEqual(service.store.get(target['id'])['browser'],spare['id'])
 
     def test_four_selected_accounts_continue_instead_of_rotating_into_ten_new_ones(self):
         service=self.service(); clients=[self.browser(service,'Profile '+str(i),points=50+i*10) for i in range(4)]
@@ -208,15 +209,16 @@ class ImageAffinityTests(unittest.TestCase):
         self.assertTrue(any(p['action']=='get_points' for p in service.pending.values()))
         self.assertFalse(launched)
 
-    def test_temporary_page_remount_reserves_selected_account_instead_of_rotating_it(self):
+    def test_temporary_page_remount_only_waits_owner_while_ready_connected_spare_runs(self):
         service=self.service();owner=self.browser(service,'Profile 1',points=50);rows=self.queue(service,count=2)
         service.preferences['concurrency']=1;service._tick();service.store.update(rows[0]['id'],'completed')
         owner['connected']=time.time()-4000
         service._snapshot(owner,{'url':owner['project'],'controls_ready':False,'running':False,'tasks':[]})
-        self.browser(service,'Fresh',points=15);service._tick()
-        self.assertEqual(service.store.get(rows[1]['id'])['status'],'queued')
+        spare=self.browser(service,'Fresh',points=15);service._tick()
+        self.assertEqual(service.store.get(rows[1]['id'])['browser'],spare['id'])
+        self.assertEqual(service.store.get(rows[1]['id'])['status'],'preparing')
         owner['page_ready']=True;service._tick()
-        self.assertEqual(service.store.get(rows[1]['id'])['browser'],owner['id'])
+        self.assertEqual(service.store.get(rows[1]['id'])['browser'],spare['id'])
 
     def test_unreleased_or_unaffordable_image_rows_do_not_deadlock_explicit_other_work(self):
         for mode in ('paused','budget'):

@@ -183,6 +183,10 @@ class FlowDialog(QtWidgets.QDialog):
         self.button('打开选中浏览器', self.open_selected_browser, row)
         self.button('修正后恢复选中浏览器', self.resume_selected_browsers, row)
         self.button('连接／安装扩展…', self.open_setup, row)
+        self.close_low_credit_button = self.button('关闭所有积分不足浏览器',
+            lambda: self.send('close_low_credit_browsers'), row)
+        self.close_low_credit_button.setEnabled(False)
+        self.close_low_credit_button.setToolTip('手动批量关闭已连接且确认低于10分的配置；生成、下载、待核对或余额未知／过期的会跳过。需要扩展1.1.34。')
         row.addStretch()
         layout.addLayout(row)
         hint = QtWidgets.QLabel('默认自动安排时长：按队首任务将空闲的自动配置切到所需时长；固定分档仅接相匹配的任务。\n'
@@ -381,6 +385,9 @@ class FlowDialog(QtWidgets.QDialog):
             self.send('lane', scope=scope, key=identifier, duration=value)
 
     def update_browsers(self):
+        from .runtime_close import low_balance
+        self.close_low_credit_button.setEnabled(any(low_balance(c, self.state.get('preferences', {}))
+            for c in self.state.get('clients', [])))
         # QTableWidget otherwise moves a row as soon as its sorted cell changes,
         # causing the remaining cells to be written into another account's row.
         sorting = self.browsers.isSortingEnabled()
@@ -746,6 +753,12 @@ class FlowDialog(QtWidgets.QDialog):
 
     def update_state(self, state):
         self.state = state
+        report = state.get('runtime_close_batch', {})
+        stamp = (report.get('id'), report.get('message'), report.get('detail'))
+        if report.get('id') and stamp != getattr(self, '_runtime_close_report', None):
+            self._runtime_close_report = stamp
+            self.note.setText(report['message'])
+            self.note.setToolTip(report.get('detail') or report['message'])
         if not self.preferences_loaded:
             preferences = state.get('preferences', {})
             self.concurrent.setValue(int(preferences.get('concurrency', 2)))

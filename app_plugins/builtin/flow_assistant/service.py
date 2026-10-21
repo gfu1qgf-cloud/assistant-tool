@@ -278,6 +278,9 @@ class FlowService(QtCore.QObject, FlowOperations):
                 self.store.update(row['id'], status, error='浏览器断开；已提交的任务会先核对，不自动重复生成。')
         for request_id, request in list(self.pending.items()):
             if request['client'] == client.get('id'):
+                if request['action'] == 'close_browser' and client.get('runtime_close', {}).get('state') != 'closed':
+                    from .runtime_close import timeout as close_timeout
+                    close_timeout(client, self)
                 self.pending.pop(request_id, None)
         if socket_alive(socket): socket.deleteLater()
         if not self.closing:
@@ -998,6 +1001,9 @@ class FlowService(QtCore.QObject, FlowOperations):
             elif action == 'browser_runtime':
                 from .runtime_controls import execute as runtime_execute
                 runtime_execute(self, command)
+            elif action == 'close_low_credit_browsers':
+                from .runtime_close import close_all_low
+                close_all_low(self)
             elif action == 'project_open_result':
                 from .project_startup import result
                 result(self, command)
@@ -1315,7 +1321,7 @@ class FlowService(QtCore.QObject, FlowOperations):
                     client = next((c for c in self.clients.values() if c.get('id') == request['client']), None)
                     if client:
                         from .runtime_close import timeout as close_timeout
-                        close_timeout(client)
+                        close_timeout(client, self)
                 if request['job']:
                     row = self.store.get(request['job'])
                     # A disconnected request may outlive an explicit retry.
@@ -1522,7 +1528,9 @@ class FlowService(QtCore.QObject, FlowOperations):
                 row['wait_reason'] = reuse_wait['message']
             if row['status'] == 'queued' and first and row['id'] != first and (not self.paused or row['id'] in self.released):
                 row['wait_reason'] = '按提交顺序等待前序任务派发；'+row['wait_reason']
+        from .runtime_close import batch_summary
         self.changed.emit({'jobs': rows, 'clients': clients, 'paused': self.paused,
+                           'runtime_close_batch': batch_summary(self),
                            'browser_capacity': browser_capacity(self),
                            'high_credit_pending': dict(self.high_credit_pending) if self.high_credit_pending else None,
                            'pairing': self.pair, 'preferences': self.preferences, 'downloads_root': self.downloads_root,

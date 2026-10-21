@@ -58,7 +58,7 @@ def before_new_browser(service, job):
                              credit_next_at=p['at']+value(preferences,'credit_retry_seconds'))
         detail = '现有账号优先：'+profile+'；'
         if any(r['status'] in TRANSIENT | {'archiving'} for r in related):
-            return detail+'等待原任务／上传重试完成后续用，暂不开新浏览器'
+            return detail+'此账号等待原任务／上传重试；其他已连接账号可继续接单，暂不开新浏览器'
         if pending: return detail+'正在核对积分或恢复原页面，暂不开新浏览器'
         if (client.get('native_busy') or client.get('batch_running') or client.get('reset_wait_until',0)>now):
             if now-state['since'] < value(preferences,'browser_startup_seconds'):

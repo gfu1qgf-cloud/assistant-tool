@@ -451,7 +451,7 @@ class QueueStore:
 
 
 def choose_client(clients, rows, limit, job=None, preferences=None, cost=None, *, affinity=None, selection_order=None):
-    from .image_affinity import allows_image, retained_pool, retained, dispatch_order
+    from .image_affinity import allows_image, dispatch_order
     from .high_credit import allowed
     preferences = preferences or {}
     active = [row for row in rows if row['status'] in TRANSIENT]
@@ -477,15 +477,21 @@ def choose_client(clients, rows, limit, job=None, preferences=None, cost=None, *
     if job is None:
         return min(eligible, key=credit_order, default=None)
     preferences = preferences or {}
-    pool = affinity['pool'] if affinity is not None else retained_pool(clients, rows, preferences)
     pending = affinity['images'] if affinity is not None else None
-    eligible = [client for client in eligible if allows_image(client, job, rows, preferences, pending) and
-                (retained(client, preferences) or len(pool) < limit)]
+    eligible = [client for client in eligible if allows_image(client, job, rows, preferences, pending)]
     ranked = [(dispatch_rank(client, job, preferences), client) for client in eligible if capable(client, job, preferences, cost)]
     ranked = [(rank, client) for rank, client in ranked if rank is not None
               and (cost is None or client['credits'] >= cost)]
-    # Drain admitted accounts first. New accounts still enter by small balance;
-    # duration lanes filter eligibility rather than forcing account rotation.
-    ranked.sort(key=lambda item: (selection_order.get(item[1]['id'],len(selection_order)),item[0]) if selection_order is not None
-                else (*dispatch_order(item[1], preferences), item[0]))
+    # Retention is a preference among accounts ready for this exact job, not a
+    # reservation of execution capacity. A waiting/underfunded member cannot
+    # exclude a ready, already-connected spare; active rows still enforce limit.
+    def order(item):
+        rank, client = item
+        priority = dispatch_order(client, preferences)
+        if selection_order is None: return (*priority, rank)
+        # A just-failed preflight still follows the existing snapshot rotation
+        # once its backoff ends; retention must not force another immediate try.
+        retention = max(priority[1], int(bool(client.get('prepare_wait'))))
+        return (priority[0], retention, selection_order.get(client['id'],len(selection_order)), rank)
+    ranked.sort(key=order)
     return ranked[0][1] if ranked else None
