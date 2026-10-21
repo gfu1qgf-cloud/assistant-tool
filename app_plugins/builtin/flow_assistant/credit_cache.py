@@ -69,7 +69,7 @@ def refresh_needed(service, queued_rows):
     return changed
 
 
-def pending_balance_profiles(service, queued_rows, affinity):
+def pending_browser_checks(service, queued_rows, affinity):
     """Reserve only a live, bounded read that could supply an admitted job."""
     from .account_policy import account_hold
     from .credit_cooldown import credit_hold
@@ -81,7 +81,10 @@ def pending_balance_profiles(service, queued_rows, affinity):
     now = time.time(); rows = service.store.rows()
     result = set()
     for client in service.clients.values():
-        if (not client.get('authorized') or not client.get('profile') or not client.get('page_ready')
+        reading = any(request['client'] == client.get('id') and request['action'] in {'get_points','repair_project'} and
+                      now-request['at'] < request_timeout(service.preferences,request['action'],client)
+                      for request in service.pending.values())
+        if (not reading or not client.get('authorized') or not client.get('profile')
                 or client.get('blocked') or block_for(client, service.preferences)
                 or account_hold(client, service.preferences) or credit_hold(client, service.preferences)
                 or not allowed(client, service.preferences) or client.get('setup_blocked')
@@ -89,9 +92,6 @@ def pending_balance_profiles(service, queued_rows, affinity):
                 or client.get('reset_wait_until', 0) > now): continue
         if (len(affinity['pool']) >= int(service.preferences.get('concurrency', 2)) and
                 str(client.get('account') or '').strip().casefold() not in affinity['pool']): continue
-        if not any(request['client'] == client['id'] and request['action'] == 'get_points' and
-                   now - request['at'] < request_timeout(service.preferences, 'get_points', client)
-                   for request in service.pending.values()): continue
         if any(dispatch_rank(client, row['payload'], service.preferences) is not None and
                allows_image(client, row['payload'], rows, service.preferences, affinity['images'])
                for row in queued_rows): result.add(client['profile'])

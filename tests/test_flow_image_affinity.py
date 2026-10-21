@@ -229,7 +229,7 @@ class ImageAffinityTests(unittest.TestCase):
                 if mode=='paused':service.paused=True;service.released={next_row['id']}
                 else:service.store.set_payload(rows[1]['id'],{**rows[1]['payload'],'budget':1})
                 service._tick()
-                self.assertEqual(service.store.get(next_row['id'])['browser'],owner['id'])
+                self.assertEqual(service.store.get(next_row['id'])['browser'],owner['id'] if mode=='paused' else '')
                 self.assertEqual(service.store.get(rows[1]['id'])['status'],'queued')
 
 

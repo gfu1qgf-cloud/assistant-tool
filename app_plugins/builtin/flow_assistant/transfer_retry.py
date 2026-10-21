@@ -102,6 +102,9 @@ class TransferRecovery:
         if self._transfer_pending(row, 'upload'): return False
         client = self._transfer_client(row, 'upload', fresh=retry)
         if not client: return False
+        if retry:
+            from .runtime_controls import recover_upload
+            if recover_upload(self, client, row): return False
         cost = row['remote'].get('cost')
         if retry and cost is not None and (client.get('credits') is None or client['credits'] < cost):
             self.store.update(row['id'], 'queued', attempt='', browser='', remote={},

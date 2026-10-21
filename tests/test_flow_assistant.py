@@ -366,7 +366,7 @@ class FlowTests(unittest.TestCase):
         self.assertTrue(other.paused)
         self.assertEqual(QueueStore(self.namespace).get(row['id'])['status'], 'queued')
 
-    def test_missing_lane_does_not_head_block_and_auto_launch_matches_lane(self):
+    def test_fifo_reassigns_existing_browser_before_later_matching_duration(self):
         service = self.service()
         service.store.enqueue(distinct_jobs(self, 1, duration=10, budget=0) + distinct_jobs(self, 1, duration=6, budget=0))
         six = self.client(service, 'Profile 6')
@@ -375,11 +375,11 @@ class FlowTests(unittest.TestCase):
                                     'profile_projects': {'Profile 8': 'https://labs.google/project/eight',
                                                          'Profile 10': 'https://labs.google/project/ten'}})
         service.paused = False; service._tick()
-        self.assertEqual([r['status'] for r in service.store.rows()], ['queued', 'preparing'])
-        self.assertEqual(json.loads(six['socket'].sendTextMessage.call_args.args[0])['params']['duration'], 6)
+        self.assertEqual([r['status'] for r in service.store.rows()], ['preparing', 'queued'])
+        self.assertEqual(json.loads(six['socket'].sendTextMessage.call_args.args[0])['params']['duration'], 10)
         launched = []; service.launch_requested.connect(launched.append)
         service._tick()
-        self.assertEqual(launched, ['Profile 10'])
+        self.assertEqual(launched, ['Profile 8'])
 
     def test_lane_is_persistent_and_can_be_changed_without_losing_queue(self):
         service = self.service(); service.store.enqueue(self.jobs(duration=8))

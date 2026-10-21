@@ -111,7 +111,8 @@ class SchedulerAuditTests(unittest.TestCase):
         second = self.queue(service); service.paused = False
         service._tick()
         self.assertEqual(service.store.get(first['id'])['status'], 'queued')
-        self.assertEqual(service.store.get(second['id'])['browser'], ready['id'])
+        self.assertEqual(service.store.get(second['id'])['browser'], '', 'a later ready lane cannot pass the FIFO head')
+        self.assertIn('Small',service.launching)
         self.assertNotEqual(service.store.get(second['id'])['browser'], rich['id'])
 
     def test_many_waiting_clips_share_one_probe_without_blocking_a_ready_lane(self):
@@ -127,8 +128,9 @@ class SchedulerAuditTests(unittest.TestCase):
         last = self.queue(service); service.paused = False
         with patch('app_plugins.builtin.flow_assistant.service.prefer_smaller', wraps=prefer_smaller) as probe:
             service._tick()
-        self.assertEqual(probe.call_count, 1)  # Unapproved high accounts never enter the paid candidate set.
-        self.assertEqual(service.store.get(last['id'])['browser'], ready['id'])
+        self.assertEqual(probe.call_count, 0)  # Only the FIFO head is considered; high accounts remain unapproved.
+        self.assertEqual(service.store.get(last['id'])['browser'], '')
+        self.assertIn('Small',service.launching)
 
 
 if __name__ == '__main__': unittest.main()

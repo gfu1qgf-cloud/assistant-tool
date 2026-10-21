@@ -1,6 +1,7 @@
 """Manual submissions must fill distinct accounts despite preflight failures."""
 import time
 import unittest
+from unittest.mock import patch
 from flow_reference_fixtures import upload_receipt, distinct_jobs
 
 import test_flow_assistant as fixtures
@@ -78,7 +79,11 @@ class ManualParallelismTests(unittest.TestCase):
         for _ in range(3):
             service._tick()
         preparations = [item for item in service.pending.values() if item['action'] == 'prepare']
-        self.assertEqual(len(preparations), 1)
+        self.assertEqual(len(preparations), 0,'strict FIFO waits for the earlier retry countdown')
+        head=service.store.rows()[0]
+        with patch('time.time',return_value=head['remote']['prepare_retry']['next_at']+.1):service._tick()
+        preparations = [item for item in service.pending.values() if item['action'] == 'prepare']
+        self.assertEqual(len(preparations),1)
         self.assertNotEqual(preparations[0]['client'], owner['id'])
         self.assertFalse(service.preferences.get('browser_blocks'))
 
@@ -105,7 +110,8 @@ class ManualParallelismTests(unittest.TestCase):
         for _ in range(3):
             service._tick()
         rows = service.store.rows()
-        self.assertEqual([r['status'] for r in rows], ['queued', 'preparing'])
+        self.assertEqual([r['status'] for r in rows], ['queued', 'queued'])
+        service.execute({'action':'cancel','ids':[rows[0]['id']]});service._tick()
         self.acknowledge(service, client)
         self.assertEqual(service.store.rows()[1]['status'], 'generating')
         self.assertEqual(service.store.batches()[rows[0]['payload']['batch_id']]['reserved'], 0)

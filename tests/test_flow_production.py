@@ -264,10 +264,11 @@ class ProductionTests(unittest.TestCase):
         service = self.service(); service.store.enqueue(self.jobs(count=2)); rows = service.store.rows()
         service.execute({'action': 'priority', 'ids': [rows[1]['id']], 'value': 10})
         client = self.client(service); service.paused = False; service._tick()
-        self.assertEqual(service.store.get(rows[1]['id'])['status'], 'preparing')
-        before = service.store.get(rows[1]['id'])['payload']
-        service.execute({'action': 'edit', 'ids': [rows[1]['id']], 'value': dict(prompt='new', duration=8, aspect='9:16', resolution='720p', budget=7)})
-        self.assertEqual(service.store.get(rows[1]['id'])['payload'], before)
+        self.assertEqual(service.store.get(rows[0]['id'])['status'], 'preparing')
+        self.assertEqual(service.store.get(rows[1]['id'])['status'], 'queued','legacy priority cannot change FIFO')
+        before = service.store.get(rows[0]['id'])['payload']
+        service.execute({'action': 'edit', 'ids': [rows[0]['id']], 'value': dict(prompt='new', duration=8, aspect='9:16', resolution='720p', budget=7)})
+        self.assertEqual(service.store.get(rows[0]['id'])['payload'], before)
 
     def test_multi_edit_preserves_individual_prompts_and_rejects_partial_updates(self):
         service = self.service(); service.store.enqueue(self.jobs(prompt='one') + self.jobs(prompt='two'))

@@ -7,10 +7,10 @@ from qt_compat import QtCore
 from .browser_options import snapshot
 from .timing import request_timeout
 
-UI_ACTIONS = {'get_points', 'prepare', 'upload_images', 'run_tasks', 'retry_download'}
+UI_ACTIONS = {'get_points', 'prepare', 'upload_images', 'run_tasks', 'retry_download', 'focus_window'}
 
 
-def native_activate(marker):
+def native_activate(marker, *, identity=None):
     if os.name != 'nt': return 'unsupported'
     import ctypes
     from ctypes import wintypes as w
@@ -50,6 +50,7 @@ def native_activate(marker):
             if (kernel.QueryFullProcessImageNameW(process, 0, executable, ctypes.byref(size)) and
                     os.path.basename(executable.value).casefold() == 'chrome.exe'):
                 matches.append(hwnd)
+                if identity is not None: identity.update(hwnd=int(hwnd), pid=int(pid.value))
         finally: kernel.CloseHandle(process)
         return True
 
@@ -83,14 +84,20 @@ def receive(service, client, message):
             return
         if message.get('unavailable') is True:
             state = 'error'
-        elif not snapshot(service.preferences)['focus_before_action']:
+        elif pending['action'] != 'focus_window' and not snapshot(service.preferences)['focus_before_action']:
             state = 'disabled'
         else:
-            try: state = native_activate('[AssistantFlowFocus ' + token + ']')
+            try:
+                if type(message.get('window_id')) is int and message['window_id'] >= 0:
+                    identity = {'chrome_window_id':message['window_id']}
+                    state = native_activate('[AssistantFlowFocus ' + token + ']', identity=identity)
+                    if state not in {'not_found','ambiguous','error'}: client['native_window'] = identity
+                else: state = native_activate('[AssistantFlowFocus ' + token + ']')
             except (OSError, AttributeError, ValueError): state = 'error'
         # Chrome's caption can lag its tab title briefly. Never block the queue
         # thread, and never retry a generation command to recover focus.
-        if state == 'not_found' and index < 4:
+        client['foreground'] = {'state': state, 'method': 'windows', 'at': time.time(), 'action': pending['action']}
+        if state in {'not_found','denied'} and index < 4:
             QtCore.QTimer.singleShot(100, lambda: attempt(index+1)); return
         client['foreground'] = {'state': state, 'method': 'windows', 'at': time.time(), 'action': pending['action']}
         service.send(client, {'type': 'foreground_result', 'request_id': request_id, 'token': token, 'state': state})

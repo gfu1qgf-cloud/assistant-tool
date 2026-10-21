@@ -55,7 +55,7 @@ def repair_idle(service, client):
         'message': f'页面消息通道未就绪，正在自动修复 {count}/{limit}；只恢复当前空闲项目'}
     service.connection_recoveries[profile] = state
     client['connection_recovery'] = state
-    return service.request(client, 'repair_project', {'idle': True, 'url': client['saved_project']})
+    return service.request(client, 'repair_project', {'idle': True, 'url': client['saved_project'], 'force_reload':count >= 2})
 
 
 def watch_connections(service):

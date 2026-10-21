@@ -33,6 +33,9 @@ class ReportAuditTests(unittest.TestCase):
             'verified':True,'model':'omni_1_1_flash','cost':20}})
         self.assertEqual(service.store.get(row['id'])['status'],'queued')
         cheap=self.queue(service,duration=6); service._tick()
+        self.assertEqual(service.store.get(cheap['id'])['status'],'queued','unaffordable FIFO head waits for another account')
+        self.assertFalse(client.get('blocked'))
+        service.execute({'action':'cancel','ids':[row['id']]});service._tick()
         self.assertEqual(service.store.get(cheap['id'])['status'],'preparing')
         self.assertEqual(service.store.get(cheap['id'])['browser'],client['id'])
 
@@ -46,6 +49,9 @@ class ReportAuditTests(unittest.TestCase):
         client['credits']=10
         service._response(client,{'request_id':key,'success':True,'data':upload_receipt(service,row['id'])})
         cheap=self.queue(service,duration=6); service._tick()
+        self.assertEqual(service.store.get(cheap['id'])['status'],'queued')
+        self.assertFalse(client.get('blocked'))
+        service.execute({'action':'cancel','ids':[row['id']]});service._tick()
         self.assertEqual(service.store.get(cheap['id'])['status'],'preparing')
         self.assertFalse(service.store.attempt_charged(row['attempt']))
 

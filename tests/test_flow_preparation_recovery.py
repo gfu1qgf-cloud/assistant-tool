@@ -1,6 +1,7 @@
 """Stale pre-submit failures must not silently reduce account concurrency."""
 import time
 import unittest
+from unittest.mock import patch
 from flow_reference_fixtures import upload_receipt, distinct_jobs
 
 import test_flow_assistant as fixtures
@@ -145,6 +146,8 @@ class PreparationRecoveryTests(unittest.TestCase):
         self.assertEqual(row['remote']['prepare_retry']['count'], 1)
         self.assertFalse(service.preferences.get('browser_blocks'))
         service._tick()
+        self.assertFalse(any(p['action'] == 'prepare' for p in service.pending.values()))
+        with patch('time.time',return_value=row['remote']['prepare_retry']['next_at']+.1):service._tick()
         self.assertTrue(any(p['action'] == 'prepare' and p['client'] != owner['id'] for p in service.pending.values()))
         from app_plugins.builtin.flow_assistant.page_readiness import defer_prepare
         for _ in range(3):

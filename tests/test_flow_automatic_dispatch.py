@@ -33,12 +33,12 @@ class AutomaticDispatchTests(unittest.TestCase):
         request = json.loads(client['socket'].sendTextMessage.call_args.args[0])
         self.assertEqual(request['params']['duration'], 6)
 
-    def test_already_matching_job_precedes_reassignment(self):
+    def test_fifo_head_precedes_a_later_matching_job(self):
         service = self.service(); service.store.enqueue(self.jobs(duration=10, budget=0) + self.jobs(duration=6, budget=0))
         self.client(service, 'Six'); service.preferences.update(profile_lanes={'Six': 6})
         service.paused = False; service._tick()
-        self.assertEqual([r['status'] for r in service.store.rows()], ['queued', 'preparing'])
-        self.assertEqual(service.preferences['profile_lanes']['Six'], 6)
+        self.assertEqual([r['status'] for r in service.store.rows()], ['preparing', 'queued'])
+        self.assertEqual(service.preferences['profile_lanes']['Six'], 10)
 
     def test_offline_old_ten_profile_is_reassigned_and_opened_for_six(self):
         service = self.service(); service.store.enqueue(self.jobs(duration=6, budget=0))

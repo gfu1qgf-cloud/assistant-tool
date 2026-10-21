@@ -100,7 +100,7 @@ async function fixture({active=false, state='minimized', pendingUrl, focused=fal
     const f=await fixture({native:true,nativeState,active:true,state:'normal'});await enable(f);
     await f.api.receive(nativeCommand);
     assert.equal(f.sent.filter(v=>v.type==='foreground_request').length,1);
-    assert.equal(f.windows.length,0,'native focus is performed by the Windows host, not a Chrome focus request');
+    assert.equal(f.windows.length,1,'Chrome requests its exact window first; the Windows host then verifies actual foreground focus');
     assert.equal(f.forwarded.length,1,'Windows denial must not duplicate the paid action');
     assert.equal(f.document.title,'Original Flow title','always restore title');
     assert.equal(f.scripts[1].target.documentIds[0],'our-document','cleanup only touches the original document');
@@ -108,6 +108,11 @@ async function fixture({active=false, state='minimized', pendingUrl, focused=fal
   const nativeOff=await fixture({native:true,active:true,state:'normal'});
   await nativeOff.api.receive({...nativeCommand,browser_options:{focus_before_action:false}});
   assert.equal(nativeOff.scripts.length,0);assert.equal(nativeOff.sent.filter(v=>v.type==='foreground_request').length,0);
+  const manualFocus=await fixture({native:true,active:true,state:'normal'});
+  await manualFocus.api.receive({...nativeCommand,action:'focus_window',browser_options:{focus_before_action:false}});
+  assert.equal(manualFocus.forwarded.length,0,'manual focus is not a page command or paid action');
+  assert.equal(manualFocus.sent.find(v=>v.type==='foreground_request').window_id,42);
+  assert.equal(manualFocus.sent.find(v=>v.action==='focus_window_response').data.state,'focused');
   const documentFailure=await fixture({native:true,scriptFailure:true,active:true,state:'normal'});await enable(documentFailure);
   await documentFailure.api.receive(nativeCommand);
   assert.equal(documentFailure.forwarded.length,1);assert(documentFailure.sent.some(v=>v.unavailable===true));

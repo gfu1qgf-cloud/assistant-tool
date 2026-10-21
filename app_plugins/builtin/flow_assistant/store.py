@@ -450,7 +450,7 @@ class QueueStore:
                 self.update(row['id'], 'queued', attempt='', browser='', remote={})
 
 
-def choose_client(clients, rows, limit, job=None, preferences=None, cost=None, *, affinity=None):
+def choose_client(clients, rows, limit, job=None, preferences=None, cost=None, *, affinity=None, selection_order=None):
     from .image_affinity import allows_image, retained_pool, retained, dispatch_order
     from .high_credit import allowed
     preferences = preferences or {}
@@ -486,5 +486,6 @@ def choose_client(clients, rows, limit, job=None, preferences=None, cost=None, *
               and (cost is None or client['credits'] >= cost)]
     # Drain admitted accounts first. New accounts still enter by small balance;
     # duration lanes filter eligibility rather than forcing account rotation.
-    ranked.sort(key=lambda item: (*dispatch_order(item[1], preferences), item[0]))
+    ranked.sort(key=lambda item: (selection_order.get(item[1]['id'],len(selection_order)),item[0]) if selection_order is not None
+                else (*dispatch_order(item[1], preferences), item[0]))
     return ranked[0][1] if ranked else None

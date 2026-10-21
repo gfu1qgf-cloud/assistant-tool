@@ -20,7 +20,7 @@ class QueueTools:
         actions = dialog.queue_menu_button.menu()
         actions.addSeparator()
         for label, callback in [('重试全部失败项', lambda: dialog.send('retry', ids=[], only_failed=True)),
-                                ('修改未提交项', self.edit), ('调整优先级', self.priority),
+                                ('修改未提交项', self.edit),
                                 ('暂存下载并释放账号', self.release), ('打开对应浏览器', self.open_browser),
                                 ('调整本批积分上限', self.batch_limit)]:
             actions.addAction(label, callback)
@@ -50,7 +50,7 @@ class QueueTools:
         key = self.group.currentData()
         if key:
             order = {value: index for index, value in enumerate(dict.fromkeys(row['payload'].get(key, '历史未分批') for row in visible))}
-            visible.sort(key=lambda row: (order[row['payload'].get(key, '历史未分批')], -row['payload'].get('priority', 0)))
+            visible.sort(key=lambda row: order[row['payload'].get(key, '历史未分批')])
         table.clearSpans(); table.setRowCount(0)
         group = object()
         batches = self.dialog.state.get('batches', {})
@@ -69,7 +69,7 @@ class QueueTools:
             index = table.rowCount(); table.insertRow(index)
             duration = f'{job["duration"]}秒' if job.get('duration') else '默认时长'
             values = [f'{job["task_id"]} {job["task_name"]}', f'{Path(job["image"]).name} · {duration}',
-                      labels.get(row['status'], row['status']) + (f' · 优先{job.get("priority")}' if job.get('priority') else ''),
+                      labels.get(row['status'], row['status']),
                       row['remote'].get('account', ''),
                       ('已保存到任务目录：' if row['status'] in {'completed','needs_review'} else '目标：') + Path(job['output']).name,
                       ('已保存到：' + job['directory'] + '；' if row['status'] in {'completed','needs_review'} else '') + (row.get('wait_reason') or row['error'])]

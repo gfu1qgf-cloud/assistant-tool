@@ -33,12 +33,14 @@ class RetryNowTests(unittest.TestCase):
 
     def test_upload_runs_now_once_without_resetting_counter(self):
         service, row, client = self.waiting_upload()
+        client['capabilities']=['runtime_controls_v1']
         info = {**retry_info(row, 'upload'), 'count': 2, 'next_at': time.time()+999}
         service._save_transfer(row, 'upload', info); row = service.store.get(row['id'])
         command = self.command(row); service.execute(command); service.execute(command)
         current = service.store.get(row['id'])
-        self.assertEqual(retry_info(current, 'upload')['count'], 3)
-        self.assertEqual(sum(p['action'] == 'upload_images' for p in service.pending.values()), 1)
+        self.assertEqual(retry_info(current, 'upload')['count'], 2,'F5 recovery does not consume an upload retry')
+        self.assertEqual(sum(p['action'] == 'repair_project' for p in service.pending.values()), 1)
+        self.assertFalse(any(p['action']=='upload_images' for p in service.pending.values()))
         self.assertEqual(current['attempt'], row['attempt'])
         self.assertFalse(any(p['action'] == 'run_tasks' for p in service.pending.values()))
 

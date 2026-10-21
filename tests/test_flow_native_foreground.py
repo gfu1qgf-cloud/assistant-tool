@@ -47,6 +47,14 @@ class NativeForegroundTests(unittest.TestCase):
             service.pending.clear(); receive(service,client,message)
             activate.assert_not_called()
 
+    def test_extension_window_id_is_bound_to_verified_native_identity(self):
+        service,client,message=self.request()
+        def activate(marker,*,identity):
+            identity.update(hwnd=101,pid=9001);return 'focused'
+        with patch(MODULE+'.native_activate',side_effect=activate):
+            receive(service,client,{**message,'window_id':42,'tab_id':7})
+        self.assertEqual(client['native_window'],{'chrome_window_id':42,'hwnd':101,'pid':9001})
+
     def test_disabled_during_handshake_cancels_activation(self):
         service,client,message=self.request()
         service.preferences['browser_options']={'focus_before_action':False}

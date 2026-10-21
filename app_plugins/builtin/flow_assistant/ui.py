@@ -12,7 +12,7 @@ from .credit_cooldown import credit_hold
 from .credit_cache import restore_balance
 from .timing import value as timing_value
 from .pricing import RULE_NOTE
-from .browser_table import Column as BC, HEADERS as BROWSER_HEADERS, BrowserItem
+from .browser_table import Column as BC, HEADERS as BROWSER_HEADERS, BrowserItem, row_color
 from .status_ui import status_area
 
 STATUS = {'queued': '等待执行', 'preparing': '首次核对／更新快照', 'uploading': '准备参考图',
@@ -185,8 +185,8 @@ class FlowDialog(QtWidgets.QDialog):
         self.button('连接／安装扩展…', self.open_setup, row)
         row.addStretch()
         layout.addLayout(row)
-        hint = QtWidgets.QLabel('默认自动安排时长：优先同档和通用浏览器，没有匹配时会把空闲的自动配置改为所需时长并接单，无需手动分档。\n'
-            '正在生成／下载的浏览器不改；需要专用账号时，可手动选“固定 6／8／10 秒”。积分连接时读取一次，之后本地扣算。\n'
+        hint = QtWidgets.QLabel('默认自动安排时长：按队首任务将空闲的自动配置切到所需时长；固定分档仅接相匹配的任务。\n'
+            '严格按提交顺序派发；优先从已连接浏览器快照中按配置顺序取用。需要专用账号时，可手动选“固定 6／8／10 秒”。\n'
             '选中浏览器后右键“检测选中浏览器积分”，可直接检查账号和积分；积分栏显示检测时间或失败原因。\n'
             '点击表头排序，再次点击切换升序／降序；配置名称与 Chrome 启动器一致。')
         hint.setWordWrap(True); layout.addWidget(hint)
@@ -214,6 +214,8 @@ class FlowDialog(QtWidgets.QDialog):
         self.lane_edits = {}
         self.pending_lanes = {}
         layout.addWidget(self.browsers)
+        legend = QtWidgets.QLabel('整行颜色：黄色＝积分耗尽　红色＝异常／需处理　绿色＝正常可用／执行中　蓝色＝高积分账号。右键“运行时操作”可测试激活与 F5；未连接时禁用。',page)
+        legend.setWordWrap(True); layout.addWidget(legend)
         self.tabs.addTab(page, '浏览器与时长分档')
 
     def _settings_page(self):
@@ -452,7 +454,7 @@ class FlowDialog(QtWidgets.QDialog):
             online = bool(client.get('id'))
             status = browser_status(client, preferences, self.state.get('jobs', []))
             credit_text = ((f'{client["credits"]:g}' + ('（估算）' if client.get('credits_estimated') else ''))
-                           if client.get('credits') is not None else '未知（调度按 50 分排序）')
+                           if client.get('credits') is not None else '未知（待检测；参考 50 分）')
             from .high_credit import is_high
             if is_high(client, preferences): credit_text += '\n千分账号（曾 ≥100 分）'
             hold = credit_hold(client, preferences)
@@ -489,10 +491,17 @@ class FlowDialog(QtWidgets.QDialog):
             if online:
                 from .foreground import description
                 values[BC.REASON] += '\n' + description(client, preferences)
+                if client.get('runtime_note'): values[BC.REASON] += '\n'+client['runtime_note']
+                if client.get('native_window'):
+                    native = client['native_window']
+                    values[BC.REASON] += f'\nChrome 窗口 {native.get("chrome_window_id")} · HWND {native.get("hwnd")} · PID {native.get("pid")}'
+            tint = row_color(client,preferences,status,self.state.get('jobs',[]))
+            combo.setStyleSheet('QComboBox { background-color: '+tint+'; color: #202020; }' if tint else '')
             for column, text in values.items():
                 item = self.browsers.item(row, column)
                 number = credit_number if column == BC.CREDITS else (current_lane if value == 'automatic' else value)
                 item.update_value(text, identity, number=number, numeric=column in (BC.CREDITS, BC.LANE))
+                item.setBackground(QtGui.QColor(tint) if tint else QtGui.QBrush())
                 if column == BC.CREDITS and check.get('message'):
                     item.setToolTip(text + '\n' + str(check['message']))
                 if column in (BC.CONNECTION, BC.PROJECT, BC.STATE): item.setForeground(QtGui.QColor(status['color']))
@@ -516,7 +525,24 @@ class FlowDialog(QtWidgets.QDialog):
         menu.addAction('重置选中账号状态并重新检测', lambda: self.account_state_action('reset_account_state'))
         menu.addAction('打开选中浏览器', self.open_selected_browser)
         menu.addAction('连接／安装扩展…', self.open_setup)
+        self.runtime_menu(menu)
         menu.exec(self.browsers.viewport().mapToGlobal(position))
+
+    def runtime_menu(self, menu):
+        runtime = menu.addMenu('运行时操作')
+        selected = self.browser_selections()
+        online = {client.get('id'):client for client in self.state.get('clients',[]) if client.get('id')}
+        runtime.setEnabled(bool(selected) and all(item.get('browser') in online for item in selected))
+        for text, operation in (('激活窗口（切到前台）','focus'),('F5 刷新原项目页面','refresh'),
+                                ('检测当前积分','credits'),('读取页面状态','snapshot')):
+            action = runtime.addAction(text,lambda _checked=False, op=operation:self.send('browser_runtime',
+                operation=op,keys=[item['key'] for item in self.browser_selections()]))
+            if operation in {'focus','refresh'}:
+                supported = bool(selected) and all('runtime_controls_v1' in online.get(item.get('browser'),{}).get('capabilities',[]) for item in selected)
+                action.setEnabled(supported)
+                if not supported: action.setToolTip('当前扩展尚未加载此操作支持；相关浏览器正常重启加载 1.1.33 后可用。')
+        runtime.setToolTip('只对当前已连接的所选浏览器执行；未连接时禁用。F5 会再次核对无生成、下载或待确认结果。')
+        return runtime
 
     def detect_selected_credits(self):
         if getattr(self.plugin, 'manual_credit_check_api', 0) != 1:

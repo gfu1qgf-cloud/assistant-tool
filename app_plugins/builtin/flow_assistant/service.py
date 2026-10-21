@@ -82,6 +82,7 @@ class FlowService(QtCore.QObject, FlowOperations):
         self.program_timing = None if program_timing is None else validate_timing({'timing': normalize_timing(program_timing)})
         self.program_browser_options = None if program_browser_options is None else normalize_browser_options(program_browser_options)
         self.clients, self.pending = {}, {}
+        self.browser_snapshot = []
         self.paused, self.closing, self.last_launch = True, False, 0
         self.launched, self.archiving = set(), set()
         self.launching = {}
@@ -209,7 +210,7 @@ class FlowService(QtCore.QObject, FlowOperations):
         from .foreground import UI_ACTIONS
         foreground = {}
         if (action in UI_ACTIONS and not (action == 'retry_download' and params.get('restore')) and
-                browser_options_snapshot(self.preferences)['focus_before_action'] and
+                (action == 'focus_window' or browser_options_snapshot(self.preferences)['focus_before_action']) and
                 'native_foreground_v1' in client.get('capabilities', [])):
             foreground['foreground_token'] = uuid.uuid4().hex
             self.pending[request_id].update(foreground)
@@ -467,6 +468,8 @@ class FlowService(QtCore.QObject, FlowOperations):
                 browser_closed(self, client.get('profile'))
             return
         if action == 'repair_project':
+            client['runtime_note'] = ('F5／页面恢复已完成，等待重新连接和积分确认。' if message.get('success') else
+                'F5／页面恢复未执行：'+str(message.get('error') or '扩展未确认成功'))
             current = dict(client.get('connection_recovery') or {})
             current.update(state='waiting' if message.get('success') else 'failed',
                 message='页面已恢复，正在重新确认连接和积分' if message.get('success') else
@@ -481,6 +484,10 @@ class FlowService(QtCore.QObject, FlowOperations):
                 from .project_startup import note_missing
                 note_missing(self, client, message.get('error', ''), message.get('code', ''))
             self.request(client, 'snapshot')
+            return
+        if action == 'focus_window':
+            client['runtime_note'] = ('窗口激活操作已返回；'+str((message.get('data') or {}).get('state') or '') if message.get('success') else
+                '窗口激活失败：'+str(message.get('error') or '扩展未确认成功'))
             return
         if action == 'get_points':
             if client.pop('manual_credit_pending', False):
@@ -969,12 +976,16 @@ class FlowService(QtCore.QObject, FlowOperations):
                 self.paused = False
                 self.safety_paused = False
                 self.launched.clear()
+                self.browser_snapshot = []
             elif action == 'pause':
                 self.paused = True
                 self.released.clear()
             elif action == 'browser_launch_result':
                 from .browser_slots import launch_result
                 launch_result(self, command)
+            elif action == 'browser_runtime':
+                from .runtime_controls import execute as runtime_execute
+                runtime_execute(self, command)
             elif action == 'project_open_result':
                 from .project_startup import result
                 result(self, command)
@@ -1336,8 +1347,10 @@ class FlowService(QtCore.QObject, FlowOperations):
             admitted = admitted_queue(rows, batches, self.observed_costs, paused=self.paused, released=self.released)
             from .balance_dispatch import refresh_probe_cycle
             refresh_probe_cycle(self, rows)
-            queued_rows = sorted([row for row in admitted if row['remote'].get('prepare_retry', {}).get('next_at', 0) <= time.time()],
-                           key=lambda row: -row['payload'].get('priority', 0))
+            from .ordered_dispatch import queue_head, snapshot_clients, take, browser_order
+            queued_rows = queue_head(self, rows, batches)
+            if queued_rows and queued_rows[0]['remote'].get('prepare_retry', {}).get('next_at', 0) > time.time():
+                return
             if queued_rows and not self.safety_paused:
                 from .browser_slots import watch_probe_retries
                 if watch_probe_retries(self): self.publish()
@@ -1355,29 +1368,15 @@ class FlowService(QtCore.QObject, FlowOperations):
                 self.publish()
             if refresh_needed(self, queued_rows): self.publish()
             client = queued = None
-            # An unavailable 10-second lane must not block a ready 6-second job.
-            matches = []
+            # Strict FIFO: only the earliest admitted row may acquire a browser.
             affinity = affinity_context(clients, rows, self.preferences, {row['id'] for row in admitted})
-            for index, candidate in enumerate(queued_rows):
-                selected = choose_client(fresh_clients(self, candidate, clients), rows, limit, candidate['payload'], self.preferences,
-                                         estimated_cost(candidate['payload'], self.observed_costs), affinity=affinity)
-                if selected:
-                    rank = (-candidate['payload'].get('priority', 0), *dispatch_order(selected, self.preferences),
-                            dispatch_rank(selected, candidate['payload'], self.preferences), index)
-                    matches.append((rank, candidate, selected))
-            deferred_choices = set()
-            for _rank, candidate, selected in sorted(matches, key=lambda item: item[0]):
-                choice = (selected['id'], candidate['payload'].get('image_identity', {}).get('sha256'),
-                          cost_key(candidate['payload']))
-                if choice in deferred_choices:
-                    continue
-                if prefer_smaller(self, candidate, selected, affinity=affinity):
-                    # Many clips can await the same account/image/settings.
-                    # Probe once per tick while still considering other lanes.
-                    deferred_choices.add(choice)
-                    continue
+            candidate = queued_rows[0]
+            ready = snapshot_clients(self, fresh_clients(self, candidate, clients))
+            selected = choose_client(ready, rows, limit, candidate['payload'], self.preferences,
+                estimated_cost(candidate['payload'], self.observed_costs), affinity=affinity,
+                selection_order={c['id']:index for index,c in enumerate(ready)})
+            if selected and not prefer_smaller(self, candidate, selected, affinity=affinity):
                 queued, client = candidate, selected
-                break
             if client:
                 if not self.media_disks_ready(queued):
                     return
@@ -1393,6 +1392,7 @@ class FlowService(QtCore.QObject, FlowOperations):
                 from .browser_slots import seen as browser_seen
                 browser_seen(self, client)
                 remember_owner(self, queued, client)
+                take(self, client)
                 self.assign_lane(client, queued['payload'])
                 remote = {'account': client['account'], 'profile': client.get('profile', ''), 'activity_at': time.time()}
                 if queued['remote'].get('prepare_retry'):
@@ -1426,7 +1426,7 @@ class FlowService(QtCore.QObject, FlowOperations):
                           allows_image(cached[profile], row['payload'], rows, self.preferences, affinity['images']) and
                           (str(cached[profile].get('account') or '').strip().casefold() in affinity['pool'] or
                            len(affinity['pool']) < limit)]
-                ranked = sorted((((*dispatch_order(cached[profile], self.preferences), rank), index, profile)
+                ranked = sorted((((*browser_order(cached[profile], self.preferences), rank), index, profile)
                     for rank, index, profile in ranked if rank is not None),
                     key=lambda item:(item[0],item[1],available.index(item[2])))
                 candidate = ranked[0][2] if ranked else None
@@ -1440,7 +1440,7 @@ class FlowService(QtCore.QObject, FlowOperations):
                 # Cold connected pages and extension hello packets do not
                 # justify opening the entire backup group while four pages
                 # are still initializing or undergoing bounded recovery.
-                from .credit_cache import pending_balance_profiles
+                from .credit_cache import pending_browser_checks
                 starting = {c.get('profile') for c in clients if c.get('profile') and
                     c.get('profile') not in held_profiles and c.get('account') not in useful_accounts and
                     not block_for(c, self.preferences) and not c.get('blocked') and
@@ -1448,7 +1448,7 @@ class FlowService(QtCore.QObject, FlowOperations):
                     (time.time() - c.get('connected', 0) < timing_value(self.preferences, 'browser_startup_seconds') or
                      (c.get('connection_recovery') or {}).get('state') == 'checking' or
                      0 < (c.get('connection_recovery') or {}).get('count', 0) < timing_value(self.preferences, 'connection_repair_attempts'))}
-                starting.update(profile for profile in pending_balance_profiles(self, queued_rows, affinity)
+                starting.update(profile for profile in pending_browser_checks(self, queued_rows, affinity)
                     if profile not in held_profiles)
                 starting.update(p for p in self.launching if p not in held_profiles and
                     not any(c.get('profile') == p and c.get('account') in useful_accounts for c in clients))
@@ -1486,12 +1486,17 @@ class FlowService(QtCore.QObject, FlowOperations):
             client['credit_cooldown'] = credit_hold(client, self.preferences)
         admitted = admitted_queue(rows, batches, self.observed_costs, paused=self.paused, released=self.released)
         affinity = affinity_context(clients, rows, self.preferences, {row['id'] for row in admitted})
+        from .ordered_dispatch import queue_head
+        fifo = queue_head(self,rows,batches)
+        first = fifo[0]['id'] if fifo else None
         for row in rows:
             row['reset_risk'] = submission_risk(row, row['attempt'] in charged)
             row['wait_reason'] = waiting_reason(row, clients, rows, self.preferences, self.observed_costs, batches,
                 paused=self.paused, released=self.released, affinity=affinity)
             detail = retry_detail(row, self.preferences)
             if detail: row['wait_reason'] = detail
+            if row['status'] == 'queued' and first and row['id'] != first and (not self.paused or row['id'] in self.released):
+                row['wait_reason'] = '按提交顺序等待前序任务派发；'+row['wait_reason']
         self.changed.emit({'jobs': rows, 'clients': clients, 'paused': self.paused,
                            'browser_capacity': browser_capacity(self),
                            'high_credit_pending': dict(self.high_credit_pending) if self.high_credit_pending else None,

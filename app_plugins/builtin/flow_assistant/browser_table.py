@@ -26,6 +26,25 @@ def natural_key(text):
                  for part in re.split(r'(\d+)', str(text).casefold()))
 
 
+def row_color(client, preferences, status, jobs=()):
+    from .credit_cooldown import credit_hold
+    from .credit_policy import balance_ready
+    from .high_credit import is_high
+    failed = preferences.get('browser_launch_failures',{}).get(client.get('profile'))
+    affected = [row for row in jobs if client.get('id') and row.get('browser') == client['id'] or
+                client.get('profile') and row.get('remote',{}).get('profile') == client['profile']]
+    recovering = any(row.get('status') in {'uncertain','download_failed'} or
+        row.get('status') == 'uploading' and row.get('remote',{}).get('transfer_retries',{}).get('upload',{}).get('last_error')
+        for row in affected)
+    if (failed or recovering or status['state'] in {'需处理','账号已隔离'} or
+            (client.get('credit_check') or {}).get('state') == 'failed' or
+            (client.get('connection_recovery') or {}).get('state') in {'failed','stopped'}): return '#ffd6d6'
+    if credit_hold(client,preferences) or balance_ready(client,preferences=preferences) and client['credits'] < 10: return '#fff0a6'
+    if is_high(client,preferences): return '#d9eaff'
+    if status['state'] in {'执行中','可接单','网页队列收尾中'}: return '#d8f0d8'
+    return ''
+
+
 class BrowserItem(QtWidgets.QTableWidgetItem):
     def __init__(self):
         super().__init__()

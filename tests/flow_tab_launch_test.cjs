@@ -10,7 +10,7 @@ const project = 'https://flow.google.com/project/our-project';
 const extension = 'pnjppjjfgiccpcfajkpooklgohgihdom';
 const ticket = 'a'.repeat(32);
 
-async function fixture(rows, saved = {}) {
+async function fixture(rows, saved = {}, health = {accepted:true}) {
   const tabs = new Map(rows.map(tab => [tab.id, {...tab}]));
   const hooks = {}, created = [], updates = [], focused = [], messages = [], sockets = [], reloads = [];
   const data = {lzxConfig: {token: 'x'.repeat(40), port: 18189, profile: 'Profile 23', project}, ...saved};
@@ -29,7 +29,7 @@ async function fixture(rows, saved = {}) {
     tabs: {async query() {return [...tabs.values()];}, async get(id) {if (!tabs.has(id)) throw Error('gone'); return tabs.get(id);},
       async create(value) {created.push(structuredClone(value)); const tab = {id: 100+created.length, windowId: 42, ...value}; tabs.set(tab.id, tab); return tab;},
       async update(id, value) {if (!tabs.has(id)) throw Error('gone'); updates.push({id, ...value}); Object.assign(tabs.get(id), value); return tabs.get(id);},
-      async reload(id) {reloads.push(id);}, async sendMessage() {return {accepted: true};}},
+      async reload(id) {reloads.push(id);}, async sendMessage() {return health;}},
     windows: {async update(id, value) {focused.push({id, ...value});}},
     downloads: {onChanged: event('download'), async search() {return [];}},
     alarms: {onAlarm: event('alarm')}, action: {onClicked: event('action')}};
@@ -44,6 +44,17 @@ async function fixture(rows, saved = {}) {
 }
 
 (async () => {
+  const idleRefresh=await fixture([{id:7,windowId:42,url:project,active:true}],{},
+    {healthy:true,running:false,native_busy:false});
+  await idleRefresh.api.receive({action:'repair_project',request_id:'f5',params:{idle:true,url:project,force_reload:true}});
+  assert.deepEqual(idleRefresh.reloads,[7],'explicit F5 reloads the same healthy idle tab');
+  assert.equal(idleRefresh.created.length,0);
+  await idleRefresh.api.receive({action:'repair_project',request_id:'double-f5',params:{idle:true,url:project,force_reload:true}});
+  assert.equal(idleRefresh.reloads.length,1,'repeated F5 respects the existing page recovery gap');
+  const runningRefresh=await fixture([{id:7,windowId:42,url:project,active:true}],{},
+    {healthy:true,running:true,native_busy:false});
+  await runningRefresh.api.receive({action:'repair_project',request_id:'busy-f5',params:{idle:true,url:project,force_reload:true}});
+  assert.equal(runningRefresh.reloads.length,0,'even manual F5 must preserve an active generation');
   const starting = await fixture([{id: 7, windowId: 42, active: true,
     url: 'chrome://newtab/', pendingUrl: project+'#lzx_setup='+ticket+'&lzx_port=18189'}]);
   assert.equal(await starting.api.ensureTab(), 7, 'a pending same-project navigation is already our tab');
