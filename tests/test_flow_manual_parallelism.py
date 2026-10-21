@@ -44,7 +44,7 @@ class ManualParallelismTests(unittest.TestCase):
         service = self.service()
         service.preferences.update(concurrency=4, auto_lane=True)
         clients = [self.browser(service, i, version='1.1.16', credits=credits)
-                   for i, credits in enumerate((35, 75, 250, 1300))]
+                   for i, credits in enumerate((35, 55, 75, 90))]
         service.preferences['profile_lanes'] = {c['profile']: 8 for c in clients}
         service.preferences['browser_blocks'] = {'profile:' + c['profile']:
             '浏览器响应超时，请检查页面后恢复；未发送新的生成请求。' for c in clients[:3]}

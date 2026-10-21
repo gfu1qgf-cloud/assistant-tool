@@ -37,6 +37,7 @@ from .balance_dispatch import prefer_smaller, profile_order, can_fund
 from .image_affinity import remember_owner, allows_image, retained, affinity_context, cached_profile, dispatch_order, retire_exhausted
 from .prepare_snapshot import remember as remember_prepare, reuse as reuse_prepare
 from .browser_slots import request_start as start_browser, can_start as can_start_browser, occupied_profiles, summary as browser_capacity
+from .high_credit import allowed as high_credit_allowed
 
 DEFAULT_PORT = 18189
 PROTOCOL = 1
@@ -51,6 +52,7 @@ class FlowService(QtCore.QObject, FlowOperations):
     failed = QtCore.pyqtSignal(str)
     launch_requested = QtCore.pyqtSignal(str)
     project_open_requested = QtCore.pyqtSignal(object)
+    high_credit_confirmation_requested = QtCore.pyqtSignal(object)
     running_changed = QtCore.pyqtSignal(bool)
     finished_job = QtCore.pyqtSignal(str)
     submitted = QtCore.pyqtSignal(object)
@@ -79,6 +81,7 @@ class FlowService(QtCore.QObject, FlowOperations):
         self.credit_debits = {}
         self.connection_recoveries = {}
         self.project_startup_session = uuid.uuid4().hex
+        self.high_credit_pending = None
         self.archive_result.connect(self._archived)
 
     @QtCore.pyqtSlot()
@@ -86,6 +89,11 @@ class FlowService(QtCore.QObject, FlowOperations):
         try:
             self.store = QueueStore(self.namespace)
             self.preferences = self.store.settings()
+            # Consent from a previous application process never authorizes a new run.
+            entries = {key: {**entry, 'decision': 'skipped'} if entry.get('decision') == 'asking' else entry
+                       for key, entry in self.preferences.get('high_credit_accounts', {}).items()}
+            self.commit_preferences({**self.preferences, 'high_credit_session': uuid.uuid4().hex,
+                                      'high_credit_accounts': entries})
             if self.program_timing is not None:
                 self.commit_preferences({**self.preferences, **timing_changes(self.preferences, self.program_timing)})
             self.store.recover()
@@ -466,6 +474,9 @@ class FlowService(QtCore.QObject, FlowOperations):
             client['credits_local'] = bool(client['account']) and type(client['credits']) is int
             client['credits_estimated'] = False
             if client['credits_local']:
+                from .high_credit import with_marker
+                marked = with_marker(self.preferences, client)
+                if marked != self.preferences: self.commit_preferences(marked)
                 # A slow observation may have started before a new submission.
                 # Do not let its old balance undo an intervening local debit.
                 spent = self.credit_debits.get(client['account'], 0) - request.get('credit_debits', {}).get(client['account'], 0)
@@ -497,6 +508,12 @@ class FlowService(QtCore.QObject, FlowOperations):
             return
         if action == 'prepare' and row['status'] != 'preparing':
             return
+        if action == 'prepare' and message.get('success'):
+            from .high_credit import submission_allowed
+            if not submission_allowed(self, client, row):
+                self.store.update(job_id, 'queued', attempt='', browser='', remote={},
+                    error='千分账号尚未获准或小额账号已可用，重新调度；未提交生成。')
+                return
         if action == 'upload_images' and row['status'] != 'uploading':
             return
         if action == 'run_tasks' and (row['status'] not in {'submitting', 'generating', 'uncertain'}
@@ -595,6 +612,11 @@ class FlowService(QtCore.QObject, FlowOperations):
             if row['remote'].get('account') and row['remote']['account'] != client['account']:
                 self.quarantine(client, row, '上传期间登录账号变化，请刷新账号并重新核对。')
                 return
+            from .high_credit import submission_allowed
+            if not submission_allowed(self, client, row):
+                self.store.update(job_id, 'queued', attempt='', browser='', remote={},
+                    error='千分账号尚未获准或小额账号已可用，已跳过；图片已上传但未提交生成。')
+                return
             if client.get('credits') is None or client['credits'] < MIN_CREDITS or row['remote']['cost'] > client['credits'] or credit_hold(client, self.preferences):
                 client['blocked'] = '积分不足'
                 self.store.update(job_id, 'queued', attempt='', browser='', remote={},
@@ -606,6 +628,8 @@ class FlowService(QtCore.QObject, FlowOperations):
                 return
             self.store.update(job_id, 'uploading', remote={**row['remote'], 'activity_at': time.time()})
             self.store.update(job_id, 'submitting')  # Commit before sending any generation request.
+            from .high_credit import note_normal_spend
+            note_normal_spend(self, client)
             debit_balance(client, self.clients.values(), row['remote']['cost'])
             account_key = client['account'].casefold()
             self.credit_debits[account_key] = self.credit_debits.get(account_key, 0) + row['remote']['cost']
@@ -894,6 +918,12 @@ class FlowService(QtCore.QObject, FlowOperations):
             elif action == 'project_open_result':
                 from .project_startup import result
                 result(self, command)
+            elif action == 'high_credit_decision':
+                from .high_credit import decide
+                decide(self, command)
+            elif action == 'retry_high_credit':
+                from .high_credit import retry_selected
+                retry_selected(self, command.get('keys', []))
             elif action == 'submit_selected':
                 self.released.update(row['id'] for row in self.store.rows()
                                      if row['id'] in command['ids'] and row['status'] == 'queued')
@@ -1234,6 +1264,10 @@ class FlowService(QtCore.QObject, FlowOperations):
             admitted = admitted_queue(rows, batches, self.observed_costs, paused=self.paused, released=self.released)
             queued_rows = sorted([row for row in admitted if row['remote'].get('prepare_retry', {}).get('next_at', 0) <= time.time()],
                            key=lambda row: -row['payload'].get('priority', 0))
+            from .high_credit import watch as watch_high_credit
+            before_high_credit = self.preferences, self.high_credit_pending
+            watch_high_credit(self, queued_rows)
+            if before_high_credit != (self.preferences, self.high_credit_pending): self.publish()
             if not queued_rows or self.safety_paused:
                 return
             clients = [client for client in self.clients.values() if client['authorized']]
@@ -1297,7 +1331,7 @@ class FlowService(QtCore.QObject, FlowOperations):
                     'aspectRatio': 'ASPECT_RATIO_' + job['aspect'].replace(':', '_'),
                     'resolution': 'VIDEO_RESOLUTION_' + job['resolution'].upper(), 'footageType': 'VIDEO_FRAMES', 'count': 1}, queued['id'])
                 self.publish()
-            elif time.time() - self.last_launch > timing_value(self.preferences, 'browser_launch_interval_seconds'):
+            else:  # Actual Chrome opens share the GUI's single-shot spacing timer.
                 profiles = configured_profiles(self.preferences)
                 online = {c.get('profile') for c in clients}
                 held_profiles = {r['remote'].get('profile') for r in rows if r['status'] in TRANSIENT | {'uncertain', 'download_failed'}}
@@ -1312,10 +1346,11 @@ class FlowService(QtCore.QObject, FlowOperations):
                           for index, row in enumerate(queued_rows) for profile in available
                           if (not cached[profile].get('account') or str(cached[profile]['account']).strip().casefold() not in held_accounts) and
                           can_fund(cached[profile], row['payload'], self.preferences, self.observed_costs) and
+                          high_credit_allowed(cached[profile], self.preferences) and
                           allows_image(cached[profile], row['payload'], rows, self.preferences, affinity['images']) and
                           (retained(cached[profile], self.preferences) or len(affinity['pool']) < limit)]
-                ranked = sorted(((((0 if retained(cached[profile], self.preferences) else 1),
-                    *profile_order(profile, self.preferences), rank), index, profile) for rank, index, profile in ranked if rank is not None),
+                ranked = sorted((((*dispatch_order(cached[profile], self.preferences), rank), index, profile)
+                    for rank, index, profile in ranked if rank is not None),
                     key=lambda item:(item[0],item[1],available.index(item[2])))
                 candidate = ranked[0][2] if ranked else None
                 # Busy or unrelated lanes must not prevent starting a useful one.
@@ -1370,6 +1405,7 @@ class FlowService(QtCore.QObject, FlowOperations):
             if detail: row['wait_reason'] = detail
         self.changed.emit({'jobs': rows, 'clients': clients, 'paused': self.paused,
                            'browser_capacity': browser_capacity(self),
+                           'high_credit_pending': self.high_credit_pending,
                            'pairing': self.pair, 'preferences': self.preferences, 'downloads_root': self.downloads_root,
                            'released': list(self.released), 'safety_paused': self.safety_paused,
                            'drafts': self.drafts, 'batches': batches, 'spaces': self.space_status(rows),

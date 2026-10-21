@@ -445,6 +445,8 @@ class QueueStore:
 
 def choose_client(clients, rows, limit, job=None, preferences=None, cost=None, *, affinity=None):
     from .image_affinity import allows_image, retained_pool, retained, dispatch_order
+    from .high_credit import allowed
+    preferences = preferences or {}
     active = [row for row in rows if row['status'] in TRANSIENT]
     if len(active) >= limit:
         return None
@@ -459,6 +461,7 @@ def choose_client(clients, rows, limit, job=None, preferences=None, cost=None, *
     busy_browsers = {row['browser'] for row in held}
     busy_profiles = {row['remote']['profile'] for row in held if row['remote'].get('profile')}
     eligible = [client for client in clients if client.get('account') and client.get('credits') is not None
+                and allowed(client, preferences)
                 and balance_ready(client, preferences=preferences) and not client.get('blocked') and not client.get('batch_running')
                 and not block_for(client, preferences or {})
                 and client.get('reset_wait_until', 0) <= time.time()

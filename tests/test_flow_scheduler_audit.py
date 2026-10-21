@@ -128,7 +128,7 @@ class SchedulerAuditTests(unittest.TestCase):
         last = self.queue(service); service.paused = False
         with patch('app_plugins.builtin.flow_assistant.service.prefer_smaller', wraps=prefer_smaller) as probe:
             service._tick()
-        self.assertEqual(probe.call_count, 2)
+        self.assertEqual(probe.call_count, 1)  # Unapproved high accounts never enter the paid candidate set.
         self.assertEqual(service.store.get(last['id'])['browser'], ready['id'])
 
 

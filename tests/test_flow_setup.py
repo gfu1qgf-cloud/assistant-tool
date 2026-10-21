@@ -51,6 +51,7 @@ class SetupTests(unittest.TestCase):
         commands = []; plugin.command.connect(commands.append)
         dialog = FlowDialog(plugin); plugin.dialog = dialog
         self.addCleanup(dialog.close); self.addCleanup(dialog.setup.clear_sensitive_clipboard)
+        self.addCleanup(plugin.stop)
         return dialog, launcher, commands
 
     def prepare(self, setup, commands, project=PROJECT):

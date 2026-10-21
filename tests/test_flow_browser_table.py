@@ -75,6 +75,18 @@ class BrowserTableTests(unittest.TestCase):
         dialog.browsers.sortItems(C.CREDITS, QtCore.Qt.SortOrder.DescendingOrder)
         self.assertEqual(self.profiles(dialog), ['Profile 30', 'Profile 10', 'Profile 2', 'Profile 4'])
 
+    def test_high_credit_marker_remains_visible_after_balance_drops_below_one_hundred(self):
+        dialog, _, _ = self.table()
+        rich = dialog.state['clients'][0]
+        self.assertIn('千分账号', dialog.browsers.item(self.row(dialog, rich['profile']), C.CREDITS).text())
+        from app_plugins.builtin.flow_assistant.high_credit import with_marker
+        dialog.state['preferences'] = with_marker(dialog.state['preferences'], rich)
+        rich['credits'] = 38
+        dialog.update_browsers()
+        row = self.row(dialog, rich['profile'])
+        self.assertIn('千分账号', dialog.browsers.item(row, C.CREDITS).text())
+        self.assertEqual(dialog.browsers.item(row, C.STATE).text(), '千分账号备用')
+
     def test_refresh_after_any_sort_keeps_all_cells_editors_and_selection_on_same_profile(self):
         dialog, launcher, commands = self.table()
         combo = dialog.lane_edits[('profile', 'Profile 2')]

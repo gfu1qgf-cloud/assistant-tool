@@ -1,0 +1,209 @@
+"""Persistent >=100-credit classification; explicit, bounded backup consent."""
+import math
+import time
+import uuid
+
+from .account_policy import identities
+from .credit_policy import balance_ready
+from .timing import value as timing_value
+
+THRESHOLD = 100
+
+
+def account_key(client, preferences):
+    account = str(client.get('account') or '').strip().casefold()
+    if account:
+        return account
+    links = preferences.get('high_credit_links', {})
+    balances = preferences.get('credit_balance_links', {})
+    for key in sorted(identities(client)):
+        linked = links.get(key) or balances.get(key, {}).get('account')
+        if linked:
+            return linked
+    return ''
+
+
+def record(client, preferences):
+    return preferences.get('high_credit_accounts', {}).get(account_key(client, preferences), {})
+
+
+def is_high(client, preferences):
+    points = client.get('credits')
+    return bool(record(client, preferences)) or (bool(client.get('account')) and
+        type(points) in (int, float) and math.isfinite(points) and points >= THRESHOLD)
+
+
+def allowed(client, preferences):
+    if not is_high(client, preferences):
+        return True
+    entry = record(client, preferences)
+    return bool(preferences.get('high_credit_session') and entry.get('decision') == 'approved' and
+        entry.get('session') == preferences['high_credit_session'] and
+        entry.get('cycle') == preferences.get('normal_credit_spends', 0))
+
+
+def reason(client, preferences):
+    if not is_high(client, preferences) or allowed(client, preferences):
+        return ''
+    entry = record(client, preferences)
+    if entry.get('decision') == 'asking':
+        return '千分账号（曾检测到至少 100 分）：等待确认；未点击或选择否会跳过'
+    if entry.get('decision') == 'skipped':
+        return '千分账号（曾检测到至少 100 分）：已跳过；小额账号用完后才重新询问，可右键重新询问'
+    return '千分账号（曾检测到至少 100 分）：保留备用；小额账号用完后询问，未确认不接单'
+
+
+def with_marker(preferences, client):
+    account = str(client.get('account') or '').strip().casefold()
+    if not account or not is_high(client, preferences):
+        return preferences
+    entries = dict(preferences.get('high_credit_accounts', {}))
+    entries[account] = entries.get(account) or {'detected_at': time.time(), 'decision': 'standby'}
+    links = {**preferences.get('high_credit_links', {}), **{key: account for key in identities(client)}}
+    return {**preferences, 'high_credit_accounts': entries, 'high_credit_links': links}
+
+
+def candidates(service):
+    from .connection_status import configured_profiles
+    from .image_affinity import cached_profile
+    online = [c for c in service.clients.values() if c.get('authorized')]
+    profiles = {c.get('profile') for c in online}
+    return online + [cached_profile(profile, service.preferences)
+                     for profile in configured_profiles(service.preferences) if profile not in profiles]
+
+
+def potential(service, client, queued):
+    """Busy is not exhausted. Failed/unsupported/unaffordable accounts are."""
+    from .account_policy import account_hold
+    from .credit_cooldown import credit_hold, MIN_CREDITS
+    from .policy import block_for, estimated_cost
+    from .routing import dispatch_rank
+    now = time.time()
+    preferences = service.preferences
+    block = block_for(client, preferences)
+    confirming = (client.get('setup_pending') and block == client.get('setup_blocked') and
+        now - client.get('connected', 0) < timing_value(preferences, 'browser_startup_seconds'))
+    if (account_hold(client, preferences) or credit_hold(client, preferences) or
+            block and not confirming or client.get('blocked') or
+            (client.get('credit_close') or {}).get('state') in {'checking', 'closing', 'closed'}):
+        return False
+    fresh = balance_ready(client, preferences=preferences)
+    usable = any(dispatch_rank(client, row['payload'], preferences) is not None and
+        (not fresh or client['credits'] >= max(MIN_CREDITS,
+            estimated_cost(row['payload'], service.observed_costs) or 0)) for row in queued)
+    if not usable:
+        return False
+    profile = client.get('profile')
+    online = bool(client.get('authorized'))
+    if online and fresh and client.get('page_ready'):
+        return True
+    if (online and client.get('page_ready') and not fresh and
+            client.get('credit_last_request_observed_at') != client.get('credits_at', 0)):
+        return True  # Let the ordinary one-shot balance refresh start before considering a backup.
+    if not online and profile in preferences.get('browser_launch_failures', {}):
+        return False
+    probe = getattr(service, 'small_balance_probes', {}).get(profile)
+    if probe and probe <= now:
+        return False
+    if not online and profile in service.launched and profile not in service.launching:
+        return False
+    if not online and profile in service.launching and now - service.launching[profile] >= timing_value(preferences, 'browser_startup_seconds'):
+        return False
+    if online and now - client.get('connected', now) >= timing_value(preferences, 'browser_startup_seconds'):
+        check = client.get('credit_check') or {}
+        return check.get('state') == 'checking' and now - check.get('at', 0) < timing_value(preferences, 'request_timeout_seconds')
+    return True
+
+
+def normal_remaining(service, queued):
+    return any(not is_high(client, service.preferences) and potential(service, client, queued)
+               for client in candidates(service))
+
+
+def submission_allowed(service, client, row):
+    if not allowed(client, service.preferences):
+        return False
+    if not is_high(client, service.preferences):
+        return True
+    # A smaller account can finish detecting between two response callbacks,
+    # before the next scheduler tick revokes the previous backup permission.
+    from .policy import admitted_queue
+    queued = admitted_queue(service.store.rows(), service.store.batches(), service.observed_costs,
+                            paused=service.paused, released=service.released)
+    return not normal_remaining(service, [row] + queued)
+
+
+def decide(service, command):
+    pending = getattr(service, 'high_credit_pending', None)
+    if not pending or command.get('nonce') != pending['nonce']:
+        return False
+    from .policy import admitted_queue
+    queued = admitted_queue(service.store.rows(), service.store.batches(), service.observed_costs,
+                            paused=service.paused, released=service.released)
+    current = [c for c in service.clients.values() if c.get('authorized') and c.get('profile') == pending['profile']]
+    unchanged = not current or all(account_key(c, service.preferences) == pending['account'] for c in current)
+    approved = (command.get('approved') is True and time.time() < pending['expires_at'] and unchanged and
+        bool(queued) and not service.safety_paused and not normal_remaining(service, queued) and
+        pending['cycle'] == service.preferences.get('normal_credit_spends', 0))
+    entries = dict(service.preferences.get('high_credit_accounts', {}))
+    entries[pending['account']] = {**entries[pending['account']],
+        'decision': 'approved' if approved else 'skipped', 'session': service.preferences['high_credit_session'],
+        'cycle': pending['cycle'], 'decided_at': time.time()}
+    service.commit_preferences({**service.preferences, 'high_credit_accounts': entries})
+    service.high_credit_pending = None
+    return True
+
+
+def watch(service, queued):
+    preferences = service.preferences
+    for client in candidates(service):
+        preferences = with_marker(preferences, client)
+    if preferences != service.preferences:
+        service.commit_preferences(preferences)
+    normal = bool(queued) and normal_remaining(service, queued)
+    pending = getattr(service, 'high_credit_pending', None)
+    if pending and (time.time() >= pending['expires_at'] or normal or not queued or service.safety_paused):
+        decide(service, {'nonce': pending['nonce'], 'approved': False})
+    if normal:
+        entries = {key: {**entry, 'decision': 'standby'} if entry.get('decision') == 'approved' else entry
+                   for key, entry in service.preferences.get('high_credit_accounts', {}).items()}
+        if entries != service.preferences.get('high_credit_accounts', {}):
+            service.commit_preferences({**service.preferences, 'high_credit_accounts': entries})
+        return
+    if not queued or service.safety_paused or getattr(service, 'high_credit_pending', None):
+        return
+    cycle = service.preferences.get('normal_credit_spends', 0)
+    options = [c for c in candidates(service) if is_high(c, service.preferences) and
+        not allowed(c, service.preferences) and (record(c, service.preferences).get('asked_cycle') != cycle or
+            record(c, service.preferences).get('decision') == 'approved' and
+            record(c, service.preferences).get('session') != service.preferences.get('high_credit_session')) and
+        potential(service, c, queued)]
+    if not options:
+        return
+    client = min(options, key=lambda c: (c.get('credits') if type(c.get('credits')) in (int, float) else 10**9,
+                                        c.get('profile', '')))
+    account = account_key(client, service.preferences)
+    entries = dict(service.preferences['high_credit_accounts'])
+    entries[account] = {**entries[account], 'decision': 'asking', 'asked_cycle': cycle}
+    service.commit_preferences({**service.preferences, 'high_credit_accounts': entries})
+    pending = {'nonce': uuid.uuid4().hex, 'account': account, 'profile': client.get('profile', ''),
+        'credits': client.get('credits'), 'cycle': cycle,
+        'expires_at': time.time() + timing_value(service.preferences, 'high_credit_confirmation_seconds')}
+    service.high_credit_pending = pending
+    service.publish()  # Persist the skip/ask state before showing UI or dispatching.
+    service.high_credit_confirmation_requested.emit(pending)
+
+
+def note_normal_spend(service, client):
+    if not is_high(client, service.preferences):
+        service.commit_preferences({**service.preferences,
+            'normal_credit_spends': service.preferences.get('normal_credit_spends', 0) + 1})
+
+
+def retry_selected(service, keys):
+    entries = dict(service.preferences.get('high_credit_accounts', {}))
+    selected = {account_key(c, service.preferences) for c in candidates(service) if identities(c) & set(keys)}
+    for account in selected:
+        if account in entries:
+            entries[account] = {key: value for key, value in entries[account].items() if key != 'asked_cycle'}
+    service.commit_preferences({**service.preferences, 'high_credit_accounts': entries})

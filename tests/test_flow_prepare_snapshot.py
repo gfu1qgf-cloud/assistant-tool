@@ -20,7 +20,7 @@ class PrepareSnapshotTests(unittest.TestCase):
         return [json.loads(call.args[0]) for call in client['socket'].sendTextMessage.call_args_list]
 
     def prepared(self):
-        service=self.service();client=self.browser(service,'Profile 1',points=100)
+        service=self.service();client=self.browser(service,'Profile 1',points=90)
         client['page_instance']='document-one';service.preferences['concurrency']=1
         service.store.enqueue(self.jobs(duration=8,count=2,budget=0));service.paused=False;service._tick()
         row=service.store.rows()[0]
@@ -45,7 +45,7 @@ class PrepareSnapshotTests(unittest.TestCase):
         service._response(client,{'request_id':upload,'success':True,'data':receipt})
         service._response(client,{'request_id':upload,'success':True,'data':receipt})
         self.assertEqual(sum(a['action']=='run_tasks' for a in self.actions(client)),1)
-        self.assertEqual(client['credits'],100-current['remote']['cost'])
+        self.assertEqual(client['credits'],90-current['remote']['cost'])
         self.assertEqual(self.actions(client)[-1]['params']['expected_account'],client['account'])
 
     def test_cache_misses_on_refresh_account_settings_project_extension_expiry_or_disabled(self):
@@ -77,7 +77,7 @@ class PrepareSnapshotTests(unittest.TestCase):
                 self.assertFalse(service.store.batches()[row['payload']['batch_id']]['reserved'])
 
     def test_old_extension_without_page_proof_never_creates_a_cache(self):
-        service=self.service();client=self.browser(service,points=100)
+        service=self.service();client=self.browser(service,points=90)
         service.store.enqueue(self.jobs(duration=8,budget=0));service.paused=False;service._tick()
         key=next(k for k,p in service.pending.items() if p['action']=='prepare')
         service._response(client,{'request_id':key,'success':True,'data':{

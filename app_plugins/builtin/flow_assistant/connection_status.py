@@ -24,6 +24,8 @@ def browser_status(client, preferences, jobs=(), now=None):
     saved = preferences.get('profile_projects', {}).get(client.get('profile')) or client.get('saved_project')
     project = '页面已响应' if online and client.get('page_ready') else ('地址已保存' if project_identity(saved) else '未设置地址')
     cooldown = credit_reason(client, preferences, now)
+    from .high_credit import reason as high_credit_reason
+    high_reason = high_credit_reason(client, preferences)
     if not online:
         failure = preferences.get('browser_launch_failures', {}).get(client.get('profile'), {})
         slot = preferences.get('browser_slots', {}).get(client.get('profile'), {})
@@ -32,6 +34,8 @@ def browser_status(client, preferences, jobs=(), now=None):
             return {'connection': '未连接', 'project': project, 'state': '账号已隔离', 'reason': isolated, 'color': '#b03728'}
         if cooldown:
             return {'connection': '未连接', 'project': project, 'state': '积分冷却', 'reason': cooldown, 'color': '#986100'}
+        if high_reason:
+            return {'connection': '未连接', 'project': project, 'state': '千分账号备用', 'reason': high_reason, 'color': '#986100'}
         if failure or slot:
             return {'connection': '未连接', 'project': project, 'state': '启动待处理' if failure else '等待原连接',
                     'reason': failure.get('message') or '原窗口仍占用启动名额；等待原扩展重连，未重复打开其他配置', 'color': '#986100'}
@@ -75,6 +79,8 @@ def browser_status(client, preferences, jobs=(), now=None):
         closing = (client.get('credit_close') or {}).get('message')
         return {'connection': '已连接', 'project': project, 'state': '积分冷却',
                 'reason': cooldown + ('；' + closing if closing else ''), 'color': '#986100'}
+    if high_reason:
+        return {'connection': '已连接', 'project': project, 'state': '千分账号备用', 'reason': high_reason, 'color': '#986100'}
     if (client.get('prepare_wait') or {}).get('next_at', 0) > now:
         return {'connection': '已连接', 'project': project, 'state': '自动等待中',
                 'reason': '此浏览器的页面控件尚未稳定，短暂等待后自动重试；其他账号继续执行', 'color': '#986100'}

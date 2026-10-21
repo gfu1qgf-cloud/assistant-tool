@@ -109,6 +109,8 @@ class WindowReuseTests(unittest.TestCase):
             plugin.snapshot = {'preferences': {'profile_projects': {profile: url}}}
             for _ in range(2):
                 plugin._launch_checked({'profile': profile, 'status': 'enabled', 'version': EXTENSION_VERSION})
+        self.assertEqual(launcher.launch_profile.call_count, 1)
+        plugin.launch_timer.stop(); plugin._next_browser_launch()
         self.assertEqual(launcher.launch_profile.call_count, 2)
         self.assertEqual({call.args[0]['directory'] for call in launcher.launch_profile.call_args_list},
                          {'Profile 23', 'Profile 24'})
@@ -130,6 +132,7 @@ class WindowReuseTests(unittest.TestCase):
         plugin._changed({'clients': [{'profile': 'Profile 23'}]})
         plugin._changed({'clients': []})
         self.assertTrue(plugin.launch_browser('Profile 23', [setups.PROJECT])[0])
+        plugin.launch_timer.stop(); plugin._next_browser_launch()
         self.assertEqual(launcher.launch_profile.call_count, 2)
 
     def test_manual_connect_uses_existing_idle_page_repair_and_returns_pending_ack(self):

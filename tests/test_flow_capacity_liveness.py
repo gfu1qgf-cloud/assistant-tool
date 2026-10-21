@@ -51,6 +51,7 @@ class CapacityLivenessTests(unittest.TestCase):
 
     def test_open_usable_account_can_progress_when_all_backup_probes_lack_window_capacity(self):
         service, rich, small = self.configured()
+        rich['credits'] = 90  # Test an ordinary funded fallback; high backups require separate explicit consent.
         service.preferences['parameter_blocks'] = {'profile:Small': [{
             'model':'omni_1_1_flash', 'duration':10, 'aspect':'9:16', 'resolution':'720p', 'reason':'unsupported'}]}
         service.store.enqueue(self.jobs(duration=10, budget=0))

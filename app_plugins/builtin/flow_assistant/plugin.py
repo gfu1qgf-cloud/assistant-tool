@@ -4,17 +4,21 @@ from .timing import CONFIG_KEY, normalize, snapshot as timing_snapshot, validate
 import json
 import time
 import uuid
+import random
+
+CANCELLED_LAUNCH = '已取消待启动浏览器'
 
 
 class FlowAssistantPlugin(QtCore.QObject):
     command = QtCore.pyqtSignal(object)
     plugin_id = 'flow_assistant'
     display_name = 'Flow 视频助手'
-    version = '0.4.34'
+    version = '0.4.35'
     upstream_version = '1.1.5'
     ui_api_version = 2
     manual_credit_check_api = 1
     account_state_api = 1
+    high_credit_api = 1
     timing_settings_api = 1
     required_api_version = 1
 
@@ -25,8 +29,13 @@ class FlowAssistantPlugin(QtCore.QObject):
         self.busy = False
         self.launch_probes, self.stopping = {}, False
         self.browser_launches = {}
+        self.pending_browser_launches = {}
+        self.launch_timer = QtCore.QTimer(self)
+        self.launch_timer.setSingleShot(True)
+        self.launch_timer.timeout.connect(self._next_browser_launch)
         self.timing_request = ''
         self.pending_timing = None
+        self.high_credit_box = None
 
     def register(self, context):
         self.context = context
@@ -66,6 +75,7 @@ class FlowAssistantPlugin(QtCore.QObject):
         self.service.failed.connect(self._failed)
         self.service.launch_requested.connect(self._launch)
         self.service.project_open_requested.connect(self._open_missing_project)
+        self.service.high_credit_confirmation_requested.connect(self._confirm_high_credit)
         self.service.running_changed.connect(self._running)
         self.service.finished_job.connect(lambda path: self.context.log('Flow 视频已保存：' + path))
         self.service.submitted.connect(self._submitted)
@@ -80,10 +90,32 @@ class FlowAssistantPlugin(QtCore.QObject):
 
     def _changed(self, value):
         self.snapshot = value
+        box = self.high_credit_box
+        if box and (value.get('high_credit_pending') or {}).get('nonce') != box.request['nonce']:
+            box.reject()
         connected = {client.get('profile') for client in value.get('clients', [])}
         self.browser_launches = {key: at for key, at in self.browser_launches.items() if key[0] not in connected}
         if self.dialog:
             self.dialog.update_state(value)
+
+    def _confirm_high_credit(self, request):
+        if self.stopping or request['expires_at'] <= time.time():
+            self.command.emit({'action':'high_credit_decision', 'nonce':request['nonce'], 'approved':False})
+            return
+        if self.high_credit_box:
+            self.high_credit_box.reject()
+        from .high_credit_ui import HighCreditConfirmation
+        from qt_compat import QtWidgets
+        parent = self.dialog or self.context.parent_widget
+        box = HighCreditConfirmation(request, parent)
+        self.high_credit_box = box
+        def finished(result):
+            approved = result == int(QtWidgets.QMessageBox.StandardButton.Yes) and time.time() < request['expires_at']
+            if self.high_credit_box is box: self.high_credit_box = None
+            self.command.emit({'action':'high_credit_decision', 'nonce':request['nonce'], 'approved':approved})
+            box.deleteLater()
+        box.finished.connect(finished)
+        box.open()
 
     def _running(self, value):
         self.busy = value
@@ -139,35 +171,74 @@ class FlowAssistantPlugin(QtCore.QObject):
             self.context.log('Flow 时间设置已写入程序设置，但本次应用失败：' + str(result.get('error') or '未知错误') +
                 '；已保留当前运行参数，下次正常启动会重新应用。')
 
-    def launch_browser(self, directory, urls):
+    def launch_browser(self, directory, urls, *, completed=None, guard=None):
         """Coalesce pending opens; Flow may reuse Chrome's existing window."""
         from .timing import value as timing_value
         launcher = getattr(self.context.parent_widget, 'chrome_plugin', None)
         dialog = getattr(launcher, 'dialog', None)
         profile = next((p for p in getattr(dialog, 'profiles', []) if p['directory'] == directory), None)
         if not profile:
+            if completed: completed(False, 'Chrome 配置已不可用：' + directory)
             return False, 'Chrome 配置已不可用：' + directory
         targets = tuple(str(url).strip() for url in urls if str(url).strip())
         if not targets or any(not url.startswith('https://') for url in targets):
+            if completed: completed(False, '没有有效的 Flow 网页地址。')
             return False, '没有有效的 Flow 网页地址。'
         now = time.monotonic()
         wait = timing_value(self.snapshot.get('preferences', {}), 'browser_startup_seconds')
         self.browser_launches = {key: at for key, at in self.browser_launches.items() if now - at < wait}
         key = directory, targets
         if key in self.browser_launches:
+            if completed: completed(True, None)
             return True, None
-        ok, error = dialog.launch_profile(profile, urls=list(targets), new_window=False)
+        if key in self.pending_browser_launches:
+            if completed: self.pending_browser_launches[key]['callbacks'].append(completed)
+            return True, None
+        entry = {'profile':directory, 'targets':targets, 'guard':guard, 'callbacks':[completed] if completed else []}
+        if self.launch_timer.isActive() or self.pending_browser_launches:
+            self.pending_browser_launches[key] = entry
+            return True, None
+        return self._perform_browser_launch(entry)
+
+    def _perform_browser_launch(self, entry):
+        directory, targets = entry['profile'], entry['targets']
+        launcher = getattr(self.context.parent_widget, 'chrome_plugin', None)
+        dialog = getattr(launcher, 'dialog', None)
+        profile = next((p for p in getattr(dialog, 'profiles', []) if p['directory'] == directory), None)
+        if self.stopping or entry['guard'] and not entry['guard']():
+            ok, error = False, CANCELLED_LAUNCH
+        elif not profile:
+            ok, error = False, 'Chrome 配置已不可用：' + directory
+        else:
+            try: ok, error = dialog.launch_profile(profile, urls=list(targets), new_window=False)
+            except Exception as failure: ok, error = False, str(failure)
         if ok:
-            self.browser_launches[key] = now
+            from .timing import value as timing_value
+            preferences = self.snapshot.get('preferences', {})
+            gap = random.uniform(timing_value(preferences, 'browser_launch_interval_seconds'),
+                timing_value(preferences, 'browser_launch_interval_seconds') + timing_value(preferences, 'browser_launch_jitter_seconds'))
+            self.launch_timer.start(max(1, round(gap * 1000)))
+            self.browser_launches[directory, targets] = time.monotonic()
+        for callback in entry['callbacks']: callback(ok, error)
+        if not ok and not entry['callbacks'] and error != CANCELLED_LAUNCH: self._failed(error)
         return ok, error
+
+    def _next_browser_launch(self):
+        if not self.pending_browser_launches: return
+        key = next(iter(self.pending_browser_launches))
+        entry = self.pending_browser_launches.pop(key)
+        ok, _error = self._perform_browser_launch(entry)
+        if not ok and self.pending_browser_launches: self.launch_timer.start(0)
 
     def _open_missing_project(self, command):
         from .project_startup import launch_allowed
         if self.stopping or not launch_allowed(self.snapshot, command):
             self.command.emit({**command, 'opened':False, 'cancelled':True})
             return
-        ok, error = self.launch_browser(command['profile'], [command['project']])
-        self.command.emit({**command, 'opened':ok, 'error':error})
+        def completed(ok, error):
+            self.command.emit({**command, 'opened':ok, 'error':error, 'cancelled':error == CANCELLED_LAUNCH})
+        self.launch_browser(command['profile'], [command['project']], completed=completed,
+            guard=lambda: launch_allowed(self.snapshot, command))
 
     def _launch(self, directory):
         launcher = getattr(self.context.parent_widget, 'chrome_plugin', None)
@@ -232,10 +303,25 @@ class FlowAssistantPlugin(QtCore.QObject):
             # Never turn an online page recovery into another Chrome launch.
             self.command.emit({'action': 'open_browser', 'profile': directory})
             return
-        ok, error = self.launch_browser(directory, [project])
-        self.command.emit({'action': 'browser_launch_result', 'profile': directory, 'opened': ok, 'error': error})
-        if not ok:
-            self._failed('启动 Chrome 配置失败：' + str(error))
+        def still_needed():
+            from .high_credit import allowed
+            from .image_affinity import cached_profile
+            state = self.snapshot
+            if not allowed(cached_profile(directory, state.get('preferences', {})), state.get('preferences', {})):
+                return False
+            if (state.get('preferences', {}).get('profile_projects', {}).get(directory) != project or
+                state.get('preferences', {}).get('browser_slots', {}).get(directory, {}).get('state') == 'opening'
+                and (state.get('safety_paused') or state.get('paused') and not state.get('released'))):
+                return False
+            if any(c.get('profile') == directory for c in state.get('clients', [])):
+                self.command.emit({'action':'open_browser','profile':directory})
+                return False
+            return True
+        def completed(ok, error):
+            self.command.emit({'action':'browser_launch_result','profile':directory,'opened':ok,'error':error,
+                              **({'cancelled':True} if error == CANCELLED_LAUNCH else {})})
+            if not ok and error != CANCELLED_LAUNCH: self._failed('启动 Chrome 配置失败：' + str(error))
+        self.launch_browser(directory, [project], completed=completed, guard=still_needed)
 
     def open_dialog(self, *, refresh=True):
         created = self.dialog is None
@@ -301,6 +387,11 @@ class FlowAssistantPlugin(QtCore.QObject):
 
     def stop(self):
         self.stopping = True
+        if self.high_credit_box: self.high_credit_box.reject()
+        self.launch_timer.stop()
+        pending, self.pending_browser_launches = self.pending_browser_launches, {}
+        for entry in pending.values():
+            for callback in entry['callbacks']: callback(False, CANCELLED_LAUNCH)
         if self.dialog:
             self.dialog.setup.shutdown()
             self.dialog.manual.flush_draft()

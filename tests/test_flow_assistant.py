@@ -311,7 +311,7 @@ class FlowTests(unittest.TestCase):
 
     def test_duration_lanes_do_not_steal_other_durations(self):
         clients = [{'id': str(n), 'profile': f'Profile {n}', 'account': f'{n}@example.test',
-                    'credits': points, 'credits_at': time.time()} for n, points in [(6, 90), (8, 20), (10, 100), (11, 120)]]
+                    'credits': points, 'credits_at': time.time()} for n, points in [(6, 90), (8, 20), (10, 80), (11, 70)]]
         prefs = {'profile_lanes': {'Profile 6': 6, 'Profile 8': 8, 'Profile 10': 10}, 'allow_general': True, 'auto_lane': False}
         self.assertEqual(choose_client(clients, [], 4, {'duration': 8}, prefs)['id'], '8')
         clients[1]['blocked'] = '积分不足'

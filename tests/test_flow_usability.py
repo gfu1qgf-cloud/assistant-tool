@@ -108,7 +108,7 @@ class UsabilityTests(unittest.TestCase):
         service._message(socket, json.dumps({'type': 'hello', 'protocol': 1, 'token': 'x' * 40,
             'browser_id': 'browser', 'profile': 'Profile 23', 'project': PROJECT}))
         client = service.clients[socket]
-        client.update(account='fixture@example.test', credits=100, credits_at=time.time())
+        client.update(account='fixture@example.test', credits=90, credits_at=time.time())
         self.assertFalse(client['page_ready']); self.assertFalse(capable(client, {'duration': 10}, service.preferences))
         self.assertNotEqual(browser_status(client, service.preferences)['state'], '可接单')
         service._snapshot(client, {'url': PROJECT, 'tasks': []})

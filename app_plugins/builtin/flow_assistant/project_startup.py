@@ -24,9 +24,10 @@ def note_missing(service, client, error, code=''):
 
 
 def request_open(service, client):
+    from .high_credit import allowed
     profile = client.get('profile')
     project = service.preferences.get('profile_projects', {}).get(profile)
-    if (not client.get('authorized') or not client.get('project_missing') or not profile
+    if (not allowed(client, service.preferences) or not client.get('authorized') or not client.get('project_missing') or not profile
             or not project_identity(project) or project_identity(project) != project_identity(client.get('saved_project'))
             or client.get('page_ready') or service.safety_paused or client.get('native_busy')
             or account_hold(client, service.preferences) or credit_hold(client, service.preferences)
@@ -100,6 +101,7 @@ def result(service, command):
 
 
 def launch_allowed(snapshot, command):
+    from .high_credit import allowed
     preferences = snapshot.get('preferences', {})
     lease = preferences.get('browser_slots', {}).get(command.get('profile'), {}).get('project_startup', {})
     if (snapshot.get('safety_paused') or snapshot.get('paused', True) and not snapshot.get('released')
@@ -110,7 +112,7 @@ def launch_allowed(snapshot, command):
         return False
     client = next((c for c in snapshot.get('clients', []) if c.get('id') == command.get('browser')
         and c.get('profile') == command.get('profile')), None)
-    if (not client or not client.get('project_missing') or client.get('page_ready')
+    if (not client or not allowed(client, preferences) or not client.get('project_missing') or client.get('page_ready')
             or project_identity(client.get('saved_project')) != project_identity(command.get('project'))
             or client.get('native_busy') or client.get('batch_running')
             or client.get('reset_wait_until', 0) > time.time() or account_hold(client, preferences)

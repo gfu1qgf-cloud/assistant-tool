@@ -44,8 +44,13 @@ class BalanceDispatchTests(unittest.TestCase):
         service = self.service(); rich, small = self.setup_accounts(service); row = self.queue(service)
         launched = []; service.launch_requested.connect(launched.append); service._tick(); service._tick()
         self.assertEqual(launched, [small['profile']])
-        deadline = service.small_balance_probes[small['profile']]
-        with patch('time.time', return_value=deadline + .1): service._tick()
+        deadline = service.launching[small['profile']] + 90
+        with patch('time.time', return_value=deadline + .1):
+            service._tick()
+            request = service.high_credit_pending
+            self.assertIsNotNone(request)
+            service.execute({'action': 'high_credit_decision', 'nonce': request['nonce'], 'approved': True})
+            service._tick()
         self.assertEqual(service.store.get(row['id'])['browser'], rich['id'])
         self.assertEqual(launched, [small['profile']])
 
@@ -56,7 +61,7 @@ class BalanceDispatchTests(unittest.TestCase):
         launched = []; service.launch_requested.connect(launched.append); service._tick()
         self.assertEqual(launched, [small['profile']])
 
-    def test_banned_low_credit_or_busy_small_accounts_do_not_hold_rich_account_forever(self):
+    def test_unavailable_small_accounts_require_consent_and_busy_small_is_not_exhausted(self):
         for mode in ('banned','low','busy'):
             with self.subTest(mode=mode):
                 self.setUp(); service = self.service(); rich, small = self.setup_accounts(service)
@@ -69,7 +74,15 @@ class BalanceDispatchTests(unittest.TestCase):
                     service.store.update(busy['id'], 'generating', browser=small['id'], remote={'profile':small['profile'],'account':small['account']})
                 row = self.queue(service); before = copy.deepcopy(service.preferences)
                 service._tick()
-                self.assertEqual(service.store.get(row['id'])['browser'], rich['id'])
+                if mode == 'busy':
+                    self.assertIsNone(service.high_credit_pending)
+                    self.assertEqual(service.store.get(row['id'])['status'], 'queued')
+                else:
+                    self.assertEqual(service.store.get(row['id'])['status'], 'queued')
+                    self.assertIsNotNone(service.high_credit_pending)
+                    service.execute({'action': 'high_credit_decision', 'nonce': service.high_credit_pending['nonce'], 'approved': True})
+                    service._tick()
+                    self.assertEqual(service.store.get(row['id'])['browser'], rich['id'])
                 self.assertEqual(service.preferences.get('account_blocks'), before.get('account_blocks'))
                 service.execute({'action':'stop'})
 

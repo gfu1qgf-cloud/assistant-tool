@@ -18,7 +18,7 @@ class PreparationRecoveryTests(unittest.TestCase):
     client = fixtures.FlowTests.client
 
     def browser(self, service, profile='Profile 104'):
-        client = self.client(service, profile, credits=100)
+        client = self.client(service, profile, credits=90)
         url = 'https://labs.google/fx/tools/flow/project/' + profile.replace(' ', '-')
         client.update(project=url, saved_project=url, extension_version=EXTENSION_VERSION,
                       page_ready=True, page_at=time.time(), credits_local=True,

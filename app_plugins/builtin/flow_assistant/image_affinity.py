@@ -52,7 +52,9 @@ def retained(client, preferences):
 
 
 def dispatch_order(client, preferences):
-    return (0 if retained(client, preferences) else 1, *credit_order(client))
+    from .high_credit import is_high
+    tier, credits = credit_order(client)
+    return (1 if is_high(client, preferences) else tier, 0 if retained(client, preferences) else 1, credits)
 
 
 def allows_image(client, job, rows, preferences, pending=None):
@@ -75,6 +77,7 @@ def allows_image(client, job, rows, preferences, pending=None):
 
 def retained_pool(clients, rows, preferences):
     """Healthy selected accounts reserve slots while their image finishes."""
+    from .high_credit import allowed
     pool = set()
     jobs = [row.get('payload', {}) for row in rows if row['status'] in PENDING]
     held_rows = {}
@@ -82,7 +85,7 @@ def retained_pool(clients, rows, preferences):
         held_rows.setdefault(account_key(row['remote'].get('account')), []).append(row)
     for client in clients:
         account = account_key(client.get('account'))
-        if (not account or not retained(client, preferences) or block_for(client, preferences) or client.get('blocked')
+        if (not account or not allowed(client, preferences) or not retained(client, preferences) or block_for(client, preferences) or client.get('blocked')
                 or client.get('setup_blocked') or client.get('reset_wait_until', 0) > time.time()):
             continue
         held = held_rows.get(account, [])

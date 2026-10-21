@@ -42,8 +42,9 @@ def block_for(client, preferences):
 
 
 def capable(client, job, preferences, cost=None):
+    from .high_credit import allowed
     credits = client.get('credits')
-    return (not client.get('blocked') and not block_for(client, preferences)
+    return (allowed(client, preferences) and not client.get('blocked') and not block_for(client, preferences)
             and not client.get('batch_running')
             and not client.get('native_busy')
             and client.get('reset_wait_until', 0) <= time.time()
@@ -99,6 +100,10 @@ def waiting_reason(row, clients, rows, preferences, observed, batches, *, paused
     if len(pool) >= max(1, min(8, int(preferences.get('concurrency', 2)))):
         return '优先用完已选账号的积分，等待当前账号／图片完成或并行名额；不轮换仍有积分的账号'
     lane = [c for c in clients if dispatch_rank(c, row['payload'], preferences) is not None]
+    from .high_credit import reason as high_credit_reason
+    high_reasons = [high_credit_reason(c, preferences) for c in lane]
+    if high_reasons and all(high_reasons):
+        return high_reasons[0]
     duration = row['payload'].get('duration')
     label = f'{duration} 秒档' if duration else '通用档'
     if not lane:

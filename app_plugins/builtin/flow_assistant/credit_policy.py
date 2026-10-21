@@ -31,6 +31,8 @@ def debit_balance(client, clients, cost):
 
 
 def credit_order(client):
-    """Spend small funded accounts first; preserve 1000+ balances for last."""
-    credits = client['credits']
-    return (0 if credits < 100 else 1 if credits < 1000 else 2, credits)
+    """Two tiers; unknown 50 is a sorting hint, never a spendable balance."""
+    credits = client.get('credits')
+    if type(credits) not in (int, float) or not math.isfinite(credits):
+        return (0, 50)
+    return (0 if credits < 100 else 1, credits)

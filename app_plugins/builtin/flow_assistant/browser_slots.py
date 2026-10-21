@@ -42,6 +42,11 @@ def summary(service):
 
 def request_start(service, profile, job=None):
     online = next((c for c in service.clients.values() if c.get('authorized') and c.get('profile') == profile), None)
+    if job is not None:
+        from .high_credit import allowed
+        from .image_affinity import cached_profile
+        if not allowed(online or cached_profile(profile, service.preferences), service.preferences):
+            return False
     if online:
         # Reopening Chrome is not a page repair. Reuse the original tab.
         from .connection_recovery import repair_idle

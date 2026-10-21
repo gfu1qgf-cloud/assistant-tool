@@ -14,6 +14,8 @@ def with_balance(preferences, client, clients):
             or not math.isfinite(balance) or balance < 0 or type(observed) not in (int, float)
             or not math.isfinite(observed) or observed <= 0):
         return preferences
+    from .high_credit import with_marker
+    preferences = with_marker(preferences, client)
     records = dict(preferences.get('credit_balances', {}))
     records[account] = {'account': account, 'balance': balance, 'observed_at': observed,
         'balance_at': time.time(), 'estimated': bool(client.get('credits_estimated'))}

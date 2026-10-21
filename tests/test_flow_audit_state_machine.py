@@ -226,7 +226,7 @@ class FlowCreditOrderTests(unittest.TestCase):
         clients = [self.client(n) for n in (1500, 300, 70)]
         for job in (None, {'duration': None}):
             self.assertEqual(choose_client(clients, [], 4, job)['credits'], 70)
-        self.assertEqual(choose_client(clients[:2], [], 4, {'duration': None})['credits'], 300)
+        self.assertIsNone(choose_client(clients[:2], [], 4, {'duration': None}))
 
     def test_small_funded_account_precedes_rich_matching_automatic_lane(self):
         small, rich = self.client(40), self.client(1500)
@@ -237,9 +237,12 @@ class FlowCreditOrderTests(unittest.TestCase):
         clients = [self.client(n) for n in (9, 99, 100, 999, 1000, 1500)]
         self.assertEqual(choose_client(clients, [], 4, {'duration': 8}, {}, 12)['credits'], 99)
         active = [{'status': 'generating', 'browser': '99', 'remote': {'account':'99@example.test'}}]
-        self.assertEqual(choose_client(clients, active, 4, {'duration': 8}, {}, 12)['credits'], 100)
+        self.assertIsNone(choose_client(clients, active, 4, {'duration': 8}, {}, 12))
         prefs = {'auto_lane': False, 'allow_general': False,
                  'profile_lanes': {str(c['credits']): 8 if c['credits'] >= 1000 else 10 for c in clients}}
+        self.assertIsNone(choose_client(clients, [], 4, {'duration': 8}, prefs, 12))
+        prefs.update(high_credit_session='explicit-consent', high_credit_accounts={c['account']: {
+            'decision': 'approved', 'session': 'explicit-consent', 'cycle': 0} for c in clients if c['credits'] >= 100})
         self.assertEqual(choose_client(clients, [], 4, {'duration': 8}, prefs, 12)['credits'], 1000)
         self.assertIsNone(choose_client(clients, active, 1, {'duration': 8}, {}, 12))
 

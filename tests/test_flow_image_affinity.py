@@ -23,7 +23,7 @@ class ImageAffinityTests(unittest.TestCase):
         return service.store.rows()
 
     def test_same_image_really_runs_on_four_distinct_accounts(self):
-        service=self.service(); clients=[self.browser(service,'Profile '+str(i),points=points) for i,points in enumerate((26,38,90,1300))]
+        service=self.service(); clients=[self.browser(service,'Profile '+str(i),points=points) for i,points in enumerate((26,38,90,70))]
         self.queue(service)
         for _ in range(5): service._tick()
         active=[row for row in service.store.rows() if row['status']=='preparing']
@@ -53,7 +53,7 @@ class ImageAffinityTests(unittest.TestCase):
         for i in range(4):
             image=self.target/f'image-{i}.png';image.write_bytes(('distinct reference '+str(i)).encode())
             service.store.enqueue(self.jobs(images=[image],duration=8,budget=0))
-            self.browser(service,'Profile '+str(i),points=40+i*20)
+            self.browser(service,'Profile '+str(i),points=40+i*15)
         for _ in range(5): service._tick()
         active=[row for row in service.store.rows() if row['status']=='preparing']
         self.assertEqual(len(active),4); self.assertEqual(len({row['browser'] for row in active}),4)

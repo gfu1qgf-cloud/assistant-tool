@@ -35,8 +35,7 @@ def can_fund(client, job, preferences, observed):
 
 
 def prefer_smaller(service, row, selected, *, affinity=None):
-    if retained(selected, service.preferences):
-        return False
+    from .high_credit import allowed
     selected_order = dispatch_order(selected, service.preferences)
     now = time.time(); cost = estimated_cost(row['payload'], service.observed_costs)
     probes = getattr(service, 'small_balance_probes', {})
@@ -61,9 +60,9 @@ def prefer_smaller(service, row, selected, *, affinity=None):
         client = online.get(profile) or cached_profile(profile, service.preferences)
         if profile not in online and profile in service.preferences.get('browser_launch_failures', {}): continue
         fresh = balance_ready(client, preferences=service.preferences)
-        if (profile in held or str(client.get('account') or '').strip().casefold() in held_accounts or
+        if (not allowed(client, service.preferences) or profile in held or str(client.get('account') or '').strip().casefold() in held_accounts or
                 fresh and client['credits'] < max(MIN_CREDITS, cost or 0) or
-                (0 if retained(client, service.preferences) else 1, *scheduling_order(client)) >= selected_order or
+                dispatch_order(client, service.preferences) >= selected_order or
                 not allows_image(client, row['payload'], rows, service.preferences, affinity['images']) or
                 account_hold(client, service.preferences) or credit_hold(client, service.preferences) or
                 client.get('setup_blocked') or client.get('batch_running') or client.get('native_busy') or
@@ -74,7 +73,7 @@ def prefer_smaller(service, row, selected, *, affinity=None):
         if block and not recoverable_prepare_reason(block, client.get('extension_version')): continue
         if probes.get(profile, 0) and probes[profile] <= now: continue
         if profile not in online and profile in service.launched and profile not in service.launching: continue
-        options.append(((0 if retained(client, service.preferences) else 1, *scheduling_order(client)), profile, client))
+        options.append((dispatch_order(client, service.preferences), profile, client))
     if not options: return False
     _, profile, client = min(options, key=lambda value: (value[0], profiles.index(value[1])))
     if profile not in online and not can_start(service, profile):

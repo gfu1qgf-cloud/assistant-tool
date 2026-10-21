@@ -451,6 +451,8 @@ class FlowDialog(QtWidgets.QDialog):
             status = browser_status(client, preferences, self.state.get('jobs', []))
             credit_text = ((f'{client["credits"]:g}' + ('（估算）' if client.get('credits_estimated') else ''))
                            if client.get('credits') is not None else '未知（调度按 50 分排序）')
+            from .high_credit import is_high
+            if is_high(client, preferences): credit_text += '\n千分账号（曾 ≥100 分）'
             hold = credit_hold(client, preferences)
             if hold and (not online or client.get('credits') is None):
                 credit_text = f'{hold["balance"]:g}（冷却记录）'
@@ -504,6 +506,7 @@ class FlowDialog(QtWidgets.QDialog):
             self.browsers.selectRow(index.row())
         menu = QtWidgets.QMenu(self.browsers)
         menu.addAction('检测选中浏览器积分', self.detect_selected_credits)
+        menu.addAction('重新询问使用千分账号（小额账号用完后）', lambda: self.account_state_action('retry_high_credit'))
         menu.addAction('标记选中账号不可用', lambda: self.account_state_action('mark_account_unavailable'))
         menu.addAction('重置选中账号状态并重新检测', lambda: self.account_state_action('reset_account_state'))
         menu.addAction('打开选中浏览器', self.open_selected_browser)
@@ -522,6 +525,9 @@ class FlowDialog(QtWidgets.QDialog):
         self.send('credits', keys=[value['key'] for value in selected], manual=True)
 
     def account_state_action(self, action):
+        if action == 'retry_high_credit' and getattr(self.plugin, 'high_credit_api', 0) != 1:
+            self.note.setText('下次正常启动主程序后可使用千分账号确认；当前任务继续运行。')
+            return
         if getattr(self.plugin, 'account_state_api', 0) != 1:
             self.note.setText('下次正常重启主程序后可使用账号隔离和手动重置；当前任务保持不动。')
             return
