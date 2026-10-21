@@ -259,8 +259,8 @@ class CreditCooldownTests(unittest.TestCase):
                 self.assertFalse(close_idle_exhausted(service))
                 self.assertFalse(service.pending)
         service.store.update(row['id'], 'completed')
-        self.assertTrue(close_idle_exhausted(service))
-        self.assertEqual([p['action'] for p in service.pending.values()], ['close_exhausted'])
+        self.assertFalse(close_idle_exhausted(service))
+        self.assertFalse(service.pending)
 
     def test_close_waits_for_other_window_of_same_account(self):
         service = self.service(); client = self.browser(service, close=True); self.low(service, client)
@@ -278,19 +278,14 @@ class CreditCooldownTests(unittest.TestCase):
         service.store.reserve(row['id'], 'a' * 32, 10, 'duration_rule')
         self.assertFalse(close_idle_exhausted(service)); self.assertFalse(service.pending)
 
-    def test_close_requires_new_capability_and_explicit_page_idle(self):
+    def test_close_is_disabled_regardless_of_extension_capability_and_page_busy_state(self):
         service = self.service(); client = self.browser(service); self.low(service, client)
         client['credit_check']['at'] -= 31
-        self.assertFalse(close_idle_exhausted(service))
-        client.update(capabilities=['close_exhausted_v1'], batch_running=True)
-        self.assertTrue(close_idle_exhausted(service))
-        key = next(k for k,p in service.pending.items() if p['action'] == 'close_exhausted')
-        service._response(client, {'request_id':key,'success':False,'code':'FLOW_CLOSE_BUSY','error':'page still running'})
-        self.assertEqual(client['credit_close']['count'], 0)
-        client['batch_running'] = False
-        client['credit_close']['next_at'] = 0
-        self.assertTrue(close_idle_exhausted(service))
-        self.assertFalse(close_idle_exhausted(service))
+        for capabilities in ([], ['close_exhausted_v1']):
+            for busy in (False, True):
+                client.update(capabilities=capabilities, batch_running=busy)
+                self.assertFalse(close_idle_exhausted(service))
+                self.assertFalse(service.pending)
 
     def test_manual_detection_is_not_interrupted_by_auto_close(self):
         service = self.service(); client = self.browser(service, close=True); self.low(service, client)

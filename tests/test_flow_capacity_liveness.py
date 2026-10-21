@@ -4,7 +4,7 @@ import unittest
 
 import test_flow_credit_cooldown as fixtures
 from app_plugins.builtin.flow_assistant.balance_dispatch import prefer_smaller
-from app_plugins.builtin.flow_assistant.browser_slots import occupied_profiles
+from app_plugins.builtin.flow_assistant.browser_slots import occupied_profiles, request_start
 
 
 class CapacityLivenessTests(unittest.TestCase):
@@ -26,6 +26,8 @@ class CapacityLivenessTests(unittest.TestCase):
         cold.update(credits=None, account='', credits_local=False, page_ready=False)
         self.browser(service, 'Exhausted', 0)
         service.small_balance_probes = {'Cold': time.time() - 1}
+        # Capacity now covers pending starts, not retained idle windows.
+        for i in range(4): request_start(service, 'Pending ' + str(i))
         service.paused = False
         return service, rich, small
 
@@ -34,7 +36,7 @@ class CapacityLivenessTests(unittest.TestCase):
         service.store.enqueue(self.jobs(duration=10, budget=0, count=7))
         service.store.enqueue(self.jobs(duration=8, budget=0, count=5))
         launches = []; service.launch_requested.connect(launches.append)
-        self.assertEqual(len(occupied_profiles(service)), 4)
+        self.assertEqual(len(occupied_profiles(service)), 8)
         service._tick()
         active = [r for r in service.store.rows() if r['status'] == 'preparing']
         self.assertEqual(len(active), 1)
@@ -47,7 +49,7 @@ class CapacityLivenessTests(unittest.TestCase):
         service.store.enqueue(self.jobs(duration=10, budget=0))
         row = service.store.rows()[0]
         self.assertFalse(prefer_smaller(service, row, small))
-        self.assertFalse(service.preferences.get('browser_slots'))
+        self.assertEqual(len(service.preferences['browser_slots']), 4)
 
     def test_open_usable_account_can_progress_when_all_backup_probes_lack_window_capacity(self):
         service, rich, small = self.configured()

@@ -39,26 +39,16 @@ class BackupRotationTests(unittest.TestCase):
         service.paused = False
         return service, rich, service.store.rows()
 
-    def test_full_four_windows_close_skipped_backup_then_open_small_without_touching_tasks(self):
+    def test_skipped_backup_stays_open_while_another_small_account_starts(self):
         service, rich, before = self.full()
         launches = []; service.launch_requested.connect(launches.append)
-        self.assertFalse(can_start(service, 'Backup'))
-        service._tick()
-        self.assertFalse(launches)
-        request = next((key, p) for key, p in service.pending.items() if p['action'] == 'close_exhausted')
-        self.assertEqual(request[1]['client'], rich['id'])
-        sent = json.loads(rich['socket'].sendTextMessage.call_args.args[0])
-        self.assertEqual(sent['params']['reason'], 'high_credit_backup')
-        self.assertNotIn('balance', sent['params'])  # Never fabricate a low balance.
-        self.assertEqual(service.store.rows(), before)
-        self.assertFalse(allowed(rich, service.preferences))
-        service._response(rich, {'request_id': request[0], 'success': True, 'data': {'closing': True}})
-        service._tick(); self.assertFalse(launches)
-        service._response(rich, {'request_id': request[0], 'success': True, 'data': {'closed': True}})
+        self.assertTrue(can_start(service, 'Backup'))
         service._tick()
         self.assertEqual(launches, ['Backup'])
-        self.assertEqual(len(occupied_profiles(service)), 4)
         self.assertEqual(service.store.rows(), before)
+        self.assertFalse(allowed(rich, service.preferences))
+        self.assertFalse(any(p['action'] == 'close_exhausted' for p in service.pending.values()))
+        rich['socket'].close.assert_not_called()
         self.assertEqual(service.preferences['profile_lanes']['Backup'], 10)
 
     def test_existing_paid_or_unconfirmed_rich_work_must_finish_before_rotation(self):
@@ -73,16 +63,14 @@ class BackupRotationTests(unittest.TestCase):
         service.store.reserve(row['id'], 'a' * 32, 12, 'duration_rule')
         self.assertFalse(watch(service, service.store.rows()[:1]))
 
-    def test_busy_close_or_failure_keeps_the_slot_and_does_not_open_a_fifth_window(self):
+    def test_legacy_close_failure_no_longer_blocks_another_account(self):
         service, rich, _ = self.full()
+        rich['credit_close'] = {'state': 'failed', 'count': 3}
         launches = []; service.launch_requested.connect(launches.append)
-        service._tick()
-        key = next(k for k, p in service.pending.items() if p['action'] == 'close_exhausted')
-        service._response(rich, {'request_id': key, 'success': False, 'code': 'FLOW_CLOSE_BUSY', 'error': 'download pending'})
-        service._tick()
-        self.assertEqual(len(occupied_profiles(service)), 4)
-        self.assertFalse(launches)
-        self.assertEqual(rich['credit_close']['count'], 0)
+        service._tick(); service._tick()
+        self.assertEqual(launches, ['Backup'])
+        self.assertFalse(any(p['action'] == 'close_exhausted' for p in service.pending.values()))
+        rich['socket'].close.assert_not_called()
 
     def test_no_alternative_or_no_admitted_queue_does_not_close_a_pool(self):
         service, rich, rows = self.full()
@@ -91,11 +79,11 @@ class BackupRotationTests(unittest.TestCase):
         self.assertFalse(watch(service, [r for r in rows if r['status'] == 'queued']))
         self.assertFalse(service.pending)
 
-    def test_manual_credit_probe_cannot_clear_an_inflight_close_lease(self):
-        service, rich, _ = self.full(); service._tick()
-        self.assertFalse(service.request(rich, 'get_points', manual_credit=True))
-        self.assertEqual(rich['credit_close']['state'], 'checking')
-        self.assertFalse(any(p['action'] == 'get_points' for p in service.pending.values()))
+    def test_manual_credit_probe_does_not_wait_for_disabled_close_lease(self):
+        service, rich, _ = self.full()
+        rich['credit_close'] = {'state': 'closing'}
+        self.assertTrue(service.request(rich, 'get_points', manual_credit=True))
+        self.assertTrue(any(p['action'] == 'get_points' for p in service.pending.values()))
 
     def test_native_absence_report_releases_only_that_profile_and_preserves_all_jobs(self):
         service, rich, rows = self.full()

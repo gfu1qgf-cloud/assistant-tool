@@ -41,33 +41,37 @@ class BrowserSlotsTests(unittest.TestCase):
         self.assertEqual(len(service.preferences['browser_slots']),4)
         self.assertTrue(all(row['status']=='queued' for row in service.store.rows()))
 
-    def test_cold_blocked_and_low_credit_windows_all_count_toward_the_limit(self):
-        for kind in ('cold','blocked','low'):
+    def test_idle_manual_windows_do_not_count_as_pending_launches(self):
+        for kind in ('cold', 'blocked', 'low'):
             with self.subTest(kind=kind):
-                self.setUp();service,profiles=self.configured()
+                self.setUp(); service, profiles = self.configured()
                 for profile in profiles[:4]:
-                    client=self.browser(service,profile,points=40)
-                    client['connected']=time.time()-86400
-                    if kind=='cold':client.update(page_ready=False,credits_local=False,
-                        connection_recovery={'state':'stopped','count':3})
-                    elif kind=='blocked':client['blocked']='参数核对失败'
-                    else:self.low(service,client)
-                service.store.enqueue(self.jobs(duration=8,budget=0));service.paused=False
-                launches=[];service.launch_requested.connect(launches.append)
-                service._tick();service._tick()
-                self.assertFalse(launches)
-                self.assertFalse(can_start(service,profiles[4]))
+                    client = self.browser(service, profile, points=40)
+                    client['connected'] = time.time() - 86400
+                    if kind == 'cold': client.update(page_ready=False, credits_local=False,
+                        connection_recovery={'state': 'stopped', 'count': 3})
+                    elif kind == 'blocked': client['blocked'] = '参数核对失败'
+                    else: self.low(service, client)
+                self.assertTrue(can_start(service, profiles[4]))
+                service.store.enqueue(self.jobs(duration=8, budget=0)); service.paused = False
+                launches = []; service.launch_requested.connect(launches.append)
+                service._tick(); service._tick()
+                self.assertLessEqual(len(launches), 2)
+                self.assertFalse(set(launches) & set(profiles[:4]))
+                self.assertFalse(any(p['action'] == 'close_exhausted' for p in service.pending.values()))
 
-    def test_an_unknown_disconnect_or_restart_does_not_release_physical_window_reservations(self):
-        service,profiles=self.configured();client=self.browser(service,profiles[0]);seen(service,client)
-        disconnected(service,client);service.clients.clear()
-        for profile in profiles[1:4]:self.assertTrue(request_start(service,profile))
-        self.assertFalse(can_start(service,profiles[4]))
-        service.launch_attempts=set();service.launched.clear();service.launching.clear()
-        service.preferences=service.store.settings()
-        self.assertFalse(can_start(service,profiles[4]),'persisted reservations survive an ordinary restart')
-        self.assertTrue(request_start(service,profiles[0]),'the same reserved profile may reconnect once after restart')
-        self.assertFalse(request_start(service,profiles[0]))
+    def test_disconnected_idle_window_does_not_block_but_pending_starts_survive_restart(self):
+        service, profiles = self.configured()
+        client = self.browser(service, profiles[0]); seen(service, client)
+        disconnected(service, client); service.clients.clear()
+        for profile in profiles[1:4]: self.assertTrue(request_start(service, profile))
+        self.assertTrue(can_start(service, profiles[4]))
+        service.launch_attempts = set(); service.launched.clear(); service.launching.clear()
+        service.preferences = service.store.settings()
+        self.assertTrue(can_start(service, profiles[4]))
+        self.assertTrue(request_start(service, profiles[0]))
+        self.assertFalse(request_start(service, profiles[0]))
+        self.assertFalse(can_start(service, profiles[4]), 'four unconnected starts remain bounded')
 
     def test_definite_process_failure_releases_only_that_slot_and_is_not_retried_on_enqueue(self):
         service,profiles=self.configured()
@@ -101,25 +105,15 @@ class BrowserSlotsTests(unittest.TestCase):
         self.assertTrue(can_start(service,profiles[0]))
         self.assertNotIn(profiles[0],service.preferences.get('browser_launch_failures',{}))
 
-    def test_low_credit_closing_keeps_slot_until_disconnect_or_final_close_receipt(self):
-        service,profiles=self.configured();client=self.browser(service,profiles[0],close=True);seen(service,client)
-        self.low(service,client);client['credit_check']['at']-=31
-        for profile in profiles[1:4]:self.assertTrue(request_start(service,profile))
-        self.assertTrue(close_idle_exhausted(service))
-        key=next(k for k,p in service.pending.items() if p['action']=='close_exhausted')
-        service._response(client,{'request_id':key,'success':True,'data':{'closing':True}})
-        self.assertIn(key,service.pending)
-        self.assertFalse(can_start(service,profiles[4]))
-        service._response(client,{'request_id':key,'success':False,'error':'native close failed'})
-        self.assertNotIn(key,service.pending)
-        self.assertEqual(client['credit_close']['state'],'failed')
-        self.assertFalse(can_start(service,profiles[4]))
-        client['credit_close']['next_at']=0
-        self.assertTrue(close_idle_exhausted(service))
-        key=next(k for k,p in service.pending.items() if p['action']=='close_exhausted')
-        service._response(client,{'request_id':key,'success':True,'data':{'closed':True}})
-        self.assertTrue(can_start(service,profiles[4]))
-        self.assertFalse(close_idle_exhausted(service),'a background extension surviving window closure must not close/reopen repeatedly')
+    def test_low_credit_window_stays_open_without_holding_an_admission_slot(self):
+        service, profiles = self.configured()
+        client = self.browser(service, profiles[0], close=True); seen(service, client)
+        self.low(service, client); client['credit_check']['at'] -= 31
+        for profile in profiles[1:4]: self.assertTrue(request_start(service, profile))
+        self.assertFalse(close_idle_exhausted(service))
+        self.assertTrue(can_start(service, profiles[4]))
+        self.assertIn(profiles[0], occupied_profiles(service), 'the physical window is retained')
+        self.assertFalse(any(p['action'] == 'close_exhausted' for p in service.pending.values()))
 
     def test_explicit_successful_idle_close_disconnect_releases_the_slot(self):
         service,profiles=self.configured();client=self.browser(service,profiles[0]);seen(service,client)
@@ -128,29 +122,31 @@ class BrowserSlotsTests(unittest.TestCase):
         service.clients.clear();disconnected(service,client)
         self.assertTrue(can_start(service,profiles[4]))
 
-    def test_socket_drop_during_unconfirmed_close_does_not_prove_a_vacancy(self):
-        service, profiles = self.configured(); client = self.browser(service, profiles[0]); seen(service, client)
+    def test_legacy_close_state_on_idle_disconnect_cannot_block_a_new_account(self):
+        service, profiles = self.configured()
+        client = self.browser(service, profiles[0]); seen(service, client)
         for profile in profiles[1:4]: request_start(service, profile)
         client['credit_close'] = {'state': 'closing'}
         service.clients.clear(); disconnected(service, client)
-        self.assertFalse(can_start(service, profiles[4]))
+        self.assertIn(profiles[0], occupied_profiles(service))
+        self.assertTrue(can_start(service, profiles[4]))
 
-    def test_stale_page_readiness_does_not_prevent_the_extension_from_checking_low_credit_close(self):
-        service,profiles=self.configured();client=self.browser(service,profiles[0],close=True)
-        self.low(service,client);client['credit_check']['at']-=31
-        client.update(page_ready=False,batch_running=True)
-        self.assertTrue(close_idle_exhausted(service),'the extension must independently verify live idle/native/download state')
-        self.assertEqual([p['action'] for p in service.pending.values()],['close_exhausted'])
+    def test_stale_low_credit_page_is_never_automatically_closed(self):
+        service, profiles = self.configured(); client = self.browser(service, profiles[0], close=True)
+        self.low(service, client); client['credit_check']['at'] -= 31
+        client.update(page_ready=False, batch_running=True)
+        self.assertFalse(close_idle_exhausted(service))
+        self.assertFalse(service.pending)
 
-    def test_small_balance_probe_cannot_bypass_full_browser_capacity(self):
-        service,profiles=self.configured()
-        rich=self.browser(service,profiles[0],points=1300)
-        for profile in profiles[1:4]:self.browser(service,profile,points=1000)
-        service.store.enqueue(self.jobs(duration=8,budget=0));row=service.store.rows()[0]
-        launches=[];service.launch_requested.connect(launches.append)
-        self.assertFalse(prefer_smaller(service,row,rich),'a blocked backup probe must allow funded work in an already open window')
-        self.assertFalse(launches)
-        self.assertFalse(can_start(service,profiles[4]))
+    def test_idle_rich_windows_do_not_block_small_balance_probe(self):
+        service, profiles = self.configured()
+        rich = self.browser(service, profiles[0], points=1300)
+        for profile in profiles[1:4]: self.browser(service, profile, points=1000)
+        service.store.enqueue(self.jobs(duration=8, budget=0)); row = service.store.rows()[0]
+        launches = []; service.launch_requested.connect(launches.append)
+        self.assertTrue(prefer_smaller(service, row, rich))
+        self.assertEqual(launches, [profiles[4]])
+        self.assertFalse(can_start(service, profiles[4]), 'the same start is still deduplicated')
 
     def test_preparation_recovery_repairs_an_online_profile_without_launching_chrome_again(self):
         service,profiles=self.configured();client=self.browser(service,profiles[0])

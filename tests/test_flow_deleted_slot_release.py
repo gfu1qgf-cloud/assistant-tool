@@ -34,16 +34,15 @@ class DeletedSlotReleaseTests(unittest.TestCase):
         return next(json.loads(call.args[0]) for call in reversed(client['socket'].sendTextMessage.call_args_list)
                     if json.loads(call.args[0]).get('action')=='close_exhausted')
 
-    def test_confirmed_deleted_attempts_are_sent_only_to_their_original_browser(self):
-        service=self.service();one=self.browser(service,'One',close=True);two=self.browser(service,'Two',close=True)
-        one['capabilities'].append('close_released_batches_v1')
-        self.retire_record(service,one,'a'*32);self.retire_record(service,two,'b'*32)
-        self.observe(service,one,2);one['credit_check']['at']-=31
-        self.assertTrue(close_idle_exhausted(service))
-        sent=self.closure(one)
-        self.assertEqual(sent['params'].get('released_batches'),['a'*32])
-        self.assertNotIn('b'*32,sent['params']['released_batches'])
-        self.assertEqual(service.store.batches()[next(iter(service.store.batches()))]['reserved'],12)
+    def test_deleted_attempts_keep_original_ownership_without_native_close_requests(self):
+        service = self.service(); one = self.browser(service, 'One', close=True); two = self.browser(service, 'Two', close=True)
+        self.retire_record(service, one, 'a' * 32); self.retire_record(service, two, 'b' * 32)
+        self.observe(service, one, 2); one['credit_check']['at'] -= 31
+        self.assertFalse(close_idle_exhausted(service))
+        self.assertEqual(service.store.released_attempts(one['id']), ['a' * 32])
+        self.assertEqual(service.store.released_attempts(two['id']), ['b' * 32])
+        self.assertFalse(any(p['action'] == 'close_exhausted' for p in service.pending.values()))
+        self.assertEqual(service.store.batches()[next(iter(service.store.batches()))]['reserved'], 12)
 
     def test_an_old_extension_cannot_consume_three_close_retries_on_unsupported_release_proof(self):
         service=self.service();client=self.browser(service,close=True)
@@ -51,7 +50,7 @@ class DeletedSlotReleaseTests(unittest.TestCase):
         self.observe(service,client,2);client['credit_check']['at']-=31
         for _ in range(5): self.assertFalse(close_idle_exhausted(service))
         self.assertFalse(any(p['action']=='close_exhausted' for p in service.pending.values()))
-        self.assertEqual(client['credit_close'].get('count',0),0)
+        self.assertEqual(client.get('credit_close', {}).get('count',0),0)
 
     def test_real_four_slot_shape_recovers_three_productive_accounts_and_keeps_unknown_result(self):
         service=self.service(); profiles=['Rich','Low1','Low2','Original','Next1','Next2','Next3']
@@ -89,7 +88,8 @@ class DeletedSlotReleaseTests(unittest.TestCase):
         self.assertEqual(len({r['browser'] for r in service.store.rows() if r['status']=='preparing'}),3)
         self.assertEqual(service.store.get(original['id'])['status'],'uncertain')
         self.assertEqual(service.store.get(original['id'])['attempt'],'f'*32)
-        self.assertLessEqual(len(occupied_profiles(service)),4)
+        self.assertEqual(len(occupied_profiles(service)), 7)
+        self.assertFalse(any(p['action'] == 'close_exhausted' for p in service.pending.values()))
         self.assertFalse(any(r['status']=='cancelled' for r in service.store.rows()))
 
     def test_reconnecting_cooldown_browser_restores_balance_for_idle_close_without_spending(self):
@@ -108,7 +108,7 @@ class DeletedSlotReleaseTests(unittest.TestCase):
         for key,pending in list(service.pending.items()):
             service._response(client,{'request_id':key,'success':True,'data':{}})
         client['credit_check']['at']-=31
-        self.assertTrue(close_idle_exhausted(service))
+        self.assertFalse(close_idle_exhausted(service))
 
 
 if __name__=='__main__':unittest.main()

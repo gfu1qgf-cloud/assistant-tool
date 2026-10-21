@@ -35,20 +35,33 @@ def limit(service):
     return max(1, min(8, int(service.preferences.get('concurrency', 2))))
 
 
+def admission_profiles(service):
+    """Count work and pending launches, never idle physical Chrome windows."""
+    online = {c.get('profile'): c for c in service.clients.values() if c.get('authorized')}
+    slots = {profile for profile, entry in service.preferences.get('browser_slots', {}).items()
+             if entry.get('state') == 'opening' and profile not in online}
+    slots.update(profile for profile in service.launching if profile not in online or
+                 not (online[profile].get('page_ready') and online[profile].get('credits_local')))
+    slots.update(row['remote']['profile'] for row in service.store.rows()
+                 if row['status'] in TRANSIENT | {'uncertain', 'download_failed'} and row['remote'].get('profile'))
+    return slots
+
+
 def can_start(service, profile, occupied=None):
+    # The legacy occupied argument described physical windows; it is no longer a gate.
     if profile in service.preferences.get('browser_launch_failures', {}):
         return False
     if profile in getattr(service, 'launch_attempts', set()):
         return False
-    occupied = occupied_profiles(service) if occupied is None else occupied
+    occupied = admission_profiles(service)
     return profile in occupied or len(occupied) < limit(service)
 
 
 def summary(service):
-    profiles = sorted(occupied_profiles(service))
+    profiles = sorted(admission_profiles(service))
     return {'profiles': profiles, 'used': len(profiles), 'limit': limit(service),
-            'message': (f'浏览器启动名额 {len(profiles)}/{limit(service)}：等待真实窗口退出确认；'
-                        '有可用替代账号时，核对空闲备用窗口退出后自动换号') if len(profiles) >= limit(service) else ''}
+            'message': (f'任务／启动名额 {len(profiles)}/{limit(service)}：等待当前任务或启动完成；'
+                        '自动关闭已停用，空闲窗口不阻塞换号') if len(profiles) >= limit(service) else ''}
 
 
 def request_start(service, profile, job=None):

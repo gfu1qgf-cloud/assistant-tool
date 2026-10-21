@@ -84,8 +84,7 @@ def potential(service, client, queued):
     confirming = (client.get('setup_pending') and block == client.get('setup_blocked') and
         now - client.get('connected', 0) < timing_value(preferences, 'browser_startup_seconds'))
     if (account_hold(client, preferences) or credit_hold(client, preferences) or
-            block and not confirming or client.get('blocked') or
-            (client.get('credit_close') or {}).get('state') in {'checking', 'closing', 'closed'}):
+            block and not confirming or client.get('blocked')):
         return False
     fresh = balance_ready(client, preferences=preferences)
     usable = any(dispatch_rank(client, row['payload'], preferences) is not None and

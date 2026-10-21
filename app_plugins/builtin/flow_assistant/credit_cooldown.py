@@ -100,20 +100,5 @@ def refresh_expired(service, queued_rows):
 
 
 def close_idle_exhausted(service):
-    """The browser also checks its page, durable receipts and Chrome downloads."""
-    changed = False
-    now = time.time()
-    for client in list(service.clients.values()):
-        hold = credit_hold(client, service.preferences, now)
-        if (not client.get('authorized') or not hold or not client.get('credits_local')
-                or not client.get('account') or not client.get('profile')
-                or type(client.get('credits')) not in (int, float) or client['credits'] >= MIN_CREDITS
-                or 'close_exhausted_v1' not in client.get('capabilities', [])
-                or (client.get('credit_close') or {}).get('state') in {'closing', 'closed'}
-                or client.get('setup_pending') or account_hold(client, service.preferences)
-                or client.get('reset_wait_until', 0) > now):
-            continue
-        from .idle_close import request_close
-        changed |= request_close(service, client, {'balance': hold['balance'], 'until': hold['until']},
-            '积分低于 10，没有未完成任务，正在核对下载后关闭此浏览器')
-    return changed
+    """Compatibility entry point: exhausted browsers now remain open."""
+    return False

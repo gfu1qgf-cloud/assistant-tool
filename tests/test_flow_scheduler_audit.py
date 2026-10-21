@@ -76,8 +76,7 @@ class SchedulerAuditTests(unittest.TestCase):
         self.assertIsNone(choose_client([client], [held, row], 4, row['payload'], service.preferences, 12))
 
     def test_native_busy_and_reset_hold_apply_to_all_sessions_of_the_same_account(self):
-        for state in ({'native_busy': True}, {'reset_wait_until': time.time() + 60},
-                      {'credit_close': {'state': 'checking'}}, {'credit_close': {'state': 'closing'}}):
+        for state in ({'native_busy': True}, {'reset_wait_until': time.time() + 60}):
             with self.subTest(state=state):
                 service = self.service(); one = self.browser(service, 'One'); two = self.browser(service, 'Two')
                 two['account'] = one['account']; one.update(state)

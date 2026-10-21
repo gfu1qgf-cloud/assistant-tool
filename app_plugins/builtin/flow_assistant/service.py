@@ -18,7 +18,7 @@ from .archive import archive_download
 from .store import QueueStore, TRANSIENT, choose_client, fingerprint, make_jobs, submission_risk
 from .routing import cost_key, lane_for, lane_key, dispatch_rank, automatic_lane, normalize_lane
 from .credit_policy import debit_balance, credit_order
-from .credit_cooldown import credit_hold, credit_record, credit_reason, remember_balance, refresh_expired, close_idle_exhausted, MIN_CREDITS
+from .credit_cooldown import credit_hold, credit_record, credit_reason, remember_balance, refresh_expired, MIN_CREDITS
 from .credit_cache import restore_balance, refresh_needed
 from .timing import value as timing_value, normalize as normalize_timing, snapshot as timing_snapshot, request_timeout, validate as validate_timing, timing_changes
 from .media_identity import owns_download, generated_bindings, merge_snapshot_bindings
@@ -37,7 +37,7 @@ from .reference_image import verified_receipt
 from .balance_dispatch import prefer_smaller, profile_order, can_fund
 from .image_affinity import remember_owner, allows_image, retained, affinity_context, cached_profile, dispatch_order, retire_exhausted
 from .prepare_snapshot import remember as remember_prepare, reuse as reuse_prepare
-from .browser_slots import request_start as start_browser, can_start as can_start_browser, occupied_profiles, summary as browser_capacity
+from .browser_slots import request_start as start_browser, can_start as can_start_browser, summary as browser_capacity
 from .high_credit import allowed as high_credit_allowed
 
 DEFAULT_PORT = 18189
@@ -164,8 +164,8 @@ class FlowService(QtCore.QObject, FlowOperations):
             self._disconnected(socket)
 
     def request(self, client, action, params=None, job=None, *, manual_credit=False):
-        if action != 'close_exhausted' and (client.get('credit_close') or {}).get('state') in {'checking', 'closing', 'closed'}:
-            return False  # Do not clear a close lease or submit work during native closure.
+        if action == 'close_exhausted':
+            return False  # Automatic closure was disabled; never send a native close.
         if action == 'refresh_project':
             # A reload can cancel an accepted website generation. Even legacy
             # recovery plans may only query snapshots; never send this command.
@@ -1296,8 +1296,6 @@ class FlowService(QtCore.QObject, FlowOperations):
                 self.publish()
             if self.watch_transfer_retries():
                 self.publish()
-            if close_idle_exhausted(self):
-                self.publish()
             from .page_recovery import watch
             if watch(self): self.publish()
             if time.time() - getattr(self, '_last_publish', 0) >= timing_value(self.preferences, 'status_publish_seconds'):
@@ -1314,8 +1312,6 @@ class FlowService(QtCore.QObject, FlowOperations):
             before_high_credit = self.preferences, self.high_credit_pending
             watch_high_credit(self, queued_rows)
             if before_high_credit != (self.preferences, self.high_credit_pending): self.publish()
-            from .browser_rotation import watch as rotate_backups
-            if rotate_backups(self, queued_rows): self.publish()
             if not queued_rows or self.safety_paused:
                 return
             clients = [client for client in self.clients.values() if client['authorized']]
@@ -1384,9 +1380,8 @@ class FlowService(QtCore.QObject, FlowOperations):
                 online = {c.get('profile') for c in clients}
                 held_profiles = {r['remote'].get('profile') for r in rows if r['status'] in TRANSIENT | {'uncertain', 'download_failed'}}
                 held_profiles.update(hold['profile'] for hold in self.store.reset_holds() if hold['profile'])
-                window_slots = occupied_profiles(self)
                 available = [p for p in profiles if p not in self.launched and p not in online and p not in held_profiles
-                             and not block_for({'profile': p}, self.preferences) and can_start_browser(self, p, window_slots)]
+                             and not block_for({'profile': p}, self.preferences) and can_start_browser(self, p)]
                 cached = {profile: cached_profile(profile, self.preferences) for profile in available}
                 held_accounts = {str(row['remote'].get('account') or '').strip().casefold() for row in rows
                     if row['status'] in TRANSIENT | {'uncertain', 'download_failed'}}

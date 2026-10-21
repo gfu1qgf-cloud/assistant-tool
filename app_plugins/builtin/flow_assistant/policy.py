@@ -103,9 +103,6 @@ def waiting_reason(row, clients, rows, preferences, observed, batches, *, paused
     from .high_credit import reason as high_credit_reason
     from .high_credit import allowed as high_credit_allowed
     high_reasons = [high_credit_reason(c, preferences) for c in lane]
-    if any((c.get('credit_close') or {}).get('reason') == 'high_credit_backup' and
-           c['credit_close'].get('state') in {'checking', 'closing'} for c in clients):
-        return '任务保持排队：正在核对并关闭已跳过的千分账号，释放名额后自动换账号'
     if high_reasons and all(high_reasons):
         return '排队等待其他可用账号；千分账号未获准使用，仅跳过该账号'
     duration = row['payload'].get('duration')

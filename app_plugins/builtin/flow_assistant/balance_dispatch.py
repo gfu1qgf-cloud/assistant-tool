@@ -76,7 +76,6 @@ def prefer_smaller(service, row, selected, *, affinity=None):
                 account_hold(client, service.preferences) or credit_hold(client, service.preferences) or
                 client.get('setup_blocked') or client.get('batch_running') or client.get('native_busy') or
                 client.get('reset_wait_until', 0) > now or
-                (client.get('credit_close') or {}).get('state') in {'checking', 'closing', 'closed'} or
                 dispatch_rank(client, row['payload'], service.preferences) is None): continue
         block = block_for(client, service.preferences) or client.get('blocked')
         if block and not recoverable_prepare_reason(block, client.get('extension_version')): continue

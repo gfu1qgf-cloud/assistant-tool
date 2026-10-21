@@ -462,7 +462,6 @@ def choose_client(clients, rows, limit, job=None, preferences=None, cost=None, *
     busy_accounts = {account(row['remote'].get('account')) for row in held} | {
         account(client.get('account')) for client in clients if client.get('batch_running') or client.get('native_busy') or
         client.get('reset_wait_until', 0) > time.time() or
-        (client.get('credit_close') or {}).get('state') in {'checking', 'closing', 'closed'} or
         (client.get('connection_recovery') or {}).get('state') == 'checking' or
         (client.get('credit_check') or {}).get('hold_dispatch')}
     busy_browsers = {row['browser'] for row in held}

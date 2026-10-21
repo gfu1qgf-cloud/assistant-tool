@@ -38,7 +38,7 @@ def browser_status(client, preferences, jobs=(), now=None):
             return {'connection': '未连接', 'project': project, 'state': '千分账号备用', 'reason': high_reason, 'color': '#986100'}
         if failure or slot:
             return {'connection': '未连接', 'project': project, 'state': '启动待处理' if failure else '等待原连接',
-                    'reason': failure.get('message') or '原窗口仍占用启动名额；等待原扩展重连，未重复打开其他配置', 'color': '#986100'}
+                    'reason': failure.get('message') or '保留原配置连接记录，等待扩展重连；不因空闲窗口阻止其他账号', 'color': '#986100'}
         return {'connection': '未连接', 'project': project, 'state': '待连接' if project_identity(saved) else '待配置',
                 'reason': '等待打开此配置并连接扩展' if project_identity(saved) else '请先添加这个配置自己的 Flow 项目地址', 'color': '#986100'}
     blocks = preferences.get('browser_blocks', {})
