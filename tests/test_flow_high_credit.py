@@ -38,8 +38,13 @@ class HighCreditTests(unittest.TestCase):
     def answer(self, service, approved, **updates):
         request = service.high_credit_pending
         self.assertIsNotNone(request)
+        if request['phase'] == 'queued': self.display(service)
         service.execute({'action': 'high_credit_decision', 'nonce': request['nonce'],
                          'approved': approved, **updates})
+
+    def display(self, service):
+        service.execute({'action': 'high_credit_prompt_shown', 'nonce': service.high_credit_pending['nonce'],
+                         'shown_at': time.time()})
 
     def test_threshold_is_two_tiers_and_exactly_one_hundred_is_protected(self):
         service = self.service()
@@ -135,7 +140,7 @@ class HighCreditTests(unittest.TestCase):
 
     def test_timeout_and_late_yes_both_skip_without_charging(self):
         service = self.service(); rich = self.browser(service, points=1038); self.queue(service)
-        service._tick(); pending = dict(service.high_credit_pending)
+        service._tick(); self.display(service); pending = dict(service.high_credit_pending)
         with patch('time.time', return_value=pending['expires_at'] + .01):
             self.answer(service, True)
         self.assertFalse(allowed(rich, service.preferences)); self.assertEqual(record(rich, service.preferences)['decision'], 'skipped')
@@ -143,7 +148,7 @@ class HighCreditTests(unittest.TestCase):
 
     def test_worker_timeout_is_independent_of_the_gui(self):
         service = self.service(); rich = self.browser(service, points=1038); self.queue(service)
-        service._tick(); deadline = service.high_credit_pending['expires_at']
+        service._tick(); self.display(service); deadline = service.high_credit_pending['expires_at']
         with patch('time.time', return_value=deadline + .01): service._tick()
         self.assertIsNone(service.high_credit_pending)
         self.assertEqual(record(rich, service.preferences)['decision'], 'skipped')
@@ -167,7 +172,7 @@ class HighCreditTests(unittest.TestCase):
         old = copy.deepcopy(service.high_credit_pending)
         rich['account'] = 'changed@example.test'; self.answer(service, True)
         self.assertFalse(allowed(rich, service.preferences))
-        self.assertEqual(service.preferences['high_credit_accounts'][old['account']]['decision'], 'skipped')
+        self.assertEqual(service.preferences['high_credit_accounts'][old['account']]['decision'], 'standby')
 
     def test_marker_survives_debits_refresh_alias_and_restart_but_consent_does_not(self):
         service = self.service(); rich = self.browser(service, points=100); self.queue(service); service._tick()
@@ -267,13 +272,13 @@ class HighCreditTests(unittest.TestCase):
 
     def test_confirmation_box_default_escape_close_and_timeout_are_no(self):
         request = {'nonce': 'n', 'account': 'a@example.test', 'profile': 'Profile 1', 'credits': 1038,
-                   'expires_at': time.time() + 5}
+                   'seconds': 5}
         box = HighCreditConfirmation(request); self.addCleanup(box.close)
         self.assertEqual(box.defaultButton(), box.button(QtWidgets.QMessageBox.StandardButton.No))
         results = []; box.finished.connect(results.append); box.open()
         QtTest.QTest.keyClick(box, QtCore.Qt.Key.Key_Escape)
         self.assertNotEqual(results[-1], int(QtWidgets.QMessageBox.StandardButton.Yes))
-        timeout = HighCreditConfirmation({**request, 'expires_at': time.time() + .05}); self.addCleanup(timeout.close)
+        timeout = HighCreditConfirmation({**request, 'seconds': .05}); self.addCleanup(timeout.close)
         timed = []; timeout.finished.connect(timed.append); timeout.open(); QtTest.QTest.qWait(160)
         self.assertEqual(timed, [int(QtWidgets.QMessageBox.StandardButton.No)])
 
@@ -282,12 +287,100 @@ class HighCreditTests(unittest.TestCase):
         plugin = FlowAssistantPlugin(); plugin.context = SimpleNamespace(parent_widget=parent)
         self.addCleanup(plugin.stop); commands = []; plugin.command.connect(commands.append)
         request = {'nonce': 'n', 'account': 'a@example.test', 'profile': 'Profile 1', 'credits': 1038,
-                   'expires_at': time.time() + 5}
+                   'seconds': 5}
         plugin._confirm_high_credit(request)
+        self.app.processEvents()
         plugin.high_credit_box.button(QtWidgets.QMessageBox.StandardButton.Yes).click()
         self.assertTrue(commands[-1]['approved'])
         plugin._confirm_high_credit({**request, 'nonce': 'next'})
         plugin.high_credit_box.close(); self.assertFalse(commands[-1]['approved'])
+
+    def test_gui_delivery_delay_does_not_consume_the_five_second_choice(self):
+        service = self.service(); rich = self.browser(service, points=1038); self.queue(service); service._tick()
+        issued = service.high_credit_pending['issued_at']
+        with patch('time.time', return_value=issued + 8):
+            service._tick()
+            self.assertEqual(service.high_credit_pending['phase'], 'queued')
+            self.display(service)
+            self.assertAlmostEqual(service.high_credit_pending['expires_at'], issued + 13)
+            self.answer(service, True)
+        self.assertTrue(allowed(rich, service.preferences))
+
+    def test_visible_question_is_not_dismissed_or_recorded_as_refusal_when_small_returns(self):
+        service = self.service(); rich = self.browser(service, points=1038); self.queue(service); service._tick()
+        self.display(service); nonce = service.high_credit_pending['nonce']
+        small = self.browser(service, 'Small', points=50); service._tick()
+        self.assertEqual(service.high_credit_pending['nonce'], nonce)
+        self.answer(service, True)
+        self.assertEqual(record(rich, service.preferences)['decision'], 'standby')
+        self.assertNotIn('asked_cycle', record(rich, service.preferences))
+        self.assertFalse(allowed(rich, service.preferences))
+
+    def test_unshown_dialog_is_retryable_and_never_converted_to_user_refusal(self):
+        service = self.service(); rich = self.browser(service, points=1038); self.queue(service); service._tick()
+        issued = service.high_credit_pending['issued_at']
+        with patch('time.time', return_value=issued + 61): service._tick()
+        entry = record(rich, service.preferences)
+        self.assertEqual(entry['decision'], 'standby'); self.assertEqual(entry['decision_source'], 'not_shown')
+        self.assertNotIn('asked_cycle', entry); self.assertIsNone(service.high_credit_pending)
+        service.execute({'action': 'retry_high_credit', 'keys': ['profile:' + rich['profile']]})
+        service._tick()
+        self.assertIsNotNone(service.high_credit_pending)
+        self.assertNotIn('retry_after', record(rich, service.preferences))
+
+    def test_legacy_ambiguous_skip_is_reoffered_once_without_canceling_jobs(self):
+        service = self.service(); rich = self.browser(service, points=1038); rows = self.queue(service)
+        service._tick(); self.answer(service, False)
+        entries = copy.deepcopy(service.preferences['high_credit_accounts'])
+        entries[rich['account']].pop('decision_source')
+        service.commit_preferences({**service.preferences, 'high_credit_accounts': entries})
+        service.execute({'action': 'stop'}); restarted = self.service(); self.browser(restarted, points=1038)
+        restarted.paused = False; restarted._tick()
+        self.assertEqual(restarted.high_credit_pending['account'], rich['account'])
+        self.assertEqual({row['id'] for row in restarted.store.rows()}, {row['id'] for row in rows})
+        self.assertTrue(all(row['status'] == 'queued' for row in restarted.store.rows()))
+        self.answer(restarted, False); restarted.execute({'action': 'stop'})
+        again = self.service(); self.browser(again, points=1038); again.paused = False; again._tick()
+        self.assertIsNone(again.high_credit_pending)
+
+    def test_approved_idle_account_is_used_before_showing_another_question(self):
+        service = self.service(); rich = self.browser(service, 'One', points=100)
+        self.browser(service, 'Two', points=1038); rows = self.queue(service, count=1)
+        asked = []; service.high_credit_confirmation_requested.connect(asked.append)
+        service._tick(); self.answer(service, True); service._tick()
+        self.assertEqual(service.store.get(rows[0]['id'])['browser'], rich['id']); self.assertEqual(len(asked), 1)
+
+    def test_a_delayed_gui_question_starts_its_local_timer_at_show_time(self):
+        request = {'nonce': 'delayed', 'account': 'a@example.test', 'profile': 'Profile 4', 'credits': 814,
+                   'issued_at': time.time() - 8, 'seconds': 5, 'expires_at': time.time() - 3}
+        box = HighCreditConfirmation(request); self.addCleanup(box.close)
+        self.assertFalse(box.timer.isActive()); box.open()
+        self.assertIsNone(box.expires_at)  # Merely queueing/showing the native window is not a painted question.
+        self.app.processEvents()
+        self.assertGreater(box.expires_at - time.time(), 4.8)
+        self.assertTrue(box.timer.isActive()); self.assertTrue(box.isVisible())
+
+    def test_service_gui_handshake_keeps_question_visible_during_normal_account_updates(self):
+        service = self.service(); rich = self.browser(service, points=814); rows = self.queue(service)
+        parent = QtWidgets.QWidget(); self.addCleanup(parent.close)
+        plugin = FlowAssistantPlugin(); plugin.context = SimpleNamespace(parent_widget=parent)
+        self.addCleanup(plugin.stop)
+        plugin.command.connect(service.execute)
+        service.changed.connect(plugin._changed)
+        service.high_credit_confirmation_requested.connect(plugin._confirm_high_credit)
+        service._tick()
+        self.app.processEvents()
+        box = plugin.high_credit_box
+        self.assertIsNotNone(box); self.assertTrue(box.isVisible())
+        self.assertEqual(service.high_credit_pending['phase'], 'shown')
+        self.assertGreater(service.high_credit_pending['expires_at'] - time.time(), 4.8)
+        small = self.browser(service, 'Small', points=50); service._tick()
+        self.assertIs(plugin.high_credit_box, box); self.assertTrue(box.isVisible())
+        box.button(QtWidgets.QMessageBox.StandardButton.Yes).click()
+        self.assertIsNone(plugin.high_credit_box)
+        self.assertEqual(record(rich, service.preferences)['decision'], 'standby')
+        self.assertEqual(service.store.get(rows[0]['id'])['browser'], small['id'])
+        self.assertFalse(any(row['status'] == 'cancelled' for row in service.store.rows()))
 
 
 if __name__ == '__main__': unittest.main()

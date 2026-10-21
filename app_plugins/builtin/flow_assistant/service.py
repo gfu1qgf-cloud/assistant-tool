@@ -90,8 +90,8 @@ class FlowService(QtCore.QObject, FlowOperations):
             self.store = QueueStore(self.namespace)
             self.preferences = self.store.settings()
             # Consent from a previous application process never authorizes a new run.
-            entries = {key: {**entry, 'decision': 'skipped'} if entry.get('decision') == 'asking' else entry
-                       for key, entry in self.preferences.get('high_credit_accounts', {}).items()}
+            from .high_credit import new_session_entries
+            entries = new_session_entries(self.preferences)
             self.commit_preferences({**self.preferences, 'high_credit_session': uuid.uuid4().hex,
                                       'high_credit_accounts': entries})
             if self.program_timing is not None:
@@ -921,6 +921,9 @@ class FlowService(QtCore.QObject, FlowOperations):
             elif action == 'high_credit_decision':
                 from .high_credit import decide
                 decide(self, command)
+            elif action == 'high_credit_prompt_shown':
+                from .high_credit import prompt_shown
+                prompt_shown(self, command)
             elif action == 'retry_high_credit':
                 from .high_credit import retry_selected
                 retry_selected(self, command.get('keys', []))
@@ -1405,7 +1408,7 @@ class FlowService(QtCore.QObject, FlowOperations):
             if detail: row['wait_reason'] = detail
         self.changed.emit({'jobs': rows, 'clients': clients, 'paused': self.paused,
                            'browser_capacity': browser_capacity(self),
-                           'high_credit_pending': self.high_credit_pending,
+                           'high_credit_pending': dict(self.high_credit_pending) if self.high_credit_pending else None,
                            'pairing': self.pair, 'preferences': self.preferences, 'downloads_root': self.downloads_root,
                            'released': list(self.released), 'safety_paused': self.safety_paused,
                            'drafts': self.drafts, 'batches': batches, 'spaces': self.space_status(rows),

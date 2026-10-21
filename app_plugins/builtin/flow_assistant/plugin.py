@@ -13,7 +13,7 @@ class FlowAssistantPlugin(QtCore.QObject):
     command = QtCore.pyqtSignal(object)
     plugin_id = 'flow_assistant'
     display_name = 'Flow 视频助手'
-    version = '0.4.35'
+    version = '0.4.36'
     upstream_version = '1.1.5'
     ui_api_version = 2
     manual_credit_check_api = 1
@@ -99,8 +99,9 @@ class FlowAssistantPlugin(QtCore.QObject):
             self.dialog.update_state(value)
 
     def _confirm_high_credit(self, request):
-        if self.stopping or request['expires_at'] <= time.time():
-            self.command.emit({'action':'high_credit_decision', 'nonce':request['nonce'], 'approved':False})
+        from .timing import value as timing_value
+        if self.stopping or time.time() - request.get('issued_at', time.time()) >= timing_value(self.snapshot.get('preferences', {}), 'request_timeout_seconds'):
+            self.command.emit({'action':'high_credit_decision', 'nonce':request['nonce'], 'approved':False, 'source':'not_shown'})
             return
         if self.high_credit_box:
             self.high_credit_box.reject()
@@ -108,11 +109,14 @@ class FlowAssistantPlugin(QtCore.QObject):
         from qt_compat import QtWidgets
         parent = self.dialog or self.context.parent_widget
         box = HighCreditConfirmation(request, parent)
+        box.shown.connect(self.command.emit)
         self.high_credit_box = box
         def finished(result):
-            approved = result == int(QtWidgets.QMessageBox.StandardButton.Yes) and time.time() < request['expires_at']
+            chose_yes = result == int(QtWidgets.QMessageBox.StandardButton.Yes)
+            approved = chose_yes and box.expires_at is not None and time.time() < box.expires_at
             if self.high_credit_box is box: self.high_credit_box = None
-            self.command.emit({'action':'high_credit_decision', 'nonce':request['nonce'], 'approved':approved})
+            self.command.emit({'action':'high_credit_decision', 'nonce':request['nonce'], 'approved':approved,
+                               'source':'dismissed' if self.stopping else 'timeout' if box.timed_out or chose_yes and not approved else 'user'})
             box.deleteLater()
         box.finished.connect(finished)
         box.open()

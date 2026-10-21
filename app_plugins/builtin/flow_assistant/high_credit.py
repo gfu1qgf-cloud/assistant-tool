@@ -47,9 +47,9 @@ def reason(client, preferences):
         return ''
     entry = record(client, preferences)
     if entry.get('decision') == 'asking':
-        return '千分账号（曾检测到至少 100 分）：等待确认；未点击或选择否会跳过'
+        return '千分账号（曾检测到至少 100 分）：等待使用确认；窗口显示后才开始倒计时'
     if entry.get('decision') == 'skipped':
-        return '千分账号（曾检测到至少 100 分）：已跳过；小额账号用完后才重新询问，可右键重新询问'
+        return '千分账号（曾检测到至少 100 分）：本轮已跳过，任务仍保留在队列；可右键重新询问'
     return '千分账号（曾检测到至少 100 分）：保留备用；小额账号用完后询问，未确认不接单'
 
 
@@ -133,22 +133,68 @@ def submission_allowed(service, client, row):
     return not normal_remaining(service, [row] + queued)
 
 
+def new_session_entries(preferences):
+    entries = {}
+    for key, original in preferences.get('high_credit_accounts', {}).items():
+        entry = dict(original)
+        # v1 recorded automatic dismissal as refusal. Re-offer those ambiguous
+        # decisions once; explicit v2 refusals/timeouts keep their durable hold.
+        if entry.get('decision') == 'asking' or (entry.get('decision') == 'skipped' and not entry.get('decision_source')):
+            entry.update(decision='standby', decision_source='interrupted_or_legacy_prompt')
+            entry.pop('asked_cycle', None)
+        entries[key] = entry
+    return entries
+
+
+def prompt_shown(service, command):
+    pending = getattr(service, 'high_credit_pending', None)
+    shown_at = command.get('shown_at')
+    if (not pending or command.get('nonce') != pending['nonce'] or pending['phase'] != 'queued' or
+            type(shown_at) not in (int, float) or not math.isfinite(shown_at) or
+            shown_at < pending['issued_at'] or shown_at > time.time() + 1):
+        return False
+    service.high_credit_pending = {**pending, 'phase': 'shown', 'shown_at': shown_at,
+                                  'expires_at': shown_at + pending['seconds']}
+    return True
+
+
 def decide(service, command):
     pending = getattr(service, 'high_credit_pending', None)
     if not pending or command.get('nonce') != pending['nonce']:
+        return False
+    source = command.get('source', 'user')
+    shown = pending['phase'] == 'shown'
+    if command.get('approved') is True and not shown:
         return False
     from .policy import admitted_queue
     queued = admitted_queue(service.store.rows(), service.store.batches(), service.observed_costs,
                             paused=service.paused, released=service.released)
     current = [c for c in service.clients.values() if c.get('authorized') and c.get('profile') == pending['profile']]
     unchanged = not current or all(account_key(c, service.preferences) == pending['account'] for c in current)
-    approved = (command.get('approved') is True and time.time() < pending['expires_at'] and unchanged and
-        bool(queued) and not service.safety_paused and not normal_remaining(service, queued) and
-        pending['cycle'] == service.preferences.get('normal_credit_spends', 0))
+    needed = (unchanged and bool(queued) and not service.safety_paused and not normal_remaining(service, queued)
+              and pending['cycle'] == service.preferences.get('normal_credit_spends', 0))
+    timely = shown and time.time() < pending['expires_at']
+    approved = command.get('approved') is True and timely and needed
+    declined = command.get('approved') is False and source == 'user'
+    timeout = shown and (source == 'timeout' or command.get('approved') is True and not timely)
+    skipped = declined or timeout and needed
+    if approved:
+        decision, decision_source = 'approved', 'user_approved'
+    elif declined:
+        decision, decision_source = 'skipped', 'user_declined'
+    elif skipped:
+        decision, decision_source = 'skipped', 'timeout'
+    else:
+        decision, decision_source = 'standby', source if source != 'user' else 'conditions_changed'
     entries = dict(service.preferences.get('high_credit_accounts', {}))
     entries[pending['account']] = {**entries[pending['account']],
-        'decision': 'approved' if approved else 'skipped', 'session': service.preferences['high_credit_session'],
+        'decision': decision, 'decision_source': decision_source,
+        'session': service.preferences['high_credit_session'],
         'cycle': pending['cycle'], 'decided_at': time.time()}
+    if not approved and not skipped:
+        entries[pending['account']].pop('asked_cycle', None)
+        if source == 'not_shown':
+            entries[pending['account']]['retry_after'] = time.time() + timing_value(service.preferences, 'request_timeout_seconds')
     service.commit_preferences({**service.preferences, 'high_credit_accounts': entries})
     service.high_credit_pending = None
     return True
@@ -162,8 +208,13 @@ def watch(service, queued):
         service.commit_preferences(preferences)
     normal = bool(queued) and normal_remaining(service, queued)
     pending = getattr(service, 'high_credit_pending', None)
-    if pending and (time.time() >= pending['expires_at'] or normal or not queued or service.safety_paused):
-        decide(service, {'nonce': pending['nonce'], 'approved': False})
+    if pending:
+        if pending['phase'] == 'shown' and time.time() >= pending['expires_at']:
+            decide(service, {'nonce': pending['nonce'], 'approved': False, 'source': 'timeout'})
+        elif pending['phase'] == 'queued' and time.time() - pending['issued_at'] >= timing_value(service.preferences, 'request_timeout_seconds'):
+            decide(service, {'nonce': pending['nonce'], 'approved': False, 'source': 'not_shown'})
+        # Changing availability never closes a visible question prematurely.
+        # Small accounts can proceed concurrently; Yes revalidates eligibility.
     if normal:
         entries = {key: {**entry, 'decision': 'standby'} if entry.get('decision') == 'approved' else entry
                    for key, entry in service.preferences.get('high_credit_accounts', {}).items()}
@@ -172,12 +223,25 @@ def watch(service, queued):
         return
     if not queued or service.safety_paused or getattr(service, 'high_credit_pending', None):
         return
+    from .store import TRANSIENT, choose_client
+    rows = service.store.rows()
+    clients = [c for c in service.clients.values() if c.get('authorized')]
+    limit = max(1, min(8, int(service.preferences.get('concurrency', 2))))
+    if sum(row['status'] in TRANSIENT for row in rows) >= limit:
+        return
+    from .policy import estimated_cost
+    if any(choose_client(clients, rows, limit, row['payload'], service.preferences,
+            estimated_cost(row['payload'], service.observed_costs)) is not None for row in queued):
+        return  # Use an already approved idle account before asking for another.
+    if any(allowed(c, service.preferences) and is_high(c, service.preferences) and
+           (not c.get('id') or not c.get('page_ready')) and potential(service, c, queued) for c in candidates(service)):
+        return  # Give an approved original browser its bounded startup interval.
     cycle = service.preferences.get('normal_credit_spends', 0)
     options = [c for c in candidates(service) if is_high(c, service.preferences) and
         not allowed(c, service.preferences) and (record(c, service.preferences).get('asked_cycle') != cycle or
             record(c, service.preferences).get('decision') == 'approved' and
             record(c, service.preferences).get('session') != service.preferences.get('high_credit_session')) and
-        potential(service, c, queued)]
+        record(c, service.preferences).get('retry_after', 0) <= time.time() and potential(service, c, queued)]
     if not options:
         return
     client = min(options, key=lambda c: (c.get('credits') if type(c.get('credits')) in (int, float) else 10**9,
@@ -188,7 +252,8 @@ def watch(service, queued):
     service.commit_preferences({**service.preferences, 'high_credit_accounts': entries})
     pending = {'nonce': uuid.uuid4().hex, 'account': account, 'profile': client.get('profile', ''),
         'credits': client.get('credits'), 'cycle': cycle,
-        'expires_at': time.time() + timing_value(service.preferences, 'high_credit_confirmation_seconds')}
+        'phase': 'queued', 'issued_at': time.time(), 'expires_at': None,
+        'seconds': timing_value(service.preferences, 'high_credit_confirmation_seconds')}
     service.high_credit_pending = pending
     service.publish()  # Persist the skip/ask state before showing UI or dispatching.
     service.high_credit_confirmation_requested.emit(pending)
@@ -205,5 +270,5 @@ def retry_selected(service, keys):
     selected = {account_key(c, service.preferences) for c in candidates(service) if identities(c) & set(keys)}
     for account in selected:
         if account in entries:
-            entries[account] = {key: value for key, value in entries[account].items() if key != 'asked_cycle'}
+            entries[account] = {key: value for key, value in entries[account].items() if key not in {'asked_cycle', 'retry_after'}}
     service.commit_preferences({**service.preferences, 'high_credit_accounts': entries})

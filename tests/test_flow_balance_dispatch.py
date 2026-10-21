@@ -49,6 +49,7 @@ class BalanceDispatchTests(unittest.TestCase):
             service._tick()
             request = service.high_credit_pending
             self.assertIsNotNone(request)
+            service.execute({'action': 'high_credit_prompt_shown', 'nonce': request['nonce'], 'shown_at': time.time()})
             service.execute({'action': 'high_credit_decision', 'nonce': request['nonce'], 'approved': True})
             service._tick()
         self.assertEqual(service.store.get(row['id'])['browser'], rich['id'])
@@ -80,6 +81,7 @@ class BalanceDispatchTests(unittest.TestCase):
                 else:
                     self.assertEqual(service.store.get(row['id'])['status'], 'queued')
                     self.assertIsNotNone(service.high_credit_pending)
+                    service.execute({'action': 'high_credit_prompt_shown', 'nonce': service.high_credit_pending['nonce'], 'shown_at': time.time()})
                     service.execute({'action': 'high_credit_decision', 'nonce': service.high_credit_pending['nonce'], 'approved': True})
                     service._tick()
                     self.assertEqual(service.store.get(row['id'])['browser'], rich['id'])

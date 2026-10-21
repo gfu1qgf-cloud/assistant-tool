@@ -13,6 +13,7 @@ from .credit_cache import restore_balance
 from .timing import value as timing_value
 from .pricing import RULE_NOTE
 from .browser_table import Column as BC, HEADERS as BROWSER_HEADERS, BrowserItem
+from .status_ui import status_area
 
 STATUS = {'queued': '等待执行', 'preparing': '首次核对／更新快照', 'uploading': '准备参考图',
           'submitting': '提交生成', 'generating': '生成中', 'downloading': '下载中',
@@ -41,14 +42,7 @@ class FlowDialog(QtWidgets.QDialog):
         self.resize(1160, 760)
         layout = QtWidgets.QVBoxLayout(self)
         self.note = QtWidgets.QLabel('选择任务编号和图片 → 写提示词 → 提交并生成。浏览器按需启动，成品自动下载到任务目录；连接和等待原因见下方。')
-        self.note.setWordWrap(True)
-        layout.addWidget(self.note)
-        status_row = QtWidgets.QHBoxLayout()
         self.connection_summary = QtWidgets.QLabel('浏览器：尚未连接', self)
-        self.connection_summary.setTextFormat(QtCore.Qt.TextFormat.PlainText)
-        self.connection_summary.setWordWrap(True); status_row.addWidget(self.connection_summary, 1)
-        self.connection_button = self.button('浏览器连接／时长设置', lambda: self.tabs.setCurrentWidget(self.browser_page), status_row)
-        layout.addLayout(status_row)
         self.tabs = QtWidgets.QTabWidget(self)
         layout.addWidget(self.tabs, 1)
         self._queue_page()
@@ -57,6 +51,11 @@ class FlowDialog(QtWidgets.QDialog):
         self._submit_page()
         self._browser_page()
         self._settings_page()
+        status_row = QtWidgets.QHBoxLayout()
+        status_row.addWidget(status_area(self.connection_summary, 3), 1)
+        self.connection_button = self.button('浏览器连接／时长设置', lambda: self.tabs.setCurrentWidget(self.browser_page), status_row)
+        layout.addLayout(status_row)
+        layout.addWidget(status_area(self.note, 1))
 
     def button(self, text, callback, layout):
         button = QtWidgets.QPushButton(text, self)
@@ -100,7 +99,6 @@ class FlowDialog(QtWidgets.QDialog):
         from .queue_ui import QueueTools
         self.queue_tools = QueueTools(self, page, layout)
         self.progress = QtWidgets.QLabel('尚无任务')
-        layout.addWidget(self.progress)
         self.queue = self.table(['任务', '参考图／时长', '状态', '执行账号', '保存文件', '详情'], page)
         self.queue.setColumnWidth(0, 150)
         self.queue.setColumnWidth(1, 170)
@@ -113,6 +111,8 @@ class FlowDialog(QtWidgets.QDialog):
         self.delete_shortcut.setContext(QtCore.Qt.ShortcutContext.WidgetWithChildrenShortcut)
         self.delete_shortcut.activated.connect(lambda: self.delete_records())
         layout.addWidget(self.queue, 1)
+        layout.addWidget(status_area(self.progress, 1))
+        layout.addWidget(status_area(self.queue_tools.summary, 2))
         self.tabs.addTab(page, '全局生成队列')
 
     def _submit_page(self):
@@ -158,7 +158,7 @@ class FlowDialog(QtWidgets.QDialog):
         self.batch_limit = QtWidgets.QSpinBox(page); self.batch_limit.setRange(0, 10**8); self.batch_limit.setSpecialValueText('不限整批')
         limits.addWidget(self.batch_label, 1); limits.addWidget(QtWidgets.QLabel('整批积分上限')); limits.addWidget(self.batch_limit)
         layout.addLayout(limits)
-        self.batch_estimate = QtWidgets.QLabel(page); self.batch_estimate.setWordWrap(True); layout.addWidget(self.batch_estimate)
+        self.batch_estimate = QtWidgets.QLabel(page)
         self.compose.itemChanged.connect(self.update_estimate)
         for widget in (self.duration, self.aspect, self.resolution): widget.currentIndexChanged.connect(self.update_estimate)
         for widget in (self.count, self.budget): widget.valueChanged.connect(self.update_estimate)
@@ -170,6 +170,7 @@ class FlowDialog(QtWidgets.QDialog):
         self.submit_button = self.button('提交并生成', self.enqueue, actions)
         self.save_only.toggled.connect(lambda checked: self.submit_button.setText('仅保存到队列' if checked else '提交并生成'))
         layout.addLayout(actions)
+        layout.addWidget(status_area(self.batch_estimate, 1))
         self.tabs.addTab(page, '批量添加任务')
 
     def _browser_page(self):
@@ -723,20 +724,21 @@ class FlowDialog(QtWidgets.QDialog):
         self.queue.verticalScrollBar().setValue(scroll)
         done = sum(row['status'] == 'completed' for row in jobs)
         activity = '安全暂停，需确认继续' if state.get('safety_paused') else ('仅执行已提交项；其余等待开始' if state['paused'] else '全局调度中')
-        self.progress.setText(f'{activity} · 完成 {done}/{len(jobs)} · 已连接 {len(state["clients"])} 个浏览器')
         statuses = [browser_status(client, state.get('preferences', {}), jobs) for client in state['clients']]
         ready = sum(item['state'] == '可接单' for item in statuses)
         busy = sum(item['state'] == '执行中' for item in statuses)
         queued = [row for row in jobs if row['status'] == 'queued']
         reason = (queued[0].get('wait_reason') or queued[0].get('error') or '等待调度') if queued else ''
         active = sum(row['status'] in {'preparing', 'uploading', 'submitting', 'generating', 'downloading'} for row in jobs)
+        self.progress.setText(f'{activity} · 排队 {len(queued)} · 执行 {active} · 完成 {done}/{len(jobs)} · 已连接 {len(state["clients"])} 个浏览器')
         limit = int(state.get('preferences', {}).get('concurrency', 2))
         attention = sum(item['state'] in {'需处理', '未就绪', '账号已隔离', '自动等待中'} for item in statuses)
-        self.connection_summary.setText(f'账号并行 {active}/{limit} · 浏览器：已连接 {len(statuses)} · 可接单 {ready} · 执行中 {busy} · 等待／需处理 {attention}' +
+        summary = (f'账号并行 {active}/{limit} · 浏览器：已连接 {len(statuses)} · 可接单 {ready} · 执行中 {busy} · 等待／需处理 {attention}' +
             (f'\n排队原因：{reason}' if reason else '\n提交并保存成功后自动调度；不必再点开始。'))
         capacity = state.get('browser_capacity', {})
         if capacity.get('message') and queued:
-            self.connection_summary.setText(self.connection_summary.text() + '\n' + capacity['message'])
+            summary += '\n' + capacity['message']
+        self.connection_summary.setText(summary)
         self.update_browsers()
         self.setup.apply_state(state)
         self.manual.apply_state(state)

@@ -27,7 +27,7 @@ class QueueTools:
         actions.addSeparator()
         actions.addAction('清理已完成／已取消记录…', lambda: dialog.delete_records([
             row['id'] for row in dialog.state.get('jobs', []) if row['status'] in {'completed', 'cancelled'}]))
-        self.summary = QtWidgets.QLabel(page); self.summary.setWordWrap(True); layout.addWidget(self.summary)
+        self.summary = QtWidgets.QLabel(page)
         self.search.textChanged.connect(self.refresh); self.status.currentIndexChanged.connect(self.refresh)
         self.group.currentIndexChanged.connect(self.refresh)
 

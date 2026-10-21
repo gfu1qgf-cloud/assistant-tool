@@ -10,6 +10,7 @@ from .pricing import fixed_cost
 from .routing import dispatch_rank
 from .timing import value as timing_value
 from .connection_status import configured_profiles, browser_status
+from .status_ui import status_area
 
 
 def estimate_text(items, state):
@@ -138,11 +139,11 @@ class ManualWorkflowMixin:
         lower.addWidget(self.options)
         self.recent = RecentSubmissions(self); self.recent.setMinimumWidth(260); lower.addWidget(self.recent, 1)
         layout.addLayout(lower, 2)
-        self.route_note = QtWidgets.QLabel(self); self.route_note.setWordWrap(True); layout.addWidget(self.route_note)
-        self.estimate = QtWidgets.QLabel(self); self.estimate.setWordWrap(True); layout.addWidget(self.estimate)
+        self.route_note = QtWidgets.QLabel(self); layout.addWidget(status_area(self.route_note, 2))
+        self.estimate = QtWidgets.QLabel(self); layout.addWidget(status_area(self.estimate, 1))
         row = QtWidgets.QHBoxLayout()
         self.status = QtWidgets.QLabel('草稿按任务＋图片分别保存；普通回车换行，Ctrl+Enter 提交并切换下一张。', self)
-        self.status.setWordWrap(True); row.addWidget(self.status, 1)
+        row.addWidget(status_area(self.status, 1), 1)
         self.submit = QtWidgets.QPushButton('提交这一条', self); self.submit.clicked.connect(lambda: self.enqueue())
         self.submit_next = QtWidgets.QPushButton('提交并切换下一张', self); self.submit_next.clicked.connect(lambda: self.enqueue(advance=True))
         row.addWidget(self.submit); row.addWidget(self.submit_next); layout.addLayout(row)
