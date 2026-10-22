@@ -4,12 +4,14 @@ import traceback
 from qt_compat import QtCore, QtGui, QtWidgets
 from model.ClipboardHelper import set_internal_clipboard_text
 from .engine import CONFIG_KEY, format_result, normalize_settings, run_segmentation
+from .duration_warning import CopyDurationGuard, duration_check, duration_text, warning_text
 
 
 class ScriptSegmenterDialog(QtWidgets.QDialog):
     def __init__(self, context, parent=None):
         super().__init__(parent)
         self.context, self.entries, self.handle, self._loading = context, [], None, False
+        self.copy_guard = CopyDurationGuard(self, self)
         self.setWindowTitle("智能文案分段助手")
         self.setWindowFlags(self.windowFlags() | QtCore.Qt.WindowType.WindowMinMaxButtonsHint)
         self.resize(1080, 730)
@@ -72,6 +74,12 @@ class ScriptSegmenterDialog(QtWidgets.QDialog):
             row.addWidget(QtWidgets.QLabel(label))
             row.addWidget(widget)
         row.addStretch()
+        self.total_limit = QtWidgets.QSpinBox()
+        self.total_limit.setRange(30, 3600)
+        self.total_limit.setSuffix(' 秒')
+        self.total_limit.setToolTip('整篇朗读时长上限，默认180秒。超时提醒，不改写或截断文案。')
+        row.addWidget(QtWidgets.QLabel('总朗读上限'))
+        row.addWidget(self.total_limit)
         advanced.hide()
         more.toggled.connect(advanced.setVisible)
         layout.addWidget(advanced)
@@ -111,6 +119,10 @@ class ScriptSegmenterDialog(QtWidgets.QDialog):
         self.summary = QtWidgets.QLabel()
         self.summary.setWordWrap(True)
         rl.addWidget(self.summary)
+        self.duration_note = QtWidgets.QLabel()
+        self.duration_note.setWordWrap(True)
+        self.duration_note.hide()
+        rl.addWidget(self.duration_note)
         self.table = QtWidgets.QTableWidget(0, 4)
         self.table.setHorizontalHeaderLabels(["段", "生成秒数", "预计朗读", "原文"])
         self.table.verticalHeader().hide()
@@ -156,7 +168,8 @@ class ScriptSegmenterDialog(QtWidgets.QDialog):
         self.pause.setValue(saved["pause_seconds"])
         self.padding.setValue(saved["padding_seconds"])
         self.cjk_speed.setValue(int(saved["characters_per_minute"]))
-        for widget in [self.mode, self.strategy, self.speed, self.pause, self.padding, self.cjk_speed]:
+        self.total_limit.setValue(saved['total_limit_seconds'])
+        for widget in [self.mode, self.strategy, self.speed, self.pause, self.padding, self.cjk_speed, self.total_limit]:
             signal = widget.currentIndexChanged if widget in (self.mode, self.strategy) else widget.valueChanged
             signal.connect(self.invalidate_results)
         self.new_manual()
@@ -166,7 +179,7 @@ class ScriptSegmenterDialog(QtWidgets.QDialog):
         return normalize_settings({"durations": durations, "preferred_seconds": max(durations),
             "words_per_minute": self.speed.value(), "pause_seconds": self.pause.value(),
             "padding_seconds": self.padding.value(), "characters_per_minute": self.cjk_speed.value(),
-            "boundary_strategy": self.strategy.currentData()})
+            "boundary_strategy": self.strategy.currentData(), 'total_limit_seconds': self.total_limit.value()})
 
     def current_entry(self):
         row = self.sources.currentRow()
@@ -273,7 +286,7 @@ class ScriptSegmenterDialog(QtWidgets.QDialog):
 
     def set_busy(self, value):
         for widget in [self.input, self.mode, self.strategy, self.speed, self.pause, self.padding, self.cjk_speed,
-                       self.source_field, self.generate_button, self.generate_all_button]:
+                       self.source_field, self.generate_button, self.generate_all_button, self.total_limit]:
             widget.setEnabled(not value)
         self.status.setText("后台分段中；关闭此窗口也会继续。" if value else "分段完成。")
 
@@ -306,6 +319,7 @@ class ScriptSegmenterDialog(QtWidgets.QDialog):
         self.detail.clear()
         entry = self.current_entry() or {}
         result = entry.get("result")
+        self.duration_note.hide()
         self.copy_button.setEnabled(bool(result))
         self.save_button.setEnabled(bool(result))
         if not result:
@@ -313,6 +327,15 @@ class ScriptSegmenterDialog(QtWidgets.QDialog):
             return
         self.summary.setText(f"{len(result['segments'])}段 · 预计朗读 {result['estimated_seconds']:.1f}秒 · 视频合计 {result['video_seconds']}秒"
                              + (f" · {result['warning_count']}段超时需处理" if result["warning_count"] else " · 原文完整性已校验"))
+        check = duration_check(result)
+        if check['seconds'] > check['limit']:
+            self.duration_note.setText(warning_text(check) + ' 实际时长以生成音频为准；复制前会再次确认。')
+            self.duration_note.setStyleSheet('color:#8a3600;background:#fff0db;padding:6px;')
+            self.duration_note.show()
+        elif check['seconds'] >= check['limit'] - 10:
+            self.duration_note.setText(f"接近{duration_text(check['limit'])}上限，建议留余量；实际时长以生成音频为准。")
+            self.duration_note.setStyleSheet('color:#735900;background:#fff9dc;padding:6px;')
+            self.duration_note.show()
         for segment in result["segments"]:
             row = self.table.rowCount()
             self.table.insertRow(row)
@@ -342,15 +365,21 @@ class ScriptSegmenterDialog(QtWidgets.QDialog):
     def copy_all(self):
         result = (self.current_entry() or {}).get("result")
         if result:
-            set_internal_clipboard_text(format_result(result))
-            self.status.setText("已复制全部分段（含段号和建议秒数）。")
+            def approved():
+                if (self.current_entry() or {}).get('result') is result:
+                    set_internal_clipboard_text(format_result(result))
+                    self.status.setText("已复制全部分段（含段号和建议秒数）。")
+            self.copy_guard.request([duration_check(result)], approved)
 
     def copy_selected(self, with_labels=True):
         result = (self.current_entry() or {}).get("result")
         indices = self.selected_indices()
         if result and indices:
-            set_internal_clipboard_text(format_result(result, indices, with_labels))
-            self.status.setText(f"已复制 {len(indices)}段。")
+            def approved():
+                if (self.current_entry() or {}).get('result') is result:
+                    set_internal_clipboard_text(format_result(result, indices, with_labels))
+                    self.status.setText(f"已复制 {len(indices)}段。")
+            self.copy_guard.request([duration_check(result, indices)], approved)
 
     def result_menu(self, point):
         index = self.table.indexAt(point)

@@ -8,7 +8,7 @@ CONFIG_KEY = "script_segmenter"
 DEFAULT_SETTINGS = {"durations": [6, 8, 10], "preferred_seconds": 10,
                     "words_per_minute": 150, "characters_per_minute": 240,
                     "pause_seconds": 0.3, "padding_seconds": 0.4,
-                    "boundary_strategy": "fewest"}
+                    "boundary_strategy": "fewest", "total_limit_seconds": 180}
 ABBREVIATIONS = {"dr", "prof", "mr", "mrs", "ms", "sv", "napr", "tzv", "resp", "str", "č", "atď"}
 SPECIAL = re.compile(r"https?://[^\s<>]+|[\w.+-]+@[\w.-]+\.[\w-]+", re.UNICODE)
 
@@ -34,7 +34,8 @@ def normalize_settings(value):
             "characters_per_minute": _number(value.get("characters_per_minute"), 240, 80, 600),
             "pause_seconds": _number(value.get("pause_seconds"), .3, 0, 2),
             "padding_seconds": _number(value.get("padding_seconds"), .4, 0, 2),
-            "boundary_strategy": "punctuation_first" if value.get("boundary_strategy") == "punctuation_first" else "fewest"}
+            "boundary_strategy": "punctuation_first" if value.get("boundary_strategy") == "punctuation_first" else "fewest",
+            "total_limit_seconds": int(_number(value.get("total_limit_seconds"), 180, 30, 3600))}
 
 
 def _word_character(character):

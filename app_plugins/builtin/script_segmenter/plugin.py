@@ -4,7 +4,7 @@ from app_plugins.api import MAIN_MENU, TASK_CONTEXT_MENU, PluginCommand
 class ScriptSegmenterPlugin:
     plugin_id = "script_segmenter"
     display_name = "智能文案分段助手"
-    version = "1.0"
+    version = "1.1"
     required_api_version = 1
 
     def __init__(self):
@@ -60,4 +60,5 @@ class ScriptSegmenterPlugin:
         if self.quick_copy is not None:
             self.quick_copy.stop()
         if self.dialog is not None:
+            self.dialog.copy_guard.cancel()
             self.dialog.close()
