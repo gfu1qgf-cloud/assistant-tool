@@ -15,20 +15,20 @@ class CaptionInspectorPolishTests(unittest.TestCase):
     def setUpClass(cls):
         cls.app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
 
-    def test_relevant_effect_is_marked_without_hiding_or_disabling_others(self):
+    def test_effect_titles_stay_plain_without_hiding_or_disabling_other_parameters(self):
         layer = caption('appear')
         layer['caption_effects']['anim_in_type'] = 'word_pop_random'
         editor = CaptionEffectEditor(layer)
         self.addCleanup(editor.deleteLater)
-        self.assertIn('当前使用', editor.groups['word_pop'].toggle.text())
-        self.assertNotIn('当前使用', editor.groups['floating'].toggle.text())
+        self.assertEqual('逐词弹入', editor.groups['word_pop'].toggle.text())
+        self.assertEqual('漂浮', editor.groups['floating'].toggle.text())
         floating = editor.controls['floating_amplitude']
         self.assertTrue(floating.isEnabled())
         self.assertFalse(editor.groups['floating'].isHidden())
         editor.controls['anim_in_type'].setCurrentIndex(
             editor.controls['anim_in_type'].findData('floating'))
-        self.assertIn('当前使用', editor.groups['floating'].toggle.text())
-        self.assertNotIn('当前使用', editor.groups['word_pop'].toggle.text())
+        self.assertEqual('漂浮', editor.groups['floating'].toggle.text())
+        self.assertEqual('逐词弹入', editor.groups['word_pop'].toggle.text())
         self.assertTrue(editor.controls['word_pop_random_duration'].isEnabled())
 
     def test_display_description_and_duration_target_follow_settings(self):

@@ -27,6 +27,8 @@ class CaptionProperties(QtWidgets.QWidget):
     def __init__(self, parent=None, *, allow_manual_file=True):
         super().__init__(parent)
         self.layer, self.loading = None, False
+        self.parameter_window = None
+        self.parameter_panel = None
         self.allow_manual_file = allow_manual_file
         draft = QtWidgets.QWidget(self)
         form = QtWidgets.QFormLayout(draft)
@@ -99,6 +101,12 @@ class CaptionProperties(QtWidgets.QWidget):
         self.gallery_button = QtWidgets.QPushButton("样式图库…")
         self.gallery_button.clicked.connect(self.choose_gallery)
         action_row.addWidget(self.gallery_button)
+        self.parameter_actions = action_row
+        self.parameter_button = QtWidgets.QPushButton('参数一览…')
+        self.parameter_button.setAutoDefault(False)
+        self.parameter_button.setToolTip('比较预设与当前参数；双击展开、滚动定位并闪烁提示。')
+        self.parameter_button.clicked.connect(self.show_parameters)
+        action_row.addWidget(self.parameter_button)
         reset = QtWidgets.QPushButton('还原预设默认值')
         self.reset_button=reset
         reset.setToolTip('明确重置当前预设的外观、位置尺寸和分组节奏；保留任务文字、人声语言、时间戳与来源。普通切换预设不重置位置和分组。')
@@ -272,6 +280,8 @@ class CaptionProperties(QtWidgets.QWidget):
     def set_layer(self, layer):
         self.layer = copy.deepcopy(layer)
         self.setEnabled(bool(layer))
+        if self.parameter_window is not None:
+            self.parameter_window.queue_refresh()
         if not layer:
             self.effects_editor.set_layer(None)
             return
@@ -381,6 +391,16 @@ class CaptionProperties(QtWidgets.QWidget):
                 combo.setCurrentIndex(combo.findData(dialog.selected))
         finally:
             dialog.deleteLater()
+
+    def show_parameters(self):
+        if not self.layer: return
+        if self.parameter_window is None:
+            from .caption_parameter_window import CaptionParameterWindow
+            self.parameter_window = CaptionParameterWindow(self)
+        self.parameter_window.refresh()
+        self.parameter_window.show()
+        self.parameter_window.raise_()
+        self.parameter_window.activateWindow()
 
     def reset_style(self):
         self._apply_preset(reset_layout=True)

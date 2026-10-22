@@ -46,6 +46,9 @@ def compose_basics(panel):
     content = QtWidgets.QWidget(); body = QtWidgets.QVBoxLayout(content)
     body.setContentsMargins(3, 3, 3, 3); body.setSpacing(7)
     basic = panel.add_section('basic', '基础设置', content, expanded=True)
+    panel.caption_properties.parameter_panel = panel
+    panel.caption_properties.parameter_actions.removeWidget(panel.caption_properties.parameter_button)
+    basic.header_layout.addWidget(panel.caption_properties.parameter_button)
     for widget in (identity, panel.caption_properties, panel.geometry_editor):
         panel.body.removeWidget(widget)
     body.addWidget(identity)
