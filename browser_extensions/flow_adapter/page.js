@@ -366,10 +366,34 @@
   }
   function checkFailedCards() {
     for (const tile of document.querySelectorAll('flow-video-tile, flow-grid-tile-container, [data-media-id]')) {
-      const text = tile.textContent || '';
-      if (!/failed to generate|生成失败|生成失敗/i.test(text) || !/refund|退还|退還|退回|退款/i.test(text)) continue;
-      const ids = new Set(['data-media-id','data-tile-id','data-generation-id','data-asset-id','data-id','id'].map(key=>tile.getAttribute?.(key)).filter(Boolean));
-      for (const id of ids) generationFailed(id,'refund_card','Flow 失败卡片明确提示生成失败并退款');
+      if (!siteAlertVisible(tile)) continue;
+      const copy = tile.cloneNode?.(true);
+      if (copy) {
+        const originals = [...(tile.querySelectorAll?.('*') || [])], copies = [...copy.querySelectorAll('*')];
+        originals.forEach((node,index) => {if (!siteAlertVisible(node)) copies[index]?.remove();});
+        for (const node of copy.querySelectorAll(ignoredAlertContent)) node.remove();
+      }
+      const text = String((copy || tile).textContent || '').replace(/\s+/g, ' ');
+      const failedText = /failed to generate|(?:could not|couldn't|unable to) generate|生成失败|生成失敗|(?:无法|無法|未能)生成(?:这|這|该|該)?(?:部|段|个|個)?(?:影片|视频|視頻)/i.test(text);
+      const failedState = ['data-status','data-state','data-generation-status'].some(key =>
+        /^(?:failed|error|MEDIA_GENERATION_STATUS_FAILED)$/i.test(tile.getAttribute?.(key) || '')) ||
+        [...(tile.querySelectorAll?.('h1, h2, h3, [role="heading"]') || [])].some(node =>
+          siteAlertVisible(node) && /^(?:failed|failure|失败|失敗)$/i.test(String(node.textContent || '').trim()));
+      const retry = [...(tile.querySelectorAll?.('button, [role="button"]') || [])].some(button => {
+        if (!siteAlertVisible(button) || button.getAttribute?.('aria-disabled') === 'true') return false;
+        return ['aria-label','title','data-tooltip','textContent'].some(key => {
+          const label = String(key === 'textContent' ? button.textContent : button.getAttribute?.(key) || '').trim();
+          return /^(?:retry(?:\s+(?:video|generation))?|try again|重试|重試|重试生成|重試生成|重试视频|重試影片|重新尝试|重新嘗試)$/i.test(label);
+        });
+      });
+      const refunded = /refund|退还|退還|退回|退款/i.test(text);
+      if (!(failedText || failedState) || !(refunded || retry)) continue;
+      const attributes = ['data-media-id','data-generation-id','data-asset-id'];
+      let ids = new Set(attributes.map(key => tile.getAttribute?.(key)).filter(Boolean));
+      if (!ids.size) ids = new Set(['data-tile-id','data-id','id'].map(key => tile.getAttribute?.(key)).filter(Boolean));
+      if (ids.size !== 1) continue;
+      generationFailed([...ids][0], 'refund_card', (retry ?
+        'Flow 本次视频卡片已失败并提供重试按钮：' : 'Flow 失败卡片明确提示生成失败并退款：') + text.slice(0,350));
     }
   }
   window.addEventListener('flow-task-media-failed',event=>generationFailed(event.detail?.mediaId,event.detail?.source,event.detail?.reason));
@@ -485,7 +509,7 @@
     if (message?.timing) applyTiming(message.timing);
     if (!handler || !message) return;
     if (message.action === 'ready') {pageStatus(); return;}
-    if (!['get_points', 'prepare', 'upload_images', 'run_tasks', 'snapshot', 'retry_download'].includes(message.action)) return;
+    if (!['get_points', 'prepare', 'upload_images', 'run_tasks', 'snapshot', 'retry_download', 'skip_download'].includes(message.action)) return;
     let ownsOperation = false;
     try {
       if (message.action === 'snapshot') { snapshot(true); return; }
@@ -525,6 +549,10 @@
         const data = await window.__lzxReferenceIdentity.upload(message.params || {},
           {account:email, page_instance:pageInstance, guard:guardAccount});
         emit({action:'upload_images_response', request_id:message.request_id, success:true, data});
+      } else if (message.action === 'skip_download') {
+        const ok = helpers.skipDownload?.(message.params?.batch_id);
+        emit({action:'skip_download_response', request_id:message.request_id, success:!!ok,
+          error:ok ? '' : '原任务不是当前网页批次，未停止其他任务。'});
       } else if (message.action === 'retry_download') {
         const ok = await helpers.retry(message.params?.batch_id);
         emit({action: 'retry_download_response', request_id: message.request_id, success: !!ok,

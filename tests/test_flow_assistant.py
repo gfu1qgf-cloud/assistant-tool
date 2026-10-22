@@ -122,7 +122,8 @@ class FlowTests(unittest.TestCase):
         service.request(client, 'prepare', job=row['id'])
         request_id = next(iter(service.pending))
         service._response(client, {'request_id': request_id, 'success': True, 'data': {'verified': False, 'model': 'veo'}})
-        self.assertEqual(service.store.get(row['id'])['status'], 'failed')
+        self.assertEqual(service.store.get(row['id'])['status'], 'queued')
+        self.assertEqual(service.preferences['environment_recoveries']['browser:browser']['code'], 'FLOW_SETTINGS_MISMATCH')
         self.assertEqual(fake.sendTextMessage.call_count, 1)
 
     def test_prepared_job_is_committed_before_send_and_late_reply_is_ignored(self):

@@ -14,7 +14,7 @@ class FlowAssistantPlugin(QtCore.QObject):
     command = QtCore.pyqtSignal(object)
     plugin_id = 'flow_assistant'
     display_name = 'Flow 视频助手'
-    version = '0.4.50'
+    version = '0.4.51'
     upstream_version = '1.1.5'
     ui_api_version = 2
     manual_credit_check_api = 1
@@ -122,9 +122,11 @@ class FlowAssistantPlugin(QtCore.QObject):
         self.high_credit_box = box
         def finished(result):
             chose_yes = result == int(QtWidgets.QMessageBox.StandardButton.Yes)
-            approved = chose_yes and box.expires_at is not None and time.time() < box.expires_at
+            decided_at = time.time()
+            approved = chose_yes and box.expires_at is not None and decided_at < box.expires_at
             if self.high_credit_box is box: self.high_credit_box = None
             self.command.emit({'action':'high_credit_decision', 'nonce':request['nonce'], 'approved':approved,
+                               'decided_at':decided_at,
                                'source':'dismissed' if self.stopping else 'timeout' if box.timed_out or chose_yes and not approved else 'user'})
             box.deleteLater()
         box.finished.connect(finished)

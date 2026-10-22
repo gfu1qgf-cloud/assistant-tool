@@ -181,7 +181,7 @@ class HighCreditTests(unittest.TestCase):
     def test_worker_timeout_is_independent_of_the_gui(self):
         service = self.service(); rich = self.browser(service, points=1038); self.queue(service)
         service._tick(); self.display(service); deadline = service.high_credit_pending['expires_at']
-        with patch('time.time', return_value=deadline + .01): service._tick()
+        with patch('time.time', return_value=deadline + value(service.preferences, 'request_timeout_seconds') + .01): service._tick()
         self.assertIsNone(service.high_credit_pending)
         self.assertEqual(record(rich, service.preferences)['decision'], 'skipped')
 
@@ -193,10 +193,10 @@ class HighCreditTests(unittest.TestCase):
         service.execute({'action': 'high_credit_decision', 'nonce': pending['nonce'], 'approved': True})
         self.assertFalse(allowed(rich, service.preferences))
 
-    def test_fifty_credit_account_arriving_during_question_invalidates_yes(self):
+    def test_fifty_credit_account_arriving_during_question_keeps_yes_and_small_priority(self):
         service = self.service(); rich = self.browser(service, points=1038); self.queue(service); service._tick()
         small = self.browser(service, 'Small', points=50); self.answer(service, True); service._tick()
-        self.assertFalse(allowed(rich, service.preferences))
+        self.assertTrue(allowed(rich, service.preferences))
         self.assertEqual(service.store.rows()[0]['browser'], small['id'])
 
     def test_changed_login_during_question_invalidates_yes(self):
@@ -206,7 +206,7 @@ class HighCreditTests(unittest.TestCase):
         self.assertFalse(allowed(rich, service.preferences))
         self.assertEqual(service.preferences['high_credit_accounts'][old['account']]['decision'], 'standby')
 
-    def test_marker_survives_debits_refresh_alias_and_restart_but_consent_does_not(self):
+    def test_marker_and_explicit_yes_survive_debits_alias_and_restart(self):
         service = self.service(); rich = self.browser(service, points=100); self.queue(service); service._tick()
         self.answer(service, True); debit_balance(rich, service.clients.values(), 12)
         self.observe(service, rich, 88, manual=True)
@@ -214,9 +214,9 @@ class HighCreditTests(unittest.TestCase):
         other = {**rich, 'id': 'alias', 'profile': 'Alias', 'credits': 88}
         self.assertTrue(allowed(other, service.preferences))
         service.execute({'action': 'stop'}); restarted = self.service()
-        self.assertTrue(is_high(other, restarted.preferences)); self.assertFalse(allowed(other, restarted.preferences))
+        self.assertTrue(is_high(other, restarted.preferences)); self.assertTrue(allowed(other, restarted.preferences))
         self.browser(restarted, points=88); restarted.paused = False; restarted._tick()
-        self.assertIsNotNone(restarted.high_credit_pending)
+        self.assertIsNone(restarted.high_credit_pending)
 
     def test_skip_survives_restart_and_manual_credit_refresh(self):
         service = self.service(); rich = self.browser(service, points=1038); self.queue(service); service._tick()
@@ -344,9 +344,8 @@ class HighCreditTests(unittest.TestCase):
         small = self.browser(service, 'Small', points=50); service._tick()
         self.assertEqual(service.high_credit_pending['nonce'], nonce)
         self.answer(service, True)
-        self.assertEqual(record(rich, service.preferences)['decision'], 'standby')
-        self.assertNotIn('asked_cycle', record(rich, service.preferences))
-        self.assertFalse(allowed(rich, service.preferences))
+        self.assertEqual(record(rich, service.preferences)['permission'], 'allow')
+        self.assertTrue(allowed(rich, service.preferences))
 
     def test_unshown_dialog_is_retryable_and_never_converted_to_user_refusal(self):
         service = self.service(); rich = self.browser(service, points=1038); self.queue(service); service._tick()
@@ -410,7 +409,7 @@ class HighCreditTests(unittest.TestCase):
         self.assertIs(plugin.high_credit_box, box); self.assertTrue(box.isVisible())
         box.button(QtWidgets.QMessageBox.StandardButton.Yes).click()
         self.assertIsNone(plugin.high_credit_box)
-        self.assertEqual(record(rich, service.preferences)['decision'], 'standby')
+        self.assertEqual(record(rich, service.preferences)['permission'], 'allow')
         self.assertEqual(service.store.get(rows[0]['id'])['browser'], small['id'])
         self.assertFalse(any(row['status'] == 'cancelled' for row in service.store.rows()))
 

@@ -67,6 +67,15 @@ def browser_status(client, preferences, jobs=(), now=None):
         return {'connection': '已连接', 'project': project, 'state': '自动确认中',
                 'reason': str(recovery.get('message') or client.get('setup_blocked') or '正在后台确认本配置，无需手动操作'), 'color': '#986100'}
     if block:
+        repair = next((preferences.get('environment_recoveries', {}).get(key, {}) for key in browser_keys(client)
+            if preferences.get('environment_recoveries', {}).get(key, {}).get('error') == stored_block), {})
+        if repair and not account_error and block == stored_block:
+            stopped = repair.get('state') == 'stopped'
+            return {'connection': '已连接', 'project': project,
+                'state': '恢复失败／已跳过' if stopped else '自动恢复中',
+                'reason': ('原页面自动恢复已达上限，已跳过此账号；其他账号继续接单。' if stopped else
+                    f'原页面将自动刷新并重新核对（{repair.get("count",0)}/{timing_value(preferences,"connection_repair_attempts")}）；其他账号继续接单。') + str(block),
+                'color': '#b03728' if stopped else '#986100'}
         return {'connection': '已连接', 'project': project, 'state': '账号已隔离' if account_error else '需处理', 'reason': str(block), 'color': '#b03728'}
     active = next((row for row in jobs if row.get('status') in
         {'preparing', 'uploading', 'submitting', 'generating', 'downloading', 'uncertain', 'download_failed'}

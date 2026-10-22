@@ -627,7 +627,8 @@ class FlowService(QtCore.QObject, FlowOperations):
                     return
                 if defer_prepare(self, client, row, message.get('error') or '', message.get('code', '')):
                     return
-                self.quarantine(client, row, str(message.get('error') or '页面参数核对失败'))
+                self.quarantine(client, row, str(message.get('error') or '页面参数核对失败'),
+                    recovery_code='FLOW_SETTINGS_MISMATCH' if message.get('code') == 'FLOW_SETTINGS_MISMATCH' else '')
                 return
             if action in {'upload_images', 'retry_download'}:
                 detail = message.get('error') or '；'.join(str(value) for value in (data.get('errors') or {}).values()) or '浏览器传输未完成'
@@ -649,7 +650,7 @@ class FlowService(QtCore.QObject, FlowOperations):
             cost_source = 'duration_rule' if rule is not None else 'page'
             if rule is not None: cost = rule
             if not data.get('verified') or data.get('model') != 'omni_1_1_flash':
-                self.quarantine(client, row, '页面未确认 Omni 参数，未提交生成。', status='failed')
+                self.quarantine(client, row, '页面未确认 Omni 参数，未提交生成。', recovery_code='FLOW_SETTINGS_MISMATCH')
                 return
             if ('email' in data and str(data['email']).strip().casefold() != client['account']
                     or row['remote'].get('account') and row['remote']['account'] != client['account']):
@@ -778,7 +779,8 @@ class FlowService(QtCore.QObject, FlowOperations):
         client['active_batch'] = str(data.get('batch_id') or '')
         batch = str(data.get('batch_id') or '')
         row = next((r for r in self.store.rows() if r['attempt'] == batch and r['browser'] == client['id']), None)
-        if not row or row['status'] in {'completed', 'cancelled', 'archiving', 'archive_failed', 'download_parked', 'needs_review'}:
+        if not row or row['status'] in {'completed', 'cancelled', 'archiving', 'archive_failed', 'needs_review'} or (
+                row['status'] == 'download_parked' and not row['remote'].get('download_skipped')):
             return
         if row['remote'].get('generation_retry', {}).get('failed_attempt') == row['attempt']:
             return
@@ -797,7 +799,8 @@ class FlowService(QtCore.QObject, FlowOperations):
                 previous and incoming and ({identity(b) for b in previous} != {identity(b) for b in incoming}
                     or any(previous_ids.get(identity(b)) and b['mediaIds'] and
                            previous_ids[identity(b)] != set(b['mediaIds']) for b in incoming))):
-            self.store.update(row['id'], 'uncertain', error='原任务的媒体归属发生变化，已停止接收替代结果；保留原绑定，不会重新生成。')
+            self.store.update(row['id'], 'download_parked' if row['status'] == 'download_parked' else 'uncertain',
+                error='原任务的媒体归属发生变化，已停止接收替代结果；保留原绑定，不会重新生成。')
             return
         bindings = merge_snapshot_bindings(row['remote'], bindings)
         # A refreshed signed URL is not generation/download progress.
@@ -813,7 +816,9 @@ class FlowService(QtCore.QObject, FlowOperations):
         # A ready media ID is completion evidence even during that wait.
         remote['cloud_finished'] = bool(remote.get('cloud_finished') or ready_bindings({'bindings': bindings}))
         status = row['status']
-        if row['status'] == 'downloading' and retry_info(row, 'download').get('active'):
+        if row['status'] == 'download_parked':
+            status = 'download_parked'
+        elif row['status'] == 'downloading' and retry_info(row, 'download').get('active'):
             status = 'downloading'
         elif row['status'] == 'uncertain' and (remote.get('watch_attention') or
                 remote.get('page_recovery') and not incoming):
@@ -828,7 +833,8 @@ class FlowService(QtCore.QObject, FlowOperations):
             if not (row['status'] == 'downloading' and any(task.get('downloadIds') or []) and 'failed' not in (task.get('status') or [])):
                 status = 'download_failed'
         if remote != row['remote'] or status != row['status']:
-            self.store.update(row['id'], status, remote=remote, error=row['error'] if status in {'uncertain', 'download_failed'} else '')
+            self.store.update(row['id'], status, remote=remote,
+                error=row['error'] if status in {'uncertain', 'download_failed', 'download_parked'} else '')
         self.resume_download_binding(self.store.get(row['id']))
         pending = remote.get('unverified_download')
         if pending and owns_download(self.store.get(row['id']), pending):
@@ -850,7 +856,8 @@ class FlowService(QtCore.QObject, FlowOperations):
         if data.get('download_path') != self.download_name(row) or not data.get('mediaId') or not data.get('submissionId'):
             raise ValueError('下载归属标识不完整')
         if not owns_download(row, data):
-            self.store.update(row['id'], 'uncertain', remote={**row['remote'], 'unverified_download': data,
+            self.store.update(row['id'], 'download_parked' if row['status'] == 'download_parked' else 'uncertain',
+                remote={**row['remote'], 'unverified_download': data,
                 'unverified_download_event': message.get('event_id')},
                 error='收到浏览器下载，但缺少本次生成响应的归属证据；未归档为任务成品，正在核对原任务，不会重新生成。')
             self.send(client, {'type': 'ack', 'event_id': message.get('event_id')})
@@ -869,6 +876,9 @@ class FlowService(QtCore.QObject, FlowOperations):
             return
         current_download = retry_info(row, 'download').get('download_id')
         if data.get('state') == 'interrupted' and current_download is not None and data.get('downloadId') not in (None, current_download):
+            self.send(client, {'type': 'ack', 'event_id': message.get('event_id')})
+            return
+        if row['status'] == 'download_parked' and data.get('state') != 'complete':
             self.send(client, {'type': 'ack', 'event_id': message.get('event_id')})
             return
         if row['status'] not in {'completed', 'archiving'}:
@@ -1358,6 +1368,8 @@ class FlowService(QtCore.QObject, FlowOperations):
                 self.publish()
             if watch_preparation(self):
                 self.publish()
+            from .environment_recovery import watch as watch_environment
+            if watch_environment(self): self.publish()
             if watch_connections(self):
                 self.publish()
             from .project_startup import watch as watch_project_startup

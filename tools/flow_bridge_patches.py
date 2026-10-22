@@ -38,6 +38,15 @@ TRANSPORT = '''    if (window.__lzxFlowTransport) {
       }), {prepare: syncPageVideoSettings, initialized: () => bridgeUiReady,
         reconcileResults: reconcileResultReceipts,
         upload: uploadPathsToFlow, images: getLoadedPageImages, click: simulateClick, cleanup: cleanupPageOverlays,
+        skipDownload: batchId => {
+          if (!/^[a-f0-9]{32}$/.test(batchId || "")) return false;
+          const path = `FlowBridge/${batchId}/result.mp4`;
+          if (state.tasks.length !== 1 || state.tasks[0].download_path !== path) return false;
+          // Stop only our local result/download wait. Flow's cloud generation
+          // and the original task/media bindings are deliberately retained.
+          if (batchPromise) stopBatch();
+          return true;
+        },
         failed: (taskId, submissionId, reason) => {
           const row = state.tasks.findIndex(t => t.taskId === taskId);
           const line = state.tasks[row]?.mediaBindings?.findIndex(b => b?.submissionId === submissionId);

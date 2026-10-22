@@ -13,6 +13,39 @@ from .reference_image import freeze_reference
 
 
 class TransferRecovery:
+    def _release_skipped_wait(self, row):
+        """Retire only this attempt's local wait, never cancel cloud work."""
+        client = next((c for c in self.clients.values() if c.get('authorized') and c['id'] == row['browser']), None)
+        if (not client or 'skip_download_v1' not in client.get('capabilities', []) or
+                not client.get('batch_running') or client.get('native_busy') or
+                client.get('active_batch') != row['attempt']):
+            return False
+        previous = client.get('skip_download_wait') or {}
+        if not isinstance(previous, dict) or previous.get('attempt') != row['attempt']: previous = {}
+        if (previous.get('count', 0) >= timing_value(self.preferences, 'connection_repair_attempts') or
+                previous.get('next_at', 0) > time.time() or
+                any(p['client'] == client['id'] and p['action'] == 'skip_download' for p in self.pending.values())):
+            return False
+        if self.request(client, 'skip_download', {'batch_id': row['attempt']}):
+            client['skip_download_wait'] = {'attempt':row['attempt'], 'count':previous.get('count',0)+1,
+                'next_at':time.time()+timing_value(self.preferences,'transfer_wait_seconds')}
+            return True
+        return False
+
+    def park_failed_download(self, row):
+        """An exhausted download is retained for manual recovery, not dispatch."""
+        if row['status'] != 'download_failed' or not retry_info(row, 'download').get('stopped'):
+            return False
+        remote = {**row['remote'], 'download_skipped': True, 'released_at': time.time()}
+        self.store.update(row['id'], 'download_parked', remote=remote,
+            error='下载已跳过，不占用后续调度；保留原任务，可手动下载或仅重试下载。原因：' +
+                  str(retry_info(row, 'download').get('last_error') or row['error'])[:700])
+        for key, request in list(self.pending.items()):
+            if request['job'] == row['id'] and request['attempt'] == row['attempt']:
+                self.pending.pop(key)
+        self._release_skipped_wait(self.store.get(row['id']))
+        return True
+
     def recover_extension_downloads(self, client):
         """An updated extension automatically recovers its old ASB rejection.
 
@@ -68,7 +101,10 @@ class TransferRecovery:
         info.update(count=count, stopped=stopped, active=False, next_at=next_at,
                     last_error=str(error)[:1000], waiting='', stop_code=stop_code)
         status = ('failed' if stopped else 'uploading') if stage == 'upload' else 'download_failed'
-        return self._save_transfer(row, stage, info, status=status, error=str(error)[:1000])
+        changed = self._save_transfer(row, stage, info, status=status, error=str(error)[:1000])
+        if stage == 'download' and stopped:
+            changed |= self.park_failed_download(self.store.get(row['id']))
+        return changed
 
     def _wait_transfer(self, row, stage, reason):
         info = dict(retry_info(row, stage)); info.update(active=False, waiting=reason,
@@ -192,6 +228,9 @@ class TransferRecovery:
     def watch_transfer_retries(self):
         changed = False
         for row in self.store.rows():
+            if row['status'] == 'download_parked' and row['remote'].get('download_skipped'):
+                changed |= self._release_skipped_wait(row)
+                continue
             if row['status'] == 'download_failed': stage = 'download'
             elif row['status'] == 'uploading' and retry_info(row, 'upload').get('next_at'): stage = 'upload'
             else: continue
@@ -199,7 +238,10 @@ class TransferRecovery:
             if not info:
                 changed |= self.transfer_failed(row, stage, row['error'] or '等待恢复原视频下载')
                 continue
-            if info.get('stopped') or self._transfer_pending(row, stage): continue
+            if info.get('stopped'):
+                if stage == 'download': changed |= self.park_failed_download(row)
+                continue
+            if self._transfer_pending(row, stage): continue
             if stage == 'upload' and (self.safety_paused or self.paused and row['id'] not in self.released):
                 changed |= self._wait_transfer(row, stage, '队列已暂停；继续后自动重试上传')
                 continue

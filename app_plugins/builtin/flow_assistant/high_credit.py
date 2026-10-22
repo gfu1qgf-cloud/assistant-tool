@@ -125,23 +125,45 @@ def normal_remaining(service, queued):
                for client in candidates(service))
 
 
+def normal_unchecked(service, queued):
+    """An unknown balance or slow page is not proof an ordinary account is spent."""
+    from .policy import block_for
+    from .routing import dispatch_rank
+    for client in candidates(service):
+        if (is_high(client, service.preferences) or block_for(client, service.preferences) or client.get('blocked') or
+                not any(dispatch_rank(client, row['payload'], service.preferences) is not None for row in queued)):
+            continue
+        failure = service.preferences.get('browser_launch_failures', {}).get(client.get('profile'))
+        if failure and not potential(service, client, queued): continue
+        if not balance_ready(client, preferences=service.preferences): return True
+        if client['credits'] >= 10 and not client.get('page_ready'):
+            recovery = client.get('connection_recovery') or {}
+            if recovery.get('count', 0) < timing_value(service.preferences, 'connection_repair_attempts'):
+                return True
+    return False
+
+
 def submission_allowed(service, client, row):
     if not allowed(client, service.preferences):
         return False
     if not is_high(client, service.preferences):
         return True
-    # A smaller account can finish detecting between two response callbacks,
-    # before the next scheduler tick revokes the previous backup permission.
-    from .policy import admitted_queue
-    queued = admitted_queue(service.store.rows(), service.store.batches(), service.observed_costs,
-                            paused=service.paused, released=service.released)
-    return not normal_remaining(service, [row] + queued)
+    # A newly ready ordinary account wins before payment. Unknown/busy
+    # accounts are not grounds to revoke an explicit high-account choice.
+    from .store import choose_client
+    from .policy import estimated_cost
+    ordinary = [c for c in service.clients.values() if c.get('authorized') and not is_high(c, service.preferences)]
+    return choose_client(ordinary, service.store.rows(),
+        max(1, min(8, int(service.preferences.get('concurrency', 2)))) + 1, row['payload'], service.preferences,
+        estimated_cost(row['payload'], service.observed_costs)) is None
 
 
 def new_session_entries(preferences):
     entries = {}
     for key, original in preferences.get('high_credit_accounts', {}).items():
         entry = dict(original)
+        if entry.get('decision_source') == 'user_approved' and 'permission' not in entry:
+            entry['permission'] = 'allow'
         # v1 recorded automatic dismissal as refusal. Re-offer those ambiguous
         # decisions once; explicit v2 refusals/timeouts keep their durable hold.
         if entry.get('decision') == 'asking' or (entry.get('decision') == 'skipped' and not entry.get('decision_source')):
@@ -178,11 +200,13 @@ def decide(service, command):
     unchanged = not current or all(account_key(c, service.preferences) == pending['account'] for c in current)
     needed = (unchanged and bool(queued) and not service.safety_paused and not normal_remaining(service, queued)
               and pending['cycle'] == service.preferences.get('normal_credit_spends', 0))
-    timely = shown and time.time() < pending['expires_at']
-    approved = command.get('approved') is True and timely and needed
+    decided_at = command.get('decided_at', time.time())
+    timely = (shown and type(decided_at) in (int, float) and math.isfinite(decided_at) and
+        pending['shown_at'] <= decided_at < pending['expires_at'] and decided_at <= time.time() + 1)
+    approved = command.get('approved') is True and source == 'user' and timely and unchanged
     declined = command.get('approved') is False and source == 'user'
     timeout = shown and (source == 'timeout' or command.get('approved') is True and not timely)
-    skipped = declined or timeout and needed
+    skipped = declined or timeout
     if approved:
         decision, decision_source = 'approved', 'user_approved'
     elif declined:
@@ -196,6 +220,12 @@ def decide(service, command):
         'decision': decision, 'decision_source': decision_source,
         'session': service.preferences['high_credit_session'],
         'cycle': pending['cycle'], 'decided_at': time.time()}
+    if approved:
+        # The same durable choice as the direct permissions menu. Ordinary
+        # dispatch priority is separate from whether consent remains valid.
+        entries[pending['account']]['permission'] = 'allow'
+    if skipped:
+        entries[pending['account']]['asked_cycle'] = service.preferences.get('normal_credit_spends', 0)
     if not approved and not skipped:
         entries[pending['account']].pop('asked_cycle', None)
         if source == 'not_shown':
@@ -211,20 +241,16 @@ def watch(service, queued):
         preferences = with_marker(preferences, client)
     if preferences != service.preferences:
         service.commit_preferences(preferences)
-    normal = bool(queued) and normal_remaining(service, queued)
+    normal = bool(queued) and (normal_remaining(service, queued) or normal_unchecked(service, queued))
     pending = getattr(service, 'high_credit_pending', None)
     if pending:
-        if pending['phase'] == 'shown' and time.time() >= pending['expires_at']:
+        if pending['phase'] == 'shown' and time.time() >= pending['expires_at'] + timing_value(service.preferences, 'request_timeout_seconds'):
             decide(service, {'nonce': pending['nonce'], 'approved': False, 'source': 'timeout'})
         elif pending['phase'] == 'queued' and time.time() - pending['issued_at'] >= timing_value(service.preferences, 'request_timeout_seconds'):
             decide(service, {'nonce': pending['nonce'], 'approved': False, 'source': 'not_shown'})
         # Changing availability never closes a visible question prematurely.
         # Small accounts can proceed concurrently; Yes revalidates eligibility.
     if normal:
-        entries = {key: {**entry, 'decision': 'standby'} if entry.get('decision') == 'approved' else entry
-                   for key, entry in service.preferences.get('high_credit_accounts', {}).items()}
-        if entries != service.preferences.get('high_credit_accounts', {}):
-            service.commit_preferences({**service.preferences, 'high_credit_accounts': entries})
         return
     if not queued or service.safety_paused or getattr(service, 'high_credit_pending', None):
         return

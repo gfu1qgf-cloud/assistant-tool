@@ -40,7 +40,7 @@ class BalanceDispatchTests(unittest.TestCase):
         self.assertEqual(service.store.get(row['id'])['browser'], replacement['id'])
         self.assertNotEqual(service.store.get(row['id'])['browser'], rich['id'])
 
-    def test_fallback_is_bounded_and_does_not_keep_opening_failed_small_profile(self):
+    def test_slow_small_profile_does_not_prompt_high_but_explicit_permission_can_use_backup(self):
         service = self.service(); rich, small = self.setup_accounts(service); row = self.queue(service)
         launched = []; service.launch_requested.connect(launched.append); service._tick(); service._tick()
         self.assertEqual(launched, [small['profile']])
@@ -48,9 +48,8 @@ class BalanceDispatchTests(unittest.TestCase):
         with patch('time.time', return_value=deadline + .1):
             service._tick()
             request = service.high_credit_pending
-            self.assertIsNotNone(request)
-            service.execute({'action': 'high_credit_prompt_shown', 'nonce': request['nonce'], 'shown_at': time.time()})
-            service.execute({'action': 'high_credit_decision', 'nonce': request['nonce'], 'approved': True})
+            self.assertIsNone(request, 'a launch timeout does not prove the ordinary balance is exhausted')
+            service.execute({'action':'set_high_credit_permission','keys':['profile:'+rich['profile']], 'permission':'allow'})
             service._tick()
         self.assertEqual(service.store.get(row['id'])['browser'], rich['id'])
         self.assertEqual(launched, [small['profile']])

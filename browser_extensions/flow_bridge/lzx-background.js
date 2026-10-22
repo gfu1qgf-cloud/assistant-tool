@@ -232,7 +232,7 @@ async function receive(message) {
     return;
   }
   if (message.type === 'pong') return;
-  if (!['get_points', 'prepare', 'upload_images', 'run_tasks', 'snapshot', 'retry_download', 'open_project', 'refresh_project', 'repair_project', 'close_exhausted', 'close_browser', 'focus_window'].includes(message.action)) return;
+  if (!['get_points', 'prepare', 'upload_images', 'run_tasks', 'snapshot', 'retry_download', 'skip_download', 'open_project', 'refresh_project', 'repair_project', 'close_exhausted', 'close_browser', 'focus_window'].includes(message.action)) return;
   await applyBrowserOptions(message.browser_options);
   const tracked = !['snapshot', 'close_exhausted', 'close_browser'].includes(message.action);
   if (tracked) commandsInFlight++;
@@ -269,6 +269,10 @@ async function receive(message) {
     }
     if (message.action === 'retry_download' && message.params?.restore) {
       await retryBoundDownload(message);
+      return;
+    }
+    if (message.action === 'skip_download' && message.params?.batch_id !== activeBatch) {
+      send({action:'skip_download_response', request_id:message.request_id, success:true, data:{stale:true}});
       return;
     }
     if (message.action === 'retry_download' && message.params?.batch_id !== activeBatch) {
@@ -516,7 +520,7 @@ async function connect() {
         profile: config.profile || '', project: config.project || '',
         extension_version: chrome.runtime.getManifest?.().version || '', setup_id: config.setup_id || '',
         capabilities: ['idle_reload', 'project_setup_v1', 'generation_media_identity_v2', 'close_exhausted_v1',
-          'close_idle_backup_v1', 'close_released_batches_v1', 'window_inventory_v1', 'timing_settings_v1', 'focus_before_action_v1', 'native_foreground_v1', 'site_pause_evidence_v1', 'runtime_controls_v1', 'manual_browser_close_v1', 'daily_credit_refresh_v1']});
+          'close_idle_backup_v1', 'close_released_batches_v1', 'window_inventory_v1', 'timing_settings_v1', 'focus_before_action_v1', 'native_foreground_v1', 'site_pause_evidence_v1', 'runtime_controls_v1', 'manual_browser_close_v1', 'daily_credit_refresh_v1', 'skip_download_v1']});
       clearInterval(heartbeat);
       heartbeat = setInterval(() => send({type: 'ping'}), timingMs('bridge_heartbeat_seconds',20));
     };
@@ -759,9 +763,9 @@ async function projectSetupAction(entry, sender) {
         if (reply.type !== 'setup_reload_allowed') return;
         if (reply.ticket !== ticket || !reply.profile || new URL(reply.project).href.replace(/\/$/, '') !== project) throw Error('项目与本次连接请求不匹配。');
         receiving = true; clearTimeout(timer);
-        if (chrome.runtime.getManifest().version !== '1.1.35') {
+        if (chrome.runtime.getManifest().version !== '1.1.36') {
           await chrome.storage.local.set({lzxReloadSetup: {...entry, tabId: sender.tab.id,
-            mode: reply.mode || 'pair', profile: reply.profile, version: '1.1.35'}});
+            mode: reply.mode || 'pair', profile: reply.profile, version: '1.1.36'}});
           finish(null, {success: true, updating: true}); chrome.runtime.reload(); return;
         }
         if (action === 'options') {

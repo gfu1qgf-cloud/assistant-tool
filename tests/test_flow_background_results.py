@@ -62,7 +62,7 @@ class FlowLateResultTests(unittest.TestCase):
         self.assertEqual(sum(a['action'] == 'snapshot' for a in self.actions(client)), 1)
         self.assertEqual(retry_info(service.store.get(row['id']), 'download')['probes'], 1)
 
-    def test_late_verified_result_resumes_probe_stop_without_new_generation(self):
+    def test_late_verified_result_is_retained_without_reoccupying_skipped_download(self):
         service, row, client, original = self.waiting()
         service.preferences['timing'] = {'download_probe_attempts': 1}
         service.retry_download(row, automatic=True)
@@ -73,10 +73,12 @@ class FlowLateResultTests(unittest.TestCase):
         self.assertTrue(retry_info(service.store.get(row['id']), 'download')['stopped'])
         self.snapshot(service, client, service.store.get(row['id']), original)
         current = service.store.get(row['id']); info = retry_info(current, 'download')
-        self.assertFalse(info['stopped']); self.assertEqual(info['count'], 0)
+        self.assertTrue(info['stopped']); self.assertEqual(info['count'], 0)
+        self.assertEqual(current['status'], 'download_parked')
+        self.assertEqual(current['remote']['bindings'], original)
         service.watch_transfer_retries()
         actions = self.actions(client)
-        self.assertEqual(sum(a['action'] == 'retry_download' for a in actions), 1)
+        self.assertEqual(sum(a['action'] == 'retry_download' for a in actions), 0)
         self.assertNotIn('run_tasks', [a['action'] for a in actions])
 
     def test_download_limits_disabled_retries_and_foreign_results_do_not_resume(self):

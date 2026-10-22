@@ -58,12 +58,13 @@ class FlowOperations(TransferRecovery, TaskReset):
             self.failed.emit('Flow 停止新增生成：' + str(error)); self.publish()
             return False
 
-    def quarantine(self, client, row, message, *, status='queued'):
+    def quarantine(self, client, row, message, *, status='queued', recovery_code=''):
         scope, key = lane_key(client)
         blocks = dict(self.preferences.get('browser_blocks', {}))
         blocks[scope + ':' + key] = str(message)[:1000]
         try:
-            self.commit_preferences({**self.preferences, 'browser_blocks': blocks})
+            from .environment_recovery import schedule
+            self.commit_preferences(schedule({**self.preferences, 'browser_blocks': blocks}, client, message, recovery_code))
         except Exception:
             self.paused = True
             self.released.clear()
@@ -71,7 +72,8 @@ class FlowOperations(TransferRecovery, TaskReset):
             raise
         remote = {**row['remote'], 'environment_error': True, 'profile': client.get('profile', ''), 'environment_browser': client['id']}
         self.store.update(row['id'], status, attempt='', browser='', remote=remote,
-                          error='浏览器环境已暂停，修正后在浏览器页恢复：' + str(message)[:700])
+                          error=('此浏览器暂不可用，等待自动恢复或由其他账号接单：' if recovery_code else
+                                 '浏览器环境已暂停，修正后在浏览器页恢复：') + str(message)[:700])
 
     def remember_cost(self, job, cost):
         if self.observed_costs.get(cost_key(job)) == cost:
@@ -103,6 +105,8 @@ class FlowOperations(TransferRecovery, TaskReset):
                  if 'profile:' + profile in keys else entry
                  for profile,entry in self.preferences.get('browser_slots', {}).items()}
         self.commit_preferences({**self.preferences, 'browser_blocks': blocks, 'parameter_blocks': limits,
+                                  'environment_recoveries': {key:entry for key,entry in self.preferences.get('environment_recoveries',{}).items()
+                                      if key not in keys},
                                   'browser_launch_failures': launch_failures, 'browser_slots':slots,
                                   'browser_probe_retries': {profile:value for profile,value in self.preferences.get('browser_probe_retries',{}).items()
                                       if 'profile:' + profile not in keys}})

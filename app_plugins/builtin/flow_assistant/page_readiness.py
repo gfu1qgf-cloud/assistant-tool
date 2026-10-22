@@ -36,7 +36,8 @@ def defer_prepare(service, client, row, error, code=''):
     count = int(previous.get('count', 0)) + 1
     limit = timing_value(service.preferences, 'prepare_attempts')
     if count > limit:
-        service.quarantine(client, row, f'页面或浏览器窗口连续未就绪，自动等待已达{limit}次；未提交生成。')
+        service.quarantine(client, row, f'页面或浏览器窗口连续未就绪，自动等待已达{limit}次；未提交生成。',
+            recovery_code='FLOW_PAGE_NOT_READY')
         return True
     recovery = {'count': count, 'next_at': time.time() + delay(service.preferences, 'prepare_retry_delays', count-1),
         'profile': client.get('profile', ''), 'browser': client['id'], 'reopen': missing_window(error)}
@@ -108,6 +109,9 @@ def recover_preparation_block(service, client):
             row['remote'].get('account') == client['account']) for row in rows):
         return False
     blocks = service.preferences.get('browser_blocks', {})
+    if any(service.preferences.get('environment_recoveries', {}).get(key, {}).get('code')
+           for key in browser_keys(client)):
+        return False  # Typed recovery keeps its own durable F5 limit.
     keys = {key for key in browser_keys(client) if recoverable_prepare_reason(blocks.get(key), client.get('extension_version'))}
     if not keys:
         return False

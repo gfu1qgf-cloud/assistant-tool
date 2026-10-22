@@ -23,7 +23,7 @@ def confirmed_failure(service, client, message):
     count = row['payload'].get('generation_recovery', {}).get('count', 0)
     limit = value(service.preferences, 'generation_retry_attempts')
     permanent = any(word in text.casefold() for word in
-        ('captcha', 'verify', 'policy', 'safety', 'prohibited', 'disabled', '违规', '政策', '验证', '封禁'))
+        ('captcha', 'verify', 'policy', 'safety', 'prohibited', 'disabled', '违规', '違規', '政策', '验证', '驗證', '封禁', '安全限制'))
     retry = {'state': 'waiting' if count < limit and not permanent else 'stopped', 'failed_at': time.time(),
         'failed_attempt': row['attempt'], 'submission': message['submissionId'], 'media': message['mediaId'],
         'source': message['failure_source'], 'next_at': time.time() + delay(service.preferences, 'generation_retry_delays', count)}

@@ -17,7 +17,7 @@ class HighCreditConfirmation(QtWidgets.QMessageBox):
         self.setStandardButtons(QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No)
         self.setDefaultButton(QtWidgets.QMessageBox.StandardButton.No)
         self.setEscapeButton(QtWidgets.QMessageBox.StandardButton.No)
-        self.button(QtWidgets.QMessageBox.StandardButton.Yes).setText('是，使用此账号')
+        self.button(QtWidgets.QMessageBox.StandardButton.Yes).setText('是，记住并允许使用')
         self.button(QtWidgets.QMessageBox.StandardButton.No).setText('否，跳过此账号')
         self.timer = QtCore.QTimer(self)
         self.timer.setInterval(100)
@@ -43,6 +43,7 @@ class HighCreditConfirmation(QtWidgets.QMessageBox):
         self.setText(f'{self.request["profile"]}\n{self.request["account"]}\n当前余额：{balance}\n'
             '此账号曾检测到至少 100 积分，已标记为千分账号。\n'
             '小额账号已用完或暂不可用，是否使用此账号？\n'
+            '选择“是”会保存使用权限，普通账号仍优先；可右键修改。\n'
             f'{math.ceil(remaining)} 秒内不选择“是”将自动跳过。')
         if remaining <= 0:
             self.timed_out = True
