@@ -118,6 +118,7 @@ class CaptionEffectEditor(QtWidgets.QWidget):
             section.show(); section.setEnabled(True)
             active = bool(modes and mode in modes)
             section.toggle.setText(self.group_titles[identifier] + (' · 当前使用' if active else ''))
+            section.set_active(active)
             if modes:
                 section.setToolTip('当前入场动画使用此组参数。' if active else
                     '选择对应入场动画后生效；现在也可编辑并保留数值。')

@@ -24,12 +24,17 @@ class PropertySection(QtWidgets.QWidget):
         self.toggle.setCheckable(True)
         self.toggle.setToolButtonStyle(QtCore.Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
         self.toggle.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Fixed)
-        self.toggle.setStyleSheet('QToolButton {text-align:left; padding:7px; border:none; background:transparent;}')
+        self.set_active(False)
         self.toggle.toggled.connect(self._expanded)
         self.header_layout.addWidget(self.toggle, 1)
         layout.addWidget(self.header)
         layout.addWidget(content)
         self.set_expanded(expanded)
+
+    def set_active(self, active):
+        self.toggle.setStyleSheet(
+            'QToolButton {text-align:left; padding:7px; border:none; border-radius:4px; background:transparent;}'
+            + ('QToolButton:enabled {color:#ffffff; background:#1765ad; font-weight:600;}' if active else ''))
 
     def _expanded(self, opened):
         self.toggle.setArrowType(QtCore.Qt.ArrowType.DownArrow if opened else QtCore.Qt.ArrowType.RightArrow)
