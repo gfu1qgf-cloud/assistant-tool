@@ -188,7 +188,12 @@ class MatteRenderTests(MatteTests):
 
     def test_shared_compositor_recovers_foreground_and_retains_user_opacity(self):
         with tempfile.TemporaryDirectory() as root:
-            path = Path(root)/"green.png"; image = self.sample_image("green"); image.save(str(path))
+            path = Path(root)/"green.png"; image = self.sample_image("green")
+            painter = QtGui.QPainter(image)
+            # Levels correct a near-key edge; a solid subject must not need
+            # recovery just because the softness strength is high.
+            painter.fillRect(16,10,4,20,QtGui.QColor(24,240,12)); painter.end()
+            image.save(str(path))
             def composite(high, opacity=100, blend="normal"):
                 layer = normalize_layers([{"id":"v", "kind":"image", "path":str(path),
                     "x":50, "y":50, "width":100, "height":100, "opacity":opacity,
@@ -201,8 +206,9 @@ class MatteRenderTests(MatteTests):
                     "-f","image2pipe","-vcodec","png","pipe:1"])
                 return QtGui.QImage.fromData(raw)
             weak, recovered, half = composite(100), composite(35), composite(35, 50)
-            self.assertGreater(recovered.pixelColor(40,20).green(), weak.pixelColor(40,20).green()+80)
-            self.assertLess(recovered.pixelColor(40,20).red(), weak.pixelColor(40,20).red()-60)
+            self.assertGreater(recovered.pixelColor(18,20).green(), weak.pixelColor(18,20).green()+80)
+            self.assertLess(recovered.pixelColor(18,20).red(), weak.pixelColor(18,20).red()-60)
+            self.assertAlmostEqual(weak.pixelColor(40,20).green(),210,delta=2)
             self.assertGreater(half.pixelColor(40,20).red(), recovered.pixelColor(40,20).red()+70)
             self.assertLess(half.pixelColor(40,20).green(), recovered.pixelColor(40,20).green()-70)
             self.assertGreater(recovered.pixelColor(0,0).red(), 245)

@@ -1,4 +1,4 @@
-"""Non-encoding design preview of native and safe deferred node text layers."""
+"""Non-encoding design preview of native and safe deferred overlay layers."""
 import copy
 import hashlib
 import json
@@ -29,7 +29,7 @@ def prepare_design_bundle(state, job, services=None):
 
 
 def design_layers(settings, job, bundle, registry, width, height, directory, cancel=None):
-    """Evaluate the SAME operation builders as export; only materialize text."""
+    """Use export's operation builders for text and visual-poster layers."""
     result, notices = [], []
     value = settings.get('_editor_timing')
     if not active_effects(settings) or value is None:
@@ -57,8 +57,9 @@ def design_layers(settings, job, bundle, registry, width, height, directory, can
                 for index, operation in enumerate(operations):
                     if operation.name == 'null':
                         continue
-                    if operation.name != 'batch_text_video.text_layer':
-                        raise ValueError('该节点组合含字幕、视觉素材或其他视频操作，快览暂不执行；请使用播放预览。')
+                    if operation.name not in {'batch_text_video.text_layer', 'batch_text_video.image_layer',
+                                              'batch_text_video.animated_layer', 'batch_text_video.visual_layer'}:
+                        raise ValueError('该节点组合含未支持快览的字幕或视频操作，请使用播放预览。')
                     item = json.loads(dict(operation.options)['layer'])
                     item['id'] = 'preview_' + hashlib.sha256(f"{layer['id']}:{index}".encode()).hexdigest()[:24]
                     # The node's builder already resolved task text, pool item,

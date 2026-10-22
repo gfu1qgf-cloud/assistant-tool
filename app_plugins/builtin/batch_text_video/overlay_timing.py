@@ -75,6 +75,25 @@ def resolve_window(value, duration, *, automatic_clock="restart", report=None):
                       settings["distance"] / 100, clock)
 
 
+def transform_at(window, time):
+    """Design-preview counterpart of add_timed_plane's fade/easing expressions."""
+    if type(time) not in (int, float) or not math.isfinite(time):
+        raise ValueError('动画快览时间无效。')
+    if time < window.start or time >= window.end:
+        return 0., 1., 0., 0.
+    incoming = max(0., min(1., (time-window.start)/window.enter_duration)) if window.enter_duration else 1.
+    outgoing = max(0., min(1., (time-window.end+window.exit_duration)/window.exit_duration)) if window.exit_duration else 0.
+    opacity, scale, x, y = incoming*(1-outgoing), 1., 0., 0.
+    for mode, progress in ((window.enter, (1-incoming)**3), (window.exit, outgoing**3)):
+        if mode == 'left': x -= window.distance*progress
+        elif mode == 'right': x += window.distance*progress
+        elif mode == 'up': y -= window.distance*progress
+        elif mode == 'down': y += window.distance*progress
+        elif mode == 'small': scale -= window.distance*progress
+        elif mode == 'large': scale += window.distance*progress
+    return opacity, scale, x, y
+
+
 def add_timed_plane(filters, plane, label, width, height, duration, fps, window, *, center=None):
     """Input is a full-canvas RGBA layer on its source clock; output is global RGBA.
 
@@ -89,10 +108,6 @@ def add_timed_plane(filters, plane, label, width, height, duration, fps, window,
         raise ValueError("出入场中心坐标无效。")
     effect = [f"setpts=PTS-STARTPTS+{window.start if window.clock == 'restart' else 0:.9f}/TB",
               "format=rgba"]
-    if window.enter_duration:
-        effect.append(f"fade=t=in:st={window.start:.9f}:d={window.enter_duration:.9f}:alpha=1")
-    if window.exit_duration:
-        effect.append(f"fade=t=out:st={window.end-window.exit_duration:.9f}:d={window.exit_duration:.9f}:alpha=1")
     # Cubic ease-out for entering; ease-in for exiting. Fade itself stays linear.
     incoming = (f"pow(1-clip((t-{window.start:.9f})/{window.enter_duration:.9f},0,1),3)"
                 if window.enter_duration else "0")
@@ -113,6 +128,12 @@ def add_timed_plane(filters, plane, label, width, height, duration, fps, window,
         factor = "1+" + "+".join(scale)
         effect.append(f"scale=w='max(2,round({width}*({factor})/2)*2)':"
                       f"h='max(2,round({height}*({factor})/2)*2)':eval=frame")
+    # Apply opacity after resizing: bicubic alpha ringing must not make a
+    # fading edge more opaque than the intended fade amount.
+    if window.enter_duration:
+        effect.append(f"fade=t=in:st={window.start:.9f}:d={window.enter_duration:.9f}:alpha=1")
+    if window.exit_duration:
+        effect.append(f"fade=t=out:st={window.end-window.exit_duration:.9f}:d={window.exit_duration:.9f}:alpha=1")
     filters.append(f"[{plane}]" + ",".join(effect) + f"[{label}_moving]")
     filters.append(f"color=c=black@0:s={width}x{height}:r={float(fps):.9f}:d={duration:.9f},"
                    f"format=rgba[{label}_blank]")

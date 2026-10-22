@@ -6,6 +6,16 @@ DEFAULTS = {"key_alpha_low": 0.0, "key_alpha_high": 100.0}
 from .chroma_key import KEY_COLORS, key_color, despill_filter
 
 
+def softness_width(layer):
+    """UI strength 0..1 controls only a narrow RGB-distance transition band.
+
+    Passing the strength directly as colorkey.blend makes even solid foreground
+    colours partially transparent. Keep Qt/native math identical and leave
+    similarity, source alpha and user opacity independent.
+    """
+    return float(layer.get('key_softness', .08)) * .1
+
+
 def levels(layer):
     low, high = (layer.get(key, default) for key, default in DEFAULTS.items())
     if any(isinstance(value, bool) or not isinstance(value, (int, float)) or
@@ -28,7 +38,7 @@ def key_filters(layer):
     if mode == "none":
         return []
     color = "0x" + "".join(f"{channel:02x}" for channel in key_color(layer))
-    result = [f"colorkey=color={color}:similarity={layer['key_similarity']:.8f}:blend={layer['key_softness']:.8f}"]
+    result = [f"colorkey=color={color}:similarity={layer['key_similarity']:.8f}:blend={softness_width(layer):.8f}"]
     low, high = levels(layer)
     if (low, high) != (0, 100):
         # LUT only changes alpha; RGB remains untouched. Applied before resize

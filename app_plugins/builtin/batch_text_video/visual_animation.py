@@ -1,5 +1,7 @@
 """Validated image motion, compiled to FFmpeg (no Python per-frame rendering)."""
 import math
+import copy
+from .overlay_timing import DEFAULTS as WINDOW_DEFAULTS, normalize_timing, resolve_window, transform_at
 
 DEFAULTS = {
     "visual_animation": "none", "animation_strength": 8., "animation_period": 2.,
@@ -7,9 +9,17 @@ DEFAULTS = {
 }
 CHOICES = (("无动画", "none"), ("律动 · 节奏缩放", "pulse"), ("呼吸 · 平滑缩放", "breathe"),
            ("轻浮动 · 上下", "float"), ("缓慢推近", "zoom_in"), ("缓慢拉远", "zoom_out"))
+SHOW_DEFAULTS = {'visual_timing_enabled': False,
+                 'visual_timing': {**copy.deepcopy(WINDOW_DEFAULTS), 'enter_duration': .6,
+                                   'exit_duration': .6, 'distance': 35.}}
 
 
 def normalize_animation(layer):
+    for key, value in SHOW_DEFAULTS.items():
+        layer.setdefault(key, copy.deepcopy(value))
+    if type(layer['visual_timing_enabled']) is not bool:
+        raise ValueError('出入场动画开关无效。')
+    layer['visual_timing'] = normalize_timing(layer['visual_timing'])
     for key, value in DEFAULTS.items():
         layer.setdefault(key, value)
     if layer["visual_animation"] not in {value for _, value in CHOICES}:
@@ -30,6 +40,29 @@ def timing(layer, duration):
     if finish-start < .001:
         raise ValueError(f"{layer.get('name', '图片')}：动画开始延迟＋提前结束必须小于最终视频时长（{duration:.3f} 秒）。")
     return start, finish
+
+
+def show_window(layer, duration):
+    """The node timing adapter and native visual layer use the same compiler."""
+    if not layer.get('visual_timing_enabled', False):
+        return None
+    return resolve_window(layer['visual_timing'], duration, automatic_clock='restart')
+
+
+def preview_transform(layer, width, height, editor_timing):
+    """Numeric transform of the same source-clock motion and global show window."""
+    if editor_timing is None:
+        return 1., 0., 0., 1.
+    duration, time = editor_timing['duration'], editor_timing['time']
+    window = show_window(layer, duration)
+    opacity, transition_scale, dx, dy = transform_at(window, time) if window else (1., 1., 0., 0.)
+    if not opacity:
+        return 1., 0., 0., 0.
+    local_duration = window.source_duration(duration) if window else duration
+    local_time = time-window.start if window and window.clock == 'restart' else time
+    scale, movement = motion_at(layer, local_duration, local_time) if layer.get('visual_animation', 'none') != 'none' else (1., 0.)
+    return (scale*transition_scale, width*dx,
+            height*dy + height*layer['height']/100*movement*transition_scale, opacity)
 
 
 def motion_at(layer, duration, time):

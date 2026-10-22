@@ -5,7 +5,7 @@ from .overlay_timing import DEFAULTS, ENTER_CHOICES, EXIT_CHOICES, normalize_tim
 
 
 class TimingNodeEditor(QtWidgets.QWidget):
-    def __init__(self, params, callback, parent=None):
+    def __init__(self, params, callback, parent=None, *, mode='node'):
         super().__init__(parent)
         self.callback, self.loading = callback, True
         self.params = {key: params.get(key, value) for key, value in DEFAULTS.items()}
@@ -17,9 +17,10 @@ class TimingNodeEditor(QtWidgets.QWidget):
         self.number(form, "start", "开始", 86400, " 秒")
         self.number(form, "end", "结束", 86400, " 秒")
         self.controls["end"].setSpecialValueText("直到视频末尾")
-        self.note(form, "开始前隐藏；结束是退场完成时刻。\n连接时间输入端时，端口数值优先。")
-        form = self.group(root, "出场与退场")
-        self.choice(form, "enter", "出场", ENTER_CHOICES)
+        self.note(form, "开始前隐藏；结束是退场完成时刻。" + (
+            "\n连接时间输入端时，端口数值优先。" if mode == 'node' else ''))
+        form = self.group(root, "入场与退场")
+        self.choice(form, "enter", "入场", ENTER_CHOICES)
         self.number(form, "enter_duration", "用时", 60, " 秒")
         self.choice(form, "exit", "退场", EXIT_CHOICES)
         self.number(form, "exit_duration", "用时", 60, " 秒")
@@ -28,12 +29,30 @@ class TimingNodeEditor(QtWidgets.QWidget):
         form = self.group(root, "素材播放")
         self.choice(form, "clock", "时钟", (("auto", "自动（推荐）"),
             ("restart", "出现时从头播放"), ("global", "跟随全片时间")))
-        self.note(form, "自动：素材出现时从头播放；字幕保留SRT原时间。\n从头播放：字幕时间相对开始秒；跟随全片：隐藏时也继续。")
+        self.note(form, "自动：素材出现时从头播放；字幕保留SRT原时间。\n从头播放：字幕时间相对开始秒；跟随全片：隐藏时也继续。" if mode == 'node' else
+                  "GIF／视频默认从出现时播放；图片不受时钟选择影响。\n动画快览显示素材首帧，完整动作请用播放预览。")
         self.error = QtWidgets.QLabel()
         self.error.setWordWrap(True); self.error.setStyleSheet("color:#c33442")
         root.addWidget(self.error)
         self.loading = False
         self.update_controls()
+
+    def set_values(self, values):
+        values = normalize_timing(values)
+        self.loading = True
+        try:
+            for key, control in self.controls.items():
+                blocker = QtCore.QSignalBlocker(control)
+                if isinstance(control, QtWidgets.QComboBox):
+                    control.setCurrentIndex(control.findData(values[key]))
+                else:
+                    control.setValue(values[key])
+                del blocker
+            self.params = values
+            self.error.clear()
+            self.update_controls()
+        finally:
+            self.loading = False
 
     def group(self, root, title):
         box = QtWidgets.QGroupBox(title)

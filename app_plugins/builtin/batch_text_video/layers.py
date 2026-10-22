@@ -241,7 +241,7 @@ def image_rect(layer, image, width, height):
                         height*layer["y"]/100-size.height()/2, size.width(), size.height())
 
 
-def compose_layers(text_images, layers, width, height, darkness, cache=None,tint_color="#000000",tint_strength=0):
+def compose_layers(text_images, layers, width, height, darkness, cache=None,tint_color="#000000",tint_strength=0, *, editor_timing=None):
     image = QtGui.QImage(width, height, QtGui.QImage.Format.Format_ARGB32_Premultiplied)
     # Darkness belongs to the video background, not the overlaid pictures or text.
     image.fill(QtGui.QColor(0, 0, 0, round(darkness*2.55)))
@@ -262,6 +262,11 @@ def compose_layers(text_images, layers, width, height, darkness, cache=None,tint
                 continue  # Computed by the shared FFmpeg operation compiler.
             painter.setOpacity(layer["opacity"]/100)
             if layer["kind"] == "image":
+                from .visual_animation import preview_transform
+                scale, dx, dy, opacity = preview_transform(layer, width, height, editor_timing)
+                if not opacity:
+                    continue
+                painter.setOpacity(layer['opacity']/100*opacity)
                 bounds = QtCore.QSize(max(1, math.ceil(width*layer["width"]/100)),
                                      max(1, math.ceil(height*layer["height"]/100)))
                 # Native composition keys before resizing. Do the same for the
@@ -274,7 +279,11 @@ def compose_layers(text_images, layers, width, height, darkness, cache=None,tint
                 if source.width() > bounds.width() or source.height() > bounds.height():
                     source = source.scaled(bounds, QtCore.Qt.AspectRatioMode.KeepAspectRatio,
                                            QtCore.Qt.TransformationMode.SmoothTransformation)
-                painter.drawImage(image_rect(layer, source, width, height), source)
+                rect = image_rect(layer, source, width, height)
+                center, size = rect.center(), rect.size()*scale
+                rect = QtCore.QRectF(center.x()-size.width()/2+dx, center.y()-size.height()/2+dy,
+                                    size.width(), size.height())
+                painter.drawImage(rect, source)
             else:
                 painter.drawImage(0, 0, text_images[layer["id"]])
     finally:

@@ -48,23 +48,27 @@ class AnimationTimeline(QtWidgets.QWidget):
         root.addLayout(heading)
         row = QtWidgets.QHBoxLayout()
         self.start_button, self.end_button = QtWidgets.QToolButton(), QtWidgets.QToolButton()
+        self.middle_button = QtWidgets.QToolButton()
+        self.middle_button.setText('中间')
+        self.middle_button.setToolTip('查看视频中间时刻；便于检查入场后的完整图片')
         self.start_button.setText('开头'); self.end_button.setText('结尾')
         self.start_button.setToolTip('直接查看动画起点')
         self.end_button.setToolTip('直接查看动画终点，包括提前结束后的停留位置')
         self.slider = TimeSlider(QtCore.Qt.Orientation.Horizontal)
         self.slider.setRange(0, self.STEPS)
         self.slider.setPageStep(self.STEPS//10)
-        self.slider.setToolTip('拖动查看该时刻的滚动文字；使用完整成品时长，不生成视频或推进资源池。背景仍是首帧。节点使用已保存的工作流；AI、脚本和模型计算不会自动执行。')
-        row.addWidget(self.start_button); row.addWidget(self.slider, 1); row.addWidget(self.end_button)
+        self.slider.setToolTip('拖动查看该时刻的滚动文字、图片入场／退场与持续动画；使用完整成品时长，不生成视频或推进资源池。背景与视觉素材仍是首帧。节点使用已保存的工作流；AI、脚本和模型计算不会自动执行。')
+        row.addWidget(self.start_button); row.addWidget(self.slider, 1); row.addWidget(self.middle_button); row.addWidget(self.end_button)
         root.addLayout(row)
         self.start_button.clicked.connect(lambda: self.jump(0))
+        self.middle_button.clicked.connect(lambda: self.jump(self.STEPS//2))
         self.end_button.clicked.connect(lambda: self.jump(self.STEPS))
         self.slider.valueChanged.connect(self._changed)
         self.set_duration(None)
 
     def set_duration(self, value):
         self.duration = float(value) if type(value) in (int, float) and math.isfinite(value) and value > 0 else None
-        for control in (self.slider, self.start_button, self.end_button):
+        for control in (self.slider, self.start_button, self.middle_button, self.end_button):
             control.setEnabled(self.duration is not None)
         self._label()
 

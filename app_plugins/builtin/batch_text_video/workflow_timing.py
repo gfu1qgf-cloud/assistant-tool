@@ -13,7 +13,7 @@ from .overlay_timing import DEFAULTS, ENTER_CHOICES, EXIT_CHOICES, normalize_tim
 
 KIND = "batch_text_video.display_window"
 LAYER_OPERATIONS = frozenset({"batch_text_video.text_layer", "batch_text_video.image_layer",
-                              "batch_text_video.animated_layer"})
+                              "batch_text_video.animated_layer", "batch_text_video.visual_layer"})
 SUPPORTED = LAYER_OPERATIONS | {"batch_text_video.caption", "subtitles", "null"}
 
 

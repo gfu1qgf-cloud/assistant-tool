@@ -93,7 +93,8 @@ def render_preview_overlay(title, body, width, height, settings, image_cache=Non
                 images[layer["id"]] = image
         warnings = warnings or [str(error)]
         return compose_layers(images,layers,width,height,settings["darkness"],image_cache,
-            settings.get("background_tint_color","#000000"),settings.get("background_tint_strength",0)),{
+            settings.get("background_tint_color","#000000"),settings.get("background_tint_strength",0),
+            editor_timing=settings.get('_editor_timing')),{
             "title_size":sizes.get("title",0),"body_size":sizes.get("body",0),
             "component_sizes":sizes,"warnings":warnings,"export_blocked":True}
 
@@ -239,7 +240,8 @@ def render_overlay(title, body, width, height, settings, image_cache=None, *, al
     for layer in custom:
         text_images[layer["id"]], component_sizes[layer["id"]] = _render_component(layer,width,height,settings)
     image = compose_layers(text_images, layers, width, height, settings["darkness"], image_cache,
-        settings.get("background_tint_color","#000000"),settings.get("background_tint_strength",0))
+        settings.get("background_tint_color","#000000"),settings.get("background_tint_strength",0),
+        editor_timing=settings.get('_editor_timing'))
     return image, {"title_size": sizes["title"] / scale, "body_size": sizes["body"] / scale,
                    "text_height": total, "available_height": available_height,
                    "component_sizes": component_sizes}

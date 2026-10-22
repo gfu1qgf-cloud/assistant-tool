@@ -3,8 +3,8 @@ import math
 from pathlib import Path
 import subprocess
 from qt_compat import QtCore, QtGui, QtWidgets
-from .visual_animation import DEFAULTS as ANIMATION_DEFAULTS, normalize_animation
-from .chroma_matte import DEFAULTS as MATTE_DEFAULTS, KEY_COLORS, levels, remap, key_filters, MatteLevels
+from .visual_animation import DEFAULTS as ANIMATION_DEFAULTS, SHOW_DEFAULTS, normalize_animation, show_window
+from .chroma_matte import DEFAULTS as MATTE_DEFAULTS, KEY_COLORS, levels, remap, key_filters, MatteLevels, softness_width
 from .chroma_key import (DEFAULTS as KEY_DEFAULTS, normalize_key, key_color, despill_type,
                          validate_mask, enhanced_alpha, add_keyed_source)
 
@@ -13,7 +13,7 @@ VISUAL_SUFFIXES = ANIMATED_SUFFIXES | {".png", ".jpg", ".jpeg", ".jfif", ".webp"
 VISUAL_FILTER = "图片 / 视频 / GIF (" + " ".join("*" + item for item in sorted(VISUAL_SUFFIXES)) + ")"
 DEFAULTS = {"blend_mode": "normal", "key_mode": "none", "key_similarity": .15,
             "key_softness": .08, "key_despill": False, "media_loop": True,
-            **MATTE_DEFAULTS, **ANIMATION_DEFAULTS, **KEY_DEFAULTS}
+            **MATTE_DEFAULTS, **ANIMATION_DEFAULTS, **KEY_DEFAULTS, **SHOW_DEFAULTS}
 
 def is_animated(path):
     return Path(str(path)).suffix.casefold() in ANIMATED_SUFFIXES
@@ -73,7 +73,7 @@ def import_visuals(paths, directory, cancel=None):
 def needs_plane(layer):
     return layer["kind"] == "image" and (is_animated(layer.get("path", "")) or
         layer.get("blend_mode", "normal") != "normal" or layer.get("key_mode", "none") != "none" or
-        layer.get("visual_animation", "none") != "none")
+        layer.get("visual_animation", "none") != "none" or layer.get('visual_timing_enabled', False))
 
 def keyed_image(image, layer):
     if layer.get("key_mode", "none") == "none":
@@ -86,7 +86,7 @@ def keyed_image(image, layer):
         rgba.height(), rgba.bytesPerLine())[:, :rgba.width()*4].reshape(rgba.height(), rgba.width(), 4).copy()
     key = np.array(key_color(layer), dtype=np.float32)
     distance = np.sqrt(np.mean(((data[:, :, :3].astype(np.float32)-key)/255)**2, axis=2))
-    softness = layer.get("key_softness", .08)
+    softness = softness_width(layer)
     alpha = (np.clip((distance-layer.get("key_similarity", .15))/softness, 0, 1) if softness else
              distance > layer.get("key_similarity", .15))
     protection = np.zeros_like(alpha, dtype=np.float32)
@@ -126,7 +126,8 @@ def preview_planes(title, body, width, height, settings, cache):
             result.append(("normal", value))
         elif kind == "visual":
             single = dict(value, blend_mode="normal")
-            result.append((value["blend_mode"], compose_layers({}, [single], width, height, 0, cache)))
+            result.append((value["blend_mode"], compose_layers({}, [single], width, height, 0, cache,
+                editor_timing=settings.get('_editor_timing'))))
         else:
             selected = [value] + [dict(default, enabled=False) for default in DEFAULT_LAYERS]
             image, _ = render_preview_overlay(title, body, width, height,
@@ -137,6 +138,9 @@ def preview_planes(title, body, width, height, settings, cache):
 def add_plane(args, filters, layer, input_index, background, label, width, height, duration, fps, *, timing=None):
     """Alpha-correct normal/add/screen, with transparent clipping at canvas edges."""
     normalize_visual(layer)
+    # An explicit timing node owns the window; never apply a native one twice.
+    if timing is None:
+        timing = show_window(layer, duration)
     local_duration = timing.source_duration(duration) if timing else duration
     path = layer["path"]
     if not Path(path).is_file() or Path(path).suffix.casefold() not in VISUAL_SUFFIXES:
@@ -203,10 +207,12 @@ class VisualProperties(QtWidgets.QWidget):
         self.layer, self.loading = None, False
         root = QtWidgets.QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
+        root.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop)
         from .property_sections import PropertySections
         self.sections = PropertySections()
         root.addWidget(self.sections)
         basic = QtWidgets.QWidget(); self.basic_form = QtWidgets.QFormLayout(basic)
+        basic.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored, QtWidgets.QSizePolicy.Policy.Maximum)
         self.basic_form.setContentsMargins(0,0,0,0)
         self.basic_form.setRowWrapPolicy(self.basic_form.RowWrapPolicy.WrapLongRows)
         self.basic_form.setFieldGrowthPolicy(self.basic_form.FieldGrowthPolicy.AllNonFixedFieldsGrow)
@@ -237,6 +243,9 @@ class VisualProperties(QtWidgets.QWidget):
             control.valueChanged.connect(self.edit)
             self.controls[key] = control
             form.addRow(label, control)
+        self.controls['key_softness'].setToolTip(
+            '0为硬边，1为最柔。只柔化接近抠像颜色的过渡像素，主体不透明度独立控制。\n'
+            '需要调整扣除的颜色范围时，请使用“颜色容差”。')
         for key, label in (("key_despill", "抑制绿／蓝色溢出"), ("media_loop", "素材不足时循环；关闭则播完隐藏")):
             control = QtWidgets.QCheckBox(label)
             control.toggled.connect(self.edit)
@@ -253,6 +262,15 @@ class VisualProperties(QtWidgets.QWidget):
         note.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored, QtWidgets.QSizePolicy.Policy.Preferred)
         form.addRow(note)
         basic.setToolTip("支持图片、视频和GIF；保留原比例，不加入素材自身音轨。播放预览与成品使用相同抠像和叠加。")
+        appearance = self._page('入场与退场')
+        self.appearance_toggle = QtWidgets.QCheckBox('启用入场／退场动画')
+        self.controls['visual_timing_enabled'] = self.appearance_toggle
+        self.sections.sections['appearance'].set_enable_control(self.appearance_toggle)
+        self.appearance_toggle.toggled.connect(self.edit)
+        from .workflow_timing_ui import TimingNodeEditor
+        self.appearance_editor = TimingNodeEditor(SHOW_DEFAULTS['visual_timing'], self._appearance_changed,
+                                                  mode='layer')
+        appearance.addRow(self.appearance_editor)
         from .component_ui import Combo, Spin
         from .visual_animation import CHOICES
         mode = Combo()
@@ -300,8 +318,15 @@ class VisualProperties(QtWidgets.QWidget):
         form.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop)
         form.setRowWrapPolicy(form.RowWrapPolicy.WrapLongRows)
         form.setFieldGrowthPolicy(form.FieldGrowthPolicy.AllNonFixedFieldsGrow)
-        self.sections.add_section('visual' if title == '抠像' else 'animation', title, page)
+        self.sections.add_section({'抠像': 'visual', '动画': 'animation', '入场与退场': 'appearance'}[title], title, page)
         return form
+
+    def _appearance_changed(self, values):
+        if self.loading or not self.layer:
+            return
+        from .overlay_timing import normalize_timing
+        self.layer['visual_timing'] = normalize_timing(values)
+        self.changed.emit(dict(self.layer))
 
     def _update_motion_controls(self):
         mode = self.controls["visual_animation"].currentData()
@@ -357,6 +382,7 @@ class VisualProperties(QtWidgets.QWidget):
                 elif isinstance(control, QtWidgets.QCheckBox): control.setChecked(value)
                 else: control.setValue(value)
             self.matte_levels.set_levels(self.layer["key_alpha_low"], self.layer["key_alpha_high"])
+            self.appearance_editor.set_values(self.layer['visual_timing'])
         self.loading = False
         self._update_motion_controls()
         self._update_key_controls()
