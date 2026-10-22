@@ -7,10 +7,11 @@ that ambiguity without silently guessing semantic identity.
 from pathlib import Path
 import re
 from .chroma_despill import DEFAULTS as DESPILL_DEFAULTS, normalize_despill
+from .chroma_cleanup import DEFAULTS as CLEANUP_DEFAULTS, normalize_cleanup
 
 KEY_COLORS = {"green": (0, 255, 0), "blue": (0, 0, 255), "black": (0, 0, 0)}
 DEFAULTS = {"key_method": "normal", "key_color": "#00ff00",
-            "key_protect_inside": True, "key_mask_path": "", **DESPILL_DEFAULTS}
+            "key_protect_inside": True, "key_mask_path": "", **DESPILL_DEFAULTS, **CLEANUP_DEFAULTS}
 COLOR_PATTERN = re.compile(r"#[0-9a-fA-F]{6}\Z")
 MASK_SUFFIXES = frozenset({".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff",
                           ".gif", ".mp4", ".mov", ".mkv", ".avi", ".webm", ".m4v"})
@@ -18,6 +19,7 @@ MASK_SUFFIXES = frozenset({".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".t
 
 def normalize_key(layer):
     normalize_despill(layer)
+    normalize_cleanup(layer)
     for key, value in DEFAULTS.items():
         layer.setdefault(key, value)
     if layer.get("key_mode", "none") not in {"none", "custom", *KEY_COLORS}:
@@ -112,13 +114,16 @@ def enhanced_alpha(raw, layer, trimap=None):
     import numpy as np
     from .chroma_matte import remap
     protection = inside_protection(raw) if layer.get("key_protect_inside", True) else np.zeros_like(raw)
-    alpha = np.maximum(remap(raw, layer), protection)
+    def quantize(value):
+        return np.floor(value*255)/255 if layer.get("key_cleanup", False) else value
+    alpha = np.maximum(quantize(remap(raw, layer)), protection)
     if trimap is not None:
         keep, remove = trimap_channels(trimap)
-        alpha = alpha*(1-remove)
-        alpha = alpha + (1-alpha)*keep
-        protection = protection*(1-remove)
-        protection = protection + (1-protection)*keep
+        keep, remove = quantize(keep), quantize(remove)
+        alpha = quantize(alpha*(1-remove))
+        alpha = quantize(alpha + (1-alpha)*keep)
+        protection = quantize(protection*(1-remove))
+        protection = quantize(protection + (1-protection)*keep)
     return alpha, protection
 
 
@@ -132,6 +137,8 @@ def add_keyed_source(args, filters, layer, input_index, label, fps, is_animated,
     from .chroma_matte import key_filters, levels
     from .chroma_despill import enabled, add_native
     edge = enabled(layer)
+    cleanup = layer.get("key_cleanup", False)
+    cleanup_protection = None
     enhanced = layer.get("key_method", "normal") == "enhanced"
     mask = validate_mask(layer)
     consumed = 1
@@ -164,7 +171,8 @@ def add_keyed_source(args, filters, layer, input_index, label, fps, is_animated,
                 f"lut=y='if(eq(val,0),255,0)',format=gray[{root}_auto]")
         else:
             filters.append(f"[{root}_regions]lut=y=0,format=gray[{root}_auto]")
-        if spill:
+        needs_protection = bool(spill) or cleanup
+        if needs_protection:
             filters.append(f"[{root}_auto]split=2[{root}_protect0][{root}_keep0]")
         else:
             filters.append(f"[{root}_auto]null[{root}_keep0]")
@@ -187,10 +195,10 @@ def add_keyed_source(args, filters, layer, input_index, label, fps, is_animated,
             filters.append(f"[{root}_white0]lut=y='clip((val-128)*255/127,0,255)',format=gray[{root}_white1]")
             filters.append(f"[{root}_black0]lut=y='clip((128-val)*255/128,0,255)',format=gray[{root}_black1]")
             for part in ("white", "black"):
-                branches = (f",split=2[{root}_{part}_alpha][{root}_{part}_protect]" if spill else
+                branches = (f",split=2[{root}_{part}_alpha][{root}_{part}_protect]" if needs_protection else
                             f"[{root}_{part}_alpha]")
                 filters.append(f"[{root}_{part}1][{root}_{part}_opacity]blend=all_mode=multiply,format=gray" + branches)
-            targets = (("alpha", "alpha0"), ("protect", "protect0")) if spill else (("alpha", "alpha0"),)
+            targets = (("alpha", "alpha0"), ("protect", "protect0")) if needs_protection else (("alpha", "alpha0"),)
             for part, source in targets:
                 filters.append(f"[{root}_{source}][{root}_black_{part}]blend="
                                f"all_expr='A*(1-B/255)',format=gray[{root}_{part}_minus]")
@@ -200,6 +208,12 @@ def add_keyed_source(args, filters, layer, input_index, label, fps, is_animated,
         else:
             alpha_pad, protection_pad = root + "_alpha0", root + "_protect0"
         filters.append(f"[{alpha_pad}]format=gray[{root}_final_alpha]")
+        if cleanup:
+            if spill:
+                filters.append(f"[{protection_pad}]split=2[{root}_color_protect][{root}_cleanup_protect]")
+                protection_pad, cleanup_protection = root + "_color_protect", root + "_cleanup_protect"
+            else:
+                cleanup_protection = protection_pad
         if spill and not edge:
             filters.append(f"[{original_pad}]split=2[{root}_clean_input][{root}_saved_rgb]")
             filters.append(f"[{root}_clean_input]{despill_filter(layer)},format=gbrp[{root}_clean_rgb]")
@@ -211,12 +225,14 @@ def add_keyed_source(args, filters, layer, input_index, label, fps, is_animated,
         else:
             color_pad = original_pad
     filters.append(f"[{root}_native_mask][{root}_final_alpha]blend=all_mode=multiply:shortest=1,format=gray[{root}_combined_mask]")
+    combined_mask = root + "_combined_mask"
+    if cleanup:
+        from .chroma_cleanup import add_native as add_cleanup
+        combined_mask = add_cleanup(filters, layer, combined_mask, cleanup_protection, root + "_cleanup")
     if edge:
-        filters.append(f"[{root}_combined_mask]split=2[{root}_output_alpha][{root}_edge_alpha]")
+        filters.append(f"[{combined_mask}]split=2[{root}_output_alpha][{root}_edge_alpha]")
         color_pad = add_native(filters, layer, color_pad, root + "_edge_alpha",
                                protection_pad if enhanced else None, root + "_despill")
         combined_mask = root + "_output_alpha"
-    else:
-        combined_mask = root + "_combined_mask"
     filters.append(f"[{color_pad}][{combined_mask}]alphamerge=shortest=1,format=rgba[{root}_source]")
     return root + "_source", consumed

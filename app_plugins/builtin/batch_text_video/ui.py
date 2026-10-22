@@ -730,6 +730,8 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
         current = self.layer_panel.current()
         self.preview.show_bounds = self.show_bounds_checkbox.isChecked()
         self.preview.set_layers(self.layer_panel.values(),current["id"] if current else "")
+        if getattr(self, 'pool_preview', None) is not None:
+            self.pool_preview.sync(bound, current['id'] if current else '', scope=self.state.get('active_profile', ''))
 
     def _preview_geometry_edited(self,identifier,values):
         if not self._loading and not self.is_batch_busy() and self.layer_panel.set_geometry(identifier,values):
@@ -857,11 +859,20 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
         self.update_preview()
         self.refresh_editor_baseline()
 
+    def _pool_preview_changed(self):
+        if self._loading or self.is_batch_busy(): return
+        self.invalidate_playback()
+        self.update_preview()
+
     def update_preview(self):
         if self.is_batch_busy():
             return
         try:
             settings = self.read_settings()
+            if getattr(self, 'pool_preview', None) is not None:
+                current = self.layer_panel.current()
+                self.pool_preview.sync(settings['layers'], current['id'] if current else '', scope=self.state.get('active_profile', ''))
+                settings = self.pool_preview.apply(settings)
             job = self.active_entry()
             from .text_colors import job_color_scope
             settings["_color_scope"] = job_color_scope(job)
@@ -1461,6 +1472,9 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
         self.render_queue_panel.refresh()
 
     def quick_export_current(self):
+        if getattr(self, 'pool_preview', None) is not None and self.pool_preview.choices:
+            self.status.setText('正在试看资源池素材，请先点击“恢复生成顺序”再快速导出。')
+            return
         if self.is_batch_busy():
             self.status.setText("正在处理其他操作，请稍后快速导出。")
             return
@@ -1733,6 +1747,8 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
 
     def _set_work_controls(self, busy):
         self.animation_timeline.setEnabled(not busy)
+        if getattr(self, 'pool_preview', None) is not None:
+            self.pool_preview.setEnabled(not busy)
         for widget in (self.left_column, self.preview, self.layer_panel, self.project_sections, self.jobs):
             widget.setEnabled(not busy)
         self.task_text_panel.setEnabled(not busy)

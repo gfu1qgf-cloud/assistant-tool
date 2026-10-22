@@ -85,10 +85,22 @@ def keyed_image(image, layer):
     data = np.frombuffer(rgba.constBits().asstring(rgba.sizeInBytes()), dtype=np.uint8).reshape(
         rgba.height(), rgba.bytesPerLine())[:, :rgba.width()*4].reshape(rgba.height(), rgba.width(), 4).copy()
     key = np.array(key_color(layer), dtype=np.float32)
-    distance = np.sqrt(np.mean(((data[:, :, :3].astype(np.float32)-key)/255)**2, axis=2))
+    if layer.get("key_cleanup", False):
+        # Connectivity is sensitive to a 0/1 alpha rounding difference. Match
+        # colorkey's double precision and uint8 truncation before reconstruction.
+        squared = np.zeros(data.shape[:2], dtype=np.float64)
+        for index in range(3):
+            delta = data[:, :, index].astype(np.float64)-key[index]
+            squared += delta*delta
+        distance = np.sqrt(squared/(255*255*3))
+        del squared, delta
+    else:
+        distance = np.sqrt(np.mean(((data[:, :, :3].astype(np.float32)-key)/255)**2, axis=2))
     softness = softness_width(layer)
     alpha = (np.clip((distance-layer.get("key_similarity", .15))/softness, 0, 1) if softness else
              distance > layer.get("key_similarity", .15))
+    if layer.get("key_cleanup", False):
+        alpha = np.floor(alpha*255)/255
     protection = np.zeros_like(alpha, dtype=np.float32)
     if layer.get("key_method", "normal") == "enhanced":
         mask_path = validate_mask(layer)
@@ -103,7 +115,15 @@ def keyed_image(image, layer):
         alpha, protection = enhanced_alpha(alpha, layer, trimap)
     else:
         alpha = remap(alpha, layer)
-    data[:, :, 3] = np.rint(data[:, :, 3]*alpha).astype(np.uint8)
+    if layer.get("key_cleanup", False):
+        alpha = np.floor(alpha*255)/255
+        data[:, :, 3] = np.floor(data[:, :, 3]*alpha).astype(np.uint8)
+    else:
+        data[:, :, 3] = np.rint(data[:, :, 3]*alpha).astype(np.uint8)
+    if layer.get("key_cleanup", False):
+        from .chroma_cleanup import clean_alpha
+        protected = np.floor(protection*255).astype(np.uint8)
+        data[:, :, 3] = clean_alpha(data[:, :, 3], layer, protected)
     spill = despill_type(layer) if layer.get("key_despill") else ""
     from .chroma_despill import enabled, correct_rgb
     if enabled(layer):
@@ -284,6 +304,17 @@ class VisualProperties(QtWidgets.QWidget):
         note.setWordWrap(True)
         note.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored, QtWidgets.QSizePolicy.Policy.Preferred)
         form.addRow(note)
+        cleanup = QtWidgets.QCheckBox("去碎块（清除悬空小块）")
+        cleanup.toggled.connect(self.edit)
+        self.controls["key_cleanup"] = cleanup
+        form.addRow(cleanup)
+        cleanup_size = QtWidgets.QSpinBox()
+        cleanup_size.setRange(1, 12); cleanup_size.setSuffix(" px")
+        cleanup_size.valueChanged.connect(self.edit)
+        self.controls["key_cleanup_size"] = cleanup_size
+        form.addRow("碎块尺度", cleanup_size)
+        cleanup.setToolTip("去除与较粗主体分离的细小残片；相连的细发丝保留原轮廓。默认关闭，不修改源文件。")
+        cleanup_size.setToolTip("按源素材像素计算，数值越大清理越强。建议先用1–2；孤立的小饰品可用增强模式白色辅助遮罩保护。")
         basic.setToolTip("支持图片、视频和GIF；保留原比例，不加入素材自身音轨。播放预览与成品使用相同抠像和叠加。")
         appearance = self._page('入场与退场')
         self.appearance_toggle = QtWidgets.QCheckBox('启用入场／退场动画')
@@ -386,6 +417,8 @@ class VisualProperties(QtWidgets.QWidget):
         edge = active and self.controls["key_despill_mode"].currentData() == "edge"
         for key in ("key_despill_amount", "key_despill_width", "key_despill_luma"):
             self.controls[key].setEnabled(edge)
+        self.controls["key_cleanup"].setEnabled(mode != "none")
+        self.controls["key_cleanup_size"].setEnabled(mode != "none" and self.controls["key_cleanup"].isChecked())
         self.matte_levels.setEnabled(mode != "none")
         self.key_details.set_layer(self.layer)
     def _key_details_changed(self, changes):

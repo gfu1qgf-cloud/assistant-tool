@@ -69,7 +69,7 @@ def preview_key(job, state, node_bundle=None, *, preview_limit=None):
         except OSError:
             fingerprints.append((str(path), None, None))
     from .text_colors import job_color_scope
-    values = ["playback-v25-edge-mask-despill", preview_limit, job_color_scope(job), settings, job.get("title", ""), job.get("body", ""),
+    values = ["playback-v26-chroma-cleanup-and-pool-preview", preview_limit, job_color_scope(job), settings, job.get("title", ""), job.get("body", ""),
               job.get("requires_title", False), job.get("voice_override", False), fingerprints, music, next_id]
     from .node_effects import cache_snapshot
     values.append(cache_snapshot(node_bundle, job.get('id')))
@@ -222,6 +222,10 @@ class PlaybackController:
         timeline.addWidget(self.playback_time)
         layout.addWidget(self.playback_timeline)
         self.playback_timeline.hide()
+        from .pool_preview import PoolPreview
+        self.pool_preview = PoolPreview(self)
+        self.pool_preview.selectionChanged.connect(self._pool_preview_changed)
+        layout.addWidget(self.pool_preview)
         from .preview_timeline import AnimationTimeline
         self.animation_timeline = AnimationTimeline(self)
         self.animation_timeline.timeChanged.connect(self._animation_preview_changed)
@@ -264,6 +268,8 @@ class PlaybackController:
             job.update(title=self.title.toPlainText(), body=self.body.toPlainText())
             state = copy.deepcopy(self.state)
             state["settings"] = self.read_settings()
+            if getattr(self, 'pool_preview', None) is not None:
+                state["settings"] = self.pool_preview.apply(state["settings"])
             from .cloud_alignment import prepare_binding
             elevenlabs_binding = prepare_binding(state['settings'], getattr(self, 'context', None))
             from .node_effects import prepare_preview_bundle
