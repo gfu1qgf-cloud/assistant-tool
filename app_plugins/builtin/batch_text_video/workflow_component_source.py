@@ -74,6 +74,10 @@ def prepare_source(task, params, services):
     if field != 'text':
         paths += [v[field] for v in value.get('sequence_items', [])]
         if value.get(field): paths.append(value[field])
+    if value['kind'] == 'image':
+        from .matting_assets import snapshot_layers
+        value = snapshot_layers([value])[0]
+        paths += [v['result']['path'] for v in value.get('_matting_snapshot', {}).values() if v and not v.get('error')]
     for path in dict.fromkeys(p for p in paths if p):
         if Path(path).is_file(): refs.append(asdict(ResourceRef.capture(path, 'component_source')))
     result = {'source': value, 'files': refs}
@@ -108,13 +112,17 @@ def build_source(inputs, params, context):
     resolved, steps = resolve_sources([value], title or '', body or '')
     layer = resolved[0]
     field = CONTENT_FIELDS[layer['kind']]
-    path = layer.get('source_file') if layer.get('source') == 'file' else layer.get(field) if field != 'text' else ''
+    path = layer.get(field) if field != 'text' else layer.get('source_file') if layer.get('source') == 'file' else ''
     refs = [ResourceRef(**v) for v in context.node_prepared.get('files', [])]
     if path:
         selected = next((r for r in refs if r.path == str(Path(path).resolve())), None)
         if selected is None: raise FileNotFoundError('提交时来源文件不存在：'+str(path))
         selected.verify()
         context.component_source_refs = getattr(context, 'component_source_refs', []) + [selected]
+        if layer.get('_matting_binding'):
+            original = next((r for r in refs if r.path == layer['_matting_binding']['source']['path']), None)
+            if original is None: raise ValueError('缺少原素材抠像快照。')
+            original.verify(); context.component_source_refs.append(original)
     if steps and owner:
         next_cursor = steps[0]['next_cursor']
         step = {'node_source': True, 'id': owner['id'], 'workflow_id': owner['workflow_id'],

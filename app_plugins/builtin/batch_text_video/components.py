@@ -137,6 +137,10 @@ def resolve_sources(layers, title="", body="", *, job=None):
                          "next_cursor": (cursor+1) % len(items), "signature": source_signature(layer)})
         if layer["kind"] == "caption" and layer["caption_timing"] != "uniform":
             layer["caption_timing"] = "file"
+        if layer['kind'] == 'image':
+            from .matting_assets import apply_saved
+            selected = apply_saved(layer)
+            if selected is not layer: layer.clear(); layer.update(selected)
     return resolved, plan
 
 

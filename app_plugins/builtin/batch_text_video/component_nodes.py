@@ -8,7 +8,7 @@ from .node_effects import TYPE_ID, INPUT_KIND, OUTPUT_KIND, new_effect
 SOURCE_KIND = 'batch_text_video.component_source'
 SOURCE_KEYS = ('id', 'kind', 'name', 'enabled', 'opacity', 'source', 'source_file',
                'text', 'path', 'caption_file', 'sequence_items', 'sequence_cursor',
-               'pool_id', 'pool_field', 'pool_name', 'pool_cursor', 'pool_next_id', 'copy_binding',
+               'pool_id', 'pool_field', 'pool_name', 'pool_cursor', 'pool_next_id', 'copy_binding', 'use_saved_matte',
                'caption_timing', 'caption_source', 'caption_language', 'caption_cloud_consent')
 
 

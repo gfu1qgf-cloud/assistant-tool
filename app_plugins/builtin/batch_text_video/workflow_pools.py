@@ -32,6 +32,12 @@ def prepare_pool(_task, params, services):
         raise ValueError("本次运行传入的项目没有这个资源池，请在当前项目中添加或重新选择资源池。")
     # Only the pool contents cross the boundary, never jobs, credentials or Store.
     refs = []
+    if pool['kind'] in {'image', 'video', 'visual'}:
+        from .matting_assets import snapshot_layers
+        frozen = snapshot_layers([dict(kind='image', path='', sequence_items=pool['items'])])[0]
+        pool['matting'] = frozen.get('_matting_snapshot', {})
+        for record in pool['matting'].values():
+            if record and not record.get('error'): refs.append(asdict(ResourceRef.capture(record['result']['path'], 'saved_matte')))
     if pool["kind"] != "copy":
         for item in pool["items"]:
             path = Path(item["path"])
@@ -71,6 +77,7 @@ def pool_layer(layer, pool, index):
     for ref in pool.files:
         if pool.kind == "text": ref.verify()
     bound = bind_pool_layers([layer], state)[0]
+    if 'matting' in data: bound['_matting_snapshot'] = data['matting']
     items = bound["sequence_items"]
     if not items:
         raise ValueError(pool.name + "：没有可用内容，请在文案视频资源池中添加。")

@@ -35,6 +35,11 @@ def prepare_layer(_task, params, _services):
     if path and Path(path).is_file():
         result["file"] = asdict(ResourceRef.capture(path, "layer_file"))
     if kind == "image":
+        from .matting_assets import snapshot_layers
+        frozen = snapshot_layers([dict(layer, path=path)])[0]
+        result['matting'] = frozen.get('_matting_snapshot', {})
+        for record in result['matting'].values():
+            if record and not record.get('error'): result.setdefault('matting_files', []).append(asdict(ResourceRef.capture(record['result']['path'], 'saved_matte')))
         from .chroma_key import active_mask, MASK_SUFFIXES
         mask = active_mask(layer)
         if mask and Path(mask).is_file() and Path(mask).suffix.casefold() in MASK_SUFFIXES:
@@ -83,7 +88,17 @@ def build_layer(inputs, params, context, *, media="text"):
             ref = ResourceRef(**stored) if stored and str(Path(path).resolve()) == stored["path"] else ResourceRef.capture(path, "layer_file")
             ref.verify()
             refs.append(ref)
+        if kind == 'image' and 'matting' in context.node_prepared:
+            layer['_matting_snapshot'] = context.node_prepared['matting']
         layer = resolve_sources([layer])[0][0]
+    if kind == 'image':
+        from .matting_assets import apply_saved
+        layer = apply_saved(layer)
+        if layer.get('_matting_binding'):
+            for label in ('source', 'result'):
+                ref = ResourceRef.capture(layer['_matting_binding'][label]['path'], 'saved_matte_'+label)
+                ref.verify(); refs.append(ref)
+        layer.pop('_matting_snapshot', None)
     layer.update(source="fixed", source_file="", sequence_items=[], sequence_cursor=0)
     layer = normalize_layer(layer, kind)
     if kind == "text" and not layer["text"].strip():

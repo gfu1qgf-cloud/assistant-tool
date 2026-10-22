@@ -9,9 +9,10 @@ from .layer_ui import ImageImportWorker
 from .layers import MAX_IMAGES
 from .custom_pool_ui import CustomPoolController
 from .custom_pools import get_pool
+from .matting_controller import MattingController
 
 
-class PoolController(CustomPoolController):
+class PoolController(CustomPoolController, MattingController):
     def init_resources(self, music_page):
         self.current_copy_id = ""
         self._active_resource_key = None
@@ -78,6 +79,7 @@ class PoolController(CustomPoolController):
         self.remove_action = resources.addAction("移出所选（不删除原文件）", self.remove_active)
         resources.addAction("清空当前池 / 队列…", self.clear_active)
         resources.addAction("全选", self.select_all_active)
+        self.init_matting_menu()
         batch = self.menu_bar.addMenu("批量")
         batch.addAction("搭配资源，加入生成队列…", self.compose_queue)
         batch.addAction("当前文案应用到所选队列", self.copy_text)
@@ -157,6 +159,8 @@ class PoolController(CustomPoolController):
             menu.addAction("添加为固定图片图层", lambda: self.use_pool_images(False))
             menu.addAction("添加视觉元素（绑定此池）", lambda: self.use_pool_images(True))
         if key in {"backgrounds", "image_pool", "music"} or key.startswith("pool:"):
+            if key in {'backgrounds', 'image_pool'} or key.startswith('pool:') and get_pool(self.state, key[5:])['kind'] in {'image', 'video', 'visual'}:
+                menu.addAction('单独抠像并保存…', lambda: self.matte_pool_selection(key=key)).setEnabled(bool(table.identifiers()))
             menu.addAction("打开文件位置", lambda: self.open_resource_location(key)).setEnabled(bool(table.identifiers()))
             menu.addSeparator()
         menu.addAction("移出所选（Delete，不删除文件）", lambda: self.remove_resource(key)).setEnabled(bool(table.identifiers()))

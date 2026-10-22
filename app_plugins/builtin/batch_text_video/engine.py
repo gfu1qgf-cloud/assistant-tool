@@ -291,6 +291,8 @@ def source_paths(state):
     from .components import walk_components
     from .chroma_key import active_mask
     for layer in walk_components(state.get('settings', {}).get('layers', [])):
+        binding = layer.get('_matting_binding')
+        if binding: inputs.extend(binding[k]['path'] for k in ('source', 'result'))
         inputs.extend(layer.get(key) for key in ('path', 'source_file', 'caption_file'))
         if layer.get('kind') == 'image' and active_mask(layer):
             inputs.append(active_mask(layer))
@@ -387,7 +389,7 @@ def prepare_static_text(job, state, directory, cancel=None, progress=None, repor
     folder = job.get("task_dir") or settings["output_dir"] or str(Path(job["path"]).parent)
     if not folder:
         raise ValueError("请选择输出文件夹。")
-    inputs = source_paths(state)
+    inputs = source_paths(state) + source_paths({'settings': settings})
     if voice_path:
         inputs.append(voice_path)
     from .task_naming import output_stem

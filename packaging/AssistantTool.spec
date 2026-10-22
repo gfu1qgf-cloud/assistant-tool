@@ -86,6 +86,7 @@ GetModule("UIAutomationCore.dll")
 for package_name in (
     "stable_whisper",
     "faster_whisper",
+    "onnxruntime",
     "ctranslate2",
     "tokenizers",
     "av",

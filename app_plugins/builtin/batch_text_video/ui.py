@@ -1738,7 +1738,8 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
     def has_local_work(self):
         # A manager-owned render handle must not mask dialog-owned QThreads.
         # Wait for their GUI completion callbacks too, not only isRunning().
-        return (self.worker is not None and not isinstance(self.worker, BackgroundTaskHandle)
+        return (getattr(self, 'matting_dialog', None) is not None and self.matting_dialog.worker is not None
+                or self.worker is not None and not isinstance(self.worker, BackgroundTaskHandle)
                 or any(worker is not None for worker in (
                     self.import_worker, self.layer_panel.worker, self.image_import_worker,
                     self.preview_worker, self.overlay_worker, self.playback_worker))
@@ -1760,6 +1761,7 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
         self.stop_button.setEnabled(busy)
 
     def cancel_work(self, *, cancel_host=True):
+        if getattr(self, 'matting_dialog', None) is not None: self.matting_dialog.cancel_work()
         self.animation_preview_timer.stop()
         self.edit_timer.stop()
         pending_quick = isinstance(self._batch_after_preview, dict)

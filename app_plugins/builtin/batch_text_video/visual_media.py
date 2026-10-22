@@ -12,7 +12,7 @@ ANIMATED_SUFFIXES = frozenset({".gif", ".mp4", ".mov", ".mkv", ".avi", ".webm", 
 VISUAL_SUFFIXES = ANIMATED_SUFFIXES | {".png", ".jpg", ".jpeg", ".jfif", ".webp", ".bmp", ".tif", ".tiff"}
 VISUAL_FILTER = "图片 / 视频 / GIF (" + " ".join("*" + item for item in sorted(VISUAL_SUFFIXES)) + ")"
 DEFAULTS = {"blend_mode": "normal", "key_mode": "none", "key_similarity": .15,
-            "key_softness": .08, "key_despill": False, "media_loop": True,
+            "key_softness": .08, "key_despill": False, "media_loop": True, "use_saved_matte": True,
             **MATTE_DEFAULTS, **ANIMATION_DEFAULTS, **KEY_DEFAULTS, **SHOW_DEFAULTS}
 
 def is_animated(path):
@@ -22,6 +22,7 @@ def normalize_visual(layer):
     for key, value in DEFAULTS.items():
         layer.setdefault(key, value)
     normalize_key(layer)
+    if type(layer['use_saved_matte']) is not bool: raise ValueError('素材已存抠像开关无效。')
     if layer["blend_mode"] not in {"normal", "add", "screen"}:
         raise ValueError("视觉元素的叠加／抠像模式无效。")
     for key, low in (("key_similarity", .00001), ("key_softness", 0)):
@@ -243,6 +244,9 @@ class VisualProperties(QtWidgets.QWidget):
         form = self._page("抠像")
         animation = self._page("动画")
         self.controls = {}
+        saved = QtWidgets.QCheckBox('优先使用此素材已保存的抠像结果')
+        saved.setToolTip('在顶部“抠像”菜单为每个素材独立保存。启用时使用透明结果，跳过下方颜色抠像；关闭可使用原素材。')
+        saved.toggled.connect(self.edit); self.controls['use_saved_matte'] = saved; form.addRow(saved)
         for key, label, choices in (("blend_mode", "叠加模式", (("普通", "normal"), ("添加", "add"), ("滤色", "screen"))),
                                     ("key_mode", "抠像颜色", (("关闭", "none"), ("绿色预设", "green"), ("蓝色预设", "blue"), ("黑色预设", "black"), ("自定义颜色", "custom"))),
                                     ("key_method", "抠像算法", (("普通 · 颜色扣除", "normal"), ("增强 · 轮廓保护", "enhanced")))):
