@@ -27,6 +27,11 @@ def credit_hold(client, preferences, now=None):
     now = time.time() if now is None else now
     record = credit_record(client, preferences)
     until = record.get('until')
+    from .credit_refresh import deadline
+    refresh = record.get('refresh_at') or deadline({**client,'account':client.get('account') or record.get('account')}, preferences)
+    if refresh and record.get('at', 0) < refresh:
+        until = min(until, refresh) if type(until) in (int,float) else until
+        record = {**record, 'until':until}
     return record if type(until) in (int, float) and math.isfinite(until) and until > now else {}
 
 
@@ -55,8 +60,13 @@ def remember_balance(service, client, *, manual=False, source='page'):
     held = credit_hold({'account': account}, service.preferences, now)
     if points < MIN_CREDITS:
         if not held or manual:
-            records[account] = {'account': account, 'balance': points, 'at': now,
-                                'until': now + timing_value(service.preferences, 'credit_cooldown_seconds'), 'source': source}
+            from .credit_refresh import deadline
+            refresh = deadline(client, service.preferences)
+            stale_probe = refresh and client.get('credits_at',now) < refresh <= now
+            records[account] = {'account': account, 'balance': points,
+                                'at': client['credits_at'] if stale_probe else now,
+                                'until': refresh if refresh > now or stale_probe else now + timing_value(service.preferences, 'credit_cooldown_seconds'),
+                                **({'refresh_at':refresh} if refresh > now or stale_probe else {}), 'source': source}
         elif points < held['balance']:
             records[account] = {**held, 'balance': points}
     elif manual or not held:

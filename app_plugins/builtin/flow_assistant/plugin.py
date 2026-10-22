@@ -14,12 +14,13 @@ class FlowAssistantPlugin(QtCore.QObject):
     command = QtCore.pyqtSignal(object)
     plugin_id = 'flow_assistant'
     display_name = 'Flow 视频助手'
-    version = '0.4.49'
+    version = '0.4.50'
     upstream_version = '1.1.5'
     ui_api_version = 2
     manual_credit_check_api = 1
     account_state_api = 1
     high_credit_api = 1
+    high_credit_permission_api = 1
     timing_settings_api = 1
     retry_now_api = 1
     required_api_version = 1

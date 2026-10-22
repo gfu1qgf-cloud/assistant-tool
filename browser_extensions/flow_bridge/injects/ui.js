@@ -6432,11 +6432,13 @@ ${presetAfter || ""}`.trim();
             if (el.children.length > 3) continue;
             const t = (el.textContent || "").trim();
             if (!t) continue;
+            if (window.__lzxFlowTransport?.isCreditRefreshText?.(t)) continue;
             if (t.includes("点数") || t.includes("點數") || t.includes("积分") || t.includes("積分") || /credits|points|ai\s*credits/i.test(t) || /\b[\d,]+\s*點\b/.test(t)) {
               let n = parseCreditNumber(t);
               if (n !== null) return n;
               // 兼容英文/窄窗口下文字与数字分属相邻兄弟节点的情况 (例如 <span>AI Credits</span><span>1,000</span>)
               if (el.parentElement) {
+                if (window.__lzxFlowTransport?.isCreditRefreshText?.(el.parentElement.textContent)) continue;
                 n = parseCreditNumber(el.parentElement.textContent);
                 if (n !== null) return n;
               }
@@ -6454,7 +6456,9 @@ ${presetAfter || ""}`.trim();
       }
       // 菜单已打开时直接读
       let pts = readPointsFromDom();
-      if (pts !== null) { readEmailCheap(); return pts; }
+      if (pts !== null) { readEmailCheap();
+        window.__lzxFlowTransport?.creditRefresh?.(document.querySelector("flow-account-panel, .flow-account-panel-overlay, .cdk-overlay-pane"), cachedEmail || readEmailCheap());
+        return pts; }
 
       const avatarBtn = document.querySelector('div.header-user-button[role="button"]') ||
                         document.querySelector("div.header-user-button") ||
@@ -6473,6 +6477,7 @@ ${presetAfter || ""}`.trim();
         const exact = exactEmailIn(panel);
         if (exact) cachedEmail = exact;
       }
+      window.__lzxFlowTransport?.creditRefresh?.(panel, cachedEmail || readEmailCheap());
       // 关闭菜单
       await sleep(100);
       const closer = document.querySelector("flow-account-panel button.close-button") ||

@@ -4,6 +4,47 @@
   let handler, getSnapshot, helpers, lastSnapshot = '', lastIdentity = '', confirmedIdentity = '', lastSnapshotAt = 0, preparedProof = null;
   let timingValues = {}, statusTimer;
   let nativeOperation = false;
+  let creditRefreshObservation = null;
+  function creditRefreshClock(text) {
+    const clean = String(text || '').replace(/\s+/g, ' ').trim();
+    const match = clean.match(/^(?:点数|點數|积分|積分)\s*(?:每天|每日)\s*(?:于|於|在)?\s*(\d{1,2})[:：](\d{2})\s*(?:刷新|重置|更新)$/i) ||
+      clean.match(/^(?:AI\s*)?(?:credits?|points?)\s+(?:refresh|reset|renew)(?:es|s)?\s+(?:daily|every day)\s+(?:at\s+)?(\d{1,2}):(\d{2})\s*(AM|PM)?$/i);
+    if (!match) return null;
+    let hour = Number(match[1]), minute = Number(match[2]);
+    if (minute > 59 || hour > 23 || match[3] && (hour < 1 || hour > 12)) return null;
+    if (match[3]) hour = hour % 12 + (match[3].toUpperCase() === 'PM' ? 12 : 0);
+    return {hour, minute, text:clean};
+  }
+  function captureCreditRefresh(panel, account) {
+    account = normalizeEmail(account);
+    if (!panel || !account || !live(panel)) return;
+    const accountPanel = panel.matches?.('flow-account-panel, .flow-account-panel-overlay') ||
+      (String(panel.textContent || '').toLowerCase().includes(account) &&
+       panel.querySelector?.('span.credits-count, [class*="credits-count"], a.credits-link'));
+    if (!accountPanel) return;
+    const matches = [...(panel.querySelectorAll?.('span, div, p') || [])].filter(node => {
+      if (!live(node) || node.closest?.(ignoredAlertContent)) return false;
+      if (typeof getComputedStyle === 'function') {
+        for (let el=node; el; el=el.parentElement) {
+          const style=getComputedStyle(el);
+          if (style.display==='none' || style.visibility==='hidden' || style.opacity==='0') return false;
+        }
+      }
+      return true;
+    }).map(node => creditRefreshClock(node.textContent)).filter(Boolean);
+    const clocks = new Map(matches.map(item => [item.hour+':'+item.minute,item]));
+    if (clocks.size > 1) return; // Conflicting page labels cannot authorize a deadline.
+    creditRefreshObservation = {account, checked:true, value:null};
+    if (!clocks.size) return;
+    const clock = [...clocks.values()][0], now = new Date(), next = new Date(now.getTime());
+    next.setHours(clock.hour,clock.minute,0,0);
+    if (next.getTime() <= now.getTime()) next.setDate(next.getDate()+1);
+    let timezone = '';
+    try {timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || '';} catch {}
+    creditRefreshObservation.value = {account,daily_time:String(clock.hour).padStart(2,'0')+':'+String(clock.minute).padStart(2,'0'),
+      next_at:next.getTime()/1000, observed_at:now.getTime()/1000, timezone,
+      offset_minutes:now.getTimezoneOffset(), text:clock.text};
+  }
   const pageInstance = globalThis.crypto?.randomUUID?.() || String(Date.now()) + ':' + Math.random();
   const timingMs = (key,fallback) => Math.max(1, (Number.isFinite(timingValues[key]) && timingValues[key] > 0 ? timingValues[key] : fallback)*1000);
   function applyTiming(raw) {
@@ -380,6 +421,8 @@
       task.status?.[line] !== 'success'));
   }
   window.__lzxFlowTransport = {
+    creditRefresh:captureCreditRefresh,
+    isCreditRefreshText:text => /(?:每天|每日)\s*(?:于|於|在)?\s*\d{1,2}[:：]\d{2}\s*(?:刷新|重置|更新)|(?:credits?|points?).*(?:refresh|reset|renew).*(?:daily|every day)/i.test(String(text || '')),
     initReference() {if (helpers) window.__lzxReferenceIdentity?.init(helpers, timingMs);},
     verifySettings, settingsPanel, waitForSettings, applyDuration, activeEmail, captureAccount, locateResult, readiness, waitForControls,
     findSubmission, matchesSubmission, hasPendingResults,
@@ -418,7 +461,9 @@
         // with a second, narrower DOM query after that menu has disappeared.
         const email = activeEmail() || normalizeEmail(message.data?.email || message.email);
         confirmedIdentity = email;
-        message = {...message, email, data: {...message.data, email}};
+        const observation = creditRefreshObservation?.account === email ? creditRefreshObservation : null;
+        message = {...message, email, data: {...message.data, email,
+          ...(observation ? {credit_refresh_checked:true,credit_refresh:observation.value} : {})}};
         if (!email) message = {...message, success: false, code: 'FLOW_ACCOUNT_NOT_READY',
           error: '账号菜单尚未返回可确认的邮箱，正在自动重试首次读取；不能据此判断未登录。'};
       }
@@ -454,7 +499,7 @@
       if (message.params?.wait_for_ready && ['prepare', 'upload_images', 'run_tasks'].includes(message.action)) {
         await waitForControls();
       }
-      if (message.action === 'get_points') { lastIdentity = ''; confirmedIdentity = ''; }
+      if (message.action === 'get_points') { lastIdentity = ''; confirmedIdentity = ''; creditRefreshObservation = null; }
       if (message.action === 'prepare') {
         if (getSnapshot?.()?.running) {
           snapshot(true);

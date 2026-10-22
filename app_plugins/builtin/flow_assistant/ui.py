@@ -464,9 +464,12 @@ class FlowDialog(QtWidgets.QDialog):
                            if client.get('credits') is not None else '未知（待检测；参考 50 分）')
             from .high_credit import is_high
             if is_high(client, preferences): credit_text += '\n千分账号（曾 ≥100 分）'
+            from .high_credit import record as high_record
+            permission = high_record(client,preferences).get('permission')
             hold = credit_hold(client, preferences)
             if hold and (not online or client.get('credits') is None):
                 credit_text = f'{hold["balance"]:g}（冷却记录）'
+            if permission in {'allow','deny'}: credit_text += '\n'+('已允许备用调度' if permission=='allow' else '已禁止调度')
             credit_number = hold['balance'] if hold and (not online or client.get('credits') is None) else client.get('credits')
             check = client.get('credit_check') or {}
             if check.get('state') == 'checking':
@@ -483,10 +486,17 @@ class FlowDialog(QtWidgets.QDialog):
                 credit_text += '\n冷却中，未自动检测'
             elif check.get('state') == 'cached':
                 credit_text += '\n上次检测缓存'
+            from .credit_refresh import record as refresh_record, deadline as refresh_deadline
+            daily = refresh_record(client,preferences)
+            if daily:
+                credit_text += '\n页面每天 '+daily['daily_time']+' 刷新'+('（'+daily['timezone']+'）' if daily.get('timezone') else '')
             if client.get('credits') is not None and client.get('credits_at'):
                 lifetime = timing_value(preferences, 'credit_validity_seconds')
-                if lifetime:
-                    deadline = QtCore.QDateTime.fromSecsSinceEpoch(int(client['credits_at'] + lifetime)).toString('MM-dd HH:mm')
+                limit = client['credits_at'] + lifetime if lifetime else 0
+                refresh = refresh_deadline(client,preferences)
+                if refresh and client['credits_at'] < refresh: limit = min(limit,refresh) if limit else refresh
+                if limit:
+                    deadline = QtCore.QDateTime.fromSecsSinceEpoch(int(limit)).toString('MM-dd HH:mm')
                     credit_text += '\n余额有效至 ' + deadline
                 else: credit_text += '\n余额不过期'
             values = {BC.PROFILE: client.get('profile') or ('浏览器 ' + identifier[:8]),
@@ -527,13 +537,31 @@ class FlowDialog(QtWidgets.QDialog):
             self.browsers.selectRow(index.row())
         menu = QtWidgets.QMenu(self.browsers)
         menu.addAction('检测选中浏览器积分', self.detect_selected_credits)
-        menu.addAction('重新询问使用千分账号（小额账号用完后）', lambda: self.account_state_action('retry_high_credit'))
+        self.high_credit_permission_menu(menu)
         menu.addAction('标记选中账号不可用', lambda: self.account_state_action('mark_account_unavailable'))
         menu.addAction('重置选中账号状态并重新检测', lambda: self.account_state_action('reset_account_state'))
         menu.addAction('打开选中浏览器', self.open_selected_browser)
         menu.addAction('连接／安装扩展…', self.open_setup)
         self.runtime_menu(menu)
         menu.exec(self.browsers.viewport().mapToGlobal(position))
+
+    def high_credit_permission_menu(self, menu):
+        from .high_credit import is_high, record
+        from .image_affinity import cached_profile
+        selected = self.browser_selections(); preferences = self.state.get('preferences', {})
+        online = {c.get('id'):c for c in self.state.get('clients', [])}
+        clients = [online.get(item.get('browser')) or cached_profile(item.get('profile'),preferences) for item in selected]
+        submenu = menu.addMenu('千分账号使用权限')
+        supported = getattr(self.plugin,'high_credit_permission_api',0) == 1
+        submenu.setEnabled(supported and bool(clients) and all(is_high(c,preferences) for c in clients))
+        group = QtGui.QActionGroup(submenu); group.setExclusive(True)
+        for text,permission in (('允许使用（普通账号优先）','allow'),('禁止使用','deny'),('恢复自动询问','auto')):
+            action = submenu.addAction(text); action.setCheckable(True); group.addAction(action)
+            action.setChecked(bool(clients) and all(record(c,preferences).get('permission','auto')==permission for c in clients))
+            action.triggered.connect(lambda _checked=False,p=permission:self.send('set_high_credit_permission',
+                permission=p,keys=[item['key'] for item in self.browser_selections()]))
+        submenu.setToolTip('选择后立即保存，重启后仍有效；不弹倒计时确认框。允许后仍优先用普通账号，禁止不取消已提交任务。')
+        return submenu
 
     def runtime_menu(self, menu):
         runtime = menu.addMenu('运行时操作')

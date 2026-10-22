@@ -12,6 +12,8 @@ def balance_ready(client, now=None, preferences=None):
     lifetime = timing_value(preferences, 'credit_validity_seconds')
     observed = client.get('credits_at', 0)
     if type(observed) not in (int, float) or not math.isfinite(observed) or observed <= 0: return False
+    from .credit_refresh import due
+    if due(client, preferences or {}, now): return False
     return (bool(client.get('account')) and valid and not client.get('identity_unconfirmed') and
             (lifetime == 0 or observed > now - lifetime))
 

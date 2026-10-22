@@ -151,6 +151,20 @@ def patch_ui(ui):
         '    function send(obj) {\n      if (window.__lzxFlowTransport) { window.__lzxFlowTransport.send(obj); return; }\n      try {')
     ui = exact(ui, '      if (action === "get_points") {\n        const pts = await probePoints();',
         '      if (action === "get_points") {\n        cachedEmail = ""; cachedPoints = null; lastProbeAt = 0;\n        const pts = await probePoints();')
+    ui = exact(ui, '      if (pts !== null) { readEmailCheap(); return pts; }',
+        '      if (pts !== null) { readEmailCheap();\n'
+        '        window.__lzxFlowTransport?.creditRefresh?.(document.querySelector("flow-account-panel, .flow-account-panel-overlay, .cdk-overlay-pane"), cachedEmail || readEmailCheap());\n'
+        '        return pts; }')
+    ui = exact(ui, '      // 关闭菜单\n      await sleep(100);',
+        '      window.__lzxFlowTransport?.creditRefresh?.(panel, cachedEmail || readEmailCheap());\n'
+        '      // 关闭菜单\n      await sleep(100);')
+    ui = exact(ui, '            if (!t) continue;\n            if (t.includes("点数")',
+        '            if (!t) continue;\n'
+        '            if (window.__lzxFlowTransport?.isCreditRefreshText?.(t)) continue;\n'
+        '            if (t.includes("点数")')
+    ui = exact(ui, '                n = parseCreditNumber(el.parentElement.textContent);',
+        '                if (window.__lzxFlowTransport?.isCreditRefreshText?.(el.parentElement.textContent)) continue;\n'
+        '                n = parseCreditNumber(el.parentElement.textContent);')
     ui = exact(ui, '    function connect() {\n', TRANSPORT + '    function connect() {\n')
     ui = exact(ui, '  async function retrySavedVideo(task, rowIndex, lineIndex) {',
         '  async function retrySavedVideo(task, rowIndex, lineIndex, downloadOnly = false) {')

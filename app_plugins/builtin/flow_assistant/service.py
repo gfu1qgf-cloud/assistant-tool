@@ -557,6 +557,9 @@ class FlowService(QtCore.QObject, FlowOperations):
             client['credits_local'] = bool(client['account']) and type(client['credits']) is int
             client['credits_estimated'] = False
             if client['credits_local']:
+                from .credit_refresh import observe as observe_credit_refresh
+                observed = observe_credit_refresh(self, client, data, started_at=request['at'])
+                if observed is not None: client['credits_at'] = min(client['credits_at'], observed)
                 from .high_credit import with_marker
                 marked = with_marker(self.preferences, client)
                 if marked != self.preferences: self.commit_preferences(marked)
@@ -1016,6 +1019,9 @@ class FlowService(QtCore.QObject, FlowOperations):
             elif action == 'retry_high_credit':
                 from .high_credit import retry_selected
                 retry_selected(self, command.get('keys', []))
+            elif action == 'set_high_credit_permission':
+                from .high_credit import set_permission
+                set_permission(self, command)
             elif action == 'submit_selected':
                 self.released.update(row['id'] for row in self.store.rows()
                                      if row['id'] in command['ids'] and row['status'] == 'queued')
@@ -1346,6 +1352,8 @@ class FlowService(QtCore.QObject, FlowOperations):
                             self.request(client, 'snapshot')
                         self.publish()
             self.refresh_reset_holds()
+            from .credit_refresh import watch as watch_credit_refresh
+            if watch_credit_refresh(self): self.publish()
             if self.watch_stalled():
                 self.publish()
             if watch_preparation(self):

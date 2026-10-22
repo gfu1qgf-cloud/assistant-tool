@@ -37,6 +37,7 @@ def allowed(client, preferences):
     if not is_high(client, preferences):
         return True
     entry = record(client, preferences)
+    if entry.get('permission') in {'allow','deny'}: return entry['permission'] == 'allow'
     return bool(preferences.get('high_credit_session') and entry.get('decision') == 'approved' and
         entry.get('session') == preferences['high_credit_session'] and
         entry.get('cycle') == preferences.get('normal_credit_spends', 0))
@@ -46,10 +47,12 @@ def reason(client, preferences):
     if not is_high(client, preferences) or allowed(client, preferences):
         return ''
     entry = record(client, preferences)
+    if entry.get('permission') == 'deny':
+        return '千分账号：用户已禁止调度；可右键设置使用权限，已提交任务仍保留核对与下载'
     if entry.get('decision') == 'asking':
         return '千分账号（曾检测到至少 100 分）：等待使用确认；窗口显示后才开始倒计时'
     if entry.get('decision') == 'skipped':
-        return '千分账号（曾检测到至少 100 分）：本轮已跳过，任务仍保留在队列；可右键重新询问'
+        return '千分账号（曾检测到至少 100 分）：本轮已跳过，任务仍保留在队列；可右键设置使用权限'
     return '千分账号（曾检测到至少 100 分）：保留备用；小额账号用完后询问，未确认不接单'
 
 
@@ -240,6 +243,7 @@ def watch(service, queued):
         return  # Give an approved original browser its bounded startup interval.
     cycle = service.preferences.get('normal_credit_spends', 0)
     options = [c for c in candidates(service) if is_high(c, service.preferences) and
+        record(c, service.preferences).get('permission') != 'deny' and
         not allowed(c, service.preferences) and (record(c, service.preferences).get('asked_cycle') != cycle or
             record(c, service.preferences).get('decision') == 'approved' and
             record(c, service.preferences).get('session') != service.preferences.get('high_credit_session')) and
@@ -274,3 +278,25 @@ def retry_selected(service, keys):
         if account in entries:
             entries[account] = {key: value for key, value in entries[account].items() if key not in {'asked_cycle', 'retry_after'}}
     service.commit_preferences({**service.preferences, 'high_credit_accounts': entries})
+
+
+def set_permission(service, command):
+    permission = command.get('permission')
+    if permission not in {'allow','deny','auto'}: raise ValueError('千分账号权限无效')
+    keys = set(command.get('keys', []))
+    selected = [c for c in candidates(service) if identities(c) & keys and is_high(c, service.preferences)]
+    if not selected: raise ValueError('请先选择已识别的千分账号，可选择离线配置')
+    preferences = service.preferences
+    for client in selected: preferences = with_marker(preferences, client)
+    entries = dict(preferences.get('high_credit_accounts', {})); accounts = set()
+    for client in selected:
+        account = account_key(client, preferences)
+        if not account: continue
+        accounts.add(account)
+        entry = {k:v for k,v in entries.get(account, {}).items() if k not in {'asked_cycle','retry_after','permission'}}
+        entry.update(decision='standby', decision_source='manual_permission', decided_at=time.time())
+        if permission != 'auto': entry['permission'] = permission
+        entries[account] = entry
+    service.commit_preferences({**preferences,'high_credit_accounts':entries})
+    if getattr(service,'high_credit_pending',None) and service.high_credit_pending['account'] in accounts:
+        service.high_credit_pending = None
