@@ -324,6 +324,8 @@ def prepare_static_text(job, state, directory, cancel=None, progress=None, repor
     if cancel and cancel.is_set():
         raise Cancelled("已取消。")
     settings = dict(state["settings"])
+    from .voice_effects import active as voice_fx_active, normalized as normalize_voice_fx, PRESETS
+    settings.update(normalize_voice_fx(settings))
     from model.MediaEncoding import normalize_export_settings, resolve_video_encoder, video_encoding_args, filter_thread_args, encoder_label, video_pixel_format, quality_label
     normalize_export_settings(settings)
     workers = 1 if preview else settings['export_workers']
@@ -511,8 +513,17 @@ def prepare_static_text(job, state, directory, cancel=None, progress=None, repor
             music_index = next_index
             loops = max(0, math.ceil((music["start"] + duration) / music["duration"]) - 1)
             args += ["-stream_loop", str(loops), "-i", music["path"]]
+            next_index += 1
+        voice_ir_index = None
+        if voice_path and voice_fx_active(settings):
+            from .voice_reverb import write_ir
+            report('人声空间特效：'+PRESETS[settings['voice_fx_preset']]['name'])
+            response = write_ir(temporary/'voice-space.wav', settings, cancel)
+            voice_ir_index = next_index
+            args += ['-i', str(response)]
+            next_index += 1
         audio_filters, has_audio = audio_graph(settings, duration, voice_index, music_index, music, media["audio"],
-            original_speed=adaptation["speed"] if adaptation and not voice_path else None)
+            original_speed=adaptation["speed"] if adaptation and not voice_path else None, voice_ir_index=voice_ir_index)
         filters += audio_filters
         script = temporary / "render.filter"
         data_file(script).write_text(";\n".join(filters), "utf-8")

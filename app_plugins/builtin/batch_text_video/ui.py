@@ -29,6 +29,7 @@ from .undo import UndoController
 from .audio_sources import resolve_voice
 from .audio_ui import AudioSourceCard
 from .component_nodes import ComponentNodeController
+from .voice_effects_preview import VoiceEffectController
 
 
 class OverlayWorker(QtCore.QThread):
@@ -175,7 +176,7 @@ class ImportWorker(QtCore.QThread):
             self.ready.emit({"entries": [], "issues": ["导入异常，请查看程序日志。"], "cancelled": False})
 
 
-class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackController, PoolController, QtWidgets.QDialog):
+class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackController, PoolController, VoiceEffectController, QtWidgets.QDialog):
     def __init__(self, context=None, store=None, parent=None):
         from .component_inspector import require_editor_api
         require_editor_api(LayerPanel)
@@ -451,6 +452,7 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
         self.controls["voice_pool_id"] = self.audio_cards["voice"].pool
         self.controls["voice_pool_mode"] = self.audio_cards["voice"].mode
         voice_card = self.audio_cards["voice"]
+        self.init_voice_effects(voice_card)
         voice_card.menu_button.show()
         for label, scope in (("当前条目跟随控件", "current"), ("选中队列跟随控件", "selected"),
                              ("全部队列跟随控件", "all")):
@@ -1738,7 +1740,8 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
     def has_local_work(self):
         # A manager-owned render handle must not mask dialog-owned QThreads.
         # Wait for their GUI completion callbacks too, not only isRunning().
-        return (getattr(self, 'matting_dialog', None) is not None and self.matting_dialog.worker is not None
+        return (getattr(self, 'voice_fx_worker', None) is not None
+                or getattr(self, 'matting_dialog', None) is not None and self.matting_dialog.worker is not None
                 or self.worker is not None and not isinstance(self.worker, BackgroundTaskHandle)
                 or any(worker is not None for worker in (
                     self.import_worker, self.layer_panel.worker, self.image_import_worker,
@@ -1761,6 +1764,7 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
         self.stop_button.setEnabled(busy)
 
     def cancel_work(self, *, cancel_host=True):
+        self.stop_voice_effect_preview()
         if getattr(self, 'matting_dialog', None) is not None: self.matting_dialog.cancel_work()
         self.animation_preview_timer.stop()
         self.edit_timer.stop()
