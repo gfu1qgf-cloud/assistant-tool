@@ -98,13 +98,13 @@ class WaitingParallelTests(unittest.TestCase):
         self.assertEqual(service.store.get(other_row['id'])['status'],'queued')
         self.assertFalse(launches)
 
-    def test_no_ready_existing_account_still_does_not_launch_a_backup_to_fill_waiting_lanes(self):
+    def test_no_ready_existing_account_admits_only_three_backups_for_three_free_lanes(self):
         service,busy,owners,spares,rows,launches = self.fixture()
         for spare in spares: service.clients.pop(spare['socket'])
         service.preferences['profiles'].append('Offline backup')
         service.preferences['profile_projects']['Offline backup'] = fixtures.PROJECT
-        for _ in range(3): service._tick()
-        self.assertFalse(launches)
+        for _ in range(8): service._tick()
+        self.assertEqual(launches,[c['profile'] for c in spares])
         self.assertEqual(sum(r['status']=='preparing' for r in service.store.rows()),1)
 
 

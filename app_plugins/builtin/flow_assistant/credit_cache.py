@@ -50,22 +50,44 @@ def restore_balance(client, preferences, now=None):
     return False
 
 
-def refresh_needed(service, queued_rows):
+def refresh_needed(service, queued_rows, *, capacity=None):
     from .credit_cooldown import credit_hold
     from .account_policy import account_hold
     from .connection_recovery import occupied
     from .routing import dispatch_rank
+    from .ordered_dispatch import browser_order
+    from .high_credit import allowed, is_high
+    from .policy import block_for, estimated_cost
+    from .store import TRANSIENT, choose_client
+    rows = service.store.rows()
+    clients = [c for c in service.clients.values() if c.get('authorized')]
+    limit = max(1,min(8,int(service.preferences.get('concurrency',2))))
+    if queued_rows:
+        job = queued_rows[0]['payload']
+        ready = choose_client(clients,rows,limit,job,service.preferences,estimated_cost(job,service.observed_costs))
+        if ready and not is_high(ready,service.preferences): return False
+    if capacity is None:
+        capacity = max(0,int(service.preferences.get('concurrency',2))-sum(r['status'] in TRANSIENT for r in rows))
+    token = lambda c: ('account',str(c['account']).strip().casefold()) if c.get('account') else ('profile',c.get('profile') or c['id'])
+    held = {r['browser'] for r in rows if r['status'] in TRANSIENT}
+    reading = {token(c) for c in service.clients.values() if c.get('id') not in held and any(
+        p['client']==c.get('id') and p['action'] in {'get_points','repair_project'} for p in service.pending.values())}
     changed = False
-    for client in list(service.clients.values()):
+    for client in sorted(service.clients.values(),key=lambda c:browser_order(c,service.preferences)):
+        if len(reading) >= capacity: break
         if (not client.get('authorized') or not client.get('page_ready')
                 or balance_ready(client, preferences=service.preferences)
                 or credit_hold(client, service.preferences) or account_hold(client, service.preferences)
-                or occupied(service, client) or client.get('setup_blocked')
+                or occupied(service, client) or client.get('native_busy') or client.get('setup_blocked')
+                or block_for(client,service.preferences) or client.get('blocked') and client['blocked'] != '积分不足'
+                or not allowed(client,service.preferences) or token(client) in reading
                 or client.get('credits_waiting_ready')
                 or client.get('credit_last_request_observed_at') == client.get('credits_at', 0)):
             continue
         if not any(dispatch_rank(client, row['payload'], service.preferences) is not None for row in queued_rows): continue
-        changed |= bool(service.request(client, 'get_points'))
+        if service.request(client, 'get_points'):
+            changed = True
+            reading.add(token(client))
     return changed
 
 
@@ -90,8 +112,6 @@ def pending_browser_checks(service, queued_rows, affinity):
                 or not allowed(client, service.preferences) or client.get('setup_blocked')
                 or client.get('batch_running')
                 or client.get('reset_wait_until', 0) > now): continue
-        if (len(affinity['pool']) >= int(service.preferences.get('concurrency', 2)) and
-                str(client.get('account') or '').strip().casefold() not in affinity['pool']): continue
         if any(dispatch_rank(client, row['payload'], service.preferences) is not None and
                allows_image(client, row['payload'], rows, service.preferences, affinity['images'])
                for row in queued_rows): result.add(client['profile'])

@@ -53,11 +53,11 @@ class NoAutoCloseTests(unittest.TestCase):
                     self.browser(service, profile, points=40)
             if sum(r['status'] == 'preparing' for r in service.store.rows()) == 3:
                 break
-        self.assertEqual(len(set(launches)), 1)
-        self.assertEqual(sum(r['status'] == 'preparing' for r in service.store.rows()), 1)
+        self.assertEqual(len(set(launches)), 3)
+        self.assertEqual(sum(r['status'] == 'preparing' for r in service.store.rows()), 3)
         self.assertEqual(service.store.get(row['id'])['status'], 'uncertain')
         self.assertEqual(service.store.get(row['id'])['attempt'], 'f' * 32)
-        self.assertEqual(sum(r['status'] == 'queued' for r in service.store.rows()), 26)
+        self.assertEqual(sum(r['status'] == 'queued' for r in service.store.rows()), 24)
         for socket in before:
             self.assertIn(socket, service.clients)
             socket.close.assert_not_called()

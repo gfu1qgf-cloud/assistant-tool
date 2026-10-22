@@ -132,12 +132,32 @@ class FlowService(QtCore.QObject, FlowOperations):
                 raise RuntimeError(f'Flow 本地端口 {pair["port"]} 无法监听：{self.server.errorString()}')
             self.server.newConnection.connect(self._accept)
             self.pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix='flow-archive')
+            self.dispatch_timer = QtCore.QTimer(self)
+            self.dispatch_timer.setSingleShot(True)
+            self.dispatch_timer.timeout.connect(self.fill_dispatch_slots)
+            self._filling_dispatch = False
             self.timer = QtCore.QTimer(self)
-            self.timer.timeout.connect(self._tick)
+            self.timer.timeout.connect(self.fill_dispatch_slots)
             self.timer.start(max(1, round(timing_value(self.preferences, 'queue_tick_seconds') * 1000)))
             self.publish()
         except Exception as error:
             self.failed.emit(str(error))
+
+    def wake_dispatch(self):
+        timer = getattr(self, 'dispatch_timer', None)
+        if not self.closing and timer is not None and not timer.isActive():
+            timer.start(0)
+
+    def fill_dispatch_slots(self):
+        if self.closing or getattr(self, '_filling_dispatch', False): return
+        self._filling_dispatch = True
+        try:
+            # Nonblocking sends only. Re-read FIFO/credit/account locks after
+            # each admission; never wait for a browser response in this loop.
+            for _ in range(max(1,min(8,int(self.preferences.get('concurrency',2))))):
+                if self._tick() is not True: break
+        finally:
+            self._filling_dispatch = False
 
     def send(self, client, message):
         socket = client.get('socket')
@@ -444,6 +464,7 @@ class FlowService(QtCore.QObject, FlowOperations):
             else:
                 self._response(client, message)
             self.publish()
+            self.wake_dispatch()
         except Exception as error:
             self.failed.emit('Flow 消息处理失败：' + str(error))
 
@@ -1237,6 +1258,8 @@ class FlowService(QtCore.QObject, FlowOperations):
                 self.released.clear()
                 timer = getattr(self, 'timer', None)
                 if timer: timer.stop()
+                dispatch_timer = getattr(self, 'dispatch_timer', None)
+                if dispatch_timer: dispatch_timer.stop()
                 for socket in list(self.clients):
                     self._close_socket(socket)
                     self._disconnected(socket)
@@ -1247,6 +1270,8 @@ class FlowService(QtCore.QObject, FlowOperations):
                 self.stopped.emit()
                 return
             self.publish()
+            if action in {'start','enqueue','submit_selected','set_high_credit_permission','browser_launch_result','project_open_result','retry_download_selected','high_credit_decision'}:
+                self.wake_dispatch()
         except Exception as error:
             if command.get('action') == 'preferences' and command.get('request_id'):
                 self.preferences_saved.emit({'request_id': command['request_id'], 'success': False, 'error': str(error)})
@@ -1392,7 +1417,8 @@ class FlowService(QtCore.QObject, FlowOperations):
             refresh_probe_cycle(self, rows)
             from .ordered_dispatch import queue_head, snapshot_clients, take, browser_order
             queued_rows = queue_head(self, rows, batches)
-            if queued_rows and queued_rows[0]['remote'].get('prepare_retry', {}).get('next_at', 0) > time.time():
+            retry = queued_rows[0]['remote'].get('prepare_retry', {}) if queued_rows else {}
+            if retry.get('next_at', 0) > time.time() and not (retry.get('browser') or retry.get('profile')):
                 return
             if queued_rows and not self.safety_paused:
                 from .browser_slots import watch_probe_retries
@@ -1409,12 +1435,17 @@ class FlowService(QtCore.QObject, FlowOperations):
                 return
             if refresh_expired(self, queued_rows):
                 self.publish()
-            if refresh_needed(self, queued_rows): self.publish()
+            if refresh_needed(self, queued_rows, capacity=min(limit-sum(r['status'] in TRANSIENT for r in rows),len(admitted))): self.publish()
             client = queued = None
             # Strict FIFO: only the earliest admitted row may acquire a browser.
             affinity = affinity_context(clients, rows, self.preferences, {row['id'] for row in admitted})
             candidate = queued_rows[0]
             ready = snapshot_clients(self, fresh_clients(self, candidate, clients))
+            if retry.get('next_at', 0) > time.time():
+                # A browser's unpaid preflight backoff cannot stop this same
+                # FIFO head being assigned to another eligible browser.
+                ready = [c for c in ready if c['id'] != retry.get('browser') and
+                    (not retry.get('profile') or c.get('profile') != retry['profile'])]
             selected = choose_client(ready, rows, limit, candidate['payload'], self.preferences,
                 estimated_cost(candidate['payload'], self.observed_costs), affinity=affinity,
                 selection_order={c['id']:index for index,c in enumerate(ready)})
@@ -1453,6 +1484,7 @@ class FlowService(QtCore.QObject, FlowOperations):
                     'aspectRatio': 'ASPECT_RATIO_' + job['aspect'].replace(':', '_'),
                     'resolution': 'VIDEO_RESOLUTION_' + job['resolution'].upper(), 'footageType': 'VIDEO_FRAMES', 'count': 1}, queued['id'])
                 self.publish()
+                return True
             else:  # Actual Chrome opens share the GUI's single-shot spacing timer.
                 from .browser_reuse import defer_launch
                 if defer_launch(self,queued_rows[0]['payload']): return
@@ -1470,9 +1502,7 @@ class FlowService(QtCore.QObject, FlowOperations):
                           if (not cached[profile].get('account') or str(cached[profile]['account']).strip().casefold() not in held_accounts) and
                           can_fund(cached[profile], row['payload'], self.preferences, self.observed_costs) and
                           high_credit_allowed(cached[profile], self.preferences) and
-                          allows_image(cached[profile], row['payload'], rows, self.preferences, affinity['images']) and
-                          (str(cached[profile].get('account') or '').strip().casefold() in affinity['pool'] or
-                           len(affinity['pool']) < limit)]
+                          allows_image(cached[profile], row['payload'], rows, self.preferences, affinity['images'])]
                 ranked = sorted((((*browser_order(cached[profile], self.preferences), rank), index, profile)
                     for rank, index, profile in ranked if rank is not None),
                     key=lambda item:(item[0],item[1],available.index(item[2])))
@@ -1502,7 +1532,9 @@ class FlowService(QtCore.QObject, FlowOperations):
                 occupied = sum(r['status'] in TRANSIENT for r in rows) + len(useful_accounts) + len(starting)
                 if candidate and occupied < limit:
                     target_job = queued_rows[ranked[0][1]]['payload']
-                    if start_browser(self, candidate, target_job): self.publish()
+                    if start_browser(self, candidate, target_job):
+                        self.publish()
+                        return True
         except Exception as error:
             tick_ok = False
             if temporary_database_lock(error):

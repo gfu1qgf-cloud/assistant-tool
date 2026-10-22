@@ -146,13 +146,16 @@ class PreparationRecoveryTests(unittest.TestCase):
         self.assertEqual(row['remote']['prepare_retry']['count'], 1)
         self.assertFalse(service.preferences.get('browser_blocks'))
         service._tick()
-        self.assertFalse(any(p['action'] == 'prepare' for p in service.pending.values()))
-        with patch('time.time',return_value=row['remote']['prepare_retry']['next_at']+.1):service._tick()
         self.assertTrue(any(p['action'] == 'prepare' and p['client'] != owner['id'] for p in service.pending.values()))
+        self.assertEqual(service.store.get(row['id'])['status'],'preparing')
+        self.assertNotEqual(service.store.get(row['id'])['browser'],owner['id'])
+        reassigned=service.store.get(row['id'])
+        other=service.store.rows()[1]
         from app_plugins.builtin.flow_assistant.page_readiness import defer_prepare
         for _ in range(3):
-            defer_prepare(service, owner, service.store.get(row['id']), '设置面板正在重建', 'FLOW_SETTINGS_NOT_READY')
+            defer_prepare(service, owner, service.store.get(other['id']), '设置面板正在重建', 'FLOW_SETTINGS_NOT_READY')
         self.assertTrue(service.preferences['browser_blocks'])
+        self.assertEqual(service.store.get(row['id']),reassigned)
 
     def test_late_prepare_reply_or_timeout_cannot_requeue_same_attempt_after_submission(self):
         service = self.service(); client = self.browser(service)

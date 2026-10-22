@@ -19,14 +19,22 @@ def before_new_browser(service, job):
     admitted = admitted_queue(rows,service.store.batches(),service.observed_costs,
                               paused=service.paused,released=service.released)
     clients = [c for c in service.clients.values() if c.get('authorized')]
+    limit = max(1,min(8,int(preferences.get('concurrency',2))))
+    free = min(max(0,limit-sum(r['status'] in TRANSIENT for r in rows)),len(admitted))
+    if free <= 0: return '当前任务名额已满或没有等待派发的任务'
     online = {c.get('profile') for c in clients}
     opening = [(at,profile) for profile,at in service.launching.items() if profile not in online and
                now-at < value(preferences,'browser_startup_seconds')]
-    if opening:
-        return '谨慎开窗：先等待 '+min(opening)[1]+' 完成启动、连接与积分核对，再决定是否启用下一个配置'
+    waiting = {('profile',profile):'等待 '+profile+' 完成启动、连接与积分核对' for _,profile in sorted(opening)}
+    def full():
+        return len(waiting) >= free
+    def waiting_reason():
+        return f'正在并行准备 {len(waiting)} 个账号，已覆盖 {free} 个空闲任务名额；'+next(iter(waiting.values()))
+    if full(): return waiting_reason()
     affinity = affinity_context(clients,rows,preferences,{row['id'] for row in admitted})
     cost = max(MIN_CREDITS,estimated_cost(job,service.observed_costs) or 0)
     for client in sorted(clients,key=lambda c:browser_order(c,preferences)):
+        if full(): break
         profile = client.get('profile'); account = str(client.get('account') or '').strip().casefold()
         block = block_for(client,preferences)
         confirming = client.get('setup_pending') and block and block == client.get('setup_blocked')
@@ -43,11 +51,18 @@ def before_new_browser(service, job):
                    account and str(r['remote'].get('account') or '').strip().casefold() == account]
         # Unknown paid results stay protected; they cannot accept another job.
         if any(r['status'] in {'uncertain','download_failed'} for r in related): continue
+        # Its own paid/unpaid task already consumes its execution slot. It
+        # cannot reserve all of the other free slots as an "existing account".
+        if any(r['status'] in TRANSIENT | {'archiving'} for r in related): continue
         state = client.setdefault('reuse_recovery',{'since':now,'credit_count':0})
         if state.get('state') == 'stopped': continue
+        identity = ('account',account) if account else ('profile',profile)
+        if identity in waiting: continue
+        detail = '现有账号优先：'+profile+'；'
         if confirming:
             if now-client.get('connected',now) < value(preferences,'browser_startup_seconds'):
-                return '现有账号优先：'+profile+'；正在确认原项目连接，暂不开新浏览器'
+                waiting[identity] = detail+'正在确认原项目连接'
+                continue
             state.update(state='stopped',reason='原项目连接确认已超过启动占位时间')
             client['runtime_note']=state['reason']+'；允许检查其他账号'
             continue
@@ -56,13 +71,13 @@ def before_new_browser(service, job):
             if p['action'] == 'get_points' and key != state.get('credit_request'):
                 state.update(credit_request=key,credit_count=state['credit_count']+1,
                              credit_next_at=p['at']+value(preferences,'credit_retry_seconds'))
-        detail = '现有账号优先：'+profile+'；'
-        if any(r['status'] in TRANSIENT | {'archiving'} for r in related):
-            return detail+'此账号等待原任务／上传重试；其他已连接账号可继续接单，暂不开新浏览器'
-        if pending: return detail+'正在核对积分或恢复原页面，暂不开新浏览器'
+        if pending:
+            waiting[identity] = detail+'正在核对积分或恢复原页面'
+            continue
         if (client.get('native_busy') or client.get('batch_running') or client.get('reset_wait_until',0)>now):
             if now-state['since'] < value(preferences,'browser_startup_seconds'):
-                return detail+'等待原网页操作结束，暂不开新浏览器'
+                waiting[identity] = detail+'等待原网页操作结束'
+                continue
             state.update(state='stopped',reason='原网页操作持续未结束，恢复等待达到启动占位时限')
             client['runtime_note']=detail+state['reason']+'；允许检查其他账号，不刷新在途操作'
             continue
@@ -76,7 +91,8 @@ def before_new_browser(service, job):
                 client['runtime_note']=detail+state['reason']+'；允许检查其他账号'
                 continue
             repair_idle(service,client)
-            return detail+'先重试／恢复原项目页面，暂不开新浏览器'
+            waiting[identity] = detail+'正在恢复原项目页面'
+            continue
         if not balance_ready(client,preferences=preferences):
             limit = value(preferences,'credit_read_attempts')
             attempts = max(state['credit_count'],client.get('credits_ready_failures',0))
@@ -84,7 +100,8 @@ def before_new_browser(service, job):
                 from .runtime_controls import refresh
                 if not state.get('refreshed') and refresh(service,client,automatic=True):
                     state.update(refreshed=True,credit_count=0)
-                    return detail+'积分读取连续失败，先对原页执行安全 F5，再核对账号'
+                    waiting[identity] = detail+'积分读取连续失败，正在对原页执行安全 F5'
+                    continue
                 state.update(state='stopped',reason='原账号积分核对及可用的页面恢复已达上限')
                 client['runtime_note']=detail+state['reason']+'；允许检查其他账号'
                 continue
@@ -93,11 +110,15 @@ def before_new_browser(service, job):
                     key,p=next((key,p) for key,p in service.pending.items() if p['client']==client['id'] and p['action']=='get_points')
                     state.update(credit_request=key,credit_count=state['credit_count']+1,
                                  credit_next_at=now+value(preferences,'credit_retry_seconds'))
-            return detail+'先重新确认此账号积分，暂不开新浏览器'
+            waiting[identity] = detail+'正在重新确认此账号积分'
+            continue
         if (client.get('prepare_wait') or {}).get('next_at',0)>now:
-            return detail+'等待原浏览器的参数重试，暂不开新浏览器'
-        return detail+'积分足够，先等待原浏览器恢复接单，暂不开新浏览器'
-    return ''
+            waiting[identity] = detail+'等待此浏览器的参数重试'
+            continue
+        waiting[identity] = detail+'积分足够，等待原浏览器恢复接单'
+    # Prepare existing accounts first, reserving one slot per account. Only
+    # genuinely uncovered lanes can request a new profile (with GUI spacing).
+    return waiting_reason() if full() else ''
 
 
 def defer_launch(service, job):

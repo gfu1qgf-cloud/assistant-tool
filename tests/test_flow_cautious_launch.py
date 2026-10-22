@@ -17,10 +17,10 @@ class CautiousLaunchTests(unittest.TestCase):
     observe=fixtures.CreditCooldownTests.observe
     low=fixtures.CreditCooldownTests.low
 
-    def queue(self, *, points=50):
+    def queue(self, *, points=50, concurrency=1):
         service=self.service();client=self.browser(service,'Existing',points=points)
         client.update(connected=time.time()-3600,capabilities=['runtime_controls_v1'])
-        service.preferences.update(concurrency=4,profiles=['Existing','Backup'],
+        service.preferences.update(concurrency=concurrency,profiles=['Existing','Backup'],
             profile_projects={'Existing':fixtures.PROJECT,'Backup':fixtures.PROJECT})
         service.store.enqueue(self.jobs(duration=8,count=4,budget=0));service.paused=False
         launches=[];service.launch_requested.connect(launches.append)
@@ -58,7 +58,7 @@ class CautiousLaunchTests(unittest.TestCase):
         self.assertTrue(any(p['action']=='get_points' for p in service.pending.values()))
 
     def test_four_existing_accounts_still_fill_four_lanes(self):
-        service,client,launches=self.queue()
+        service,client,launches=self.queue(concurrency=4)
         for n in range(3):self.browser(service,'Existing '+str(n),points=50)
         for _ in range(4):service._tick()
         self.assertEqual(sum(r['status']=='preparing' for r in service.store.rows()),4)

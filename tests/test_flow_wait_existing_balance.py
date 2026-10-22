@@ -39,9 +39,11 @@ class ExistingBalanceTests(unittest.TestCase):
         self.assertEqual(service.store.rows()[0]['browser'],client['id'])
         self.assertFalse(launches)
 
-    def test_pending_read_of_existing_window_does_not_admit_more_profiles(self):
+    def test_pending_read_reserves_one_lane_and_leaves_the_other_lane_available(self):
         service,client,launches=self.waiting(concurrency=2)
-        service._tick();self.assertEqual(launches,[])
+        for _ in range(5): service._tick()
+        self.assertEqual(launches,['Offline'])
+        self.assertEqual(sum(p['action']=='get_points' for p in service.pending.values()),1)
 
     def test_one_failed_read_retries_existing_window_before_backup(self):
         service,client,launches=self.waiting();service._tick()

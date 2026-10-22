@@ -79,11 +79,8 @@ class ManualParallelismTests(unittest.TestCase):
         for _ in range(3):
             service._tick()
         preparations = [item for item in service.pending.values() if item['action'] == 'prepare']
-        self.assertEqual(len(preparations), 0,'strict FIFO waits for the earlier retry countdown')
-        head=service.store.rows()[0]
-        with patch('time.time',return_value=head['remote']['prepare_retry']['next_at']+.1):service._tick()
-        preparations = [item for item in service.pending.values() if item['action'] == 'prepare']
-        self.assertEqual(len(preparations),1)
+        self.assertEqual(len(preparations),1,'the same FIFO head can use another ready account during this browser backoff')
+        self.assertEqual(preparations[0]['job'],service.store.rows()[0]['id'])
         self.assertNotEqual(preparations[0]['client'], owner['id'])
         self.assertFalse(service.preferences.get('browser_blocks'))
 

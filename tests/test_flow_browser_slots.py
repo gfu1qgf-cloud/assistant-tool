@@ -140,6 +140,7 @@ class BrowserSlotsTests(unittest.TestCase):
 
     def test_idle_rich_windows_do_not_block_small_balance_probe(self):
         service, profiles = self.configured()
+        service.paused = False
         rich = self.browser(service, profiles[0], points=1300)
         for profile in profiles[1:4]: self.browser(service, profile, points=1000)
         service.store.enqueue(self.jobs(duration=8, budget=0)); row = service.store.rows()[0]

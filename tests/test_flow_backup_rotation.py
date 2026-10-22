@@ -44,12 +44,12 @@ class BackupRotationTests(unittest.TestCase):
         launches = []; service.launch_requested.connect(launches.append)
         self.assertTrue(can_start(service, 'Backup'))
         service._tick()
-        self.assertEqual(launches, [])
+        self.assertEqual(launches, ['Backup'])
         self.assertEqual(service.store.rows(), before)
         self.assertFalse(allowed(rich, service.preferences))
         self.assertFalse(any(p['action'] == 'close_exhausted' for p in service.pending.values()))
         rich['socket'].close.assert_not_called()
-        self.assertNotIn('Backup',service.preferences.get('profile_lanes',{}))
+        self.assertEqual(service.preferences.get('profile_lanes',{}).get('Backup'),10)
 
     def test_existing_paid_or_unconfirmed_rich_work_must_finish_before_rotation(self):
         service, rich, rows = self.full()
@@ -68,7 +68,7 @@ class BackupRotationTests(unittest.TestCase):
         rich['credit_close'] = {'state': 'failed', 'count': 3}
         launches = []; service.launch_requested.connect(launches.append)
         service._tick(); service._tick()
-        self.assertEqual(launches, [])
+        self.assertEqual(launches, ['Backup'])
         self.assertFalse(any(p['action'] == 'close_exhausted' for p in service.pending.values()))
         rich['socket'].close.assert_not_called()
 
