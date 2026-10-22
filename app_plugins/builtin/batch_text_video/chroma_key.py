@@ -6,16 +6,18 @@ that ambiguity without silently guessing semantic identity.
 """
 from pathlib import Path
 import re
+from .chroma_despill import DEFAULTS as DESPILL_DEFAULTS, normalize_despill
 
 KEY_COLORS = {"green": (0, 255, 0), "blue": (0, 0, 255), "black": (0, 0, 0)}
 DEFAULTS = {"key_method": "normal", "key_color": "#00ff00",
-            "key_protect_inside": True, "key_mask_path": ""}
+            "key_protect_inside": True, "key_mask_path": "", **DESPILL_DEFAULTS}
 COLOR_PATTERN = re.compile(r"#[0-9a-fA-F]{6}\Z")
 MASK_SUFFIXES = frozenset({".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff",
                           ".gif", ".mp4", ".mov", ".mkv", ".avi", ".webm", ".m4v"})
 
 
 def normalize_key(layer):
+    normalize_despill(layer)
     for key, value in DEFAULTS.items():
         layer.setdefault(key, value)
     if layer.get("key_mode", "none") not in {"none", "custom", *KEY_COLORS}:
@@ -43,7 +45,7 @@ def key_color(layer):
 
 
 def despill_type(layer):
-    """Only use FFmpeg's specialized green/blue despill for matching hues."""
+    """Only correct the matching dominant green/blue screen hue."""
     r, g, b = key_color(layer)
     if g > max(r, b) + 32:
         return "green"
@@ -61,7 +63,7 @@ def despill_filter(layer):
     this runs in FFmpeg, not a Python per-video-frame loop.
     """
     spill = despill_type(layer) if layer.get("key_despill") else ""
-    if not spill:
+    if not spill or layer.get("key_despill_mode", "basic") != "basic":
         return ""
     channels = {name: f"{name}(X,Y)" for name in ("r", "g", "b")}
     channel, others = ("g", ("r", "b")) if spill == "green" else ("b", ("r", "g"))
@@ -128,6 +130,8 @@ def add_keyed_source(args, filters, layer, input_index, label, fps, is_animated,
     recolour protected green/blue decorations.
     """
     from .chroma_matte import key_filters, levels
+    from .chroma_despill import enabled, add_native
+    edge = enabled(layer)
     enhanced = layer.get("key_method", "normal") == "enhanced"
     mask = validate_mask(layer)
     consumed = 1
@@ -143,7 +147,8 @@ def add_keyed_source(args, filters, layer, input_index, label, fps, is_animated,
         filters.append(f"[{root}_alpha_source]alphaextract,format=gray[{root}_final_alpha]")
         color_pad = root + "_rgb"
     else:
-        spill = despill_type(layer) if layer.get("key_despill") else ""
+        spill = (despill_type(layer) if layer.get("key_despill") and
+                 (edge or layer.get("key_despill_mode", "basic") == "basic") else "")
         raw_layer = dict(layer, key_alpha_low=0, key_alpha_high=100, key_despill=False)
         filters.append(f"[{root}_input]" + ",".join(key_filters(raw_layer)) +
                        f",alphaextract,format=gray,split=2[{root}_raw][{root}_regions]")
@@ -195,7 +200,7 @@ def add_keyed_source(args, filters, layer, input_index, label, fps, is_animated,
         else:
             alpha_pad, protection_pad = root + "_alpha0", root + "_protect0"
         filters.append(f"[{alpha_pad}]format=gray[{root}_final_alpha]")
-        if spill:
+        if spill and not edge:
             filters.append(f"[{original_pad}]split=2[{root}_clean_input][{root}_saved_rgb]")
             filters.append(f"[{root}_clean_input]{despill_filter(layer)},format=gbrp[{root}_clean_rgb]")
             filters.append(f"[{root}_saved_rgb]format=gbrp[{root}_saved]")
@@ -206,5 +211,12 @@ def add_keyed_source(args, filters, layer, input_index, label, fps, is_animated,
         else:
             color_pad = original_pad
     filters.append(f"[{root}_native_mask][{root}_final_alpha]blend=all_mode=multiply:shortest=1,format=gray[{root}_combined_mask]")
-    filters.append(f"[{color_pad}][{root}_combined_mask]alphamerge=shortest=1,format=rgba[{root}_source]")
+    if edge:
+        filters.append(f"[{root}_combined_mask]split=2[{root}_output_alpha][{root}_edge_alpha]")
+        color_pad = add_native(filters, layer, color_pad, root + "_edge_alpha",
+                               protection_pad if enhanced else None, root + "_despill")
+        combined_mask = root + "_output_alpha"
+    else:
+        combined_mask = root + "_combined_mask"
+    filters.append(f"[{color_pad}][{combined_mask}]alphamerge=shortest=1,format=rgba[{root}_source]")
     return root + "_source", consumed

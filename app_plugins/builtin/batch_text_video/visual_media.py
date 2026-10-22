@@ -105,7 +105,10 @@ def keyed_image(image, layer):
         alpha = remap(alpha, layer)
     data[:, :, 3] = np.rint(data[:, :, 3]*alpha).astype(np.uint8)
     spill = despill_type(layer) if layer.get("key_despill") else ""
-    if spill:
+    from .chroma_despill import enabled, correct_rgb
+    if enabled(layer):
+        correct_rgb(data, layer, protection)
+    elif spill and layer.get("key_despill_mode", "basic") == "basic":
         channel = 1 if spill == "green" else 2
         other = [index for index in range(3) if index != channel]
         original = data[:, :, channel].astype(np.float32)
@@ -251,6 +254,26 @@ class VisualProperties(QtWidgets.QWidget):
             control.toggled.connect(self.edit)
             self.controls[key] = control
             (self.basic_form if key == 'media_loop' else form).addRow(control)
+        despill_mode = QtWidgets.QComboBox()
+        despill_mode.addItem("基础 · 全图保守", "basic")
+        despill_mode.addItem("边缘 · 遮罩去色溢（推荐）", "edge")
+        despill_mode.currentIndexChanged.connect(self.edit)
+        self.controls["key_despill_mode"] = despill_mode
+        form.addRow("去色溢方式", despill_mode)
+        for key, label, low, high, value_suffix in (
+            ("key_despill_amount", "去色溢强度", 0, 100, " %"),
+            ("key_despill_width", "边缘范围", 1, 12, " px"),
+            ("key_despill_luma", "亮度补偿", 0, 100, " %"),
+        ):
+            control = QtWidgets.QSpinBox() if key == "key_despill_width" else QtWidgets.QDoubleSpinBox()
+            if isinstance(control, QtWidgets.QDoubleSpinBox): control.setDecimals(1)
+            control.setRange(low, high); control.setSuffix(value_suffix)
+            control.valueChanged.connect(self.edit)
+            self.controls[key] = control
+            form.addRow(label, control)
+        despill_mode.setToolTip("边缘方式从抠像透明度生成柔和遮罩，只修正轮廓附近的绿／蓝偏色；不会改变透明度。旧项目保留基础方式。")
+        self.controls["key_despill_width"].setToolTip("按源素材像素计算；范围越大，越向主体内部延伸。遮罩柔化后最远影响约两倍范围。")
+        self.controls["key_despill_luma"].setToolTip("用中性色补回部分去色造成的亮度下降；0不补偿，100尽量保持亮度。过亮时降低此值。")
         self.matte_levels = MatteLevels()
         self.controls.update(self.matte_levels.controls)
         self.matte_levels.changed.connect(self.edit)
@@ -356,7 +379,13 @@ class VisualProperties(QtWidgets.QWidget):
         self.controls["key_method"].setEnabled(mode != "none")
         self.controls["key_protect_inside"].setVisible(self.controls["key_method"].currentData() == "enhanced")
         self.controls["key_protect_inside"].setEnabled(mode != "none")
-        self.controls["key_despill"].setEnabled(mode != "none" and bool(self.layer) and bool(despill_type(self.layer)))
+        can_despill = mode != "none" and bool(self.layer) and bool(despill_type(self.layer))
+        self.controls["key_despill"].setEnabled(can_despill)
+        active = can_despill and self.controls["key_despill"].isChecked()
+        self.controls["key_despill_mode"].setEnabled(active)
+        edge = active and self.controls["key_despill_mode"].currentData() == "edge"
+        for key in ("key_despill_amount", "key_despill_width", "key_despill_luma"):
+            self.controls[key].setEnabled(edge)
         self.matte_levels.setEnabled(mode != "none")
         self.key_details.set_layer(self.layer)
     def _key_details_changed(self, changes):

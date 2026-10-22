@@ -34,6 +34,8 @@ def remap(alpha, layer):
 
 
 def key_filters(layer):
+    # Alpha primitives and legacy despill only. Edge despill needs the final
+    # source-alpha/trimap result and is composed by add_keyed_source instead.
     mode = layer.get("key_mode", "none")
     if mode == "none":
         return []
