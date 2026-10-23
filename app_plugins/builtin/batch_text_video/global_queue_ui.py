@@ -23,7 +23,7 @@ class GlobalRenderQueuePanel(QtWidgets.QWidget):
         settings_scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         settings_scroll.setWidget(settings_widget)
         settings_scroll.setMaximumHeight(270)
-        self.settings_section = PropertySection('全局渲染设置', settings_scroll)
+        self.settings_section = PropertySection('渲染选项', settings_scroll, expanded=True)
         layout.addWidget(self.settings_section)
         global_widget = QtWidgets.QWidget()
         global_layout = QtWidgets.QVBoxLayout(global_widget)

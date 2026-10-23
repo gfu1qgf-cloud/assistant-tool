@@ -9,6 +9,9 @@ from .matting_settings import normalize, DEFAULTS
 from .matting_models import MattingCancelled, check_cancel
 from .matting_render import load_source, infer, refined, save, qimage
 from .matting_canvas import MattingCanvas
+from .matting_history import MattingHistory
+
+INFERENCE_KEYS = ('model', 'quality', 'device')
 
 
 class MattingWorker(QtCore.QThread):
@@ -23,7 +26,7 @@ class MattingWorker(QtCore.QThread):
 
     def run(self):
         request = self.request
-        result = dict(serial=request['serial'], path=request['path'], action=request['action'])
+        result = dict(serial=request['serial'], path=request['path'], action=request['action'], values=request['values'])
         try:
             action, path, values = request['action'], request['path'], request['values']
             if action == 'load':
@@ -60,7 +63,7 @@ class MattingWorker(QtCore.QThread):
         self.ready.emit(result)
 
 
-class MattingDialog(QtWidgets.QDialog):
+class MattingDialog(QtWidgets.QDialog, MattingHistory):
     saved = QtCore.pyqtSignal(str)
 
     def __init__(self, sources=(), parent=None, *, catalogue=None, ffmpeg='', models=None):
@@ -69,6 +72,7 @@ class MattingDialog(QtWidgets.QDialog):
         self.path, self.base, self.worker = '', None, None
         self.values, self._drafts, self._pending = normalize(), {}, None
         self._serial, self._loading, self._closing, self._parameters_valid = 0, False, False, True
+        self._user_cancelled = False
         self.setWindowTitle('素材抠像工作台 · 图片／视频独立保存')
         self.setWindowFlags(self.windowFlags() | QtCore.Qt.WindowType.WindowMinMaxButtonsHint)
         self.resize(1320, 880)
@@ -93,20 +97,31 @@ class MattingDialog(QtWidgets.QDialog):
         for title, value in (('合成／透明棋盘', 'composite'), ('黑白遮罩', 'mask'), ('原始素材', 'original'), ('叠加遮罩', 'overlay')):
             self.view.addItem(title, value)
         self.view.currentIndexChanged.connect(self.change_view); row.addWidget(self.view)
-        self.brush = QtWidgets.QComboBox()
-        for title, value in (('浏览', 'view'), ('保留画笔＋', 'keep'), ('去除画笔－', 'remove')): self.brush.addItem(title, value)
-        self.brush.currentIndexChanged.connect(self.change_brush); row.addWidget(self.brush)
-        self.brush_size = QtWidgets.QSpinBox(); self.brush_size.setRange(1, 500); self.brush_size.setValue(24)
-        self.brush_size.setSuffix(' px'); self.brush_size.valueChanged.connect(self.change_brush); row.addWidget(self.brush_size)
         fit = QtWidgets.QPushButton('适合窗口'); fit.setAutoDefault(False); fit.clicked.connect(self.canvas.fit); row.addWidget(fit)
         center_layout.addLayout(row)
+        row = QtWidgets.QHBoxLayout(); row.addWidget(QtWidgets.QLabel('遮罩画笔'))
+        self.brush = QtWidgets.QComboBox(self); self.brush.hide()
+        self.brush_buttons, self.brush_group = {}, QtWidgets.QButtonGroup(self)
+        for title, value in (('浏览', 'view'), ('保留区域＋', 'keep'), ('去除区域－', 'remove')):
+            self.brush.addItem(title, value)
+            button = QtWidgets.QToolButton(); button.setText(title); button.setCheckable(True)
+            button.clicked.connect(lambda _checked=False, value=value: self.brush.setCurrentIndex(self.brush.findData(value)))
+            self.brush_group.addButton(button); self.brush_buttons[value] = button; row.addWidget(button)
+        self.brush.currentIndexChanged.connect(self.change_brush)
+        self.brush_size = QtWidgets.QSpinBox(); self.brush_size.setRange(1, 500); self.brush_size.setValue(24)
+        self.brush_size.setSuffix(' px'); self.brush_size.valueChanged.connect(self.change_brush); row.addWidget(self.brush_size)
+        center_layout.addLayout(row)
         row = QtWidgets.QHBoxLayout()
-        undo = QtWidgets.QPushButton('撤销笔画'); clear = QtWidgets.QPushButton('清空笔画')
-        self.undo_button, self.clear_button = undo, clear
-        for button in (undo, clear): button.setAutoDefault(False)
-        undo.clicked.connect(self.undo_stroke); clear.clicked.connect(lambda: self.undo_stroke(all_strokes=True))
-        row.addWidget(undo); row.addWidget(clear); row.addStretch(1); center_layout.addLayout(row)
-        hint = QtWidgets.QLabel('画笔修正为手工保留／去除。视频预览显示首帧，画笔固定在素材坐标，不自动跟踪运动。')
+        undo = QtWidgets.QPushButton('撤销 Ctrl+Z'); redo = QtWidgets.QPushButton('重做 Ctrl+Y')
+        clear = QtWidgets.QPushButton('清空涂抹')
+        self.undo_button, self.redo_button, self.clear_button = undo, redo, clear
+        for button in (undo, redo, clear): button.setAutoDefault(False)
+        undo.clicked.connect(self.undo_edit); redo.clicked.connect(self.redo_edit)
+        clear.clicked.connect(lambda: self.undo_stroke(all_strokes=True))
+        row.addWidget(undo); row.addWidget(redo); row.addWidget(clear); row.addStretch(1); center_layout.addLayout(row)
+        self.view_note = QtWidgets.QLabel(); self.view_note.setWordWrap(True); center_layout.addWidget(self.view_note)
+        hint = QtWidgets.QLabel('生成AI遮罩后，选择“保留区域＋”或“去除区域－”，按住鼠标左键涂抹；松开算一笔。\n'
+            '视频预览显示首帧，画笔固定在素材坐标，不自动跟踪运动。')
         hint.setWordWrap(True); center_layout.addWidget(hint); split.addWidget(center)
         scroll = QtWidgets.QScrollArea(); scroll.setWidgetResizable(True); scroll.setMinimumWidth(280)
         self.parameter_page = QtWidgets.QWidget(); form = QtWidgets.QFormLayout(self.parameter_page)
@@ -156,7 +171,9 @@ class MattingDialog(QtWidgets.QDialog):
         close = QtWidgets.QPushButton('关闭'); close.setAutoDefault(False); close.clicked.connect(self.close); row.addWidget(close)
         root.addLayout(row)
         self.timer = QtCore.QTimer(self); self.timer.setSingleShot(True); self.timer.setInterval(140)
-        self.timer.timeout.connect(lambda: self.submit('refine') if self.base is not None else None)
+        self.timer.timeout.connect(lambda: self.submit('refine'))
+        self.init_matting_history()
+        self.change_view(); self.change_brush()
         self.set_values(self.values); self.add_sources(sources); self.refresh_enabled()
 
     def set_values(self, values):
@@ -167,7 +184,7 @@ class MattingDialog(QtWidgets.QDialog):
             if isinstance(control, QtWidgets.QComboBox): control.setCurrentIndex(control.findData(value))
             elif isinstance(control, QtWidgets.QCheckBox): control.setChecked(value)
             else: control.setValue(value)
-        self.canvas.strokes = copy.deepcopy(self.values['strokes']); self._loading = False
+        self.canvas.strokes = copy.deepcopy(self.values['strokes']); self.canvas.update(); self._loading = False
         self.controls['quality'].setEnabled(self.values['model'] == 'rvm')
         self.controls['cleanup_size'].setEnabled(self.values['cleanup'])
 
@@ -180,23 +197,32 @@ class MattingDialog(QtWidgets.QDialog):
                            control.isChecked() if isinstance(control, QtWidgets.QCheckBox) else control.value())
         try: values = normalize(values)
         except ValueError as error:
-            self._parameters_valid = False; self.timer.stop(); self.status.setText(str(error)); self.refresh_enabled(); return
+            self._parameters_valid = False; self.timer.stop(); self._serial += 1; self._pending = None
+            self.status.setText(str(error)); self.refresh_enabled(); return
         self._parameters_valid = True
         self.values = values
         self.controls['quality'].setEnabled(values['model'] == 'rvm')
         self.controls['cleanup_size'].setEnabled(values['cleanup'])
-        if any(before[k] != values[k] for k in ('model', 'quality', 'device')):
-            self._serial += 1; self._pending = None
+        control = self.sender()
+        key = next((key for key, widget in self.controls.items() if widget is control), None)
+        self.record_values(before, values, key if isinstance(control, QtWidgets.QAbstractSpinBox) else None)
+        self.queue_preview(before)
+
+    def queue_preview(self, before):
+        self._serial += 1; self._pending = None; self._user_cancelled = False
+        if any(before[key] != self.values[key] for key in INFERENCE_KEYS):
+            self.base = None
             if self.worker: self.worker.cancel.set()
-            self.base = None; self.status.setText('模型设置已变化，请重新生成AI遮罩。')
-        elif self.base is not None: self.timer.start()
-        else: self.status.setText('点击“生成AI遮罩”后，可预览这些精修参数。')
+        if self.path:
+            self.timer.start()
+            self.status.setText('等待基础AI遮罩，完成后应用最新参数…' if self.base is None else '准备更新精修预览…')
         self.refresh_enabled()
 
     def reset_values(self):
+        before = self.values
         self.set_values({**DEFAULTS, **{key: self.values[key] for key in ('model', 'quality', 'device')}})
-        if self.base is not None: self.timer.start()
-        self.refresh_enabled()
+        self.record_values(before, self.values)
+        self.queue_preview(before)
 
     def choose_sources(self):
         from .visual_media import VISUAL_FILTER
@@ -215,6 +241,7 @@ class MattingDialog(QtWidgets.QDialog):
         if item is None: return
         if self.path: self._drafts[identity(self.path)] = copy.deepcopy(self.values)
         self.path = item.data(QtCore.Qt.ItemDataRole.UserRole); self.base = None; self.timer.stop(); self.canvas.fit()
+        self.select_history()
         self.canvas.trace = self.canvas.pan = None
         self.brush.setCurrentIndex(0)
         from .visual_media import is_animated
@@ -223,24 +250,45 @@ class MattingDialog(QtWidgets.QDialog):
 
     def submit(self, action):
         if not self.path or (action != 'load' and not self._parameters_valid): return
-        self.timer.stop(); self._serial += 1
+        self.timer.stop(); self._serial += 1; self._user_cancelled = False
         request = dict(action=action, path=self.path, values=copy.deepcopy(self.values), base=self.base,
                        serial=self._serial, models=self.models, ffmpeg=self.ffmpeg)
         if self.worker:
-            self.worker.cancel.set(); self._pending = request
+            previous = self.worker.request
+            reusable = (action == 'refine' and previous['action'] in {'infer', 'refine'}
+                        and previous['path'] == request['path']
+                        and all(previous['values'][key] == request['values'][key] for key in INFERENCE_KEYS))
+            if not reusable: self.worker.cancel.set()
+            self._pending = request
+            self.refresh_enabled()
         else: self.start_worker(request)
 
     def start_worker(self, request):
         self.worker = MattingWorker(request, self.catalogue, self)
         self.worker.ready.connect(self.worker_ready, QtCore.Qt.ConnectionType.QueuedConnection)
-        self.worker.message.connect(self.status.setText, QtCore.Qt.ConnectionType.QueuedConnection)
-        self.worker.progress.connect(self.progress.setValue, QtCore.Qt.ConnectionType.QueuedConnection)
+        self.worker.message.connect(self.worker_message, QtCore.Qt.ConnectionType.QueuedConnection)
+        self.worker.progress.connect(self.worker_progress, QtCore.Qt.ConnectionType.QueuedConnection)
         connect_thread_finished(self.worker, self, 'worker', self.worker_finished)
         self.status.setText({'load': '读取素材…', 'infer': '生成本地AI遮罩…', 'refine': '更新精修预览…', 'save': '保存素材抠像结果…'}[request['action']])
         self.progress.setValue(0); self.refresh_enabled(); self.worker.start()
 
+    def worker_message(self, message):
+        worker = self.sender()
+        if worker and worker.request['serial'] == self._serial: self.status.setText(message)
+
+    def worker_progress(self, value):
+        worker = self.sender()
+        if worker and worker.request['serial'] == self._serial: self.progress.setValue(value)
+
     def worker_ready(self, result):
         if result.get('record'): self.saved.emit(result['path'])
+        # An older refinement may supply a reusable raw AI mask, but its
+        # rendered image must never replace the user's newer parameter state.
+        if (result.get('base') is not None and not result.get('error') and not result.get('cancelled')
+                and not self._user_cancelled and result['path'] == self.path
+                and all(result['values'][key] == self.values[key] for key in INFERENCE_KEYS)):
+            self.base = result['base']
+            if self._pending and self._pending['action'] == 'refine': self._pending['base'] = self.base
         if result['serial'] != self._serial: return
         if result.get('error'): self.status.setText(result['error']); return
         if result.get('cancelled'): self.status.setText('已取消，原素材和已保存结果保留。'); return
@@ -255,47 +303,67 @@ class MattingDialog(QtWidgets.QDialog):
         if result.get('record'):
             self._drafts[identity(self.path)] = copy.deepcopy(result['record']['parameters'])
             self.status.setText('已保存并关联此素材；池轮换和正式导出自动读取该结果。')
-        else: self.status.setText(result.get('notice') or ('已读取保存结果，可重新生成后调整。' if result.get('image') else '点击“生成AI遮罩”开始抠像。'))
+        else: self.status.setText(result.get('notice') or ('已读取保存结果；调整参数会自动重建基础遮罩并更新预览。' if result.get('image') else '点击“生成AI遮罩”或调整参数开始预览。'))
+        if result['action'] == 'load' and identity(self.path) in self._drafts: self.timer.start()
 
     def worker_finished(self):
         self.worker.deleteLater(); self.worker = None
         if self._closing: self.close(); return
         pending, self._pending = self._pending, None
         if pending: self.start_worker(pending)
-        else: self.refresh_enabled()
+        else:
+            if self._user_cancelled: self.status.setText('已取消，原素材和已保存结果保留。')
+            self.refresh_enabled()
+
+    def parameters_locked(self):
+        return self.worker is not None and (self.worker.request['action'] != 'refine'
+            or self.worker.request['path'] != self.path or bool(self._pending and self._pending['action'] != 'refine'))
 
     def refresh_enabled(self):
         busy = self.worker is not None
-        locking = busy and self.worker.request['action'] != 'refine'
+        locking = self.parameters_locked()
         self.parameter_page.setEnabled(not locking)
         self.generate.setEnabled(bool(self.path) and not busy and self._parameters_valid)
         self.save_button.setEnabled(bool(self.path) and not busy and self._parameters_valid)
         self.export_button.setEnabled(bool(self.path) and not busy); self.disable_result.setEnabled(bool(self.path) and not busy)
         self.brush.setEnabled(self.base is not None and not locking)
+        for mode, button in self.brush_buttons.items():
+            button.setEnabled(not locking and (mode == 'view' or (self.base is not None and self._parameters_valid)))
+        self.brush_size.setEnabled(self.base is not None and not locking)
         self.canvas.editable = self.base is not None and not locking and self._parameters_valid
-        self.undo_button.setEnabled(self.canvas.editable); self.clear_button.setEnabled(self.canvas.editable)
+        self.undo_button.setEnabled(bool(self.path) and not locking and (bool(self.history.past) or not self._parameters_valid))
+        self.redo_button.setEnabled(bool(self.path) and not locking and self._parameters_valid and bool(self.history.future))
+        self.clear_button.setEnabled(self.canvas.editable and bool(self.values['strokes']))
         self.cancel_button.setEnabled(busy); self.progress.setVisible(busy)
 
     def cancel_work(self):
-        self.timer.stop(); self._pending = None
+        self.timer.stop(); self._pending = None; self._serial += 1; self._user_cancelled = True
         if self.worker: self.worker.cancel.set(); self.status.setText('正在取消处理…')
 
-    def change_view(self): self.canvas.view = self.view.currentData(); self.canvas.update()
+    def change_view(self):
+        self.canvas.view = self.view.currentData(); self.canvas.update()
+        if hasattr(self, 'view_note'):
+            self.view_note.setText('原始素材对比视图；参数效果请切换到合成／透明棋盘或黑白遮罩。' if self.canvas.view == 'original' else
+                                   '参数自动更新当前预览；保存后才会应用到资源池和成品。')
     def change_brush(self, *_):
-        self.canvas.mode, self.canvas.brush_size = self.brush.currentData(), self.brush_size.value(); self.canvas.update()
+        self.canvas.mode, self.canvas.brush_size = self.brush.currentData(), self.brush_size.value()
+        self.brush_buttons[self.canvas.mode].setChecked(True); self.canvas.update()
 
     def add_stroke(self, stroke):
         try: values = normalize({**self.values, 'strokes': self.values['strokes']+[copy.deepcopy(stroke)]})
         except ValueError as error:
             self.canvas.strokes = copy.deepcopy(self.values['strokes']); self.canvas.update(); self.status.setText(str(error)); return
-        self.values = values; self.timer.start()
+        before, self.values = self.values, values
+        self.record_values(before, values)
+        self.queue_preview(before)
 
     def undo_stroke(self, _checked=False, *, all_strokes=False):
         if not self.values['strokes']: return
-        if all_strokes: self.values['strokes'].clear()
-        else: self.values['strokes'].pop()
-        self.canvas.strokes = copy.deepcopy(self.values['strokes']); self.canvas.update()
-        if self.base is not None: self.timer.start()
+        before = self.values
+        values = copy.deepcopy(before)
+        if all_strokes: values['strokes'].clear()
+        else: values['strokes'].pop()
+        self.set_values(values); self.record_values(before, values); self.queue_preview(before)
 
     def disable_saved(self):
         try:

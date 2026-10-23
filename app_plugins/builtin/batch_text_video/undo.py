@@ -85,9 +85,17 @@ class UndoController:
         self.undo_keys = UndoKeys(self)
         # Scope interception to this editor, not QApplication's native/global
         # event stream (including other plugins and their dying windows).
-        for widget in [self, *self.findChildren(QtWidgets.QWidget)]:
-            widget.installEventFilter(self.undo_keys)
+        self.bind_undo_keys()
+        self.layer_panel.selectionChanged.connect(self.bind_undo_keys)
+        self.layer_panel.changed.connect(self.bind_undo_keys)
         self.reset_editor_history()
+
+    def bind_undo_keys(self, *_args):
+        # Component inspectors are created lazily after this window opens.
+        # Their numeric editors must not swallow Ctrl+Z before the window's
+        # action gets it. Child dialogs keep their own shortcut handling.
+        for widget in [self, *self.findChildren(QtWidgets.QWidget)]:
+            if widget.window() is self: widget.installEventFilter(self.undo_keys)
 
     def _editor_context(self):
         return (self.current_copy_id, self.current_id, self.preview_video, self.active_entry().get("path", ""))

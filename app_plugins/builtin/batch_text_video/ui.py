@@ -352,7 +352,8 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
         render_form = QtWidgets.QFormLayout(render_widget)
         render_form.setRowWrapPolicy(render_form.RowWrapPolicy.WrapLongRows)
         render_form.setFieldGrowthPolicy(render_form.FieldGrowthPolicy.AllNonFixedFieldsGrow)
-        check = QtWidgets.QCheckBox("允许覆盖同名成品")
+        check = QtWidgets.QCheckBox("导出时允许覆盖同名文件")
+        check.setToolTip('所有项目共用；仅覆盖目标成品文件，原始素材和抠像管理文件继续保护。')
         check.setChecked(self.state["settings"]["overwrite"])
         self.controls["overwrite"] = check
         render_form.addRow(check)
