@@ -37,7 +37,9 @@ def prepare_pool(_task, params, services):
         frozen = snapshot_layers([dict(kind='image', path='', sequence_items=pool['items'])])[0]
         pool['matting'] = frozen.get('_matting_snapshot', {})
         for record in pool['matting'].values():
-            if record and not record.get('error'): refs.append(asdict(ResourceRef.capture(record['result']['path'], 'saved_matte')))
+            if record and not record.get('error'):
+                from .matting_assets import record_files
+                for path in record_files(record): refs.append(asdict(ResourceRef.capture(path, 'saved_matte')))
     if pool["kind"] != "copy":
         for item in pool["items"]:
             path = Path(item["path"])

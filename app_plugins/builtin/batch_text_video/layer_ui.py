@@ -41,6 +41,7 @@ class LayerPanel(QtWidgets.QWidget):
     selectionChanged = QtCore.pyqtSignal(str)
     copyRequested = QtCore.pyqtSignal(str)
     imagePoolRequested = QtCore.pyqtSignal(str)
+    mattingRequested = QtCore.pyqtSignal(str)
 
     def _component_menu(self, position):
         item = self.list.itemAt(position)
@@ -144,6 +145,7 @@ class LayerPanel(QtWidgets.QWidget):
         self._pool_state = {'resource_pools':[]}
         from .component_inspector import ComponentInspector
         self.inspector = ComponentInspector(services, mode=inspector_mode)
+        self.inspector.mattingRequested.connect(self.mattingRequested)
         self.inspector.edited.connect(self._inspector_edited)
         self.inspector.unitChanged.connect(lambda unit: self.units.setCurrentIndex(self.units.findData(unit)))
         self.inspector.addImages.connect(self.append_sequence_images)

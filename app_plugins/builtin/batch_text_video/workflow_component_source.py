@@ -77,7 +77,8 @@ def prepare_source(task, params, services):
     if value['kind'] == 'image':
         from .matting_assets import snapshot_layers
         value = snapshot_layers([value])[0]
-        paths += [v['result']['path'] for v in value.get('_matting_snapshot', {}).values() if v and not v.get('error')]
+        from .matting_assets import record_files
+        paths += [p for v in value.get('_matting_snapshot', {}).values() if v and not v.get('error') for p in record_files(v)]
     for path in dict.fromkeys(p for p in paths if p):
         if Path(path).is_file(): refs.append(asdict(ResourceRef.capture(path, 'component_source')))
     result = {'source': value, 'files': refs}
@@ -134,7 +135,11 @@ def build_source(inputs, params, context):
         plans[context.node_id] = step
         context.component_source_steps = plans
     if layer['kind'] != 'caption':
-        return {'content': layer.get(field, ''), 'subtitles': None}
+        content = layer.get(field, '')
+        if layer.get('_matting_binding', {}).get('mode') == 'dynamic':
+            from .matting_live import BoundSource
+            content = BoundSource(content, layer['_matting_binding'])
+        return {'content': content, 'subtitles': None}
     if type(inputs.get('duration')) not in (int, float) or inputs['duration'] <= 0:
         raise ValueError('字幕来源需要连接文案视频输入的“最终时长”。')
     from .captions import task_word_timings

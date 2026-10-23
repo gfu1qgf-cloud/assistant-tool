@@ -33,6 +33,7 @@ class ComponentPropertyPanel(PropertySections):
     addImages = QtCore.pyqtSignal(str)
     selectCopy = QtCore.pyqtSignal(str)
     selectImagePool = QtCore.pyqtSignal(str)
+    mattingRequested = QtCore.pyqtSignal(str)
     message = QtCore.pyqtSignal(str)
 
     def __init__(self, *, mode='batch', parent=None):
@@ -120,12 +121,14 @@ class ComponentInspector(QtWidgets.QWidget):
     addImages = QtCore.pyqtSignal(str)
     selectCopy = QtCore.pyqtSignal(str)
     selectImagePool = QtCore.pyqtSignal(str)
+    mattingRequested = QtCore.pyqtSignal(str)
     message = QtCore.pyqtSignal(str)
 
     def __init__(self, services=None, *, mode='batch', parent=None):
         super().__init__(parent)
         self.services, self.mode, self.active = services, mode, None
         self.editors = {}
+        self.matting_available = False
         self.cache_parent = QtWidgets.QWidget(self); self.cache_parent.hide()
         self.body = QtWidgets.QVBoxLayout(self)
         self.body.setContentsMargins(0,0,0,0)
@@ -143,7 +146,7 @@ class ComponentInspector(QtWidgets.QWidget):
                 module, function = EDITOR_FACTORIES[kind]
                 factory = getattr(importlib.import_module(module, __package__), function)
                 editor = factory(self.services, mode=self.mode)
-                for name in ('edited','unitChanged','addImages','selectCopy','selectImagePool','message'):
+                for name in ('edited','unitChanged','addImages','selectCopy','selectImagePool','mattingRequested','message'):
                     getattr(editor, name).connect(getattr(self, name))
                 self.editors[kind] = editor
             target = self.editors[kind]
@@ -156,7 +159,10 @@ class ComponentInspector(QtWidgets.QWidget):
             if target:
                 self.body.addWidget(target); target.show()
         self.empty.setVisible(target is None)
-        if target: target.bind(layer, canvas_size, state, unit)
+        if target:
+            target.bind(layer, canvas_size, state, unit)
+            if hasattr(target, 'visual_properties'):
+                target.visual_properties.matting_button.setVisible(self.matting_available)
 
     def reveal(self, key):
         if self.active: self.active.reveal(key)

@@ -2,6 +2,7 @@
 
 from model.AppDataStorage import data_io, data_file, data_directory
 import base64
+from contextlib import ExitStack
 import json
 from dataclasses import replace
 from pathlib import Path
@@ -187,7 +188,10 @@ def frame_preview(plan, at, context, directory, max_edge=1080):
     process = None
     started = time.monotonic()
     try:
-        with data_io.open(Path(directory) / "preview.log", "wb") as log:
+        with ExitStack() as stack, data_io.open(Path(directory) / "preview.log", "wb") as log:
+            factory = getattr(context, 'deferred_input_factory', None)
+            deferred = stack.enter_context(factory(command)) if callable(factory) else None
+            if deferred is not None: command = deferred.args
             process = subprocess.Popen(command, cwd=directory, stdin=subprocess.PIPE if reader else subprocess.DEVNULL,
                 stdout=log, stderr=log, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
             if reader is not None:
@@ -215,6 +219,7 @@ def frame_preview(plan, at, context, directory, max_edge=1080):
                 feeder.start()
             while process.poll() is None:
                 context.check_canceled()
+                if deferred is not None: deferred.check()
                 if time.monotonic() - started > 60:
                     raise TimeoutError("预览画面处理超过 60 秒，已停止。")
                 if (Path(directory) / "preview.log").stat().st_size > 1024 * 1024:

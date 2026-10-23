@@ -54,6 +54,13 @@ def resolve_tools(configured=""):
 
 
 def _run(args, cancel=None, progress=None, duration=0, timeout=3600, *, cwd=None):
+    from .matting_live import Inputs
+    with Inputs(args) as inputs:
+        return _run_inputs(inputs, cancel, progress, duration, timeout, cwd=cwd)
+
+
+def _run_inputs(inputs, cancel=None, progress=None, duration=0, timeout=3600, *, cwd=None):
+    args = inputs.args
     from model.MediaStorage import require_media_output
     from model.AppDataStorage import application_storage
     output = Path(args[-1]) if args and str(args[-1]).lower().endswith(('.mp4','.mkv','.mov','.webm','.flac','.wav','.mp3','.m4a','.ogg')) else None
@@ -69,12 +76,14 @@ def _run(args, cancel=None, progress=None, duration=0, timeout=3600, *, cwd=None
             if cwd is not None:
                 args = list(args)
                 for index, value in enumerate(args[:-1]):
-                    if value == '-i': args[index+1] = str(Path(args[index+1]).resolve())
+                    if value == '-i' and not str(args[index+1]).startswith('\\\\.\\pipe\\'):
+                        args[index+1] = str(Path(args[index+1]).resolve())
             process = subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=writer, stderr=writer, cwd=cwd,
                                        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
             started = time.monotonic()
             try:
                 while process.poll() is None:
+                    inputs.check()
                     if path.stat().st_size > 4 * 1024 * 1024:
                         raise RuntimeError('媒体日志超过4 MB，已停止处理。')
                     if application_storage().protected: application_storage().check(path, write=True)
@@ -292,7 +301,9 @@ def source_paths(state):
     from .chroma_key import active_mask
     for layer in walk_components(state.get('settings', {}).get('layers', [])):
         binding = layer.get('_matting_binding')
-        if binding: inputs.extend(binding[k]['path'] for k in ('source', 'result'))
+        if binding:
+            from .matting_assets import record_files
+            inputs.extend(record_files(binding))
         inputs.extend(layer.get(key) for key in ('path', 'source_file', 'caption_file'))
         if layer.get('kind') == 'image' and active_mask(layer):
             inputs.append(active_mask(layer))

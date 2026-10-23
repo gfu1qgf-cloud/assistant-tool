@@ -95,6 +95,17 @@ def save(path, parameters, catalogue=None, *, base=None, models=None, ffmpeg='',
         if temporary.exists(): data_file(temporary).remove()
 
 
+def save_dynamic(path, parameters, catalogue=None, *, base=None, models=None, ffmpeg='', cancel=None, report=None, progress=None):
+    """Validate the visible first frame, then publish only frozen parameters."""
+    p = normalize(parameters)
+    if (not base or base['expected']['path'] != str(Path(path).resolve()) or
+            base['model'] != p['model'] or base['quality'] != p['quality']):
+        base = infer(path, p, models=models, cancel=cancel, report=report, ffmpeg=ffmpeg)
+    refined(base, p)  # Validate the exact refinement before committing metadata.
+    check_cancel(cancel)
+    return (catalogue or Catalogue()).publish_dynamic(path, p, expected=base['expected'])
+
+
 def _wait(process, cancel):
     while process.poll() is None:
         check_cancel(cancel); time.sleep(.05)

@@ -303,6 +303,11 @@ def render_plan(plan, context, configured=""):
         log_path = Path(directory) / "render.log"
         feeder, feed_errors = None, []
         with ExitStack() as stack:
+            # Trusted compilers may provide bounded, deferred media feeds.
+            # Start them only now, after plan preparation and before Popen.
+            factory = getattr(context, 'deferred_input_factory', None)
+            deferred = stack.enter_context(factory(command)) if callable(factory) else None
+            if deferred is not None: command = deferred.args
             writer = stack.enter_context(data_io.open(log_path, "wb"))
             reader = stack.enter_context(data_io.open(log_path, "rb"))
             media_reader = (stack.enter_context(context.media.open_reader(plan.video))
@@ -328,6 +333,7 @@ def render_plan(plan, context, configured=""):
             try:
                 while process.poll() is None:
                     context.check_canceled()
+                    if deferred is not None: deferred.check()
                     require_media_output(destination)
                     if time.monotonic() - started > 86400:
                         raise TimeoutError("节点渲染超过 24 小时，已停止。")

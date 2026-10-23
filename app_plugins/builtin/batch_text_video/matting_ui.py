@@ -7,7 +7,7 @@ from model.QtThreadLifecycle import connect_thread_finished
 from .matting_assets import Catalogue, identity
 from .matting_settings import normalize, DEFAULTS
 from .matting_models import MattingCancelled, check_cancel
-from .matting_render import load_source, infer, refined, save, qimage
+from .matting_render import load_source, infer, refined, save_dynamic as save, qimage
 from .matting_canvas import MattingCanvas
 from .matting_history import MattingHistory
 
@@ -38,7 +38,12 @@ class MattingWorker(QtCore.QThread):
                     record = self.catalogue.lookup(path)
                     if record:
                         result['metadata'] = metadata or record
-                        result['image'] = qimage(load_source(record['result']['path'], self.cancel, request.get('ffmpeg', ''))['source'])
+                        if record.get('mode') == 'dynamic':
+                            base = infer(path, record['parameters'], models=request.get('models'), cancel=self.cancel,
+                                         report=self.message.emit, ffmpeg=request.get('ffmpeg', ''))
+                            result.update(base=base, base_values=record['parameters'], image=qimage(refined(base, record['parameters'])))
+                        else:
+                            result['image'] = qimage(load_source(record['result']['path'], self.cancel, request.get('ffmpeg', ''))['source'])
                 except (ValueError, FileNotFoundError) as error: result['notice'] = str(error)
             elif action in {'infer', 'refine'}:
                 base = request.get('base') if action == 'refine' else None
@@ -48,14 +53,27 @@ class MattingWorker(QtCore.QThread):
                 result.update(base=base, original=qimage(base['source']), image=qimage(refined(base, values)))
                 result['notice'] = '本地AI设备：'+base['device']+'；画笔可保留／去除区域，滚轮缩放、中键平移。'
             elif action == 'save':
-                record = save(path, values, self.catalogue, base=request.get('base'), models=request.get('models'),
+                base = request.get('base') or infer(path, values, models=request.get('models'), cancel=self.cancel,
+                                                  report=self.message.emit, ffmpeg=request.get('ffmpeg', ''))
+                record = save(path, values, self.catalogue, base=base, models=request.get('models'),
                               ffmpeg=request.get('ffmpeg', ''), cancel=self.cancel,
                               report=self.message.emit, progress=self.progress.emit)
                 result['record'] = record
                 # Cancellation after the atomic publication cannot undo a
                 # committed result. Always report it and refresh its owner.
-                try: result['image'] = qimage(load_source(record['result']['path'], ffmpeg=request.get('ffmpeg', ''))['source'])
+                try:
+                    if record.get('mode') == 'dynamic':
+                        result.update(base=base, original=qimage(base['source']), image=qimage(refined(base, values)))
+                    else: result['image'] = qimage(load_source(record['result']['path'], ffmpeg=request.get('ffmpeg', ''))['source'])
                 except (ValueError, OSError): pass
+            elif action == 'export':
+                from .matting_export import export_dynamic, export_copy
+                record = request['record']
+                if record.get('mode') == 'dynamic':
+                    target = export_dynamic(self.catalogue, record, request['destination'], models=request.get('models'),
+                        ffmpeg=request.get('ffmpeg', ''), cancel=self.cancel, report=self.message.emit, progress=self.progress.emit)
+                else: target = export_copy(self.catalogue, record, request['destination'])
+                result['notice'] = '已另存：'+str(target)
             else: raise ValueError('未知抠像操作。')
             if not result.get('record'): check_cancel(self.cancel)
         except MattingCancelled: result['cancelled'] = True
@@ -73,7 +91,7 @@ class MattingDialog(QtWidgets.QDialog, MattingHistory):
         self.values, self._drafts, self._pending = normalize(), {}, None
         self._serial, self._loading, self._closing, self._parameters_valid = 0, False, False, True
         self._user_cancelled = False
-        self.setWindowTitle('素材抠像工作台 · 图片／视频独立保存')
+        self.setWindowTitle('素材抠像工作台 · 保存参数，内存动态抠像')
         self.setWindowFlags(self.windowFlags() | QtCore.Qt.WindowType.WindowMinMaxButtonsHint)
         self.resize(1320, 880)
         root = QtWidgets.QVBoxLayout(self)
@@ -84,7 +102,7 @@ class MattingDialog(QtWidgets.QDialog, MattingHistory):
         enable = QtWidgets.QPushButton('启用已存结果'); enable.setAutoDefault(False)
         enable.clicked.connect(self.enable_saved)
         top.addWidget(add); top.addWidget(self.disable_result); top.addWidget(enable); top.addStretch(1)
-        top.addWidget(QtWidgets.QLabel('结果按素材保存，资源池轮换时自动读取'))
+        top.addWidget(QtWidgets.QLabel('按素材保存参数；预览和渲染时动态抠像，无透明视频缓存'))
         root.addLayout(top)
         split = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal); root.addWidget(split, 1)
         self.files = QtWidgets.QListWidget(); self.files.setMinimumWidth(150); split.addWidget(self.files)
@@ -163,7 +181,7 @@ class MattingDialog(QtWidgets.QDialog, MattingHistory):
         root.addWidget(self.status)
         self.progress = QtWidgets.QProgressBar(); self.progress.setRange(0, 100); self.progress.hide(); root.addWidget(self.progress)
         row = QtWidgets.QHBoxLayout()
-        self.generate = QtWidgets.QPushButton('生成AI遮罩'); self.save_button = QtWidgets.QPushButton('保存结果并用于此素材')
+        self.generate = QtWidgets.QPushButton('生成AI遮罩'); self.save_button = QtWidgets.QPushButton('保存参数并用于此素材')
         self.export_button = QtWidgets.QPushButton('另存透明结果…'); self.cancel_button = QtWidgets.QPushButton('取消处理')
         for button in (self.generate, self.save_button, self.export_button, self.cancel_button): button.setAutoDefault(False); row.addWidget(button)
         self.generate.clicked.connect(lambda: self.submit('infer')); self.save_button.clicked.connect(lambda: self.submit('save'))
@@ -248,11 +266,11 @@ class MattingDialog(QtWidgets.QDialog, MattingHistory):
         self.set_values(self._drafts.get(identity(self.path), {'model': 'rvm' if is_animated(self.path) else 'isnet'}))
         self.canvas.set_images(QtGui.QImage()); self.submit('load')
 
-    def submit(self, action):
+    def submit(self, action, **options):
         if not self.path or (action != 'load' and not self._parameters_valid): return
         self.timer.stop(); self._serial += 1; self._user_cancelled = False
         request = dict(action=action, path=self.path, values=copy.deepcopy(self.values), base=self.base,
-                       serial=self._serial, models=self.models, ffmpeg=self.ffmpeg)
+                       serial=self._serial, models=self.models, ffmpeg=self.ffmpeg, **options)
         if self.worker:
             previous = self.worker.request
             reusable = (action == 'refine' and previous['action'] in {'infer', 'refine'}
@@ -269,7 +287,8 @@ class MattingDialog(QtWidgets.QDialog, MattingHistory):
         self.worker.message.connect(self.worker_message, QtCore.Qt.ConnectionType.QueuedConnection)
         self.worker.progress.connect(self.worker_progress, QtCore.Qt.ConnectionType.QueuedConnection)
         connect_thread_finished(self.worker, self, 'worker', self.worker_finished)
-        self.status.setText({'load': '读取素材…', 'infer': '生成本地AI遮罩…', 'refine': '更新精修预览…', 'save': '保存素材抠像结果…'}[request['action']])
+        self.status.setText({'load': '读取素材与抠像预览…', 'infer': '生成本地AI遮罩…', 'refine': '更新精修预览…',
+            'save': '保存素材抠像参数…', 'export': '另存透明文件…'}[request['action']])
         self.progress.setValue(0); self.refresh_enabled(); self.worker.start()
 
     def worker_message(self, message):
@@ -282,27 +301,31 @@ class MattingDialog(QtWidgets.QDialog, MattingHistory):
 
     def worker_ready(self, result):
         if result.get('record'): self.saved.emit(result['path'])
+        base_values = result.get('base_values', result['values'])
         # An older refinement may supply a reusable raw AI mask, but its
         # rendered image must never replace the user's newer parameter state.
         if (result.get('base') is not None and not result.get('error') and not result.get('cancelled')
                 and not self._user_cancelled and result['path'] == self.path
-                and all(result['values'][key] == self.values[key] for key in INFERENCE_KEYS)):
+                and all(base_values[key] == self.values[key] for key in INFERENCE_KEYS)):
             self.base = result['base']
             if self._pending and self._pending['action'] == 'refine': self._pending['base'] = self.base
         if result['serial'] != self._serial: return
         if result.get('error'): self.status.setText(result['error']); return
         if result.get('cancelled'): self.status.setText('已取消，原素材和已保存结果保留。'); return
+        if result['action'] == 'export':
+            self.status.setText(result.get('notice', '已另存透明结果。')); return
         if result['action'] == 'load':
             metadata = result.get('metadata')
             if metadata and identity(self.path) not in self._drafts:
                 try: self.set_values(metadata['parameters'])
                 except (ValueError, KeyError): self.status.setText('已存参数无效，请重新设置。')
-        if result.get('base') is not None: self.base = result['base']
+        if result.get('base') is not None and all(base_values[key] == self.values[key] for key in INFERENCE_KEYS):
+            self.base = result['base']
         original = result.get('original', self.canvas.original)
         self.canvas.set_images(original, result.get('image'))
         if result.get('record'):
             self._drafts[identity(self.path)] = copy.deepcopy(result['record']['parameters'])
-            self.status.setText('已保存并关联此素材；池轮换和正式导出自动读取该结果。')
+            self.status.setText('已保存此素材参数；设计预览、播放预览和正式导出自动使用，逐帧内存抠像，不生成透明MOV缓存。')
         else: self.status.setText(result.get('notice') or ('已读取保存结果；调整参数会自动重建基础遮罩并更新预览。' if result.get('image') else '点击“生成AI遮罩”或调整参数开始预览。'))
         if result['action'] == 'load' and identity(self.path) in self._drafts: self.timer.start()
 
@@ -375,14 +398,12 @@ class MattingDialog(QtWidgets.QDialog, MattingHistory):
         try: record = self.catalogue.lookup(self.path)
         except (ValueError, FileNotFoundError) as error: self.status.setText(str(error)); return
         if not record: self.status.setText('请先保存此素材的抠像结果，再另存文件。'); return
-        suffix = Path(record['result']['path']).suffix
+        from .visual_media import is_animated
+        suffix = ('.mov' if is_animated(self.path) else '.png') if record.get('mode') == 'dynamic' else Path(record['result']['path']).suffix
         destination, _ = QtWidgets.QFileDialog.getSaveFileName(self, '另存透明抠像结果', Path(self.path).stem+'-抠像'+suffix,
             '透明PNG (*.png)' if suffix == '.png' else '透明MOV (*.mov)')
         if not destination: return
-        from .matting_export import export_copy
-        try: destination = export_copy(self.catalogue, record, destination)
-        except (ValueError, OSError) as error: self.status.setText(str(error)); return
-        self.status.setText('已另存：'+str(destination))
+        self.submit('export', record=record, destination=destination)
 
     def enable_saved(self):
         if self.worker or not self.path: return

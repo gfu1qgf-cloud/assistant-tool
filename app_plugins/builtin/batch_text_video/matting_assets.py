@@ -95,7 +95,7 @@ class Catalogue:
             if (not isinstance(entry, dict) or not isinstance(entry.get('id'), str)
                     or not isinstance(entry.get('parameters'), dict) or type(entry.get('enabled')) is not bool):
                 raise ValueError('素材抠像记录损坏，未清空原记录。')
-            for field in ('source', 'result'):
+            for field in ('source',) if entry.get('mode') == 'dynamic' else ('source', 'result'):
                 stored = entry.get(field)
                 if (not isinstance(stored, dict) or not isinstance(stored.get('path'), str)
                         or not isinstance(stored.get('sha256'), str) or len(stored['sha256']) != 64):
@@ -109,8 +109,9 @@ class Catalogue:
         if entry is None and assets and Path(source).is_file():
             digest = fingerprint(source)['sha256']
             candidates = [v for v in assets.values() if isinstance(v, dict) and v.get('enabled', True)
-                          and isinstance(v.get('source'), dict) and isinstance(v.get('result'), dict)
-                          and isinstance(v['result'].get('path'), str)]
+                          and isinstance(v.get('source'), dict)
+                          and (v.get('mode') == 'dynamic' or (isinstance(v.get('result'), dict)
+                               and isinstance(v['result'].get('path'), str)))]
             candidates.sort(key=lambda v: v.get('created_at', ''), reverse=True)
             entry = next((v for v in candidates if v.get('source', {}).get('sha256') == digest), None)
             if entry is None and any(v.get('source_pixels') for v in candidates):
@@ -123,7 +124,7 @@ class Catalogue:
         if not entry.get('enabled', True): return None
         try:
             verify_file(entry['source'], '原素材')
-            verify_file(entry['result'], '已保存的抠像结果')
+            if entry.get('mode') != 'dynamic': verify_file(entry['result'], '已保存的抠像结果')
         except (KeyError, TypeError) as error:
             raise ValueError('素材抠像记录无效，未自动套用。') from error
         return copy.deepcopy(entry)
@@ -165,6 +166,24 @@ class Catalogue:
             raise
         return copy.deepcopy(record)
 
+    def publish_dynamic(self, source, parameters, *, expected):
+        from .matting_settings import normalize
+        parameters = normalize(parameters)
+        current = fingerprint(source)
+        if current['sha256'] != expected['sha256']:
+            raise ValueError('原素材在抠像期间已改变，未保存关联。')
+        record = dict(id=uuid.uuid4().hex, mode='dynamic', source=current, parameters=parameters,
+                      enabled=True, source_pixels=image_fingerprint(source),
+                      created_at=datetime.now(timezone.utc).isoformat())
+        if fingerprint(source)['sha256'] != expected['sha256']:
+            raise ValueError('原素材在抠像期间已改变，未保存关联。')
+        with _LOCK:
+            value = self.load()
+            value['assets'][identity(source)] = record
+            value['revision'] += 1
+            self._write(value)
+        return copy.deepcopy(record)
+
     def set_enabled(self, source, enabled):
         if type(enabled) is not bool: raise ValueError('素材结果开关无效。')
         inherited = self.lookup(source) if identity(source) not in self.load()['assets'] else None
@@ -194,23 +213,41 @@ def apply_saved(layer, catalogue=None):
     source = layer.get('path', '')
     if not source: return layer
     existing = layer.get('_matting_binding')
-    if existing and identity(source) in {identity(existing['source']['path']), identity(existing['result']['path'])}:
-        verify_file(existing['source'], '原素材'); verify_file(existing['result'], '已保存的抠像结果')
+    if existing and identity(source) in {identity(existing['source']['path']), identity(existing.get('result', existing['source'])['path'])}:
+        verify_record(existing)
         record = existing
     elif '_matting_snapshot' in layer:
         record = layer['_matting_snapshot'].get(identity(source))
         if record and record.get('error'): raise ValueError(record['error'])
         if record:
-            verify_file(record['source'], '原素材'); verify_file(record['result'], '已保存的抠像结果')
+            verify_record(record)
     else:
         record = (catalogue or Catalogue()).lookup(source)
     if record is None: return layer
     # Keep the source/sequence identities intact; only the resolved rendering
     # path changes, after the successful-export rotation plan has been built.
     result = copy.deepcopy(layer)
-    result.update(path=record['result']['path'], thumbnail='', key_mode='none', key_cleanup=False, key_despill=False,
-                  _matting_binding={key: record[key] for key in ('id', 'source', 'result')})
+    result.update(path=record['source']['path'] if record.get('mode') == 'dynamic' else record['result']['path'],
+                  thumbnail='', key_mode='none', key_cleanup=False, key_despill=False,
+                  _matting_binding=freeze(record))
     return result
+
+
+def freeze(record):
+    keys = ('id', 'mode', 'source', 'parameters') if record.get('mode') == 'dynamic' else ('id', 'source', 'result')
+    return copy.deepcopy({key: record[key] for key in keys})
+
+
+def verify_record(record):
+    verify_file(record['source'], '原素材')
+    if record.get('mode') == 'dynamic':
+        from .matting_settings import normalize
+        normalize(record['parameters'])
+    else: verify_file(record['result'], '已保存的抠像结果')
+
+
+def record_files(record):
+    return [record[k]['path'] for k in ('source', 'result') if k in record]
 
 
 def remember_copy(original, copied):
@@ -231,7 +268,7 @@ def snapshot_layers(layers, catalogue=None):
         for path in dict.fromkeys(p for p in paths if p):
             try:
                 record = catalogue.lookup(path)
-                snapshot[identity(path)] = {key: record[key] for key in ('id', 'source', 'result')} if record else None
+                snapshot[identity(path)] = freeze(record) if record else None
             except (ValueError, OSError) as error:
                 # An unused pool item/fallback must not prevent using a valid
                 # connected source. Raise the frozen error only when selected.

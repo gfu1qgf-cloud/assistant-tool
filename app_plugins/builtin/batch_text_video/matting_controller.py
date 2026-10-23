@@ -5,12 +5,20 @@ from qt_compat import QtCore, QtWidgets
 class MattingController:
     def init_matting_menu(self):
         self.matting_dialog = None
+        panel = getattr(self, 'layer_panel', None)
+        if panel is not None and hasattr(panel, 'mattingRequested'):
+            panel.inspector.matting_available = True
+            panel.mattingRequested.connect(self.matte_from_properties)
         menu = self.menu_bar.addMenu('抠像')
         menu.addAction('素材抠像工作台…', lambda: self.open_matting())
         menu.addAction('抠当前图层／正在试看的素材…', self.matte_current_layer)
         menu.addAction('抠当前资源池所选素材…', self.matte_pool_selection)
         menu.addSeparator()
         menu.addAction('查看已保存的素材抠像…', self.matte_saved_sources)
+
+    def matte_from_properties(self, identifier):
+        current = self.layer_panel.current()
+        if current and current.get('id') == identifier: self.matte_current_layer()
 
     def open_matting(self, paths=()):
         from .matting_ui import MattingDialog

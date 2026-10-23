@@ -273,7 +273,9 @@ def compose_layers(text_images, layers, width, height, darkness, cache=None,tint
                 # poster, otherwise downsampling can erase a small green prop
                 # or open its contour before region protection is calculated.
                 decode_bounds = QtCore.QSize(4096, 4096) if layer.get("key_mode", "none") != "none" else bounds
-                source = cache.get(layer["path"], decode_bounds) if cache else read_image(layer["path"], decode_bounds)
+                from .matting_live import dynamic, poster
+                if dynamic(layer): source = poster(layer['_matting_binding'], bounds)
+                else: source = cache.get(layer["path"], decode_bounds) if cache else read_image(layer["path"], decode_bounds)
                 from .visual_media import keyed_image
                 source = keyed_image(source, layer)
                 if source.width() > bounds.width() or source.height() > bounds.height():

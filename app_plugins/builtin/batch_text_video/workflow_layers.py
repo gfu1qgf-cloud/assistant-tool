@@ -39,7 +39,10 @@ def prepare_layer(_task, params, _services):
         frozen = snapshot_layers([dict(layer, path=path)])[0]
         result['matting'] = frozen.get('_matting_snapshot', {})
         for record in result['matting'].values():
-            if record and not record.get('error'): result.setdefault('matting_files', []).append(asdict(ResourceRef.capture(record['result']['path'], 'saved_matte')))
+            if record and not record.get('error'):
+                from .matting_assets import record_files
+                for path in record_files(record):
+                    result.setdefault('matting_files', []).append(asdict(ResourceRef.capture(path, 'saved_matte')))
         from .chroma_key import active_mask, MASK_SUFFIXES
         mask = active_mask(layer)
         if mask and Path(mask).is_file() and Path(mask).suffix.casefold() in MASK_SUFFIXES:
@@ -80,6 +83,8 @@ def build_layer(inputs, params, context, *, media="text"):
         content = inputs["content"]
         if not isinstance(content, str): raise TypeError("内容输入必须是文字或文件路径。")
         layer.update(source="fixed", source_file="", **({"text": content} if kind == "text" else {"path": content}))
+        if kind == 'image' and layer.get('use_saved_matte', True) and hasattr(content, 'binding'):
+            layer['_matting_binding'] = copy.deepcopy(content.binding)
         if kind == "image": refs.append(ResourceRef.capture(content, "layer_file"))
     else:
         path = layer.get("source_file") or layer.get("path", "")
@@ -95,7 +100,7 @@ def build_layer(inputs, params, context, *, media="text"):
         from .matting_assets import apply_saved
         layer = apply_saved(layer)
         if layer.get('_matting_binding'):
-            for label in ('source', 'result'):
+            for label in ('source', 'result') if 'result' in layer['_matting_binding'] else ('source',):
                 ref = ResourceRef.capture(layer['_matting_binding'][label]['path'], 'saved_matte_'+label)
                 ref.verify(); refs.append(ref)
         layer.pop('_matting_snapshot', None)
@@ -141,6 +146,9 @@ def compile_layer(operation, directory, context, video_info, *, timing=None):
     if set(options) != {"layer"} or not isinstance(options["layer"], str): raise ValueError("图层操作格式无效。")
     value = json.loads(options["layer"])
     layer = normalize_layer(value, value["kind"])
+    if layer.get('_matting_binding', {}).get('mode') == 'dynamic':
+        from .matting_live import Inputs
+        context.deferred_input_factory = Inputs
     for _, ref in operation.assets: ref.verify()
     context.check_canceled()
     stream = video_info["video"]
@@ -156,7 +164,8 @@ def compile_layer(operation, directory, context, video_info, *, timing=None):
     for index, (kind, plane) in enumerate(planes):
         label = "output" if index == len(planes)-1 else "plane" + str(index)
         if kind == "visual":
-            input_index += add_plane(args, filters, plane, input_index, background, label, width, height, duration, fps, timing=timing)-1
+            input_index += add_plane(args, filters, plane, input_index, background, label, width, height, duration, fps,
+                                     timing=timing, ffmpeg=getattr(context, 'ffmpeg', ''))-1
         elif kind == "scroll":
             from .scrolling_text import prepare_scroll_plane, add_scroll_plane
             assets = prepare_scroll_plane(plane, width, height, local_duration, directory)

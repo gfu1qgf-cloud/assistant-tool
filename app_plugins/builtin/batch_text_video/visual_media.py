@@ -72,7 +72,7 @@ def import_visuals(paths, directory, cancel=None):
     return {"layers": layers, "errors": errors, "cancelled": bool(cancel and cancel.is_set())}
 
 def needs_plane(layer):
-    return layer["kind"] == "image" and (is_animated(layer.get("path", "")) or
+    return layer["kind"] == "image" and (layer.get("_matting_binding", {}).get("mode") == "dynamic" or is_animated(layer.get("path", "")) or
         layer.get("blend_mode", "normal") != "normal" or layer.get("key_mode", "none") != "none" or
         layer.get("visual_animation", "none") != "none" or layer.get('visual_timing_enabled', False))
 
@@ -159,7 +159,7 @@ def preview_planes(title, body, width, height, settings, cache):
             result.append(("normal", image))
     return result
 
-def add_plane(args, filters, layer, input_index, background, label, width, height, duration, fps, *, timing=None):
+def add_plane(args, filters, layer, input_index, background, label, width, height, duration, fps, *, timing=None, ffmpeg=''):
     """Alpha-correct normal/add/screen, with transparent clipping at canvas edges."""
     normalize_visual(layer)
     # An explicit timing node owns the window; never apply a native one twice.
@@ -169,7 +169,12 @@ def add_plane(args, filters, layer, input_index, background, label, width, heigh
     path = layer["path"]
     if not Path(path).is_file() or Path(path).suffix.casefold() not in VISUAL_SUFFIXES:
         raise ValueError("视觉元素文件不存在或格式不支持：" + str(path))
-    if is_animated(path):
+    from .matting_live import dynamic, StreamInput
+    if dynamic(layer):
+        from .engine import resolve_tools
+        executable = ffmpeg or (args[0] if args and not args[0].startswith('-') else resolve_tools()[0])
+        args += StreamInput(layer['_matting_binding'], local_duration, layer['media_loop'], fps, executable).arguments()
+    elif is_animated(path):
         if layer["media_loop"]:
             args += ["-stream_loop", "-1"]
         args += ["-i", path]
@@ -226,6 +231,7 @@ def add_plane(args, filters, layer, input_index, background, label, width, heigh
 
 class VisualProperties(QtWidgets.QWidget):
     changed = QtCore.pyqtSignal(object)
+    mattingRequested = QtCore.pyqtSignal(str)
     def __init__(self, parent=None):
         super().__init__(parent)
         self.layer, self.loading = None, False
@@ -244,8 +250,12 @@ class VisualProperties(QtWidgets.QWidget):
         form = self._page("抠像")
         animation = self._page("动画")
         self.controls = {}
+        self.matting_button = QtWidgets.QPushButton('AI抠像工作台…')
+        self.matting_button.setToolTip('调整当前素材的AI遮罩；保存参数后用于预览和渲染，不生成透明视频缓存。')
+        self.matting_button.clicked.connect(lambda: self.mattingRequested.emit(self.layer['id']) if self.layer else None)
+        self.matting_button.hide(); form.addRow(self.matting_button)
         saved = QtWidgets.QCheckBox('优先使用此素材已保存的抠像结果')
-        saved.setToolTip('在顶部“抠像”菜单为每个素材独立保存。启用时使用透明结果，跳过下方颜色抠像；关闭可使用原素材。')
+        saved.setToolTip('为每个素材独立保存AI抠像参数。启用后预览和渲染动态抠像，跳过下方颜色抠像；关闭可使用原素材。')
         saved.toggled.connect(self.edit); self.controls['use_saved_matte'] = saved; form.addRow(saved)
         for key, label, choices in (("blend_mode", "叠加模式", (("普通", "normal"), ("添加", "add"), ("滤色", "screen"))),
                                     ("key_mode", "抠像颜色", (("关闭", "none"), ("绿色预设", "green"), ("蓝色预设", "blue"), ("黑色预设", "black"), ("自定义颜色", "custom"))),
@@ -470,5 +480,6 @@ def visual_property_panel(services=None, *, mode='batch'):
     panel.add_source()
     panel.add_geometry()
     panel.visual_properties = panel.add_bound('visual', '', VisualProperties(), fields=set(DEFAULTS), section=False)
+    panel.visual_properties.mattingRequested.connect(panel.mattingRequested)
     panel.sections.update(panel.visual_properties.sections.sections)
     return panel
