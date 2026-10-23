@@ -123,8 +123,8 @@ class CustomPoolController:
                 table.moveRequested.connect(lambda direction, k=key: self.move_resource(k, direction))
                 table.customContextMenuRequested.connect(lambda pos, k=key: self.resource_menu(k, pos))
                 table.filesDropped.connect(lambda paths, i=identifier: self.add_to_custom_pool(i, paths))
-                if kind == "video":
-                    table.currentCellChanged.connect(lambda row, _col, _old_row, _old_col, i=identifier: self.select_custom_video(i, row))
+                # A named pool can supply an overlay or an explicit background
+                # pairing. Browsing its rows must never change the base video.
                 if kind == "image":
                     table.setIconSize(QtCore.QSize(48, 48))
                 layout.addWidget(table, 1)
@@ -169,23 +169,6 @@ class CustomPoolController:
                 pool["next_id"] = ""
         else:
             self.state[key] = items
-
-    def select_custom_video(self, identifier, row):
-        if self._loading:
-            return
-        table = self.custom_tables.get(identifier)
-        if table is None or row < 0 or not table.item(row, 0):
-            return
-        selected = table.item(row, 0).data(QtCore.Qt.ItemDataRole.UserRole)
-        item = next(item for item in get_pool(self.state, identifier, "video")["items"] if item["id"] == selected)
-        self._commit_edit()
-        self.preview_video = item["path"]
-        if not self.current_copy_id:
-            self.current_id = ""
-            self.clear_editor()
-        self.request_background(self.preview_video)
-        self.update_preview()
-        self.refresh_editor_baseline()
 
     def new_resource_pool(self):
         if self.is_batch_busy():

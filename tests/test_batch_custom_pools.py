@@ -236,7 +236,7 @@ class CustomPoolTests(unittest.TestCase):
             self.assertEqual(dialog.pairs[0]["voice_path"], "")
             dialog.deleteLater()
 
-    def test_named_video_pool_can_preview_without_creating_queue(self):
+    def test_named_video_pool_selection_does_not_replace_background_or_create_queue(self):
         with tempfile.TemporaryDirectory() as root, patch.object(BatchTextVideoDialog, "request_background") as request:
             store = Store(Path(root) / "store")
             state = fresh_state()
@@ -247,9 +247,11 @@ class CustomPoolTests(unittest.TestCase):
             store.save(state, 0)
             dialog = BatchTextVideoDialog(store=store)
             dialog.copy_pool.setCurrentCell(0, 0)
+            before = copy.deepcopy(dialog.active_entry())
+            request.reset_mock()
             dialog.custom_tables[pool["id"]].setCurrentCell(0, 0)
-            self.assertEqual(dialog.active_entry()["path"], path)
-            request.assert_called_with(path)
+            self.assertEqual(dialog.active_entry(), before)
+            request.assert_not_called()
             self.assertEqual(dialog.state["jobs"], [])
             dialog.close()
             dialog.deleteLater()

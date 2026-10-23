@@ -223,9 +223,9 @@ class PoolController(CustomPoolController, MattingController):
 
     def copy_preview_path(self, source):
         # Preview immediately, without creating an implicit export pairing.
-        videos = self.state["backgrounds"] + [item["path"] for pool in self.state["resource_pools"]
-            if pool["kind"] == "video" for item in pool["items"]]
-        if self.preview_video and self.preview_video in videos:
+        # Only the dedicated background pool may override a copy's background
+        # by row selection. Named video pools require explicit queue pairing.
+        if self.preview_video and self.preview_video in self.state["backgrounds"]:
             return self.preview_video
         return source.get("path") or (self.state["backgrounds"][0] if self.state["backgrounds"] else "")
 

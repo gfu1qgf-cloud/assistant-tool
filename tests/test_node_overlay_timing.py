@@ -76,8 +76,11 @@ class OverlayTimingTests(unittest.TestCase):
                          [("operations", True), ("start", False), ("end", False)])
         self.assertTrue(definition.inputs[0].multiple)
         self.assertNotIn("video", [p.key for p in definition.inputs])
-        self.assertEqual({k for k, _ in definition.parameters[2].choices}, EFFECTS)
-        self.assertEqual({k for k, _ in definition.parameters[4].choices}, EFFECTS)
+        parameters = {p.key: p for p in definition.parameters}
+        self.assertEqual({k for k, _ in parameters['enter'].choices}, EFFECTS)
+        self.assertEqual({k for k, _ in parameters['exit'].choices}, EFFECTS)
+        self.assertEqual(parameters['fade_in'].default, 0)
+        self.assertEqual(parameters['fade_out'].default, 0)
 
     def test_no_render_or_asset_change_during_build_and_multiple_wire_order(self):
         image, text = self.layer(), self.layer("text")
@@ -174,7 +177,8 @@ class OverlayTimingTests(unittest.TestCase):
         self.assertIsInstance(fragment, VideoFilterFragment)
         content = ";".join(fragment.filters)
         self.assertIn("gte(t,20.000000000)*lt(t,23.000000000)", content)
-        self.assertIn("alpha=1", content)
+        self.assertIn("format=rgba", content)
+        self.assertNotIn('fade=t=', content)
         self.assertEqual(sum("[input]" in f for f in fragment.filters), 1)
         self.assertIn("[input][", fragment.filters[-1])
         self.assertEqual(len(fragment.inputs), 1)

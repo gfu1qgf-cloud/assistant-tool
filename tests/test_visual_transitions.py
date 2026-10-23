@@ -60,7 +60,7 @@ class VisualTransitionTests(unittest.TestCase):
         layer = dict(id='picture', name='测试图片', kind='image', path=str(self.picture), source='fixed',
                      x=50, y=50, width=25, height=25, visual_timing_enabled=True,
                      visual_timing=dict(start=.5, end=2.5, enter=mode, exit=mode,
-                         enter_duration=.8, exit_duration=.8, distance=40, clock='restart'))
+                         enter_duration=.8, exit_duration=.8, fade_in=.8, fade_out=.8, distance=40, clock='restart'))
         layer.update(extra)
         return normalize_layers([layer])[0]
 
@@ -70,7 +70,7 @@ class VisualTransitionTests(unittest.TestCase):
         self.assertIsNone(show_window(layers[0], 3))
         other = normalize_layers([dict(id='another', kind='image', path=str(self.picture))])[0]
         layers[0]['visual_timing']['enter'] = 'left'
-        self.assertEqual(other['visual_timing']['enter'], 'fade')
+        self.assertEqual(other['visual_timing']['enter'], 'cut')
 
     def test_widget_independent_entry_exit_and_loading_does_not_emit(self):
         panel = VisualProperties()
@@ -84,7 +84,7 @@ class VisualTransitionTests(unittest.TestCase):
         editor = panel.appearance_editor
         for field in ('enter', 'exit'):
             self.assertEqual({editor.controls[field].itemData(i) for i in range(editor.controls[field].count())},
-                             set(MODES) | {'cut'})
+                             set(MODES) - {'fade'} | {'cut'})
         editor.controls['exit'].setCurrentIndex(editor.controls['exit'].findData('down'))
         editor.controls['enter_duration'].setValue(.6)
         self.assertEqual(changed[-1]['visual_timing']['enter'], 'left')

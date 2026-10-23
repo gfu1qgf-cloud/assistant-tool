@@ -3,16 +3,16 @@ from dataclasses import dataclass
 import math
 
 
-DEFAULTS = {"start": 0., "end": 0., "enter": "fade", "exit": "fade",
-            "enter_duration": .4, "exit_duration": .4, "distance": 12., "clock": "auto"}
+DEFAULTS = {"start": 0., "end": 0., "enter": "cut", "exit": "cut",
+            "enter_duration": .4, "exit_duration": .4, "fade_in": 0., "fade_out": 0.,
+            "distance": 12., "clock": "auto"}
 EFFECTS = frozenset({"cut", "fade", "left", "right", "up", "down", "small", "large"})
-ENTER_CHOICES = (("cut", "直接出现"), ("fade", "淡入"), ("left", "从左滑入＋淡入"),
-                 ("right", "从右滑入＋淡入"), ("up", "从上滑入＋淡入"),
-                 ("down", "从下滑入＋淡入"), ("small", "由小放大＋淡入"),
-                 ("large", "由大缩小＋淡入"))
-EXIT_CHOICES = (("cut", "直接消失"), ("fade", "淡出"), ("left", "向左滑出＋淡出"),
-                ("right", "向右滑出＋淡出"), ("up", "向上滑出＋淡出"),
-                ("down", "向下滑出＋淡出"), ("small", "缩小＋淡出"), ("large", "放大＋淡出"))
+ENTER_CHOICES = (("cut", "无位移／缩放"), ("left", "从左滑入"),
+                 ("right", "从右滑入"), ("up", "从上滑入"),
+                 ("down", "从下滑入"), ("small", "由小放大"), ("large", "由大缩小"))
+EXIT_CHOICES = (("cut", "无位移／缩放"), ("left", "向左滑出"),
+                ("right", "向右滑出"), ("up", "向上滑出"),
+                ("down", "向下滑出"), ("small", "缩小"), ("large", "放大"))
 
 
 def normalize_timing(value):
@@ -20,11 +20,17 @@ def normalize_timing(value):
         raise ValueError("显示时段设置格式无效。")
     result = {**DEFAULTS, **value}
     for key, maximum in (("start", 86400), ("end", 86400), ("enter_duration", 60),
-                         ("exit_duration", 60), ("distance", 80)):
+                         ("exit_duration", 60), ("fade_in", 60), ("fade_out", 60), ("distance", 80)):
         number = result[key]
         if type(number) not in (int, float) or not math.isfinite(number) or not 0 <= number <= maximum:
             raise ValueError("显示时段的时间／运动幅度必须是范围内的有限数值。")
         result[key] = float(number)
+    # Old pure-fade settings remain readable. Motion choices no longer imply
+    # opacity changes; the two fade durations own alpha independently.
+    for phase, fade in (("enter", "fade_in"), ("exit", "fade_out")):
+        if result[phase] == 'fade':
+            result[phase] = 'cut'
+            result[fade] = result[phase+'_duration']
     if result["end"] and result["end"] <= result["start"]:
         raise ValueError("显示时段的结束秒必须大于开始秒；0表示直到视频结束。")
     if result["enter"] not in EFFECTS or result["exit"] not in EFFECTS:
@@ -44,6 +50,8 @@ class ShowWindow:
     exit_duration: float
     distance: float
     clock: str
+    fade_in: float = 0.
+    fade_out: float = 0.
 
     def source_duration(self, video_duration):
         return self.end - self.start if self.clock == "restart" else video_duration
@@ -68,11 +76,16 @@ def resolve_window(value, duration, *, automatic_clock="restart", report=None):
         enter, exit = enter * factor, exit * factor
         if report:
             report("显示时段太短，已按比例缩短出入场动画，保留完整显示阶段。", None)
+    fade_in, fade_out = settings['fade_in'], settings['fade_out']
+    if fade_in + fade_out > span:
+        factor = span * .9 / (fade_in + fade_out)
+        fade_in, fade_out = fade_in * factor, fade_out * factor
+        if report: report('显示时段太短，已按比例缩短淡入淡出，保留完整显示阶段。', None)
     clock = automatic_clock if settings["clock"] == "auto" else settings["clock"]
     if clock not in {"restart", "global"}:
         raise ValueError("显示时段的默认素材时钟无效。")
     return ShowWindow(start, end, settings["enter"], settings["exit"], enter, exit,
-                      settings["distance"] / 100, clock)
+                      settings["distance"] / 100, clock, fade_in, fade_out)
 
 
 def transform_at(window, time):
@@ -83,7 +96,9 @@ def transform_at(window, time):
         return 0., 1., 0., 0.
     incoming = max(0., min(1., (time-window.start)/window.enter_duration)) if window.enter_duration else 1.
     outgoing = max(0., min(1., (time-window.end+window.exit_duration)/window.exit_duration)) if window.exit_duration else 0.
-    opacity, scale, x, y = incoming*(1-outgoing), 1., 0., 0.
+    fade_in = max(0., min(1., (time-window.start)/window.fade_in)) if window.fade_in else 1.
+    fade_out = max(0., min(1., (time-window.end+window.fade_out)/window.fade_out)) if window.fade_out else 0.
+    opacity, scale, x, y = fade_in*(1-fade_out), 1., 0., 0.
     for mode, progress in ((window.enter, (1-incoming)**3), (window.exit, outgoing**3)):
         if mode == 'left': x -= window.distance*progress
         elif mode == 'right': x += window.distance*progress
@@ -130,10 +145,10 @@ def add_timed_plane(filters, plane, label, width, height, duration, fps, window,
                       f"h='max(2,round({height}*({factor})/2)*2)':eval=frame")
     # Apply opacity after resizing: bicubic alpha ringing must not make a
     # fading edge more opaque than the intended fade amount.
-    if window.enter_duration:
-        effect.append(f"fade=t=in:st={window.start:.9f}:d={window.enter_duration:.9f}:alpha=1")
-    if window.exit_duration:
-        effect.append(f"fade=t=out:st={window.end-window.exit_duration:.9f}:d={window.exit_duration:.9f}:alpha=1")
+    if window.fade_in:
+        effect.append(f"fade=t=in:st={window.start:.9f}:d={window.fade_in:.9f}:alpha=1")
+    if window.fade_out:
+        effect.append(f"fade=t=out:st={window.end-window.fade_out:.9f}:d={window.fade_out:.9f}:alpha=1")
     filters.append(f"[{plane}]" + ",".join(effect) + f"[{label}_moving]")
     filters.append(f"color=c=black@0:s={width}x{height}:r={float(fps):.9f}:d={duration:.9f},"
                    f"format=rgba[{label}_blank]")

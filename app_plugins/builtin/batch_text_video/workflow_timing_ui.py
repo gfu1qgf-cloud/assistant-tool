@@ -9,6 +9,8 @@ class TimingNodeEditor(QtWidgets.QWidget):
         super().__init__(parent)
         self.callback, self.loading = callback, True
         self.params = {key: params.get(key, value) for key, value in DEFAULTS.items()}
+        try: self.params = normalize_timing(self.params)
+        except ValueError: pass  # Keep invalid drafts editable, as before.
         self.controls = {}
         root = QtWidgets.QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -20,10 +22,15 @@ class TimingNodeEditor(QtWidgets.QWidget):
         self.note(form, "开始前隐藏；结束是退场完成时刻。" + (
             "\n连接时间输入端时，端口数值优先。" if mode == 'node' else ''))
         form = self.group(root, "入场与退场")
-        self.choice(form, "enter", "入场", ENTER_CHOICES)
-        self.number(form, "enter_duration", "用时", 60, " 秒")
-        self.choice(form, "exit", "退场", EXIT_CHOICES)
-        self.number(form, "exit_duration", "用时", 60, " 秒")
+        self.choice(form, "enter", "入场方式", ENTER_CHOICES)
+        self.number(form, "enter_duration", "入场用时", 60, " 秒")
+        self.number(form, "fade_in", "淡入时长", 60, " 秒")
+        self.choice(form, "exit", "退场方式", EXIT_CHOICES)
+        self.number(form, "exit_duration", "退场用时", 60, " 秒")
+        self.number(form, "fade_out", "淡出时长", 60, " 秒")
+        for key in ('fade_in', 'fade_out'):
+            self.controls[key].setSpecialValueText('0 秒（关闭）')
+            self.controls[key].setToolTip('独立控制透明度；0关闭，不影响位移／缩放动画。')
         self.number(form, "distance", "运动幅度", 80, " %")
         self.controls["distance"].setToolTip("滑动距离按画面宽／高计算；缩放幅度按元素原尺寸计算。只移动叠加内容，不移动背景。")
         form = self.group(root, "素材播放")
