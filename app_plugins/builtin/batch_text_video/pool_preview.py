@@ -14,6 +14,7 @@ class PoolPreview(QtWidgets.QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.layers, self.choices, self.loading, self.scope = [], {}, False, None
+        self.embedded, self.source_attached = False, False
         root = QtWidgets.QVBoxLayout(self); root.setContentsMargins(0, 0, 0, 0)
         row = QtWidgets.QHBoxLayout()
         row.addWidget(QtWidgets.QLabel('资源池试看'))
@@ -48,6 +49,17 @@ class PoolPreview(QtWidgets.QWidget):
     def current_layer(self):
         return next((layer for layer in self.layers if layer['id'] == self.layer_combo.currentData()), None)
 
+    def attach_to_source(self, source):
+        """Keep the session state while moving the chooser beside its source."""
+        self.embedded = True
+        self.source_attached = source is not None
+        self.layer_combo.hide()
+        if source is None:
+            self.hide()
+        elif self.parentWidget() is not source:
+            self.setParent(source)
+            source.layout().insertWidget(1, self)
+
     def sync(self, layers, selected='', *, scope=None):
         self.loading = True
         if scope is not None and scope != self.scope:
@@ -66,7 +78,7 @@ class PoolPreview(QtWidgets.QWidget):
         self.layer_combo.setCurrentIndex(self.layer_combo.findData(target))
         self.loading = False
         self._populate_items()
-        self.setVisible(bool(self.layers))
+        self.setVisible(self.source_attached and selected in ids if self.embedded else bool(self.layers))
 
     def _populate_items(self):
         self.loading = True

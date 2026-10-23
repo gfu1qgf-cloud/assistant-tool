@@ -733,7 +733,12 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
         self.preview.show_bounds = self.show_bounds_checkbox.isChecked()
         self.preview.set_layers(self.layer_panel.values(),current["id"] if current else "")
         if getattr(self, 'pool_preview', None) is not None:
-            self.pool_preview.sync(bound, current['id'] if current else '', scope=self.state.get('active_profile', ''))
+            self._sync_pool_preview(bound, current)
+
+    def _sync_pool_preview(self, layers, current):
+        source = self.layer_panel.content_editor if current and current.get('kind') == 'image' else None
+        self.pool_preview.attach_to_source(source)
+        self.pool_preview.sync(layers, current['id'] if current else '', scope=self.state.get('active_profile', ''))
 
     def _preview_geometry_edited(self,identifier,values):
         if not self._loading and not self.is_batch_busy() and self.layer_panel.set_geometry(identifier,values):
@@ -873,7 +878,7 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
             settings = self.read_settings()
             if getattr(self, 'pool_preview', None) is not None:
                 current = self.layer_panel.current()
-                self.pool_preview.sync(settings['layers'], current['id'] if current else '', scope=self.state.get('active_profile', ''))
+                self._sync_pool_preview(settings['layers'], current)
                 settings = self.pool_preview.apply(settings)
             job = self.active_entry()
             from .text_colors import job_color_scope

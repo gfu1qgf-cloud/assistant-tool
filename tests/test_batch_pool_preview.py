@@ -122,6 +122,11 @@ class PoolPreviewDialogTests(unittest.TestCase):
 
     def test_real_design_preview_changes_image_without_saving_or_advancing(self):
         self.setup_pool(); dialog = self.dialog
+        source = dialog.layer_panel.content_editor
+        self.assertIs(dialog.pool_preview.parentWidget(), source)
+        self.assertIs(source.layout().itemAt(1).widget(), dialog.pool_preview)
+        self.assertTrue(dialog.pool_preview.isVisibleTo(source))
+        self.assertTrue(dialog.pool_preview.layer_combo.isHidden())
         before = copy.deepcopy(dialog.state)
         layers = dialog.layer_panel.values()
         initial = dialog.preview.overlay.pixelColor(dialog.preview.overlay.width()//2, dialog.preview.overlay.height()//2)
@@ -136,6 +141,24 @@ class PoolPreviewDialogTests(unittest.TestCase):
         dialog.pool_preview.reset.click(); self.wait(lambda: dialog.overlay_worker is None)
         color = dialog.preview.overlay.pixelColor(dialog.preview.overlay.width()//2, dialog.preview.overlay.height()//2)
         self.assertGreater(color.red(), 240)
+
+    def test_chooser_follows_current_source_and_keeps_trial_when_selecting_other_controls(self):
+        self.setup_pool(); dialog = self.dialog
+        dialog.pool_preview.next.click(); self.wait(lambda: dialog.overlay_worker is None)
+        selected = copy.deepcopy(dialog.pool_preview.choices)
+        other = next(value for value in dialog.layer_panel.values() if value['kind'] != 'image')
+        dialog.layer_panel.select_layer_id(other['id'])
+        self.assertTrue(dialog.pool_preview.isHidden())
+        self.assertEqual(dialog.pool_preview.choices, selected)
+        dialog.layer_panel.select_layer_id('one')
+        self.assertIs(dialog.pool_preview.parentWidget(), dialog.layer_panel.content_editor)
+        self.assertFalse(dialog.pool_preview.isHidden())
+        self.assertEqual(dialog.pool_preview.item_combo.currentData(), '1')
+        dialog.layer_panel.content_editor.source.setCurrentIndex(
+            dialog.layer_panel.content_editor.source.findData('fixed'))
+        dialog.edit_timer.stop()
+        self.assertTrue(dialog.pool_preview.isHidden())
+        self.wait(lambda: dialog.overlay_worker is None)
 
     def test_playback_uses_trial_and_distinct_cache_key_without_committing(self):
         items = self.setup_pool(); dialog = self.dialog

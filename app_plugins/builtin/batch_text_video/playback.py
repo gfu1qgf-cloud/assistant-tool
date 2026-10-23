@@ -225,7 +225,6 @@ class PlaybackController:
         from .pool_preview import PoolPreview
         self.pool_preview = PoolPreview(self)
         self.pool_preview.selectionChanged.connect(self._pool_preview_changed)
-        layout.addWidget(self.pool_preview)
         from .preview_timeline import AnimationTimeline
         self.animation_timeline = AnimationTimeline(self)
         self.animation_timeline.timeChanged.connect(self._animation_preview_changed)
