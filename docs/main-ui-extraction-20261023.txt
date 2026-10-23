@@ -1,0 +1,20 @@
+主界面独立窗口拆分，2026-10-23
+
+范围：仅搬移 TaskSubmissionAuditDialog / TaskSubmissionAuditThread、
+OralDurationCheckResultDialog / OralDurationCheckThread。
+新模块不反向导入主窗口。main_pyui 保留同名导入，旧调用入口不变。
+视频分配线程、音频/SRT、设置保存、热键、监视器、关闭流程均未修改。
+
+所有搬移类及原主文件其余类/函数的 AST 与拆分前一致。
+新增 11 项回归测试全部通过，包含真实 Qt 异步线程、重复点击、旧回调、
+按钮恢复、关闭保护、筛选、结果展示及错误信号。
+联合原有审核、口播、线程生命周期测试：34 项，33 通过，1 项失败。
+该失败独立在拆分前正式源码复现：全仓静态规则尚未允许
+PYUI/elevenlabs_key_probe.py 中 QRunnable 的 signals.finished.connect。
+本次不修改该无关规则，不把全套测试描述为全部通过。
+
+验证使用隔离配置与离线网络阻断，没有访问真实表格、修改任务数据，
+也没有进行付费调用。真实客户任务的在线读写未测试。
+
+后续建议：音频流程、配置和退出协调需要独立生命周期设计再拆，
+不通过 mixin 或跨模块反向导入来单纯压缩行数。
