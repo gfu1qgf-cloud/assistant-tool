@@ -104,12 +104,19 @@ class Feed:
     def _run(self):
         try:
             self.pipe.connect()
-            for frame in self.frames(): self.pipe.write(frame)
+            iterator = self.frames()
+            try:
+                for frame in iterator: self.pipe.write(frame)
+            finally: iterator.close()
         except (MattingCancelled, BrokenPipeError): pass
         except Exception as error: self.error = error
         finally: self.pipe.close()
 
     def frames(self):
+        if hasattr(self.spec, 'loop_layer'):
+            from .visual_loop import frames
+            yield from frames(self)
+            return
         import numpy as np
         from . import matting_render as render
         spec = self.spec
@@ -198,4 +205,6 @@ class Inputs:
         for feed in self.feeds: feed.close()
         if kind is None:
             self.check()
-            for feed in self.feeds: verify_file(feed.spec.binding['source'], '原素材')
+            for feed in self.feeds:
+                verify_file(feed.spec.binding['source'], '原素材')
+                for source in getattr(feed.spec, 'extra_sources', []): verify_file(source, '辅助遮罩')

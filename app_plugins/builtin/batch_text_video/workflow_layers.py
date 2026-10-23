@@ -146,7 +146,8 @@ def compile_layer(operation, directory, context, video_info, *, timing=None):
     if set(options) != {"layer"} or not isinstance(options["layer"], str): raise ValueError("图层操作格式无效。")
     value = json.loads(options["layer"])
     layer = normalize_layer(value, value["kind"])
-    if layer.get('_matting_binding', {}).get('mode') == 'dynamic':
+    from .visual_loop import enabled as loop_fade_enabled
+    if layer.get('_matting_binding', {}).get('mode') == 'dynamic' or loop_fade_enabled(layer):
         from .matting_live import Inputs
         context.deferred_input_factory = Inputs
     for _, ref in operation.assets: ref.verify()

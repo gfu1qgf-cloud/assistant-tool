@@ -4,7 +4,7 @@ from app_plugins.api import MAIN_MENU, TASK_CONTEXT_MENU, PluginCommand
 class BatchTextVideoPlugin:
     plugin_id = "batch_text_video"
     display_name = "批量文案视频"
-    version = "1.28"
+    version = "1.29"
     required_api_version = 1
 
     def __init__(self):

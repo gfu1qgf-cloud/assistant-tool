@@ -13,6 +13,7 @@ VISUAL_SUFFIXES = ANIMATED_SUFFIXES | {".png", ".jpg", ".jpeg", ".jfif", ".webp"
 VISUAL_FILTER = "图片 / 视频 / GIF (" + " ".join("*" + item for item in sorted(VISUAL_SUFFIXES)) + ")"
 DEFAULTS = {"blend_mode": "normal", "key_mode": "none", "key_similarity": .15,
             "key_softness": .08, "key_despill": False, "media_loop": True, "use_saved_matte": True,
+            "media_loop_transition": "none", "media_loop_fade": .3,
             **MATTE_DEFAULTS, **ANIMATION_DEFAULTS, **KEY_DEFAULTS, **SHOW_DEFAULTS}
 
 def is_animated(path):
@@ -31,6 +32,11 @@ def normalize_visual(layer):
             raise ValueError("抠像容差／边缘柔化必须为0–1。")
     if type(layer["key_despill"]) is not bool or type(layer["media_loop"]) is not bool:
         raise ValueError("视觉元素循环／去色溢开关无效。")
+    if layer['media_loop_transition'] not in {'none', 'fade'}:
+        raise ValueError('素材循环衔接方式无效。')
+    fade = layer['media_loop_fade']
+    if type(fade) not in (int, float) or not math.isfinite(fade) or not 0 <= fade <= 3:
+        raise ValueError('素材循环叠化时长须为0–3秒。')
     levels(layer)
     normalize_animation(layer)
 
@@ -169,25 +175,33 @@ def add_plane(args, filters, layer, input_index, background, label, width, heigh
     path = layer["path"]
     if not Path(path).is_file() or Path(path).suffix.casefold() not in VISUAL_SUFFIXES:
         raise ValueError("视觉元素文件不存在或格式不支持：" + str(path))
+    box_w, box_h = max(2, round(width*layer["width"]/100)), max(2, round(height*layer["height"]/100))
+    if box_w * box_h > 64_000_000 or max(box_w, box_h) > 16384:
+        raise ValueError('视觉图层放大后像素过大，请减小宽度／高度；未启动可能耗尽内存的缩放。')
     from .matting_live import dynamic, StreamInput
-    if dynamic(layer):
+    from .visual_loop import enabled as loop_fade_enabled, LoopInput
+    candidate = loop_fade_enabled(layer)
+    executable = ''
+    if dynamic(layer) or candidate:
         from .engine import resolve_tools
         executable = ffmpeg or (args[0] if args and not args[0].startswith('-') else resolve_tools()[0])
-        args += StreamInput(layer['_matting_binding'], local_duration, layer['media_loop'], fps, executable).arguments()
+    loop_source = LoopInput(layer, local_duration, fps, executable, (box_w, box_h)) if candidate else None
+    live_loop = loop_source is not None and loop_source.overlap > 0
+    if dynamic(layer) or live_loop:
+        source = (loop_source if live_loop else
+                  StreamInput(layer['_matting_binding'], local_duration, layer['media_loop'], fps, executable))
+        args += source.arguments()
     elif is_animated(path):
         if layer["media_loop"]:
             args += ["-stream_loop", "-1"]
         args += ["-i", path]
     else:
         args += ["-loop", "1", "-i", path]
-    box_w, box_h = max(2, round(width*layer["width"]/100)), max(2, round(height*layer["height"]/100))
-    if box_w * box_h > 64_000_000 or max(box_w, box_h) > 16384:
-        raise ValueError('视觉图层放大后像素过大，请减小宽度／高度；未启动可能耗尽内存的缩放。')
     # Fraction gained float-style formatting after our Python 3.10 runtime.
     effect = [f"setpts=PTS-STARTPTS,fps={float(fps):.9f},format=rgba"]
     input_label = f"{input_index}:v"
     consumed = 1
-    if layer["key_mode"] != "none":
+    if layer["key_mode"] != "none" and not live_loop:
         # colorkey replaces (rather than multiplies) an existing alpha channel.
         # Keep that native mask separate so transparent PNG/GIF/MOV pixels do
         # not become visible when the keyed matte is made more opaque.
@@ -288,6 +302,17 @@ class VisualProperties(QtWidgets.QWidget):
             control.toggled.connect(self.edit)
             self.controls[key] = control
             (self.basic_form if key == 'media_loop' else form).addRow(control)
+        transition = QtWidgets.QComboBox()
+        transition.addItem('直接衔接', 'none'); transition.addItem('叠化', 'fade')
+        transition.currentIndexChanged.connect(self.edit)
+        self.controls['media_loop_transition'] = transition
+        self.basic_form.addRow('循环交界', transition)
+        fade = QtWidgets.QDoubleSpinBox(); fade.setRange(0, 3); fade.setDecimals(2)
+        fade.setSingleStep(.1); fade.setSuffix(' 秒'); fade.setSpecialValueText('0 秒（关闭）')
+        fade.valueChanged.connect(self.edit); self.controls['media_loop_fade'] = fade
+        self.basic_form.addRow('叠化时长', fade)
+        transition.setToolTip('仅控制此图片／视频控件的首尾循环交界，不改变底层背景；不够长且需要循环时才叠化。')
+        fade.setToolTip('首尾重叠过渡；过长时按素材长度和可用帧缓冲自动缩短。设计画面显示首帧，交界效果请看播放预览。')
         despill_mode = QtWidgets.QComboBox()
         despill_mode.addItem("基础 · 全图保守", "basic")
         despill_mode.addItem("边缘 · 遮罩去色溢（推荐）", "edge")
@@ -418,6 +443,9 @@ class VisualProperties(QtWidgets.QWidget):
             self._last_animation[self.layer['id']] = mode.currentData()
         mode.setCurrentIndex(mode.findData(self._last_animation.get(self.layer['id'], 'pulse') if enabled else 'none'))
     def _update_key_controls(self):
+        self.controls['media_loop_transition'].setEnabled(self.controls['media_loop'].isChecked())
+        self.controls['media_loop_fade'].setEnabled(self.controls['media_loop'].isChecked()
+            and self.controls['media_loop_transition'].currentData() == 'fade')
         mode = self.controls["key_mode"].currentData()
         for key in ("key_similarity", "key_softness"):
             self.controls[key].setEnabled(mode != "none")
