@@ -83,7 +83,7 @@ pydantic_core==2.46.5
 pydub==0.25.1
 Pygments==2.21.0
 pyparsing==3.3.3
-pypdf==6.19.0
+pypdf==6.21.2
 PyQt6==6.11.0
 PyQt6-Qt6==6.11.2
 PyQt6_sip==13.12.0
