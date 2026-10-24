@@ -36,6 +36,8 @@ class ResourceTable(QtWidgets.QTableWidget):
         self.horizontalHeader().setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeMode.Stretch)
         self.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
         self.setTextElideMode(QtCore.Qt.TextElideMode.ElideRight)
+        from .thumbnails import attach
+        attach(self)
 
     def identifiers(self):
         return [self.item(row, 0).data(QtCore.Qt.ItemDataRole.UserRole)
@@ -74,7 +76,8 @@ class ResourceTable(QtWidgets.QTableWidget):
                 if column == 0:
                     item.setData(QtCore.Qt.ItemDataRole.UserRole, identifier)
                     if icon:
-                        item.setIcon(QtGui.QIcon(icon))
+                        from .thumbnails import ROLE, descriptor
+                        item.setData(ROLE, icon if isinstance(icon, tuple) else descriptor(icon))
                 self.setItem(row, column, item)
             if identifier == current:
                 current_found = True
@@ -86,6 +89,33 @@ class ResourceTable(QtWidgets.QTableWidget):
             selection.setCurrentIndex(QtCore.QModelIndex(),QtCore.QItemSelectionModel.SelectionFlag.NoUpdate)
         del blocker
         self._display_rows = snapshot
+
+
+class LazyFileCombo(Combo):
+    """A large pairing must not duplicate full media lists into every row."""
+    def __init__(self, choices, parent=None):
+        super().__init__(parent)
+        self.choices, self.loaded = choices, False
+
+    def load_choices(self):
+        if self.loaded: return
+        self.loaded = True
+        blocker = QtCore.QSignalBlocker(self)
+        known = {self.itemData(i) for i in range(self.count())}
+        for path, title in self.choices.items():
+            if path not in known:
+                self.addItem(title, path)
+                self.setItemData(self.count()-1, path, QtCore.Qt.ItemDataRole.ToolTipRole)
+        del blocker
+
+    def showPopup(self):
+        self.load_choices(); super().showPopup()
+
+    def findData(self, data, role=QtCore.Qt.ItemDataRole.UserRole, flags=QtCore.Qt.MatchFlag.MatchExactly | QtCore.Qt.MatchFlag.MatchCaseSensitive):
+        index = super().findData(data, role, flags)
+        if index < 0 and isinstance(data, str) and data in self.choices:
+            self.load_choices(); index = super().findData(data, role, flags)
+        return index
 
 
 class PairingDialog(QtWidgets.QDialog):
@@ -111,6 +141,15 @@ class PairingDialog(QtWidgets.QDialog):
             self.mode.setCurrentIndex(1)
         layout.addWidget(self.mode)
         sources = QtWidgets.QFormLayout()
+        from .quantity_basis import choices
+        self.quantity_basis = Combo()
+        for identifier, name in choices(state): self.quantity_basis.addItem(name, identifier)
+        saved_basis = state['settings'].get('pairing_quantity_pool', '')
+        if saved_basis and self.quantity_basis.findData(saved_basis) < 0:
+            self.quantity_basis.addItem('失效的数量基准池（请重新选择）', saved_basis)
+        self.quantity_basis.setCurrentIndex(max(0, self.quantity_basis.findData(saved_basis)))
+        self.quantity_basis.setToolTip('选择任意默认池或自建池：池中每项生成一个成品。其他文案、背景和人声按各自规则循环；不要求底层背景。')
+        sources.addRow('成品数量基准', self.quantity_basis)
         self.video_source = Combo()
         for identifier, name in [("", "默认背景池（视频／图片）"), ("none", "无底层背景（使用控件合成）")] + [
                 (pool["id"], pool["name"]) for pool in self.pool_state.get("resource_pools", [])
@@ -168,6 +207,7 @@ class PairingDialog(QtWidgets.QDialog):
         self.buttons.rejected.connect(self.reject)
         layout.addWidget(self.buttons)
         self.mode.currentIndexChanged.connect(self.rebuild)
+        self.quantity_basis.currentIndexChanged.connect(self.rebuild)
         self.only_copies.toggled.connect(self.rebuild)
         self.only_videos.toggled.connect(self.rebuild)
         self.video_source.currentIndexChanged.connect(self.video_pool_changed)
@@ -187,13 +227,27 @@ class PairingDialog(QtWidgets.QDialog):
         voice_id = self.voice_source.currentData()
         voices = get_pool(self.pool_state, voice_id, "voice")["items"] if voice_id else []
         try:
-            self.pairs = assign_voices(pairing_plan(copies, videos, self.mode.currentData()), voices, self.voice_mode.currentData())
-            self.status.setText(f"将搭配{len(self.pairs)}个成品；" + ("无底层背景，由控件合成画面。" if not videos else "背景和人声下拉框可逐行调整。"))
+            from .quantity_basis import entries
+            count_videos = [p for p in self.videos if not self.only_videos.isChecked() or p in self.selected_videos]
+            quantity = entries(self.pool_state, self.quantity_basis.currentData(), copies, count_videos)
+            self.mode.setVisible(quantity is None)
+            self.pairs = assign_voices(pairing_plan(copies, videos, self.mode.currentData(), quantity=quantity), voices, self.voice_mode.currentData())
+            basis_note = ('数量依据：'+self.quantity_basis.currentText()+'；其他素材按各自规则轮换。') if quantity is not None else ''
+            self.status.setText(f"将搭配{len(self.pairs)}个成品；" + basis_note + ("无底层背景，由控件合成画面。" if not videos else "背景和人声下拉框可逐行调整。"))
         except ValueError as error:
             self.pairs = []
             self.status.setText(str(error))
         self.buttons.button(QtWidgets.QDialogButtonBox.StandardButton.Ok).setEnabled(bool(self.pairs))
+        # Replaced cell widgets are deleted later by Qt. Hide them immediately
+        # so changing a quantity/source cannot leave old selectors over new rows.
+        for row in range(self.table.rowCount()):
+            for column in (1, 4):
+                widget = self.table.cellWidget(row, column)
+                if widget: widget.hide()
+        self.table.clearContents()
         self.table.setRowCount(len(self.pairs))
+        voice_titles = {item['path']: (get_pool(self.pool_state, voice_id, 'voice')['name']+' / '+Path(item['path']).name) for item in voices}
+        background_titles = {path: Path(path).name for path in videos}
         for row, pair in enumerate(self.pairs):
             source = pair["copy"] or {}
             directory = source.get("task_dir", "")
@@ -203,15 +257,16 @@ class PairingDialog(QtWidgets.QDialog):
                 item = QtWidgets.QTableWidgetItem(short_directory if column == 3 else value)
                 item.setToolTip(value)
                 self.table.setItem(row, column, item)
-            combo = Combo()
+            combo = LazyFileCombo(background_titles)
             combo.addItem("无底层背景（使用控件合成）", "")
-            for path in videos:
+            if pair['path']:
+                path = pair['path']
                 combo.addItem(Path(path).name, path)
                 combo.setItemData(combo.count()-1, path, QtCore.Qt.ItemDataRole.ToolTipRole)
             combo.setCurrentIndex(combo.findData(pair["path"]))
             combo.currentIndexChanged.connect(lambda _index, c=combo, p=pair: p.update(path=c.currentData()))
             self.table.setCellWidget(row, 1, combo)
-            voice_combo = Combo()
+            voice_combo = LazyFileCombo(voice_titles)
             task_path = source.get("voice_path", "")
             voice_combo.addItem("沿用任务人声" + ("：" + Path(task_path).name if task_path else ""), None)
             voice_combo.addItem("不使用人声", "")
@@ -219,10 +274,10 @@ class PairingDialog(QtWidgets.QDialog):
                 if pool["kind"] == "voice":
                     voice_combo.addItem("池：" + pool["name"] + " · 轮换", "pool:" + pool["id"])
                     voice_combo.setItemData(voice_combo.count()-1, f"{len(pool['items'])} 条音频；按当前行顺序轮换。", QtCore.Qt.ItemDataRole.ToolTipRole)
-            for item in voices:
-                pool_name = get_pool(self.pool_state, voice_id, "voice")["name"]
-                voice_combo.addItem(pool_name + " / " + Path(item["path"]).name, item["path"])
-                voice_combo.setItemData(voice_combo.count()-1, item["path"], QtCore.Qt.ItemDataRole.ToolTipRole)
+            selected_voice = pair.get('voice_path', '')
+            if selected_voice:
+                voice_combo.addItem(voice_titles.get(selected_voice, Path(selected_voice).name), selected_voice)
+                voice_combo.setItemData(voice_combo.count()-1, selected_voice, QtCore.Qt.ItemDataRole.ToolTipRole)
             voice_combo.setCurrentIndex(voice_combo.findData(pair["voice_path"]) if "voice_path" in pair else 0)
             voice_combo._accepted_voice = voice_combo.currentData()
             voice_combo.setSizeAdjustPolicy(QtWidgets.QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)

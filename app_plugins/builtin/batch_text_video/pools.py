@@ -66,9 +66,15 @@ def new_copy():
             "label": "新文案", "status": "需配置", "output": "", "error": "", "voice_path": ""}
 
 
-def pairing_plan(copies, videos, mode="copies"):
+def pairing_plan(copies, videos, mode="copies", *, quantity=None):
     if mode not in {"copies", "videos", "one_to_one", "single"}:
         raise ValueError("搭配方式无效。")
+    if quantity is not None:
+        if not quantity or len(quantity) > 1000:
+            raise ValueError('数量基准须包含1–1000项。')
+        return [dict(copy=copies[index % len(copies)] if copies else None,
+                     path=videos[0 if mode == 'single' else index % len(videos)] if videos else '', quantity_key=list(key))
+                for index, key in enumerate(quantity)]
     if not videos:
         if copies:
             return [{"copy": item, "path": ""} for item in copies]
@@ -87,9 +93,18 @@ def pairing_plan(copies, videos, mode="copies"):
             for index in range(length)]
 
 
+def pair_identity(copy_id, path, quantity=None):
+    key = (copy_id, file_identity(path) if path else '')
+    if quantity is not None:
+        if not isinstance(quantity, (tuple, list)) or len(quantity) != 2 or any(not isinstance(p, str) or not p for p in quantity):
+            raise ValueError('成品数量基准记录无效。')
+        key += tuple(quantity)
+    return key
+
+
 def apply_pairs(state, pairs):
     # Validate the whole plan before changing the queue.
-    keys = [(pair["copy"]["id"] if pair["copy"] else "", (file_identity(pair["path"]) if pair["path"] else "")) for pair in pairs]
+    keys = [pair_identity(pair['copy']['id'] if pair['copy'] else '', pair['path'], pair.get('quantity_key')) for pair in pairs]
     if len(set(keys)) != len(keys):
         raise ValueError("搭配中有重复的文案＋背景组合，请先调整；队列未变。")
     for pair in pairs:
@@ -101,7 +116,7 @@ def apply_pairs(state, pairs):
     for pair, key in zip(pairs, keys):
         source = pair["copy"] or {"title": "", "body": "", "name": Path(pair["path"]).stem + "_文字版" if pair["path"] else "控件合成"}
         existing = next((job for job in state["jobs"] if tuple(job.get("pair_key", [])) == key), None)
-        if not existing and pair["copy"]:
+        if not existing and pair["copy"] and not pair.get('quantity_key'):
             existing = next((job for job in state["jobs"] if job.get("id") == source["id"]
                              and (file_identity(job["path"]) if job.get("path") else "") == key[1]), None)
         fields = {field: copy.deepcopy(source.get(field, "")) for field in
@@ -109,6 +124,7 @@ def apply_pairs(state, pairs):
         fields.update(path=pair["path"], copy_id=key[0], pair_key=list(key),
                       requires_title=bool(source.get("requires_title")),
                       task_voice_optional=bool(source.get("task_voice_optional")), match_error=source.get("match_error", ""))
+        if pair.get('quantity_key'): fields['quantity_key'] = copy.deepcopy(pair['quantity_key'])
         for field in ("task_date", "task_year", "task_filename_auto"):
             if field in source: fields[field] = copy.deepcopy(source[field])
         # Keep the task's original narration when a row is temporarily replaced

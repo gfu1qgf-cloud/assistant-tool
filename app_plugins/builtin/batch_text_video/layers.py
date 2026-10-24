@@ -326,15 +326,8 @@ def import_images(paths, directory, cancel=None):
             if not asset.exists():
                 data_io.replace(temporary, asset)
                 created.append(asset)
-            thumbnail = asset.with_suffix(".thumb.png")
-            if not thumbnail.exists():
-                small = image.scaled(64, 64, QtCore.Qt.AspectRatioMode.KeepAspectRatio,
-                                     QtCore.Qt.TransformationMode.SmoothTransformation)
-                if not small.save(str(thumbnail), "PNG"):
-                    raise OSError("保存图片缩略图失败：" + path.name)
-                created.append(thumbnail)
             layers.append({"id": uuid.uuid4().hex, "kind": "image", "name": path.stem,
-                           "path": str(asset.resolve()), "thumbnail": str(thumbnail.resolve()), "enabled": True, "opacity": 100,
+                           "path": str(asset.resolve()), "thumbnail": "", "enabled": True, "opacity": 100,
                            "x": 50, "y": 50, "width": 30, "height": 30})
         except Exception as error:
             errors.append(f"{path.name}：{error}")

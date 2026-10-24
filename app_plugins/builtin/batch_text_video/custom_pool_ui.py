@@ -53,7 +53,8 @@ class ImagePoolBindingDialog(QtWidgets.QDialog):
         self.setWindowTitle("图片框 · 选择图片或绑定资源池")
         self.resize(460, 240)
         form = QtWidgets.QFormLayout(self)
-        self.pool, self.mode, self.image = Combo(), Combo(), Combo()
+        from .thumbnails import ThumbnailCombo
+        self.pool, self.mode, self.image = Combo(), Combo(), ThumbnailCombo()
         for identifier, name in pool_choices(state, "image", "默认图片池"):
             self.pool.addItem(name, identifier)
         self.pool.setCurrentIndex(max(0, self.pool.findData(layer.get("pool_id", ""))))
@@ -83,7 +84,9 @@ class ImagePoolBindingDialog(QtWidgets.QDialog):
     def refresh_images(self, *_args):
         self.image.clear()
         for item in self.items():
-            self.image.addItem(QtGui.QIcon(item.get("thumbnail", "")), item.get("name") or Path(item["path"]).name, item["path"])
+            from .thumbnails import ROLE, descriptor
+            self.image.addItem(item.get("name") or Path(item["path"]).name, item["path"])
+            self.image.setItemData(self.image.count()-1, descriptor(item['path'], item.get('thumbnail')), ROLE)
             self.image.setItemData(self.image.count()-1, item["path"], QtCore.Qt.ItemDataRole.ToolTipRole)
         self.update_mode()
 
@@ -142,7 +145,8 @@ class CustomPoolController:
                 if kind == "music":
                     prefix = "→ " if item["id"] == pool["next_id"] or not pool["next_id"] and row == 0 else ""
                     values = [prefix + values[0], f"{item.get('cursor', 0):.1f}秒", item.get("last_used") or "未使用"]
-                rows.append((item["id"], values, item["path"], item.get("thumbnail", "")))
+                rows.append((item["id"], values, item["path"],
+                             (item['path'], item.get('thumbnail', '')) if kind in {'image', 'video', 'visual'} else ''))
             table.populate(rows)
         if hasattr(self, "controls") and "background_pool_id" in self.controls:
             combo = self.controls["background_pool_id"]

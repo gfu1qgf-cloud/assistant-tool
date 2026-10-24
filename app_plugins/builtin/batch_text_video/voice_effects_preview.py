@@ -2,7 +2,7 @@
 import copy
 from pathlib import Path
 import threading
-from model.AppDataStorage import data_file, data_io
+from model.AppDataStorage import data_file
 from model.QtThreadLifecycle import connect_thread_finished
 from qt_compat import QtCore
 from .voice_effects import normalized, active, resolved
@@ -26,7 +26,8 @@ def render_audition(source, settings, *, processed=True, start=0., ffmpeg='', ca
     duration = clip + (min(4., preset['rt']*.8)+.2 if preset else .2)
     if not processed: settings['voice_fx_preset'] = 'none'
     if cancel and cancel.is_set(): raise Cancelled('已取消试听。')
-    with data_io.TemporaryDirectory(prefix='voice-space-audition-') as temporary:
+    from .preview_cache import audition_temporary
+    with audition_temporary() as temporary:
         temporary = Path(temporary); target = temporary/'audition.wav'
         args = [executable, '-y', '-nostdin', '-hide_banner', '-loglevel', 'error', '-ss', f'{start:.6f}', '-t', f'{clip:.9f}', '-i', str(source)]
         ir_index = None

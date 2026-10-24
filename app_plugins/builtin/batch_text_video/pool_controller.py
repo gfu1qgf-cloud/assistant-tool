@@ -213,7 +213,7 @@ class PoolController(CustomPoolController, MattingController):
                                              "字幕：" + (item.get("task_subtitle_path") or "未找到"))), "")
                                 for item in self.state["copy_pool"]])
         self.image_pool.populate([(item["id"], [item.get("name") or Path(item["path"]).name],
-                                   item["path"], item.get("thumbnail", "")) for item in self.state["image_pool"]])
+                                   item["path"], (item["path"], item.get("thumbnail", ""))) for item in self.state["image_pool"]])
 
     def active_entry(self):
         if self.current_copy_id:
@@ -398,6 +398,7 @@ class PoolController(CustomPoolController, MattingController):
             return False
         try:
             added, updated = apply_pairs(self.state, dialog.pairs)
+            self.state['settings']['pairing_quantity_pool'] = dialog.quantity_basis.currentData()
             self.controls["voice_pool_id"].setCurrentIndex(self.controls["voice_pool_id"].findData(dialog.voice_source.currentData()))
             self.controls["voice_pool_mode"].setCurrentIndex(self.controls["voice_pool_mode"].findData(dialog.voice_mode.currentData()))
             self.controls["music_pool_id"].setCurrentIndex(self.controls["music_pool_id"].findData(dialog.music_card.pool.currentData()))

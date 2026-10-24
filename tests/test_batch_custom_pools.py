@@ -326,7 +326,7 @@ class CustomPoolTests(unittest.TestCase):
             self.assertEqual(len(imported), 1)
             self.assertEqual(saved["image_pool"], [])
             self.assertTrue(Path(imported[0]["path"]).is_file())
-            self.assertTrue(Path(imported[0]["thumbnail"]).is_file())
+            self.assertEqual(imported[0]["thumbnail"], '')  # Created only when its row is visible.
             self.assertTrue(Path(path).is_file())
             dialog.custom_tables[pool["id"]].selectAll()
             dialog.use_pool_images(True, "pool:" + pool["id"])

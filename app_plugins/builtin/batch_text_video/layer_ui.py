@@ -104,6 +104,8 @@ class LayerPanel(QtWidgets.QWidget):
         self.down_button.clicked.connect(lambda: self.move_layer(1))
         layout.addLayout(tools)
         self.list = LayerList(self._can_import_visuals, self.add_images)
+        from .thumbnails import attach
+        attach(self.list)
         self.list.setObjectName("batch_video_layers")
         self.list.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
         self.list.customContextMenuRequested.connect(self._component_menu)
@@ -350,8 +352,8 @@ class LayerPanel(QtWidgets.QWidget):
                 source = (layer["sequence_items"][layer["sequence_cursor"]]
                           if layer["source"] in {"sequence", "pool"} and layer["sequence_items"] else layer)
                 item.setToolTip(source.get("path","") + "\n图片副本；拖动可调整覆盖顺序。")
-                if source.get("thumbnail"):
-                    item.setIcon(QtGui.QIcon(source["thumbnail"]))
+                from .thumbnails import ROLE, descriptor
+                item.setData(ROLE, descriptor(source.get('path'), source.get('thumbnail')))
             elif layer["kind"] == "watermark":
                 item.setToolTip("独立四角水印组件；内容、样式和位置在“水印设置”中统一管理。")
             elif layer["kind"] == "caption":

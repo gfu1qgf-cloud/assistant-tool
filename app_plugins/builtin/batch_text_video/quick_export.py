@@ -13,7 +13,8 @@ def prepare_current_export(state, entry, copy_id="", queue_id=""):
     if entry.get("requires_title") and not str(entry.get("title") or "").strip():
         raise ValueError("表格文案没有标题，请补上第一行标题后再导出。")
     result = copy.deepcopy(state)
-    pair_key = [copy_id, file_identity(path) if path else ""]
+    from .pools import pair_identity
+    pair_key = list(pair_identity(copy_id, path, entry.get('quantity_key')))
     # A copy-pool preview takes precedence over a previously highlighted queue row.
     job = next((item for item in result["jobs"] if not copy_id and queue_id
                 and item["id"] == queue_id), None)
