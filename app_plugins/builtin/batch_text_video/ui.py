@@ -31,6 +31,7 @@ from .audio_sources import resolve_voice
 from .audio_ui import AudioSourceCard
 from .component_nodes import ComponentNodeController
 from .voice_effects_preview import VoiceEffectController
+from .workspace_navigation import WorkspaceNavigation
 
 
 class OverlayWorker(QtCore.QThread):
@@ -183,7 +184,7 @@ class ImportWorker(QtCore.QThread):
             self.ready.emit({"entries": [], "issues": ["导入异常，请查看程序日志。"], "cancelled": False})
 
 
-class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackController, PoolController, VoiceEffectController, QtWidgets.QDialog):
+class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackController, PoolController, VoiceEffectController, WorkspaceNavigation, QtWidgets.QDialog):
     def __init__(self, context=None, store=None, parent=None):
         from .component_inspector import require_editor_api
         require_editor_api(LayerPanel)
@@ -263,7 +264,11 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
         self.init_resources(music_page)
         self.tabs.setMinimumWidth(250)
         self.left_column = QtWidgets.QSplitter(QtCore.Qt.Orientation.Vertical)
-        self.left_column.addWidget(self.tabs)
+        self.resource_pane = QtWidgets.QWidget()
+        self.resource_pane_layout = QtWidgets.QVBoxLayout(self.resource_pane)
+        self.resource_pane_layout.setContentsMargins(0, 0, 0, 0)
+        self.resource_pane_layout.addWidget(self.tabs)
+        self.left_column.addWidget(self.resource_pane)
         self.splitter.addWidget(self.left_column)
         preview_page = QtWidgets.QWidget()
         preview_layout = QtWidgets.QVBoxLayout(preview_page)
@@ -375,19 +380,19 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
         form.addRow(component_button)
         self.ffmpeg = QtWidgets.QLineEdit(self.state["settings"]["ffmpeg_path"])
         self.ffmpeg.setPlaceholderText("留空使用随程序提供的标准FFmpeg")
-        render_form.addRow("FFmpeg", self.ffmpeg)
-        from model.MediaEncoding import ENCODERS, EXPORT_QUALITIES
+        from model.MediaEncoding import ENCODERS, EXPORT_QUALITIES, MAX_EXPORT_WORKERS
         self._combo(render_form, 'video_encoder', '视频编码', [(label, key) for key, label in ENCODERS])
         self._combo(render_form, 'export_quality', '导出质量', [(label, key) for key, label in EXPORT_QUALITIES])
         self.controls['export_quality'].setToolTip('所有项目共用。高：画质优先；中：画质与体积均衡；低：体积优先。分辨率与帧率由项目决定。')
-        workers_spin = self._spin('export_workers', 1, 8)
+        workers_spin = self._spin('export_workers', 1, MAX_EXPORT_WORKERS)
         workers_spin.setSuffix(' 路')
-        workers_spin.setToolTip('所有项目共用的最终编码上限，不是每个项目各开这么多路。建议2–4路；同时运行的项目还受主程序后台并发名额限制。')
+        workers_spin.setToolTip('1–64路；所有项目共享同一上限。实际并发取决于任务准备与硬件处理速度。已有数值保持不变，新批次使用新设置。')
         render_form.addRow('全局并发上限', workers_spin)
-        fallback = QtWidgets.QCheckBox('显卡异常时回退CPU（日志提示原因）')
+        fallback = QtWidgets.QCheckBox('显卡失败／编码停滞时用CPU重试')
         fallback.setChecked(self.state['settings']['encoder_fallback'])
         self.controls['encoder_fallback'] = fallback
         render_form.addRow(fallback)
+        render_form.addRow('FFmpeg（可选）', self.ffmpeg)
         encode_note = QtWidgets.QLabel('所有项目共用；新提交的任务采用当前设置。显卡用于最终H.264编码，合成和字幕仍按原画质处理。')
         encode_note.setWordWrap(True)
         render_form.addRow(encode_note)
@@ -516,7 +521,8 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
         layout.addWidget(self.splitter, 1)
         output_row = QtWidgets.QHBoxLayout()
         self.output = QtWidgets.QLineEdit(self.state["settings"]["output_dir"])
-        output_row.addWidget(QtWidgets.QLabel("普通视频输出目录"))
+        output_row.addWidget(QtWidgets.QLabel("默认导出文件夹"))
+        self.output.setPlaceholderText('任务指定目录优先；普通独立视频使用此目录')
         self.output.setToolTip("表格/人声任务始终导出到各自任务目录，不使用这里的路径。普通独立视频留空则导出到源视频目录。")
         output_row.addWidget(self.output, 1)
         browse = QtWidgets.QPushButton("选择…")
@@ -529,7 +535,7 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
         output_row.addWidget(self.open_directory_button)
         layout.addLayout(output_row)
         footer = QtWidgets.QHBoxLayout()
-        footer.addWidget(QtWidgets.QLabel('在渲染队列中勾选要导出的视频，再点击“开始全部”。'))
+        footer.addWidget(QtWidgets.QLabel('批量导出：在渲染队列勾选任务，再点击“开始全部计划”。'))
         self.global_queue_button = QtWidgets.QPushButton("渲染队列")
         self.stop_button = QtWidgets.QPushButton("停止")
         self.stop_button.setEnabled(False)
@@ -544,6 +550,7 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
         self.status.setWordWrap(True)
         layout.addWidget(self.status)
         self.init_menus(layout)
+        self.init_workspace_navigation(layout)
         self.edit_timer = QtCore.QTimer(self)
         self.edit_timer.setSingleShot(True)
         self.edit_timer.setInterval(600)
@@ -600,7 +607,8 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
         self.refresh_tables()
         if self.jobs.rowCount():
             self.right_tabs.setCurrentWidget(self.render_queue_panel)
-            self.jobs.setCurrentCell(0, 0)
+            first = next((row for row in range(self.jobs.rowCount()) if not self.jobs.isRowHidden(row)), 0)
+            self.jobs.setCurrentCell(first, 0)
         else:
             self.clear_editor()
         self.apply_profile_title()
@@ -795,6 +803,7 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
 
     def schedule_render_settings(self, *_args):
         if not self._loading:
+            self.render_queue_panel.refresh_settings_summary()
             self.render_settings_timer.start()
 
     def save_render_settings(self):
@@ -815,6 +824,7 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
             return True
         except Exception as error:
             self._log('保存全局渲染设置失败：' + str(error))
+            self.status.setText('渲染选项未保存：' + str(error))
             return False
 
     def _edit_changed(self):
@@ -1221,6 +1231,7 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
         self.refresh_pools()
         self._sync_preview_layers()
         self._loading = False
+        self.refresh_navigation()
 
     def add_files(self, paths, *, background=False):
         if self.is_batch_busy():
@@ -1802,6 +1813,7 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
             widget.setEnabled(not busy)
         self.global_queue_button.setEnabled(True)
         self.stop_button.setEnabled(busy)
+        self.update_navigation_busy(busy)
         if was_read_only and not busy and not self._loading and not self.is_batch_busy():
             self._selection_changed(self.jobs.currentRow())
 

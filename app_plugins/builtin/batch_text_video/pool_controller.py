@@ -512,8 +512,8 @@ class PoolController(CustomPoolController, MattingController):
 
     def rebuild_profile_menu(self):
         self.profile_menu.clear()
-        self.profile_menu.addAction("新建配置…", lambda: self.create_named_profile(False)).setShortcut("Ctrl+N")
-        opened = self.profile_menu.addMenu("打开配置")
+        self.profile_menu.addAction("新建项目…", lambda: self.create_named_profile(False)).setShortcut("Ctrl+N")
+        opened = self.profile_menu.addMenu("打开项目")
         opened.setToolTipsVisible(True)
         for profile in self.state["profiles"]:
             action = opened.addAction(profile["name"], lambda _checked=False, p=profile["id"]: self.switch_profile(p))
@@ -521,9 +521,9 @@ class PoolController(CustomPoolController, MattingController):
             action.setChecked(profile["id"] == self.state["active_profile"])
             action.setToolTip("打开已保存的配置；各配置的资源池、队列与轮换进度相互独立。")
         self.profile_menu.addSeparator()
-        self.profile_menu.addAction("保存配置", self.persist).setShortcut("Ctrl+S")
-        self.profile_menu.addAction("另存为…", lambda: self.create_named_profile(True)).setShortcut("Ctrl+Shift+S")
-        self.profile_menu.addAction("重命名当前配置…", self.rename_profile)
+        self.profile_menu.addAction("保存项目", self.persist).setShortcut("Ctrl+S")
+        self.profile_menu.addAction("复制项目…", lambda: self.create_named_profile(True)).setShortcut("Ctrl+Shift+S")
+        self.profile_menu.addAction("重命名当前项目…", self.rename_profile)
         delete = self.profile_menu.addAction("删除当前项目…", self.delete_current_profile)
         delete.setToolTip('只删除项目配置、资源引用和该项目渲染记录；不删除素材、音频或已导出的视频。')
         finished = self.finished_render_task_ids()
@@ -541,7 +541,7 @@ class PoolController(CustomPoolController, MattingController):
     def create_named_profile(self, clone):
         if self.is_batch_busy():
             return
-        name, ok = QtWidgets.QInputDialog.getText(self, "另存配置" if clone else "新建配置", "名称（例如：祷告词 / 管理员姓名）")
+        name, ok = QtWidgets.QInputDialog.getText(self, "复制项目" if clone else "新建项目", "名称（例如：祷告词 / 管理员姓名）")
         if ok:
             self.preview.cancel_drag()
         if ok and self.persist():
@@ -549,7 +549,7 @@ class PoolController(CustomPoolController, MattingController):
                 self.state = self.store.create_profile(self.state, name, clone)
                 self.apply_profile_widgets()
             except Exception as error:
-                self._log("配置创建失败："+str(error))
+                self._log("项目创建失败："+str(error))
 
     def switch_profile(self, identifier):
         if identifier == self.state["active_profile"]:
@@ -579,7 +579,7 @@ class PoolController(CustomPoolController, MattingController):
         if self.is_batch_busy():
             return
         profile = next(item for item in self.state["profiles"] if item["id"] == self.state["active_profile"])
-        name, ok = QtWidgets.QInputDialog.getText(self, "重命名配置", "名称", text=profile["name"])
+        name, ok = QtWidgets.QInputDialog.getText(self, "重命名项目", "名称", text=profile["name"])
         if not ok:
             return
         if not name.strip() or len(name.strip()) > 80 or any(p["name"] == name.strip() and p["id"] != profile["id"] for p in self.state["profiles"]):
@@ -594,6 +594,7 @@ class PoolController(CustomPoolController, MattingController):
     def apply_profile_title(self):
         profile = next(item for item in self.state["profiles"] if item["id"] == self.state["active_profile"])
         self.setWindowTitle("批量文案视频 · "+profile["name"])
+        self.refresh_navigation()
 
     def finished_render_task_ids(self):
         """Accept terminal host evidence, not absence of a local render handle."""

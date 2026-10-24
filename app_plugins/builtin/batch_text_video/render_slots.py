@@ -2,6 +2,7 @@
 from collections import deque
 from contextlib import contextmanager
 import threading
+from model.MediaEncoding import MAX_EXPORT_WORKERS
 
 _LOCK = threading.Lock()
 _GATES = {}
@@ -18,7 +19,7 @@ class _Gate:
 def configure(scope, limit, *, replace=True):
     if not scope:
         return None
-    limit = max(1, min(8, int(limit)))
+    limit = max(1, min(MAX_EXPORT_WORKERS, int(limit)))
     with _LOCK:
         gate = _GATES.setdefault(scope, _Gate(limit))
     if replace:

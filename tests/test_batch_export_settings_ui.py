@@ -22,7 +22,7 @@ class ExportSettingsUiTests(unittest.TestCase):
                 try:
                     self.assertEqual(dialog.controls['video_encoder'].currentData(),'cpu')
                     self.assertEqual(dialog.controls['export_workers'].value(),2)
-                    self.assertEqual(dialog.controls['export_workers'].maximum(),8)
+                    self.assertEqual(dialog.controls['export_workers'].maximum(),64)
                     quality=dialog.controls['export_quality']
                     self.assertEqual(quality.currentData(),'high')
                     self.assertEqual([quality.itemData(i) for i in range(quality.count())],['high','medium','low'])

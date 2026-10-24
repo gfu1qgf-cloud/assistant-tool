@@ -14,6 +14,7 @@ _QUALITY_VALUES = {'cpu': {'high': 20, 'medium': 23, 'low': 27},
                    'qsv': {'high': 19, 'medium': 23, 'low': 27}}
 _PROBES = {}
 _LOCK = threading.Lock()
+MAX_EXPORT_WORKERS = 64
 
 
 def normalize_export_settings(settings):
@@ -25,8 +26,8 @@ def normalize_export_settings(settings):
         raise ValueError('视频编码方式无效。')
     if type(settings['encoder_fallback']) is not bool:
         raise ValueError('编码失败回退选项必须为开关。')
-    if type(settings['export_workers']) is not int or not 1 <= settings['export_workers'] <= 8:
-        raise ValueError('同时导出数量须为1–8。')
+    if type(settings['export_workers']) is not int or not 1 <= settings['export_workers'] <= MAX_EXPORT_WORKERS:
+        raise ValueError(f'同时导出数量须为1–{MAX_EXPORT_WORKERS}。')
     quality_label(settings['export_quality'])
 
 

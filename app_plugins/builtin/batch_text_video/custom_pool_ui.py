@@ -131,7 +131,7 @@ class CustomPoolController:
                 if kind == "image":
                     table.setIconSize(QtCore.QSize(48, 48))
                 layout.addWidget(table, 1)
-                note = QtWidgets.QLabel(POOL_TYPES[kind][2] + "。\n拖入文件添加；右键搭配或应用。只记录路径，不移动原文件。")
+                note = QtWidgets.QLabel(POOL_TYPES[kind][2] + "。\n上方“添加文件…”导入，“使用素材”选择用途；也可拖入文件。")
                 note.setWordWrap(True)
                 layout.addWidget(note)
                 self.custom_pages[identifier], self.custom_tables[identifier] = page, table
@@ -195,7 +195,7 @@ class CustomPoolController:
                 self.refresh_tables()
                 self.tabs.setCurrentWidget(self.resources)
                 self.resources.setCurrentWidget(self.custom_pages[pool["id"]])
-                self.status.setText("已创建资源池；从“资源→添加文件到当前池”或拖入文件添加素材。")
+                self.status.setText("已创建资源池；点击左上方“添加文件…”或拖入文件添加素材。")
         except Exception as error:
             self.status.setText("创建资源池失败：" + str(error))
             self._log("创建资源池失败：" + str(error))

@@ -23,7 +23,8 @@ class GlobalRenderQueuePanel(QtWidgets.QWidget):
         settings_scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         settings_scroll.setWidget(settings_widget)
         settings_scroll.setMaximumHeight(270)
-        self.settings_section = PropertySection('渲染选项', settings_scroll, expanded=True)
+        self.settings_section = PropertySection('渲染选项', settings_scroll, expanded=False)
+        self.settings_section.toggle.setToolTip('展开设置并发上限（1–64路）、编码质量、同名文件覆盖及FFmpeg。')
         layout.addWidget(self.settings_section)
         global_widget = QtWidgets.QWidget()
         global_layout = QtWidgets.QVBoxLayout(global_widget)
@@ -52,7 +53,9 @@ class GlobalRenderQueuePanel(QtWidgets.QWidget):
         self.empty_label.setWordWrap(True)
         global_layout.addWidget(self.empty_label)
         row = QtWidgets.QHBoxLayout()
-        self.start_button = QtWidgets.QPushButton('开始全部')
+        self.start_button = QtWidgets.QPushButton('开始全部计划')
+        self.start_button.setAutoDefault(False)
+        self.start_button.setToolTip('开始所有项目中已勾选、尚未提交的渲染计划。仅查看、搜索或选中行不会开始导出。')
         self.start_button.clicked.connect(self.start)
         remove = QtWidgets.QPushButton('取消该项目勾选')
         remove.clicked.connect(self.remove)
@@ -75,7 +78,11 @@ class GlobalRenderQueuePanel(QtWidgets.QWidget):
         self.current_label = QtWidgets.QLabel()
         self.current_label.setWordWrap(True)
         layout.addWidget(self.current_label)
+        from .queue_tools import QueueTools
+        self.tools = QueueTools(owner, self)
+        layout.addWidget(self.tools)
         layout.addWidget(owner.jobs, 1)
+        layout.addWidget(self.tools.detail)
         self.refresh()
 
     def refresh(self):
@@ -86,6 +93,8 @@ class GlobalRenderQueuePanel(QtWidgets.QWidget):
         self.table.setRowCount(len(plans))
         self.table.setVisible(bool(plans))
         self.empty_label.setVisible(not plans)
+        self.empty_label.setText('尚未创建渲染计划。' if not self.owner.state['jobs'] else
+            '未勾选任务：可用下方“勾选未完成”创建渲染计划。')
         self.table.setFixedHeight(self.table.horizontalHeader().height() + min(5, max(1, len(plans)))*28 + 3)
         for row, plan in enumerate(plans):
             profile = next((p for p in state['profiles'] if p['id'] == plan['profile_id']), None)
@@ -121,8 +130,16 @@ class GlobalRenderQueuePanel(QtWidgets.QWidget):
             if plan['id'] == selected_id:
                 self.table.selectRow(row)
         self.refresh_current_label()
+        self.refresh_settings_summary()
+        self.tools.refresh()
         self.start_button.setEnabled(any(plan['status'] == 'staged' for plan in plans))
         self.update_delete_enabled()
+
+    def refresh_settings_summary(self):
+        controls = self.owner.controls
+        encoder = {'cpu': 'CPU', 'nvenc': 'NVIDIA', 'qsv': 'Intel', 'auto': '自动'}.get(controls['video_encoder'].currentData(), '')
+        quality = {'high': '高画质', 'medium': '均衡', 'low': '小体积'}.get(controls['export_quality'].currentData(), '')
+        self.settings_section.toggle.setText(f"渲染选项 · 上限{controls['export_workers'].value()}路 · {encoder} · {quality}")
 
     def update_delete_enabled(self, *_):
         enabled = bool(self.selected_id()) and self.selected_id() not in self.pending_removals

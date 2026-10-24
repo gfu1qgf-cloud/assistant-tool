@@ -304,7 +304,7 @@ class EncodingPolicyTests(unittest.TestCase):
         self.assertIn('25',video_encoding_args('cpu',preview=True))
         self.assertIn('19',video_encoding_args('nvenc'))
         self.assertIn('-threads',video_encoding_args('cpu',workers=4))
-        for field,value in [('export_workers',0),('export_workers',9),('export_workers',True),
+        for field,value in [('export_workers',0),('export_workers',65),('export_workers',True),
                             ('video_encoder','bogus'),('encoder_fallback','yes')]:
             with self.subTest(field=field,value=value),self.assertRaises(ValueError):
                 normalize_export_settings(dict(settings,**{field:value}))

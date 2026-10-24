@@ -203,7 +203,7 @@ class PlaybackController:
         self.edit_preview_button = QtWidgets.QPushButton("返回编辑")
         self.edit_preview_button.setAutoDefault(False)
         self.edit_preview_button.clicked.connect(self.return_to_editor)
-        self.quick_export_button = QtWidgets.QPushButton("快速导出")
+        self.quick_export_button = QtWidgets.QPushButton("导出当前1条")
         self.quick_export_button.setAutoDefault(False)
         self.quick_export_button.setToolTip("Ctrl+E：只将当前预览的搭配导出为正式成品，不生成其他队列任务；沿用成品分辨率、任务目录及覆盖设置。成功后保存轮换进度。")
         self.quick_export_button.clicked.connect(self.quick_export_current)
