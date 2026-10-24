@@ -41,14 +41,22 @@ class PreparedExport:
     def _encode(self):
         from .engine import _run, probe, Cancelled
         from model.MediaEncoding import hardware_error, video_encoding_args, encoder_label
+        from .encoding_watchdog import EncodingStalled, serial_filters
         started = time.monotonic()
         try:
             _run(self.args, self.cancel, self.progress, self.duration,
                  timeout=max(600, self.duration*30), cwd=self.cwd)
         except RuntimeError as error:
-            if self.encoder == 'cpu' or not self.encoder_fallback or not hardware_error(error):
+            stalled = isinstance(error, EncodingStalled)
+            if not self.encoder_fallback or (not stalled and (self.encoder == 'cpu' or not hardware_error(error))):
                 raise
-            self.report(encoder_label(self.encoder)+'编码初始化／会话失败，本条使用CPU重新编码；不更改画布或滤镜。')
+            if stalled:
+                self.report(str(error)+' 本条使用CPU及单滤镜线程重试一次，保留全部画面和音频效果。')
+                from .render_progress import stage
+                stage(self.progress, '停滞恢复：CPU重试')
+                if self.progress: self.progress(0)
+            else:
+                self.report(encoder_label(self.encoder)+'编码初始化／会话失败，本条使用CPU重新编码；不更改画布或滤镜。')
             old = video_encoding_args(self.encoder, preview=self.preview, workers=self.workers, quality=self.quality)
             start = next((i for i in range(len(self.args)) if self.args[i:i+len(old)] == old), None)
             if start is None:
@@ -57,6 +65,8 @@ class PreparedExport:
             if self.encoder == 'qsv':
                 pixel = args.index('-pix_fmt', start)
                 args[pixel+1] = 'yuv420p'
+            if stalled:
+                args = serial_filters(args)
             _run(args, self.cancel, self.progress, self.duration,
                  timeout=max(600, self.duration*30), cwd=self.cwd)
             self.encoder = 'cpu'

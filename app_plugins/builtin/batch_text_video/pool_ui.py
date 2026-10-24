@@ -14,7 +14,7 @@ class ResourceTable(QtWidgets.QTableWidget):
     filesDropped = QtCore.pyqtSignal(object)
 
     def dragEnterEvent(self, event):
-        if self.acceptDrops() and event.mimeData().hasUrls() and any(url.isLocalFile() for url in event.mimeData().urls()):
+        if not self.read_only and self.acceptDrops() and event.mimeData().hasUrls() and any(url.isLocalFile() for url in event.mimeData().urls()):
             event.setDropAction(QtCore.Qt.DropAction.CopyAction)
             event.accept()
 
@@ -22,13 +22,14 @@ class ResourceTable(QtWidgets.QTableWidget):
         self.dragEnterEvent(event)
 
     def dropEvent(self, event):
-        if self.acceptDrops() and event.mimeData().hasUrls():
+        if not self.read_only and self.acceptDrops() and event.mimeData().hasUrls():
             self.filesDropped.emit([url.toLocalFile() for url in event.mimeData().urls() if url.isLocalFile()])
             event.setDropAction(QtCore.Qt.DropAction.CopyAction)
             event.accept()
 
     def __init__(self, headers, parent=None):
         super().__init__(0, len(headers), parent)
+        self.read_only = False
         self.setHorizontalHeaderLabels(headers)
         self.setSelectionBehavior(self.SelectionBehavior.SelectRows)
         self.setSelectionMode(self.SelectionMode.ExtendedSelection)
@@ -44,6 +45,11 @@ class ResourceTable(QtWidgets.QTableWidget):
                 for row in sorted({index.row() for index in self.selectedIndexes()})]
 
     def keyPressEvent(self, event):
+        if self.read_only and (event.key() in (QtCore.Qt.Key.Key_Delete, QtCore.Qt.Key.Key_Space) or
+                event.modifiers() == QtCore.Qt.KeyboardModifier.AltModifier and
+                event.key() in (QtCore.Qt.Key.Key_Up, QtCore.Qt.Key.Key_Down)):
+            event.accept()
+            return
         if event.key() == QtCore.Qt.Key.Key_Delete:
             self.removeRequested.emit()
             event.accept()
@@ -53,6 +59,21 @@ class ResourceTable(QtWidgets.QTableWidget):
             event.accept()
         else:
             super().keyPressEvent(event)
+
+    def set_read_only(self, value):
+        self.read_only = bool(value)
+        with QtCore.QSignalBlocker(self):
+            for row in range(self.rowCount()):
+                item = self.item(row, 0)
+                if item and item.data(QtCore.Qt.ItemDataRole.CheckStateRole) is not None:
+                    flag = QtCore.Qt.ItemFlag.ItemIsUserCheckable
+                    item.setFlags(item.flags() & ~flag if value else item.flags() | flag)
+
+    def contextMenuEvent(self, event):
+        if self.read_only:
+            event.ignore()
+        else:
+            super().contextMenuEvent(event)
 
     def populate(self, rows):
         # Parameter edits do not change pool contents. Keep existing items,

@@ -82,6 +82,10 @@ def _run_inputs(inputs, cancel=None, progress=None, duration=0, timeout=3600, *,
             process = subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=writer, stderr=writer, cwd=cwd,
                                        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
             started = time.monotonic()
+            from .encoding_watchdog import EncodingWatchdog
+            watchdog = EncodingWatchdog() if duration and '-progress' in args else None
+            last_percent = None
+            idle_bucket = 0
             try:
                 while process.poll() is None:
                     inputs.check()
@@ -93,10 +97,18 @@ def _run_inputs(inputs, cancel=None, progress=None, duration=0, timeout=3600, *,
                         raise Cancelled("已取消；本次未消耗音乐轮换进度。")
                     if time.monotonic() - started > timeout:
                         raise TimeoutError("媒体处理超时。")
-                    if progress and duration:
-                        text = log.read().decode("utf-8", "replace")
-                        for value in re.findall(r"out_time_us=(\d+)", text):
-                            progress(min(99, int(float(value) / 1e6 / duration * 100)))
+                    if watchdog is not None:
+                        now = time.monotonic()
+                        elapsed = watchdog.observe(log.read().decode('utf-8', 'replace'), now)
+                        idle = int((now - watchdog.last_advance) // 15) if watchdog.last_advance is not None else 0
+                        if idle != idle_bucket:
+                            from .render_progress import stage
+                            stage(progress, f'编码等待：{idle*15}秒未推进' if idle else '编码中')
+                            idle_bucket = idle
+                        percent = min(99, int(elapsed / 1e6 / duration * 100))
+                        if progress and percent != last_percent:
+                            progress(percent)
+                            last_percent = percent
                     time.sleep(0.1)
             except BaseException:
                 process.kill()
@@ -520,7 +532,7 @@ def prepare_static_text(job, state, directory, cancel=None, progress=None, repor
                 media["audio"] and settings["keep_audio"] and not voice_path):
             args += ["-stream_loop", str(adaptation["loops"])]
         if empty:
-            args += ['-f', 'lavfi', '-i', f'color=c=black:s={width}x{height}:r={FPS}']
+            args += ['-f', 'lavfi', '-i', f'color=c=black:s={width}x{height}:r={FPS}:d={duration:.9f}']
         elif still:
             image_path = materialize(job["path"], temporary/"background.png")
             args += ["-framerate", str(FPS), "-i", image_path]
@@ -564,7 +576,10 @@ def prepare_static_text(job, state, directory, cancel=None, progress=None, repor
         # Graphics are SDR RGB. Keep their full chroma until the final explicit
         # Rec.709 conversion; intermediate default 4:2:0 overlays may choose a
         # different YUV matrix and then get relabelled later.
-        filters.append(f"[{background}]format=rgba[composition_background]")
+        # End the master video clock explicitly. An unbounded color/image loop
+        # can leave FFmpeg's interleaved audio/video scheduler waiting at EOF
+        # when finite reverb/ducking branches finish, despite output -t.
+        filters.append(f"[{background}]trim=duration={duration:.9f},format=rgba[composition_background]")
         background = 'composition_background'
         for index, (kind, path) in enumerate(prepared):
             label = f"layer{index}"

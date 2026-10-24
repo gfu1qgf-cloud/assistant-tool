@@ -100,6 +100,61 @@ class QueueInspectorLayoutTests(unittest.TestCase):
             dialog._set_work_controls(False)
             dialog.close()
 
+    def test_busy_queue_scrolls_to_last_job_without_editing_or_toggling(self):
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.object(BatchTextVideoDialog, 'request_background'), \
+             patch.object(BatchTextVideoDialog, '_start_overlay'):
+            store = Store(directory)
+            state = store.load()
+            state['jobs'] = [dict(id=str(i), path='', name=f'video-{i}', title=f'title-{i}', body='',
+                status='待生成', output='', error='', render_checked=True) for i in range(680)]
+            store.save(state, 0)
+            dialog = BatchTextVideoDialog(store=store)
+            dialog.resize(1250, 850); dialog.show(); dialog.open_global_queue()
+            dialog.jobs.setCurrentCell(0, 0)
+            initial_id = dialog.current_id
+            dialog._render_progress['default'] = dict.fromkeys(map(str, range(680)), 0)
+            dialog._render_stages['default'] = dict.fromkeys(map(str, range(680)), '排队中')
+            with patch.object(dialog, 'is_batch_busy', return_value=True):
+                dialog._set_work_controls(True)
+                self.app.processEvents()
+                self.assertTrue(dialog.jobs.isEnabled())
+                self.assertTrue(dialog.jobs.verticalScrollBar().isEnabled())
+                with patch.object(dialog, '_commit_edit') as commit, patch.object(dialog, '_show_job') as show:
+                    dialog.jobs.setFocus()
+                    for key, mods in ((QtCore.Qt.Key.Key_End, QtCore.Qt.KeyboardModifier.ControlModifier),
+                                      (QtCore.Qt.Key.Key_Space, QtCore.Qt.KeyboardModifier.NoModifier),
+                                      (QtCore.Qt.Key.Key_Delete, QtCore.Qt.KeyboardModifier.NoModifier),
+                                      (QtCore.Qt.Key.Key_Up, QtCore.Qt.KeyboardModifier.AltModifier)):
+                        self.app.sendEvent(dialog.jobs, QtGui.QKeyEvent(QtCore.QEvent.Type.KeyPress, key, mods))
+                    self.app.processEvents()
+                    self.assertEqual(dialog.jobs.currentRow(), 679)
+                    self.assertGreater(dialog.jobs.verticalScrollBar().value(), 0)
+                    self.assertEqual(dialog.current_id, initial_id)
+                    commit.assert_not_called(); show.assert_not_called()
+                item = dialog.jobs.item(679, 0)
+                self.assertFalse(item.flags() & QtCore.Qt.ItemFlag.ItemIsUserCheckable)
+                self.assertEqual(item.checkState(), QtCore.Qt.CheckState.Checked)
+                self.assertEqual(len(dialog.state['jobs']), 680)
+                for i in range(25):
+                    dialog._host_item_progress('default', str(i), 100)
+                    dialog._host_item_stage('default', str(i), '已完成')
+                dialog._host_item_stage('default', '25', '编码等待：30秒未推进')
+                self.assertIn('已保存 25/680', dialog.render_queue_panel.current_label.text())
+                self.assertIn('处理中 1', dialog.render_queue_panel.current_label.text())
+                self.assertIn('排队 654', dialog.render_queue_panel.current_label.text())
+                dialog._host_item_progress('default', '679', 70)
+                self.assertEqual(dialog.jobs.item(679, 0).data(PROGRESS_ROLE), 70)
+                if os.environ.get('LZX_BUSY_QUEUE_SCREENSHOT'):
+                    self.app.processEvents()
+                    self.assertTrue(dialog.grab().save(os.environ['LZX_BUSY_QUEUE_SCREENSHOT']))
+                dialog.refresh_tables()
+                self.assertFalse(dialog.jobs.item(679, 0).flags() & QtCore.Qt.ItemFlag.ItemIsUserCheckable)
+            dialog._set_work_controls(False)
+            self.assertTrue(dialog.jobs.item(679, 0).flags() & QtCore.Qt.ItemFlag.ItemIsUserCheckable)
+            self.assertEqual(dialog.current_id, '679')
+            dialog.close()
+
     def test_caption_sections_are_ordered_and_font_effects_are_nested(self):
         layer = new_caption()
         panel = LayerPanel([layer], '.', settings=DEFAULTS)

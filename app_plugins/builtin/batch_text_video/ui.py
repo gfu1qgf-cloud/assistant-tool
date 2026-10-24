@@ -845,7 +845,7 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
             return False
 
     def _selection_changed(self, row, *_args):
-        if self._loading:
+        if self._loading or self.jobs.read_only:
             return
         self.edit_timer.stop()
         self._commit_edit()
@@ -1205,6 +1205,7 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
             if in_batch:
                 self.jobs.item(row, 1).setText('已结束' if value == 100 else
                     self._render_stages.get(profile_id, {}).get(job['id'], '渲染中' if value else '排队中'))
+        self.jobs.set_read_only(self.jobs.read_only)
         self.sync_render_selection()
         self.render_queue_panel.refresh()
         music_rows = []
@@ -1213,7 +1214,7 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
             music_rows.append((item["id"], [prefix+Path(item["path"]).name,
                 f"{item.get('cursor',0):.1f}秒",str(item.get("last_used") or "未使用")],item["path"],""))
         self.music.populate(music_rows)
-        if current:
+        if current and not self.jobs.read_only:
             row = next((i for i, job in enumerate(self.state["jobs"]) if job["id"] == current), -1)
             if row >= 0:
                 self._show_job(self.state["jobs"][row])
@@ -1784,11 +1785,16 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
                 or self.text_import_dialog is not None and self.text_import_dialog.worker is not None)
 
     def _set_work_controls(self, busy):
+        was_read_only = self.jobs.read_only
         self.animation_timeline.setEnabled(not busy)
         if getattr(self, 'pool_preview', None) is not None:
             self.pool_preview.setEnabled(not busy)
-        for widget in (self.left_column, self.preview, self.layer_panel, self.project_sections, self.jobs):
+        for widget in (self.left_column, self.preview, self.layer_panel, self.project_sections):
             widget.setEnabled(not busy)
+        # Users must be able to scroll past the first completed rows while the
+        # project remains immutable. Browsing never changes the active editor.
+        self.jobs.setEnabled(True)
+        self.jobs.set_read_only(busy)
         self.task_text_panel.setEnabled(not busy)
         # Project switching stays available while a host-owned render runs.
         self.menu_bar.setEnabled(not busy or self.state['active_profile'] in self._host_plans)
@@ -1796,6 +1802,8 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
             widget.setEnabled(not busy)
         self.global_queue_button.setEnabled(True)
         self.stop_button.setEnabled(busy)
+        if was_read_only and not busy and not self._loading and not self.is_batch_busy():
+            self._selection_changed(self.jobs.currentRow())
 
     def cancel_work(self, *, cancel_host=True):
         self.stop_voice_effect_preview()

@@ -120,9 +120,7 @@ class GlobalRenderQueuePanel(QtWidgets.QWidget):
             set_row_progress(self.table, row, None if status == 'staged' else percent)
             if plan['id'] == selected_id:
                 self.table.selectRow(row)
-        profile = next(p for p in self.owner.state['profiles'] if p['id'] == self.owner.state['active_profile'])
-        from .render_selection import identifiers
-        self.current_label.setText(f"当前项目：{profile['name']} · {len(self.owner.state['jobs'])} 条视频 · 已勾选 {len(identifiers(self.owner.state))} 条\n勾选才渲染；取消勾选不删除任务或成品。")
+        self.refresh_current_label()
         self.start_button.setEnabled(any(plan['status'] == 'staged' for plan in plans))
         self.update_delete_enabled()
 
@@ -183,6 +181,8 @@ class GlobalRenderQueuePanel(QtWidgets.QWidget):
             self.pending_removals.discard(plan['id'])
 
     def update_progress(self, profile_id):
+        if profile_id == self.owner.state['active_profile']:
+            self.refresh_current_label()
         values = self.owner._render_progress.get(profile_id, {})
         if not values:
             return
@@ -193,6 +193,25 @@ class GlobalRenderQueuePanel(QtWidgets.QWidget):
                 text = summary(getattr(self.owner, '_render_stages', {}).get(profile_id, {}))
                 self.table.item(row, 1).setText(text)
                 self.table.item(row, 1).setToolTip(text)
+
+    def refresh_current_label(self):
+        profile_id = self.owner.state['active_profile']
+        profile = next(p for p in self.owner.state['profiles'] if p['id'] == profile_id)
+        values = self.owner._render_progress.get(profile_id, {})
+        if values:
+            stages = getattr(self.owner, '_render_stages', {}).get(profile_id, {})
+            completed = sum(stages.get(key) == '已完成' for key in values)
+            failed = sum(stages.get(key) == '需处理' for key in values)
+            waiting = sum(stages.get(key, '排队中') == '排队中' for key in values)
+            active = len(values) - completed - failed - waiting
+            text = (f"已保存 {completed}/{len(values)} · 处理中 {active} · 排队 {waiting}"
+                    + (f" · 需处理 {failed}" if failed else '')
+                    + '\n渲染中可滚动查看全部任务；勾选与任务内容暂时锁定。')
+        else:
+            from .render_selection import identifiers
+            text = (f"{len(self.owner.state['jobs'])} 条视频 · 已勾选 {len(identifiers(self.owner.state))} 条"
+                    '\n勾选才渲染；取消勾选不删除任务或成品。')
+        self.current_label.setText(f"当前项目：{profile['name']} · {text}")
 
     def selected_id(self):
         item = self.table.item(self.table.currentRow(), 0)
