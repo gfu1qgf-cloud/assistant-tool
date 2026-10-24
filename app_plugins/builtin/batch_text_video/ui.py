@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import subprocess
 import threading
+import time
 import traceback
 from model.BackgroundTasks import BackgroundTaskHandle
 from .background import batch_resources, execute_batch, run_batch_video_job
@@ -1552,7 +1553,11 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
             from .background import validate_batch_outputs
             profile_store = ProfileStore(self.store.directory, profile_id)
             render_state = profile_store.load()
+            self.status.setText(f'正在核对{len(ids)}项成品路径…')
+            checked_at = time.monotonic()
+            self._log(f'提交前校验：{len(ids)}项成品，共用一次源文件路径检查。')
             validate_batch_outputs(render_state, ids)
+            self._log(f'成品路径校验完成：{len(ids)}项，用时{time.monotonic()-checked_at:.2f}秒。')
             from .cloud_alignment import prepare_binding
             elevenlabs_binding = prepare_binding(render_state['settings'], self.context)
             from .node_effects import prepare_bundle

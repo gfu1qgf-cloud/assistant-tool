@@ -351,7 +351,7 @@ def source_paths(state):
     return [path for path in inputs if path]
 
 
-def safe_output(folder, name, inputs):
+def safe_output(folder, name, inputs, *, input_identities=None):
     name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", str(name)).strip(" .")
     if not name:
         raise ValueError("输出文件名为空。")
@@ -360,7 +360,9 @@ def safe_output(folder, name, inputs):
     if name.split(".", 1)[0].upper() in {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))}:
         name = "_" + name
     result = Path(folder).resolve() / (name + ".mp4")
-    if file_identity(result) in {file_identity(path) for path in inputs}:
+    identities = (input_identities if input_identities is not None else
+                  {file_identity(path) for path in dict.fromkeys(inputs)})
+    if file_identity(result) in identities:
         raise ValueError("输出会覆盖源文件，已阻止。请另选目录或文件名。")
     return result
 

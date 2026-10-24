@@ -28,6 +28,10 @@ def validate_batch_outputs(state, ids):
 
     jobs = {job['id']: job for job in state['jobs']}
     inputs = source_paths(state)
+    # All rows protect the same project sources. Resolve them once per
+    # preflight, not once per row (782 x 2639 in the reported project).
+    # Preparation and publication still resolve current sources afresh.
+    identities = frozenset(file_identity(path) for path in dict.fromkeys(inputs))
     seen_ids, outputs = set(), {}
     for job_id in ids:
         if job_id in seen_ids:
@@ -37,7 +41,7 @@ def validate_batch_outputs(state, ids):
         from .background_visual import background_job
         folder = output_folder(background_job(job, state), state["settings"])
         name = output_stem(job, state['settings'].get('task_naming_rules', {}))
-        output = safe_output(folder, name, inputs)
+        output = safe_output(folder, name, inputs, input_identities=identities)
         identity = file_identity(output)
         if identity in outputs:
             raise ValueError(f'两条任务会写入同一成品 {output.name}（{outputs[identity]}、{job_id}）；请修改输出名称后重试。')
