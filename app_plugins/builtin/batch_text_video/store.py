@@ -118,6 +118,17 @@ class Store:
             from .render_settings import apply_global
             return apply_global(state, DEFAULTS)
 
+    def current_revision(self):
+        """Publish guard: read the saved token without rebuilding every layer."""
+        with _LOCK:
+            managed = data_file(self.path)
+            if not managed.exists():
+                return 0
+            value = managed.read_json()
+            if value.get('version') != 1 or not isinstance(value.get('revision'), int):
+                raise ValueError('批量文案视频记录格式异常，未提交成品。')
+            return value['revision']
+
     def save(self, state, expected_revision, *, touch_profile=True):
         with _LOCK:
             current = self.load()
@@ -446,6 +457,16 @@ class ProfileStore(Store):
 
     def load(self):
         return Store.profile_state(self, self.identifier)
+
+    def current_revision(self):
+        with _LOCK:
+            value = data_file(self.path).read_json()
+            if value.get('version') != 1:
+                raise ValueError('批量文案视频记录格式异常，未提交成品。')
+            profile = next((p for p in value['profiles'] if p['id'] == self.identifier), None)
+            if profile is None:
+                raise ValueError('渲染配置已不存在，请重新加入队列。')
+            return profile.get('revision', 0)
 
     def save(self, state, expected_revision):
         return Store.save_profile(self, state, expected_revision, self.identifier)

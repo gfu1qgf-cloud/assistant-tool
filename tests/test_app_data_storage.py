@@ -15,6 +15,20 @@ class AppDataStorageTests(unittest.TestCase):
         self.storage = ApplicationStorage(self.root)
     def tearDown(self): self.temp.cleanup()
 
+    def test_redirects_and_sidecars_do_not_need_path_comparison(self):
+        old, new = self.root/'old'/'settings.json', self.root/'private'/'settings.json'
+        storage = ApplicationStorage(self.root, redirects=[(old, new),
+            (self.root/'old'/'media', self.root/'private'/'media')])
+        # Reproduce the failing Path comparison site, without modifying any
+        # interpreter internals or a running application.
+        with patch.object(type(old), '__eq__', side_effect=TypeError("'NoneType' object is not callable")):
+            self.assertEqual(str(storage.resolve(str(old))), str(new))
+            self.assertEqual(str(storage.resolve(str(old)+'-wal')), str(new)+'-wal')
+            self.assertEqual(str(storage.resolve(self.root/'old'/'media'/'a.png')),
+                             str(self.root/'private'/'media'/'a.png'))
+            self.assertEqual(str(storage.resolve(self.root/'old'/'media2'/'a.png')),
+                             str(self.root/'old'/'media2'/'a.png'))
+
     def test_namespace_does_not_create_blank_state_until_requested(self):
         area = self.storage.for_plugin('example')
         self.assertFalse(area.path.exists())

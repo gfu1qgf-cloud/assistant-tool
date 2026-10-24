@@ -36,6 +36,12 @@ class ApplicationStorage:
         self.guard = guard
         self.redirects = sorted(((Path(a).absolute(), Path(b).absolute()) for a, b in redirects),
                                 key=lambda pair: len(str(pair[0])), reverse=True)
+        # Resolve lexical redirects with strings. Python 3.10 Path comparison
+        # lazily invokes _flavour.casefold_parts on every newly created parent;
+        # a failure there stopped long-running exports in the field. These
+        # redirects need no filesystem access or Path comparison at all.
+        self._redirect_names = [(os.path.normcase(str(a)), len(a.parts), len(a.name), b)
+                                for a, b in self.redirects]
         self.connections = weakref.WeakSet()
 
     @property
@@ -47,15 +53,18 @@ class ApplicationStorage:
         if self.protected:
             from .PrivateDataPaths import remounted_data_path
             value = Path(remounted_data_path(value,self.root))
-        for original, destination in self.redirects:
-            if value.parent == original.parent and (value.name.startswith(original.name + '.')
-                    or value.name in {original.name+'-wal', original.name+'-shm', original.name+'-journal'}):
-                return destination.with_name(destination.name + value.name[len(original.name):])
-            try:
-                relative = value.relative_to(original)
-            except ValueError:
-                continue
-            return destination / relative
+        lexical = os.path.normcase(str(value))
+        parent, name = os.path.split(lexical)
+        for original, depth, name_length, destination in self._redirect_names:
+            old_parent, old_name = os.path.split(original)
+            if parent == old_parent and (name.startswith(old_name + '.')
+                    or name in {old_name+'-wal', old_name+'-shm', old_name+'-journal'}):
+                return destination.with_name(destination.name + value.name[name_length:])
+            if lexical == original:
+                return destination
+            prefix = original.rstrip(os.sep) + os.sep
+            if lexical.startswith(prefix):
+                return destination.joinpath(*value.parts[depth:])
         return value
 
     def check(self, path=None, *, write=False):

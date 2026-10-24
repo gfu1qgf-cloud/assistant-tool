@@ -52,7 +52,7 @@ class MusicSourceTests(unittest.TestCase):
             second = engine.clean_music(self.path, self.settings, self.cache, 'ffmpeg', 'ffprobe')
         self.assertEqual(second, first)
 
-    def test_real_cuts_keep_lossless_cache_and_preserve_original(self):
+    def test_real_cuts_keep_a_small_index_and_preserve_original(self):
         self.settings['skip_silence'] = True
         before = self.path.read_bytes()
         commands = []
@@ -67,9 +67,12 @@ class MusicSourceTests(unittest.TestCase):
         with patch.object(engine, 'probe', side_effect=probe), patch.object(engine, '_run', side_effect=run), \
                 patch.object(engine, 'filter_file_option', return_value='-filter_complex_script'):
             first = engine.clean_music(self.path, self.settings, self.cache, 'ffmpeg', 'ffprobe')
-        self.assertEqual(first[0].suffix, '.flac')
+        self.assertEqual(first[0], self.path)
         self.assertEqual(first[1], 11.04)
-        self.assertEqual(len(commands), 2)
+        self.assertEqual(len(commands), 1)
+        self.assertEqual(first.ranges, ((.96, 12.),))
+        self.assertEqual(len(list(self.cache.glob('*.index.json'))), 1)
+        self.assertFalse(list(self.cache.glob('*.flac')))
         with patch.object(engine, '_run', side_effect=AssertionError('must reuse processed cache')):
             self.assertEqual(engine.clean_music(self.path, self.settings, self.cache, 'ffmpeg', 'ffprobe'), first)
         self.assertEqual(self.path.read_bytes(), before)
@@ -386,7 +389,7 @@ class RealMusicPreparationTests(unittest.TestCase):
         self.assertTrue(output.is_file())
         self.assertTrue(scan_started.is_set())
 
-    def test_real_silence_removal_still_builds_a_reusable_lossless_cache(self):
+    def test_real_silence_removal_reuses_index_without_whole_track_conversion(self):
         song = self.root/'with-silence.wav'
         self.ffmpeg('-f', 'lavfi', '-i', 'sine=frequency=440:duration=1:sample_rate=48000',
                     '-f', 'lavfi', '-i', 'anullsrc=r=48000:cl=mono:d=1',
@@ -396,7 +399,9 @@ class RealMusicPreparationTests(unittest.TestCase):
         before = song.read_bytes()
         settings = fresh_state()['settings']
         first = engine.clean_music(song, settings, self.root/'cache', FFMPEG, self.ffprobe)
-        self.assertEqual(first[0].suffix, '.flac')
+        self.assertEqual(first[0], song)
+        self.assertEqual(len(first.ranges), 2)
+        self.assertFalse(list((self.root/'cache').glob('*.flac')))
         self.assertGreater(first[1], 2.)
         self.assertLess(first[1], 2.2)
         self.assertTrue(engine.probe(first[0], self.ffprobe)['audio'])

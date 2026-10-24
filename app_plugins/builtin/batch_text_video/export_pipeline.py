@@ -156,7 +156,9 @@ def execute_parallel_batch(store, state, ids, cancel, progress, message, done, p
                     try:
                         if exc is None:
                             # Refuse stale-record replacement before touching an existing result.
-                            if store.load()['revision'] != state['revision']:
+                            revision = (store.current_revision() if callable(getattr(store, 'current_revision', None))
+                                        else store.load()['revision'])
+                            if revision != state['revision']:
                                 raise ValueError('导出期间项目已被其他窗口修改，未覆盖其记录或未提交的成品。')
                             try:
                                 store.completion_state(state, job_id, prepared.output, prepared.music,
@@ -199,9 +201,9 @@ def execute_parallel_batch(store, state, ids, cancel, progress, message, done, p
     except Cancelled:
         if not cancel.is_set():
             error = '编码意外取消，未提交的任务及轮换已保留。'
-    except Exception:
+    except Exception as exc:
         message(traceback.format_exc())
-        error = '记录保存或并发调度异常，已安全停止；请查看日志及已生成成品。'
+        error = f'记录保存或并发调度异常，已安全停止：{type(exc).__name__}：{exc}；已完成{completed}个，未提交的轮换已保留。'
     result = {'completed': completed, 'failed': failed, 'cancelled': cancel.is_set(),
               'paths': paths, 'failures': failures}
     if error:

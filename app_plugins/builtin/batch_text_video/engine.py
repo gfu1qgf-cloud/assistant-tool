@@ -210,6 +210,13 @@ def clean_music(path, settings, cache, ffmpeg, ffprobe, cancel=None):
 def _clean_music_cached(path, settings, cache, ffmpeg, ffprobe, cancel, cleaned, metadata, key):
     if cancel and cancel.is_set():
         raise Cancelled('已取消音乐准备。')
+    from .music_analysis import from_index
+    index = cache / (key + '.index.json')
+    if index.is_file():
+        try:
+            return from_index(path, key, data_file(index).read_json())
+        except (OSError, ValueError, KeyError, TypeError):
+            pass
     if metadata.is_file():
         try:
             cached = json.loads(data_file(metadata).read_text("utf-8"))
@@ -247,21 +254,41 @@ def _build_music_cache(path, settings, cache, ffmpeg, ffprobe, cancel, cleaned, 
         # an entire track unless silence actually needs to be cut out.
         data_file(metadata).write_text(json.dumps({'duration': duration, 'direct': True}), 'utf-8')
         return path, duration, key
+    from .music_analysis import from_index
+    value = {'version': 1, 'source_duration': duration, 'ranges': ranges}
+    # Separate from legacy FLAC metadata so size-limited audio pruning never
+    # deletes the inexpensive scan result and forces a whole-library rescan.
+    data_file(cache / (key + '.index.json')).write_json(value)
+    return from_index(path, key, value)
+
+
+def _materialize_music_cycle(path, ranges, cache, ffmpeg, ffprobe, cancel, cleaned, metadata, key):
+    """Compatibility fallback only for more than 64 cuts/repeats in one output."""
     with data_io.TemporaryDirectory(dir=cache, prefix="prepare-") as folder:
         folder = Path(folder)
-        graph = []
-        if len(ranges) > 1:
-            graph.append("[0:a]asplit=" + str(len(ranges)) + "".join(f"[a{i}]" for i in range(len(ranges))))
-        for i, (start, end) in enumerate(ranges):
-            source = f"[a{i}]" if len(ranges) > 1 else "[0:a]"
-            graph.append(f"{source}atrim=start={start:.6f}:end={end:.6f},asetpts=PTS-STARTPTS[p{i}]")
-        graph.append("".join(f"[p{i}]" for i in range(len(ranges))) + f"concat=n={len(ranges)}:v=0:a=1[out]")
-        script = folder / "audio.filter"
-        data_file(script).write_text(";\n".join(graph), "utf-8")
+        from .music_inputs import append_pieces
+        chunks = []
+        for group in range(0, len(ranges), 32):
+            graph = []
+            args = [ffmpeg, '-y', '-nostdin', '-hide_banner', '-loglevel', 'error',
+                    '-filter_complex_threads', '1']
+            append_pieces(args, graph, path, ranges[group:group+32], 0, 'out')
+            script = folder / 'audio.filter'
+            data_file(script).write_text(';\n'.join(graph), 'utf-8')
+            chunk = folder / f'part-{len(chunks)}.flac'
+            _run(args + [filter_file_option(ffmpeg), str(script), '-map', '[out]',
+                         '-c:a', 'flac', str(chunk)], cancel, timeout=900)
+            chunks.append(chunk)
         temporary = folder / "clean.flac"
-        _run([ffmpeg, "-y", "-nostdin", "-hide_banner", "-loglevel", "error", "-i", str(path),
-              filter_file_option(ffmpeg), str(script), "-map", "[out]", "-ar", "48000", "-ac", "2",
-              "-c:a", "flac", str(temporary)], cancel, timeout=900)
+        if len(chunks) == 1:
+            data_io.replace(chunks[0], temporary)
+        else:
+            listing = folder / 'cycle.ffconcat'
+            # Only our own simple relative filenames enter the concat script.
+            data_file(listing).write_text('ffconcat version 1.0\n' +
+                ''.join(f"file '{chunk.name}'\n" for chunk in chunks), 'utf-8')
+            _run([ffmpeg, '-y', '-nostdin', '-hide_banner', '-loglevel', 'error',
+                  '-f', 'concat', '-safe', '1', '-i', str(listing), '-c:a', 'flac', str(temporary)], cancel, timeout=900)
         actual = probe(temporary, ffprobe)["duration"]
         data_io.replace(temporary, cleaned)
         data_file(metadata).write_text(json.dumps({"duration": actual, 'direct': False}), "utf-8")
@@ -284,14 +311,16 @@ def choose_music(state, duration, cache, ffmpeg, ffprobe, cancel, report):
             from .music_preparation import current_music_session
             session = current_music_session()
             if session is None:
-                path, total, key = clean_music(item["path"], state["settings"], cache, ffmpeg, ffprobe, cancel)
+                analysis = clean_music(item["path"], state["settings"], cache, ffmpeg, ffprobe, cancel)
             else:
-                path, total, key = session.get(item['path'], state['settings'], cache,
+                analysis = session.get(item['path'], state['settings'], cache,
                                                ffmpeg, ffprobe, cancel, report)
+            path, total, key = analysis
             cursor = float(item.get("cursor") or 0) % total if item.get("audio_key") == key else 0
             return {"id": item["id"], "path": str(path), "start": cursor, "pool_id": pool["id"] if pool else "",
                     "cursor": (cursor + duration) % total, "audio_key": key,
                     "name": Path(item["path"]).name, "duration": total,
+                    'source_ranges': getattr(analysis, 'ranges', ()),
                     'generated': file_identity(path) != file_identity(item['path'])}
         except Cancelled:
             raise
@@ -474,7 +503,11 @@ def prepare_static_text(job, state, directory, cancel=None, progress=None, repor
                 raise RuntimeError("文字图层保存失败。")
             prepared.append((kind, path))
         stage(progress, '准备音乐')
+        music_started = time.monotonic()
         music = choose_music(state, duration, media_directory / 'music-cache', ffmpeg, ffprobe, cancel, report)
+        if music:
+            report(f'音乐准备完成：{time.monotonic()-music_started:.2f}秒（含预取等待）。')
+        stage(progress, '组装画面与音轨')
         if music and music.get('generated', False):
             leases.callback(trim_generated_cache, Path(music['path']).parent, '.flac', 1024**3)
             leases.enter_context(media_cache_lease(music['path']))
@@ -558,21 +591,26 @@ def prepare_static_text(job, state, directory, cancel=None, progress=None, repor
             args += ["-i", voice_path]
             next_index += 1
         music_index = None
+        music_input, music_start = None, None
         if music:
             music_index = next_index
-            loops = max(0, math.ceil((music["start"] + duration) / music["duration"]) - 1)
-            args += ["-stream_loop", str(loops), "-i", music["path"]]
-            next_index += 1
+            from .music_inputs import append_inputs
+            needed = min(duration, preview_limit) if preview_limit is not None else duration
+            count, music_input, music_start = append_inputs(args, filters, music, next_index, needed,
+                media_directory/'music-cache', ffmpeg, ffprobe, cancel, report, leases)
+            next_index += count
         voice_ir_index = None
         if voice_path and voice_fx_active(settings):
             from .voice_reverb import write_ir
+            stage(progress, '准备人声空间特效')
             report('人声空间特效：'+PRESETS[settings['voice_fx_preset']]['name'])
             response = write_ir(temporary/'voice-space.wav', settings, cancel)
             voice_ir_index = next_index
             args += ['-i', str(response)]
             next_index += 1
         audio_filters, has_audio = audio_graph(settings, duration, voice_index, music_index, music, media["audio"],
-            original_speed=adaptation["speed"] if adaptation and not voice_path else None, voice_ir_index=voice_ir_index)
+            original_speed=adaptation["speed"] if adaptation and not voice_path else None, voice_ir_index=voice_ir_index,
+            music_input=music_input, music_start=music_start)
         filters += audio_filters
         script = temporary / "render.filter"
         data_file(script).write_text(";\n".join(filters), "utf-8")

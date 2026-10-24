@@ -156,19 +156,19 @@ class ParallelExportTests(unittest.TestCase):
 
     def test_external_state_change_stops_before_replacing_existing_result(self):
         old=self.root/'video-0.mp4';old.write_bytes(b'KEEP')
-        original=self.store.load
-        calls=0
-        def changed():
-            nonlocal calls
-            calls+=1
-            state=original()
-            if calls==1:state['revision']+=1
-            return state
-        with patch.object(self.store,'load',side_effect=changed):
+        with patch.object(self.store,'current_revision',return_value=self.state['revision']+1):
             result,state=self.run_batch()
         self.assertIn('error',result)
         self.assertEqual(self.published,[])
         self.assertEqual(old.read_bytes(),b'KEEP')
+
+    def test_fatal_error_identifies_cause_and_committed_count(self):
+        with patch.object(self.store, 'current_revision', side_effect=OSError('volume read failed')):
+            result, state = self.run_batch()
+        self.assertIn('OSError：volume read failed', result['error'])
+        self.assertIn('已完成0个', result['error'])
+        self.assertFalse(self.published)
+        self.assertEqual(state['music'][0]['cursor'], 0.)
 
     def test_cancel_before_publication_keeps_original_outputs_and_rotation(self):
         old=self.root/'video-0.mp4';old.write_bytes(b'OLD RESULT')

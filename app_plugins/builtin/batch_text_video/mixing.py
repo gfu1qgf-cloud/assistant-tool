@@ -2,7 +2,7 @@
 import math
 
 
-def audio_graph(settings, duration, voice_index=None, music_index=None, music=None, original_audio=False, *, original_speed=None, voice_ir_index=None):
+def audio_graph(settings, duration, voice_index=None, music_index=None, music=None, original_audio=False, *, original_speed=None, voice_ir_index=None, music_input=None, music_start=None):
     from .voice_effects import active, append_effect
     graph, sources = [], []
     voice = voice_index is not None
@@ -15,7 +15,9 @@ def audio_graph(settings, duration, voice_index=None, music_index=None, music=No
             sidechain=music_index is not None and settings['voice_duck']) if voice_fx else '[voice]')
     if music_index is not None:
         volume = settings["voice_music_volume"] if voice else settings["music_volume"]
-        chain = (f"[{music_index}:a]atrim=start={music['start']:.9f}:duration={duration:.9f},asetpts=PTS-STARTPTS,"
+        source = music_input or f'[{music_index}:a]'
+        start = music['start'] if music_start is None else music_start
+        chain = (f"{source}atrim=start={start:.9f}:duration={duration:.9f},asetpts=PTS-STARTPTS,"
                  f"aresample=48000,aformat=channel_layouts=stereo,volume={volume/100}")
         if voice and settings["voice_eq"]:
             chain += f",equalizer=f={settings['eq_frequency']}:t=o:w={settings['eq_width']}:g={settings['eq_gain']}"
