@@ -97,7 +97,8 @@ class PlaybackWorker(QtCore.QThread):
         result = {"key": self.key, "preview_limit": self.preview_limit}
         try:
             from model.MediaStorage import media_cache_root
-            cache = media_cache_root(self.directory, anchors=(self.job.get('task_dir'),Path(self.job['path']).parent),
+            cache = media_cache_root(self.directory, anchors=(self.job.get('task_dir'), self.state['settings'].get('output_dir'),
+                Path(self.job['path']).parent if self.job.get('path') else None),
                                      namespace='batch-text-video') / "playback-cache"
             data_directory(cache).ensure(parents=True, exist_ok=True)
             target = cache / (self.key + ".mp4")
@@ -263,7 +264,7 @@ class PlaybackController:
             return
         try:
             job = copy.deepcopy(self.active_entry())
-            if not job.get("path") or not Path(job["path"]).is_file():
+            if job.get("path") and not Path(job["path"]).is_file():
                 raise ValueError("请先选择一个有效的背景视频或图片。")
             job.update(title=self.title.toPlainText(), body=self.body.toPlainText())
             state = copy.deepcopy(self.state)

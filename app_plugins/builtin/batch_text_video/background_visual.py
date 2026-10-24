@@ -32,6 +32,7 @@ def background_job(job, state):
     """An explicitly chosen global pool overrides row backgrounds, by queue position."""
     identifier = state['settings'].get('background_pool_id', '')
     if not identifier: return dict(job)
+    if identifier == 'none': return dict(job, path='')
     if identifier == 'builtin:background':
         paths = state.get('backgrounds', [])
     else:
@@ -39,7 +40,7 @@ def background_job(job, state):
         pool = get_pool(state, identifier)
         if pool['kind'] not in {'image', 'video', 'visual'}: raise ValueError('背景池必须是图片、视频或视觉池。')
         paths = [item['path'] for item in pool['items']]
-    if not paths: raise ValueError('所选背景池为空，请添加图片或视频。')
+    if not paths: return dict(job, path='')
     index = next((index for index, item in enumerate(state.get('jobs', [])) if item.get('id') == job.get('id')), 0)
     index = job.get('_background_pool_position', index)
     if type(index) is not int or not 0 <= index <= 1_000_000: raise ValueError('背景池取用位置无效。')

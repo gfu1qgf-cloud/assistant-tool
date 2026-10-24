@@ -67,16 +67,20 @@ def new_copy():
 
 
 def pairing_plan(copies, videos, mode="copies"):
+    if mode not in {"copies", "videos", "one_to_one", "single"}:
+        raise ValueError("搭配方式无效。")
     if not videos:
-        raise ValueError("背景池为空，请先添加背景视频或图片。")
+        if copies:
+            return [{"copy": item, "path": ""} for item in copies]
+        if mode == "videos":
+            return [{"copy": None, "path": ""}]
+        raise ValueError("文案池为空：请添加文案，或使用“每个背景配一条文案”搭配固定控件。")
     if not copies:
         if mode != "videos":
             raise ValueError("文案池为空：请添加文案，或使用“每个背景配一条文案”搭配固定文本框。")
         return [{"copy": None, "path": path} for path in videos]
     if mode == "one_to_one" and len(copies) != len(videos):
         raise ValueError(f"一对一需要数量相同：文案{len(copies)}条，背景{len(videos)}个。")
-    if mode not in {"copies", "videos", "one_to_one", "single"}:
-        raise ValueError("搭配方式无效。")
     length = len(videos) if mode == "videos" else len(copies)
     return [{"copy": copies[index % len(copies)],
              "path": videos[0] if mode == "single" else videos[index % len(videos)]}
@@ -85,21 +89,21 @@ def pairing_plan(copies, videos, mode="copies"):
 
 def apply_pairs(state, pairs):
     # Validate the whole plan before changing the queue.
-    keys = [(pair["copy"]["id"] if pair["copy"] else "", file_identity(pair["path"])) for pair in pairs]
+    keys = [(pair["copy"]["id"] if pair["copy"] else "", (file_identity(pair["path"]) if pair["path"] else "")) for pair in pairs]
     if len(set(keys)) != len(keys):
         raise ValueError("搭配中有重复的文案＋背景组合，请先调整；队列未变。")
     for pair in pairs:
-        if not Path(pair["path"]).is_file():
+        if pair["path"] and not Path(pair["path"]).is_file():
             raise ValueError("背景素材不存在：" + Path(pair["path"]).name)
         if pair.get("voice_path") and not Path(pair["voice_path"]).is_file():
             raise ValueError("人声文件不存在：" + Path(pair["voice_path"]).name)
     added = updated = 0
     for pair, key in zip(pairs, keys):
-        source = pair["copy"] or {"title": "", "body": "", "name": Path(pair["path"]).stem + "_文字版"}
+        source = pair["copy"] or {"title": "", "body": "", "name": Path(pair["path"]).stem + "_文字版" if pair["path"] else "控件合成"}
         existing = next((job for job in state["jobs"] if tuple(job.get("pair_key", [])) == key), None)
         if not existing and pair["copy"]:
             existing = next((job for job in state["jobs"] if job.get("id") == source["id"]
-                             and file_identity(job.get("path", "")) == key[1]), None)
+                             and (file_identity(job["path"]) if job.get("path") else "") == key[1]), None)
         fields = {field: copy.deepcopy(source.get(field, "")) for field in
                   ("title", "body", "voice_path", "task_subtitle_path", "task_dir", "task_id", "task_type", "label")}
         fields.update(path=pair["path"], copy_id=key[0], pair_key=list(key),

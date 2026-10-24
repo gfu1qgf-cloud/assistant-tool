@@ -58,7 +58,10 @@ def resolve_voice(job, state, *, discover=False):
         return ""
     if not path and discover:
         from .matching import folder_entry
-        match = folder_entry(job.get("task_dir") or Path(job["path"]).parent)
+        folder = job.get("task_dir") or (Path(job['path']).parent if job.get('path') else None)
+        if not folder:
+            return ""
+        match = folder_entry(folder)
         if match["match_error"]:
             raise ValueError(match["match_error"])
         path = match["voice_path"]

@@ -309,7 +309,7 @@ class PoolTests(unittest.TestCase):
         dialog.only_copies.setChecked(True)
         self.assertEqual(len(dialog.pairs),1)
         self.assertEqual(dialog.pairs[0]["copy"]["id"],copies[1]["id"])
-        dialog.table.cellWidget(0,1).setCurrentIndex(1)
+        dialog.table.cellWidget(0,1).setCurrentIndex(dialog.table.cellWidget(0,1).findData(paths[1]))
         self.assertEqual(dialog.pairs[0]["path"],paths[1])
         dialog.only_videos.setChecked(True)
         self.assertEqual(dialog.pairs[0]["path"],paths[0])

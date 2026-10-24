@@ -27,6 +27,12 @@ def duration(settings, voice_duration=None):
 
 
 def probe_background(path, ffprobe, settings=None):
+    if not path:
+        from .engine import output_size
+        width, height = output_size({'aspect': 'portrait', **(settings or {})})
+        return {'empty_background': True, 'duration': duration(settings or {}), 'audio': False,
+                'video': {'width': width, 'height': height,
+                          'avg_frame_rate': f'{FPS}/1', 'r_frame_rate': f'{FPS}/1'}}
     if not is_image(path):
         from .engine import probe
         return probe(path, ffprobe)

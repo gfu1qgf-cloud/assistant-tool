@@ -54,8 +54,8 @@ def folder_entry(folder, metadata=None, explicit_voice=None):
             "task_voice_path": voice, "task_subtitle_path": subtitle,
             "task_dir": str(folder.resolve()), "label": label,
             "title": str(metadata.get("title") or ""), "body": str(metadata.get("body") or ""),
-            "name": stem + "_文字版", "status": "待生成" if (voice or metadata.get("text_only")) and background else "需配置",
-            "output": "", "error": error or ("请批量分配背景视频。" if not background else ""),
+            "name": stem + "_文字版", "status": "待生成" if voice or metadata.get("text_only") else "需配置",
+            "output": "", "error": error,
             "match_error": error}
 
 

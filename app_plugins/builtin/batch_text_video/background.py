@@ -6,17 +6,18 @@ import threading
 
 from model.BackgroundTasks import BackgroundTaskResultError, TaskCancellationToken, directory_resource
 from .components import resolve_sources
-from .engine import Cancelled, RENDERERS
+from .engine import Cancelled, RENDERERS, output_folder
 from .store import Store, ProfileStore
 from .render_progress import bind
 
 
 def batch_resources(store, state, ids):
     from .store import file_identity
+    from .background_visual import background_job
     jobs = [job for job in state["jobs"] if job["id"] in ids]
     profile = f"batch-profile:{file_identity(store.path)}:{state.get('active_profile', 'default')}"
     return [profile] + [directory_resource(
-        job.get("task_dir") or state["settings"]["output_dir"] or Path(job["path"]).parent) for job in jobs]
+        output_folder(background_job(job, state), state["settings"])) for job in jobs]
 
 
 def validate_batch_outputs(state, ids):
@@ -33,7 +34,8 @@ def validate_batch_outputs(state, ids):
             raise ValueError('同一批次重复选择了任务，未开始导出。')
         seen_ids.add(job_id)
         job = jobs[job_id]
-        folder = job.get('task_dir') or state['settings']['output_dir'] or Path(job['path']).parent
+        from .background_visual import background_job
+        folder = output_folder(background_job(job, state), state["settings"])
         name = output_stem(job, state['settings'].get('task_naming_rules', {}))
         output = safe_output(folder, name, inputs)
         identity = file_identity(output)

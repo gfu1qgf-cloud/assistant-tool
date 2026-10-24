@@ -52,8 +52,15 @@ def task_snapshot(job):
          'copy_id', 'requires_title', 'copy_profile_id')}
     fields['task_audio_text'] = '\n'.join(value for value in (str(job.get('title', '')), str(job.get('body', ''))) if value)
     fields['task_name'] = str(job.get('task_name') or job.get('label') or job.get('name') or '')
-    path = str(job.get('task_dir') or Path(job.get('path') or '.').resolve().parent)
-    identity_values = [str(Path(job.get('path') or '.').resolve()), path, str(job.get('task_id', ''))]
+    path = job.get('task_dir') or job.get('_composition_dir')
+    if not path:
+        if job.get('path'):
+            path = Path(job['path']).resolve().parent
+        else:
+            from model.node_workflow.library import WorkflowLibrary
+            path = WorkflowLibrary().root / '_compositions'
+    path = str(path)
+    identity_values = [str(Path(job['path']).resolve()) if job.get('path') else '', path, str(job.get('task_id', ''))]
     if not job.get('task_id'):
         identity_values += [str(job.get('title', '')), str(job.get('body', ''))]
     identity = 'batch-video:' + hashlib.sha256(json.dumps(identity_values, ensure_ascii=False).encode()).hexdigest()
@@ -238,7 +245,8 @@ def prepare_bundle(state, ids, services=None, *, graph_check=None, iteration_ids
     globals_value = WorkflowGlobals.create('line', max(1, len(selected)))
     for index, job in enumerate(selected):
         if job['id'] not in wanted: continue
-        task = task_snapshot(dict(job, copy_profile_id=state.get('active_profile', '')))
+        task = task_snapshot(dict(job, copy_profile_id=state.get('active_profile', ''),
+                                  _composition_dir=state['settings'].get('output_dir', '') if not job.get('path') else ''))
         jobs[job['id']] = {}
         for key, graph in graphs.items():
             payload, locks = prepare_job(graph, registry, task, runtime_services, global_data=globals_value.at_iteration(index+1))
@@ -358,7 +366,13 @@ class EffectRuntime:
         actual = dict(job, task_dir=frozen_task.directory)
         # Real currently selected source (including voice-pool choices), not a
         # private preview-cache directory or a stale source attached to the row.
-        video = ResourceRef.capture(job['path'], 'video')
+        if job.get('path'):
+            video = ResourceRef.capture(job['path'], 'video')
+        else:
+            from model.node_workflow.visual_nodes import build_background
+            video = build_background({}, dict(width=info['video']['width'], height=info['video']['height'],
+                duration=info['duration'], fps=30, style='solid', color='#000000', color2='#000000',
+                x0=0, y0=0, x1=100, y1=100), context)['video']
         subtitles = input_subtitles(actual,voice,info['duration'],canceled=Token(),report=self.report,task_key=context.task.key)
         audio = ResourceRef.capture(voice, 'audio') if voice else None
         context.workflow_input = {'type': TYPE_ID, 'job': actual, 'video': video,

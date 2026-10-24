@@ -105,7 +105,7 @@ def merge_sheet_entries(state, entries):
             changed = any(existing.get(field, "") != value for field, value in fields.items())
             existing.update(fields)
             if changed:
-                existing.update(status="待生成" if existing.get("path") and not existing.get("match_error") else "需配置",
+                existing.update(status="待生成" if not existing.get("match_error") else "需配置",
                                 error=existing.get("match_error", ""))
                 updated += 1
         else:
@@ -113,8 +113,8 @@ def merge_sheet_entries(state, entries):
             pool = state.get("backgrounds",[])
             if not job["path"] and pool:
                 job["path"] = pool[(len(state["jobs"])) % len(pool)]
-            job.update(status="待生成" if job["path"] and not job.get("match_error") else "需配置",
-                       error=job.get("match_error") or ("" if job["path"] else "请批量分配背景视频。"))
+            job.update(status="待生成" if not job.get("match_error") else "需配置",
+                       error=job.get("match_error", ""))
             state["jobs"].append(job)
             added += 1
     return added,updated

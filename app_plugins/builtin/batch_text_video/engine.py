@@ -76,7 +76,8 @@ def _run_inputs(inputs, cancel=None, progress=None, duration=0, timeout=3600, *,
             if cwd is not None:
                 args = list(args)
                 for index, value in enumerate(args[:-1]):
-                    if value == '-i' and not str(args[index+1]).startswith('\\\\.\\pipe\\'):
+                    if (value == '-i' and args[max(0, index-2):index] != ['-f', 'lavfi']
+                            and not str(args[index+1]).startswith('\\\\.\\pipe\\')):
                         args[index+1] = str(Path(args[index+1]).resolve())
             process = subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=writer, stderr=writer, cwd=cwd,
                                        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
@@ -153,6 +154,16 @@ def output_size(settings, media=None):
             raise ValueError("原素材分辨率过大，请选1080p画布。")
         return max(2, width // 2 * 2), max(2, height // 2 * 2)
     return 1080, 1920
+
+
+def output_folder(job, settings):
+    """No source is valid; no destination must never silently mean the working directory."""
+    folder = job.get('task_dir') or settings.get('output_dir')
+    if not folder and job.get('path'):
+        folder = str(Path(job['path']).parent)
+    if not folder:
+        raise ValueError('请选择输出文件夹。')
+    return folder
 
 
 def audible_ranges(text, duration):
@@ -367,11 +378,12 @@ def prepare_static_text(job, state, directory, cancel=None, progress=None, repor
     report('视频编码：'+encoder_label(encoder)+'；'
         + ('播放预览采用快速编码；成品质量：' if preview else '导出质量：')
         + quality_label(settings['export_quality']))
-    if not job.get("path") or not Path(job["path"]).is_file():
-        raise ValueError("缺少背景素材，请添加视频或图片并批量搭配。")
+    if job.get("path") and not Path(job["path"]).is_file():
+        raise ValueError("背景素材不存在：" + Path(job["path"]).name)
     from .image_background import probe_background, duration as image_duration, materialize, motion_filter, FPS
     media = probe_background(job["path"], ffprobe, settings)
     still = media.get("still_image", False)
+    empty = media.get("empty_background", False)
     settings['_still_background'] = still
     if not media["video"]:
         raise ValueError("文件没有视频轨道。")
@@ -382,7 +394,7 @@ def prepare_static_text(job, state, directory, cancel=None, progress=None, repor
     width, height = output_size(settings, media)
     from .background_framing import prepare_background_settings, framing_filter, preview_size
     encoded_width, encoded_height = preview_size(width, height) if preview else (width, height)
-    duration = image_duration(settings) if still else target_duration(media["duration"], settings)
+    duration = image_duration(settings) if still or empty else target_duration(media["duration"], settings)
     voice_path, adaptation = resolve_voice(job, state, discover=True), None
     from .captions import active_captions, task_word_timings, static_planes, write_caption_ass, filter_path
     captions = active_captions(settings["layers"])
@@ -397,7 +409,9 @@ def prepare_static_text(job, state, directory, cancel=None, progress=None, repor
         duration = target_duration(media["duration"], settings, voice_info["duration"])
         if settings["keep_audio"]:
             report("已添加任务人声，自动忽略背景视频原声，避免叠音。")
-    if still:
+    if empty:
+        report(f"无底层背景：{duration:.2f}秒；由控件合成画面。")
+    elif still:
         report(f"图片背景：{duration:.2f}秒；无视频中间缓存。")
     elif voice_path or settings["unvoiced_duration_mode"] == "fixed":
         fps = source_fps(media)
@@ -406,9 +420,7 @@ def prepare_static_text(job, state, directory, cancel=None, progress=None, repor
                f"{'循环叠化' if adaptation['fade'] else '循环直切' if adaptation['repeating'] else '单次播放'}")
     if job.get("requires_title") and not job.get("task_dir"):
         raise ValueError("表格任务缺少绑定的任务目录，请重新导入；未写入其他目录。")
-    folder = job.get("task_dir") or settings["output_dir"] or str(Path(job["path"]).parent)
-    if not folder:
-        raise ValueError("请选择输出文件夹。")
+    folder = output_folder(job, settings)
     inputs = source_paths(state) + source_paths({'settings': settings})
     if voice_path:
         inputs.append(voice_path)
@@ -420,7 +432,7 @@ def prepare_static_text(job, state, directory, cancel=None, progress=None, repor
         raise FileExistsError("成品已存在，未覆盖；请改名或启用覆盖：" + output.name)
     data_directory(output.parent).ensure(parents=True, exist_ok=True)
     from model.MediaStorage import media_cache_root
-    media_directory = media_cache_root(directory, anchors=(output.parent,Path(job['path']).parent), namespace='batch-text-video')
+    media_directory = media_cache_root(directory, anchors=(output.parent, Path(job['path']).parent if job.get('path') else None), namespace='batch-text-video')
     from .music_preparation import current_music_session
     music_session = current_music_session()
     if music_session is not None:
@@ -472,13 +484,17 @@ def prepare_static_text(job, state, directory, cancel=None, progress=None, repor
         if adaptation and adaptation["repeating"] and (not adaptation["fade"] or
                 media["audio"] and settings["keep_audio"] and not voice_path):
             args += ["-stream_loop", str(adaptation["loops"])]
-        if still:
+        if empty:
+            args += ['-f', 'lavfi', '-i', f'color=c=black:s={width}x{height}:r={FPS}']
+        elif still:
             image_path = materialize(job["path"], temporary/"background.png")
             args += ["-framerate", str(FPS), "-i", image_path]
         else:
             args += ["-i", job["path"]]
         next_index = 1
-        if still:
+        if empty:
+            filters = ['[0:v]setpts=PTS-STARTPTS,setsar=1[background]']
+        elif still:
             fit = framing_filter(width, height, settings)
             motion = motion_filter(width, height, settings, duration)
             # Decode and fit once. Only one fitted frame lives in FFmpeg's RAM loop.
@@ -501,7 +517,7 @@ def prepare_static_text(job, state, directory, cancel=None, progress=None, repor
             color = settings['_source_color_filter']
             filters = [f"[0:v]setpts=PTS-STARTPTS,{color + ',' if color else ''}{fit},setsar=1[background]"]
         from .background_visual import control as background_control
-        if not still and background_control(settings)["visual_animation"] != "none":
+        if not (still or empty) and background_control(settings)["visual_animation"] != "none":
             filters.append(f"[background]{motion_filter(width, height, settings, duration, source_fps(media))}[moving_background]")
             background_base = "moving_background"
         else:

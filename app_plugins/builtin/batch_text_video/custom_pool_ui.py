@@ -148,7 +148,7 @@ class CustomPoolController:
             combo = self.controls["background_pool_id"]
             current = combo.currentData() or self.state["settings"].get("background_pool_id", "")
             blocker = QtCore.QSignalBlocker(combo); combo.clear()
-            combo.addItem("按任务已搭配背景", ""); combo.addItem("默认背景池（图片／视频）", "builtin:background")
+            combo.addItem("按任务已搭配背景", ""); combo.addItem("无底层背景（使用控件合成）", "none"); combo.addItem("默认背景池（图片／视频）", "builtin:background")
             for pool in pools:
                 if pool["kind"] in {"image", "video", "visual"}: combo.addItem(pool["name"], pool["id"])
             if current and combo.findData(current) < 0: combo.addItem("失效的背景池（请重新选择）", current)

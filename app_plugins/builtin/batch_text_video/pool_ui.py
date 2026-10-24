@@ -112,11 +112,11 @@ class PairingDialog(QtWidgets.QDialog):
         layout.addWidget(self.mode)
         sources = QtWidgets.QFormLayout()
         self.video_source = Combo()
-        for identifier, name in [("", "默认背景池（视频／图片）")] + [
+        for identifier, name in [("", "默认背景池（视频／图片）"), ("none", "无底层背景（使用控件合成）")] + [
                 (pool["id"], pool["name"]) for pool in self.pool_state.get("resource_pools", [])
                 if pool["kind"] in {"video", "image", "visual"}]:
             self.video_source.addItem(name, identifier)
-        self.video_source.setCurrentIndex(max(0, self.video_source.findData(selected_pool)))
+        self.video_source.setCurrentIndex(max(0, self.video_source.findData(selected_pool or ("none" if state["settings"].get("background_pool_id") == "none" else ""))))
         sources.addRow("背景素材池", self.video_source)
         layout.addLayout(sources)
         cards = QtWidgets.QHBoxLayout()
@@ -182,13 +182,13 @@ class PairingDialog(QtWidgets.QDialog):
     def rebuild(self, *_args):
         copies = [item for item in self.copies if not self.only_copies.isChecked() or item["id"] in self.selected_copies]
         identifier = self.video_source.currentData()
-        pool_videos = [item["path"] for item in get_pool(self.pool_state, identifier)["items"]] if identifier else self.videos
-        videos = [path for path in pool_videos if not self.only_videos.isChecked() or path in self.selected_videos]
+        pool_videos = [item["path"] for item in get_pool(self.pool_state, identifier)["items"]] if identifier and identifier != "none" else self.videos
+        videos = [] if identifier == "none" else [path for path in pool_videos if not self.only_videos.isChecked() or path in self.selected_videos]
         voice_id = self.voice_source.currentData()
         voices = get_pool(self.pool_state, voice_id, "voice")["items"] if voice_id else []
         try:
             self.pairs = assign_voices(pairing_plan(copies, videos, self.mode.currentData()), voices, self.voice_mode.currentData())
-            self.status.setText(f"将搭配{len(self.pairs)}个成品；背景和人声下拉框可逐行调整。")
+            self.status.setText(f"将搭配{len(self.pairs)}个成品；" + ("无底层背景，由控件合成画面。" if not videos else "背景和人声下拉框可逐行调整。"))
         except ValueError as error:
             self.pairs = []
             self.status.setText(str(error))
@@ -204,6 +204,7 @@ class PairingDialog(QtWidgets.QDialog):
                 item.setToolTip(value)
                 self.table.setItem(row, column, item)
             combo = Combo()
+            combo.addItem("无底层背景（使用控件合成）", "")
             for path in videos:
                 combo.addItem(Path(path).name, path)
                 combo.setItemData(combo.count()-1, path, QtCore.Qt.ItemDataRole.ToolTipRole)
