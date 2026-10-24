@@ -20,13 +20,15 @@ class PoolController(CustomPoolController, MattingController):
         self.image_import_worker = None
         self._discard_close_save = False
         self.resources = QtWidgets.QTabWidget()
-        self.video_pool = ResourceTable(["背景视频"])
+        self.video_pool = ResourceTable(["背景素材（视频／图片）"])
         self.copy_pool = ResourceTable(["文案 / 任务", "标题"])
         self.image_pool = ResourceTable(["图片"])
-        self.resources.addTab(self.video_pool, "视频")
+        self.resources.addTab(self.video_pool, "背景")
         self.resources.addTab(self.copy_pool, "文案")
         self.resources.addTab(self.image_pool, "图片")
         self.resources.addTab(music_page, "音乐")
+        self.video_pool.setAcceptDrops(True)
+        self.video_pool.filesDropped.connect(lambda paths: self.add_files(paths, background=True))
         self.new_pool_button = QtWidgets.QToolButton()
         self.new_pool_button.setText("＋")
         self.new_pool_button.setToolTip("新建资源池")
@@ -67,11 +69,11 @@ class PoolController(CustomPoolController, MattingController):
         resources.addAction("删除当前池…", self.delete_resource_pool)
         resources.addSeparator()
         for name, callback in (("从当前任务导入文案（含人声 / 字幕）…", self.import_sheet_text), ("新增文案", self.add_manual_copy),
-                               ("添加视频…", self.add_videos), ("添加图片…", self.choose_pool_images),
+                               ("添加背景视频／图片…", self.add_videos), ("添加图片…", self.choose_pool_images),
                                ("添加音乐…", self.add_music), ("导入任务人声…", self.add_voices),
                                ("导入任务目录…", self.add_task_folder)):
             action = resources.addAction(name, callback)
-            shortcut = {"新增文案":"Ctrl+Shift+N","添加视频…":"Ctrl+Shift+O",
+            shortcut = {"新增文案":"Ctrl+Shift+N","添加背景视频／图片…":"Ctrl+Shift+O",
                         "从当前任务导入文案（含人声 / 字幕）…":"Ctrl+Shift+T"}.get(name)
             if shortcut:
                 action.setShortcut(shortcut)
@@ -149,7 +151,7 @@ class PoolController(CustomPoolController, MattingController):
             menu.addAction("从当前任务导入文案（含人声 / 字幕）…", self.import_sheet_text)
             menu.addSeparator()
         if key == "backgrounds":
-            menu.addAction("添加视频…", self.add_videos)
+            menu.addAction("添加背景视频／图片…", self.add_videos)
         if key in {"backgrounds", "copy_pool"}:
             menu.addAction("批量搭配…", self.compose_queue)
         if key == "copy_pool":
@@ -217,9 +219,18 @@ class PoolController(CustomPoolController, MattingController):
         if self.current_copy_id:
             source = next((item for item in self.state["copy_pool"] if item["id"] == self.current_copy_id), None)
             if source:
-                return {**source, "path": self.copy_preview_path(source)}
+                source = {**source, "path": self.copy_preview_path(source)}
+                return self._active_background(source)
         source = next((item for item in self.state["jobs"] if item["id"] == self.current_id), None)
-        return source or {"path": self.preview_video}
+        return self._active_background(source or {"path": self.preview_video})
+
+    def _active_background(self, source):
+        from .background_visual import background_job
+        settings = dict(self.state["settings"])
+        if "background_pool_id" in getattr(self, "controls", {}):
+            settings["background_pool_id"] = self.controls["background_pool_id"].currentData()
+        try: return background_job(source, {**self.state, "settings": settings})
+        except ValueError: return {**source, "path": ""}
 
     def copy_preview_path(self, source):
         # Preview immediately, without creating an implicit export pairing.
@@ -375,7 +386,7 @@ class PoolController(CustomPoolController, MattingController):
             return False
         key = self.active_resource() or ""
         video_pool = get_pool(self.state, key[5:]) if key.startswith("pool:") else None
-        selected_pool = video_pool["id"] if video_pool and video_pool["kind"] == "video" else ""
+        selected_pool = video_pool["id"] if video_pool and video_pool["kind"] in {"video", "image", "visual"} else ""
         selected_videos = ([item["path"] for item in video_pool["items"] if item["id"] in self.table_for(key).identifiers()]
                            if selected_pool else self.video_pool.identifiers())
         dialog = PairingDialog(self.state["copy_pool"], self.state["backgrounds"],
@@ -653,6 +664,7 @@ class PoolController(CustomPoolController, MattingController):
         self.ffmpeg.setText(settings["ffmpeg_path"])
         self.show_bounds_checkbox.setChecked(settings["show_layer_bounds"])
         self.layer_panel.settings = copy.deepcopy(settings)
+        self.layer_panel.set_background(settings)
         self.layer_panel.units.setCurrentIndex(max(0, self.layer_panel.units.findData(settings["geometry_units"])))
         self.layer_panel.set_layers(settings["layers"])
         self.tint_preset.setCurrentIndex(0)

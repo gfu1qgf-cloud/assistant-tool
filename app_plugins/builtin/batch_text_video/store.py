@@ -13,6 +13,7 @@ from model.AppDataStorage import data_file, data_directory
 from .layers import DEFAULT_LAYERS, normalize_layers
 from .effects import blur_strength
 from .voice_effects import DEFAULTS as VOICE_FX_DEFAULTS, normalized as normalize_voice_fx
+from .image_background import DEFAULTS as IMAGE_BACKGROUND_DEFAULTS, normalized as normalize_image_background
 
 SCHEMES = {"static_text": "静态文字版"}
 DEFAULTS = {
@@ -39,6 +40,7 @@ DEFAULTS = {
     "voice_duck": True, "duck_threshold_db": -30, "duck_ratio": 6,
     "duck_attack_ms": 20, "duck_release_ms": 350,
     **VOICE_FX_DEFAULTS,
+    **IMAGE_BACKGROUND_DEFAULTS,
     "layers": DEFAULT_LAYERS,
 }
 _LOCK = threading.RLock()
@@ -91,8 +93,12 @@ class Store:
             state = managed.read_json()
             if state.get("version") != 1 or not isinstance(state.get("jobs"), list) or not isinstance(state.get("music"), list):
                 raise ValueError("批量文案视频记录格式异常，未清空或覆盖；请检查 state.json。")
-            state["settings"] = {**copy.deepcopy(DEFAULTS), **state.get("settings", {})}
+            old_settings = state.get('settings', {})
+            if 'background_visual' not in old_settings and 'image_background_motion' in old_settings:
+                old_settings.update(normalize_image_background(old_settings))
+            state["settings"] = {**copy.deepcopy(DEFAULTS), **old_settings}
             state['settings'].update(normalize_voice_fx(state['settings']))
+            state['settings'].update(normalize_image_background(state['settings']))
             from .adaptation import normalize_duration
             normalize_duration(state["settings"])
             from model.MediaEncoding import normalize_export_settings
@@ -141,6 +147,7 @@ class Store:
             apply_global(state, DEFAULTS)
             from .adaptation import normalize_duration
             state['settings'].update(normalize_voice_fx(state['settings']))
+            state['settings'].update(normalize_image_background(state['settings']))
             normalize_duration(state["settings"])
             from model.MediaEncoding import normalize_export_settings
             normalize_export_settings(state['settings'])

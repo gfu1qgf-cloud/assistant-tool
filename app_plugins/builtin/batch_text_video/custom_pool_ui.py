@@ -144,6 +144,15 @@ class CustomPoolController:
                     values = [prefix + values[0], f"{item.get('cursor', 0):.1f}秒", item.get("last_used") or "未使用"]
                 rows.append((item["id"], values, item["path"], item.get("thumbnail", "")))
             table.populate(rows)
+        if hasattr(self, "controls") and "background_pool_id" in self.controls:
+            combo = self.controls["background_pool_id"]
+            current = combo.currentData() or self.state["settings"].get("background_pool_id", "")
+            blocker = QtCore.QSignalBlocker(combo); combo.clear()
+            combo.addItem("按任务已搭配背景", ""); combo.addItem("默认背景池（图片／视频）", "builtin:background")
+            for pool in pools:
+                if pool["kind"] in {"image", "video", "visual"}: combo.addItem(pool["name"], pool["id"])
+            if current and combo.findData(current) < 0: combo.addItem("失效的背景池（请重新选择）", current)
+            combo.setCurrentIndex(max(0, combo.findData(current))); del blocker
         if hasattr(self, "controls") and "music_pool_id" in self.controls:
             combo = self.controls["music_pool_id"]
             blocker = QtCore.QSignalBlocker(combo)
@@ -193,6 +202,9 @@ class CustomPoolController:
         if self.is_batch_busy():
             return
         key = self.active_resource()
+        if key == "backgrounds":
+            self.add_videos()
+            return
         if not key or not key.startswith("pool:"):
             self.status.setText("请先选中一个自建资源池分页。")
             return

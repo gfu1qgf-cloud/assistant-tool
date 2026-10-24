@@ -57,7 +57,7 @@ class AnimationTimeline(QtWidgets.QWidget):
         self.slider = TimeSlider(QtCore.Qt.Orientation.Horizontal)
         self.slider.setRange(0, self.STEPS)
         self.slider.setPageStep(self.STEPS//10)
-        self.slider.setToolTip('拖动查看该时刻的滚动文字、图片入场／退场与持续动画；使用完整成品时长，不生成视频或推进资源池。背景与视觉素材仍是首帧。节点使用已保存的工作流；AI、脚本和模型计算不会自动执行。')
+        self.slider.setToolTip('拖动查看该时刻的滚动文字、图片入场／退场与持续动画；使用完整成品时长，不生成视频或推进资源池。图片背景可快览缩放；视频与其他视觉素材仍是首帧。节点使用已保存的工作流；AI、脚本和模型计算不会自动执行。')
         row.addWidget(self.start_button); row.addWidget(self.slider, 1); row.addWidget(self.middle_button); row.addWidget(self.end_button)
         root.addLayout(row)
         self.start_button.clicked.connect(lambda: self.jump(0))

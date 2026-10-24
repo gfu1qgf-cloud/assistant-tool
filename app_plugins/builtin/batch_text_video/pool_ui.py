@@ -102,20 +102,22 @@ class PairingDialog(QtWidgets.QDialog):
         self.pairs = []
         layout = QtWidgets.QVBoxLayout(self)
         self.mode = Combo()
-        for name, key in (("每条文案配一个视频，视频用完循环", "copies"),
-                          ("每个视频配一条文案，文案用完循环", "videos"),
-                          ("一对一（文案与视频数量须相同）", "one_to_one"),
-                          ("所有文案共用第一个视频", "single")):
+        for name, key in (("每条文案配一个背景，背景用完循环", "copies"),
+                          ("每个背景配一条文案，文案用完循环", "videos"),
+                          ("一对一（文案与背景数量须相同）", "one_to_one"),
+                          ("所有文案共用第一个背景", "single")):
             self.mode.addItem(name, key)
         if not copies:
             self.mode.setCurrentIndex(1)
         layout.addWidget(self.mode)
         sources = QtWidgets.QFormLayout()
         self.video_source = Combo()
-        for identifier, name in pool_choices(self.pool_state, "video", "默认视频池"):
+        for identifier, name in [("", "默认背景池（视频／图片）")] + [
+                (pool["id"], pool["name"]) for pool in self.pool_state.get("resource_pools", [])
+                if pool["kind"] in {"video", "image", "visual"}]:
             self.video_source.addItem(name, identifier)
         self.video_source.setCurrentIndex(max(0, self.video_source.findData(selected_pool)))
-        sources.addRow("背景视频池", self.video_source)
+        sources.addRow("背景素材池", self.video_source)
         layout.addLayout(sources)
         cards = QtWidgets.QHBoxLayout()
         self.voice_card = AudioSourceCard("voice", self.pool_state)
@@ -131,7 +133,7 @@ class PairingDialog(QtWidgets.QDialog):
         layout.addLayout(cards)
         scopes = QtWidgets.QHBoxLayout()
         self.only_copies = QtWidgets.QCheckBox("仅使用选中的文案")
-        self.only_videos = QtWidgets.QCheckBox("仅使用选中的视频")
+        self.only_videos = QtWidgets.QCheckBox("仅使用选中的背景")
         self.only_copies.setEnabled(bool(selected_copies))
         self.only_videos.setEnabled(bool(selected_videos))
         scopes.addWidget(self.only_copies)
@@ -139,7 +141,7 @@ class PairingDialog(QtWidgets.QDialog):
         scopes.addStretch()
         layout.addLayout(scopes)
         self.table = QtWidgets.QTableWidget(0, 5)
-        self.table.setHorizontalHeaderLabels(["文案 / 任务", "背景视频（可更换）", "标题", "任务目录", "人声（可更换）"])
+        self.table.setHorizontalHeaderLabels(["文案 / 任务", "背景素材（可更换）", "标题", "任务目录", "人声（可更换）"])
         self.table.setEditTriggers(self.table.EditTrigger.NoEditTriggers)
         self.table.setSelectionBehavior(self.table.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(self.table.SelectionMode.ExtendedSelection)
@@ -180,13 +182,13 @@ class PairingDialog(QtWidgets.QDialog):
     def rebuild(self, *_args):
         copies = [item for item in self.copies if not self.only_copies.isChecked() or item["id"] in self.selected_copies]
         identifier = self.video_source.currentData()
-        pool_videos = [item["path"] for item in get_pool(self.pool_state, identifier, "video")["items"]] if identifier else self.videos
+        pool_videos = [item["path"] for item in get_pool(self.pool_state, identifier)["items"]] if identifier else self.videos
         videos = [path for path in pool_videos if not self.only_videos.isChecked() or path in self.selected_videos]
         voice_id = self.voice_source.currentData()
         voices = get_pool(self.pool_state, voice_id, "voice")["items"] if voice_id else []
         try:
             self.pairs = assign_voices(pairing_plan(copies, videos, self.mode.currentData()), voices, self.voice_mode.currentData())
-            self.status.setText(f"将搭配{len(self.pairs)}个视频；背景和人声下拉框可逐行调整。")
+            self.status.setText(f"将搭配{len(self.pairs)}个成品；背景和人声下拉框可逐行调整。")
         except ValueError as error:
             self.pairs = []
             self.status.setText(str(error))

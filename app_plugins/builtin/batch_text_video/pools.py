@@ -35,12 +35,13 @@ def migrate_pools(state):
 
 def add_videos(state, paths):
     from .engine import VIDEO_SUFFIXES
+    from .layers import IMAGE_SUFFIXES
     known = {file_identity(path) for path in state["backgrounds"]}
     added = 0
     for value in paths:
         path = Path(value).resolve()
         key = file_identity(path)
-        if path.is_file() and path.suffix.casefold() in VIDEO_SUFFIXES and key not in known:
+        if path.is_file() and path.suffix.casefold() in VIDEO_SUFFIXES | IMAGE_SUFFIXES and key not in known:
             state["backgrounds"].append(str(path))
             known.add(key)
             added += 1
@@ -67,13 +68,13 @@ def new_copy():
 
 def pairing_plan(copies, videos, mode="copies"):
     if not videos:
-        raise ValueError("视频池为空，请先导入背景视频。")
+        raise ValueError("背景池为空，请先添加背景视频或图片。")
     if not copies:
         if mode != "videos":
-            raise ValueError("文案池为空：请添加文案，或使用“视频为主”搭配固定文本框。")
+            raise ValueError("文案池为空：请添加文案，或使用“每个背景配一条文案”搭配固定文本框。")
         return [{"copy": None, "path": path} for path in videos]
     if mode == "one_to_one" and len(copies) != len(videos):
-        raise ValueError(f"一对一需要数量相同：文案{len(copies)}条，视频{len(videos)}个。")
+        raise ValueError(f"一对一需要数量相同：文案{len(copies)}条，背景{len(videos)}个。")
     if mode not in {"copies", "videos", "one_to_one", "single"}:
         raise ValueError("搭配方式无效。")
     length = len(videos) if mode == "videos" else len(copies)
@@ -86,10 +87,10 @@ def apply_pairs(state, pairs):
     # Validate the whole plan before changing the queue.
     keys = [(pair["copy"]["id"] if pair["copy"] else "", file_identity(pair["path"])) for pair in pairs]
     if len(set(keys)) != len(keys):
-        raise ValueError("搭配中有重复的文案＋视频组合，请先调整；队列未变。")
+        raise ValueError("搭配中有重复的文案＋背景组合，请先调整；队列未变。")
     for pair in pairs:
         if not Path(pair["path"]).is_file():
-            raise ValueError("背景视频不存在：" + Path(pair["path"]).name)
+            raise ValueError("背景素材不存在：" + Path(pair["path"]).name)
         if pair.get("voice_path") and not Path(pair["voice_path"]).is_file():
             raise ValueError("人声文件不存在：" + Path(pair["voice_path"]).name)
     added = updated = 0

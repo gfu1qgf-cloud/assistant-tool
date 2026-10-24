@@ -60,6 +60,9 @@ class LayerPanel(QtWidgets.QWidget):
         super().__init__(parent)
         self.directory = directory
         self.settings = copy.deepcopy(settings or {})
+        from .background_visual import control
+        self._background = control(self.settings)
+        self._background_selected = False
         self.canvas_size = QtCore.QSize(1920,1080) if self.settings.get("aspect") == "landscape" else QtCore.QSize(1080,1920)
         self._layers = componentize_layers(layers,self.settings)
         self._loading, self.worker = False, None
@@ -113,10 +116,11 @@ class LayerPanel(QtWidgets.QWidget):
         self.list.itemChanged.connect(self._item_changed)
         self.list.model().rowsMoved.connect(self._reordered)
         layout.addWidget(self.list)
-        background = QtWidgets.QLabel("🔒 背景视频（固定最底层，压暗只作用于背景）")
-        background.setWordWrap(True)
-        background.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored,QtWidgets.QSizePolicy.Policy.Preferred)
-        layout.addWidget(background)
+        self.background_button = QtWidgets.QPushButton("底层背景 · 视觉控件")
+        self.background_button.setCheckable(True)
+        self.background_button.setToolTip("点击调整底层背景的动画；全局背景池在项目设置中选择。")
+        self.background_button.clicked.connect(self.select_background)
+        layout.addWidget(self.background_button)
         text_top = QtWidgets.QPushButton("文字置顶")
         text_top.setToolTip("把所有文本框、标题和正文移到图片上方，避免图片遮住文案。")
         text_top.clicked.connect(self.text_to_top)
@@ -168,6 +172,23 @@ class LayerPanel(QtWidgets.QWidget):
         return spin
 
 
+    def background_values(self):
+        from .background_visual import values
+        return values(self._background)
+
+    def set_background(self, settings):
+        from .background_visual import control
+        self._background = control(settings)
+        if self._background_selected: self.select_background()
+
+    def select_background(self):
+        if not self.isEnabled(): return
+        blocker = QtCore.QSignalBlocker(self.list)
+        self.list.setCurrentRow(-1); self.list.clearSelection()
+        del blocker
+        self._background_selected = True
+        self.select_layer(-1)
+
     def values(self):
         return copy.deepcopy(self._layers)
 
@@ -197,6 +218,8 @@ class LayerPanel(QtWidgets.QWidget):
             editor.geometry_editor.snap_to_edges(horizontal,vertical)
 
     def select_layer_id(self,identifier):
+        if identifier == self._background["id"]:
+            self.select_background(); return
         for row in range(self.list.count()):
             if self.list.item(row).data(QtCore.Qt.ItemDataRole.UserRole) == identifier:
                 self.list.setCurrentRow(row)
@@ -298,6 +321,7 @@ class LayerPanel(QtWidgets.QWidget):
             self.changed.emit()
 
     def current(self):
+        if self._background_selected: return self._background
         item = self.list.currentItem()
         identifier = item.data(QtCore.Qt.ItemDataRole.UserRole) if item else None
         return next((layer for layer in self._layers if layer["id"] == identifier), None)
@@ -339,29 +363,34 @@ class LayerPanel(QtWidgets.QWidget):
             self.list.addItem(item)
             if layer["id"] == selected:
                 self.list.setCurrentRow(row)
-        if self.list.currentRow() < 0 and self.list.count():
+        if self._background_selected:
+            self.list.setCurrentRow(-1); self.list.clearSelection()
+        elif self.list.currentRow() < 0 and self.list.count():
             self.list.setCurrentRow(0)
         self._loading = False
         self.select_layer(self.list.currentRow())
 
     def select_layer(self,_row):
         if self._loading: return
+        if _row >= 0: self._background_selected = False
+        self.background_button.setChecked(self._background_selected)
         layer = self.current()
         self._loading = True
         try:
             self.header.setEnabled(bool(layer))
-            self.header.setVisible(not self._catalog_hidden and bool(layer and layer['kind'] != 'caption'))
+            self.header.setVisible(not self._catalog_hidden and bool(layer and layer['kind'] not in {'caption', 'background'}))
             self.name.setText(layer['name'] if layer else '')
             self.opacity.setValue(layer['opacity'] if layer else 100)
             self.inspector.show_layer(layer,self.canvas_size,self._pool_state,self.units.currentData())
             kind=layer['kind'] if layer else ''
-            self.hint.setText('效果顺序由图层位置决定；元素的位置和样式在工作流中调整。' if kind=='node_effect' else
+            self.hint.setText('底层背景固定铺在所有图层下方；背景池在项目设置选择，动画在本控件中调整。' if kind=='background' else
+                '效果顺序由图层位置决定；元素的位置和样式在工作流中调整。' if kind=='node_effect' else
                 '先选择要调整的角落，再设置来源、样式和内缩；四角文字可以直接填写。' if kind=='watermark' else
                 '直接在预览中拖动框内移动，拖边或角缩放；Esc取消本次拖动。位置单位可切换，对齐在框内生效。图片保持原比例。')
             self.remove_button.setEnabled(bool(layer and layer['kind'] in {'image','text','watermark','caption','node_effect'}))
             row = self.list.currentRow()
-            self.up_button.setEnabled(row > 0)
-            self.down_button.setEnabled(0 <= row < self.list.count()-1)
+            self.up_button.setEnabled(row > 0 and not self._background_selected)
+            self.down_button.setEnabled(0 <= row < self.list.count()-1 and not self._background_selected)
         finally:
             self._loading = False
         self.selectionChanged.emit(layer['id'] if layer else '')
@@ -377,7 +406,11 @@ class LayerPanel(QtWidgets.QWidget):
         # Cached/hidden editors cannot write a stale snapshot into another layer.
         if not layer or layer['id'] != identifier: return
         try:
-            candidate = normalize_layers([{**layer,**copy.deepcopy(patch),'id':layer['id'],'kind':layer['kind']}])[0]
+            if layer['kind'] == 'background':
+                from .background_visual import control
+                candidate = control({'background_visual': {**layer, **copy.deepcopy(patch)}})
+            else:
+                candidate = normalize_layers([{**layer,**copy.deepcopy(patch),'id':layer['id'],'kind':layer['kind']}])[0]
         except ValueError as error:
             self.message.emit('控件设置未应用：'+str(error))
             return
@@ -488,6 +521,7 @@ class LayerPanel(QtWidgets.QWidget):
         self.changed.emit()
 
     def move_layer(self, direction):
+        if self._background_selected: return
         row, target = self.list.currentRow(), self.list.currentRow()+direction
         self.list.move_row(row, target)
 

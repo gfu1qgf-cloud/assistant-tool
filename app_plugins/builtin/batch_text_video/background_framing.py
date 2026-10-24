@@ -111,6 +111,6 @@ def detect_background_crop(source, media, ffmpeg, directory=None, cancel=None):
 def prepare_background_settings(source, media, settings, ffmpeg, directory=None, cancel=None):
     result = dict(settings)
     result.pop("_background_crop", None)
-    if settings["fit"] == "cover" and settings.get("auto_crop_black_bars", True):
+    if not media.get("still_image") and settings["fit"] == "cover" and settings.get("auto_crop_black_bars", True):
         result["_background_crop"] = detect_background_crop(source, media, ffmpeg, directory, cancel)
     return result

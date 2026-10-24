@@ -11,6 +11,7 @@ EDITOR_FACTORIES = {
     'text': ('.component_ui', 'text_property_panel'),
     'caption': ('.caption_ui', 'caption_property_panel'),
     'image': ('.visual_media', 'visual_property_panel'),
+    'background': ('.background_visual', 'background_property_panel'),
     'watermark': ('.watermarks', 'watermark_property_panel'),
     'node_effect': ('.node_effect_ui', 'node_property_panel'),
 }
@@ -162,7 +163,7 @@ class ComponentInspector(QtWidgets.QWidget):
         if target:
             target.bind(layer, canvas_size, state, unit)
             if hasattr(target, 'visual_properties'):
-                target.visual_properties.matting_button.setVisible(self.matting_available)
+                target.visual_properties.matting_button.setVisible(self.matting_available and layer['kind'] != 'background')
 
     def reveal(self, key):
         if self.active: self.active.reveal(key)

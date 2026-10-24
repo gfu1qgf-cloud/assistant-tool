@@ -150,7 +150,7 @@ def output_size(settings, media=None):
         if abs(float(rotation)) % 180 == 90:
             width, height = height, width
         if width * height > 16_777_216:
-            raise ValueError("原视频分辨率过大，请选1080p画布。")
+            raise ValueError("原素材分辨率过大，请选1080p画布。")
         return max(2, width // 2 * 2), max(2, height // 2 * 2)
     return 1080, 1920
 
@@ -334,6 +334,8 @@ def prepare_static_text(job, state, directory, cancel=None, progress=None, repor
         raise ValueError('预览时长限制只用于播放预览，须为0–86400秒之间的正数；不会截短正式导出。')
     if cancel and cancel.is_set():
         raise Cancelled("已取消。")
+    from .background_visual import background_job
+    job = background_job(job, state)
     settings = dict(state["settings"])
     from .voice_effects import active as voice_fx_active, normalized as normalize_voice_fx, PRESETS
     settings.update(normalize_voice_fx(settings))
@@ -366,8 +368,11 @@ def prepare_static_text(job, state, directory, cancel=None, progress=None, repor
         + ('播放预览采用快速编码；成品质量：' if preview else '导出质量：')
         + quality_label(settings['export_quality']))
     if not job.get("path") or not Path(job["path"]).is_file():
-        raise ValueError("缺少背景视频，请使用‘批量分配背景’。")
-    media = probe(job["path"], ffprobe)
+        raise ValueError("缺少背景素材，请添加视频或图片并批量搭配。")
+    from .image_background import probe_background, duration as image_duration, materialize, motion_filter, FPS
+    media = probe_background(job["path"], ffprobe, settings)
+    still = media.get("still_image", False)
+    settings['_still_background'] = still
     if not media["video"]:
         raise ValueError("文件没有视频轨道。")
     from model.MediaColor import sdr_input_filter, sdr_output_filter, sdr_output_args
@@ -377,7 +382,7 @@ def prepare_static_text(job, state, directory, cancel=None, progress=None, repor
     width, height = output_size(settings, media)
     from .background_framing import prepare_background_settings, framing_filter, preview_size
     encoded_width, encoded_height = preview_size(width, height) if preview else (width, height)
-    duration = target_duration(media["duration"], settings)
+    duration = image_duration(settings) if still else target_duration(media["duration"], settings)
     voice_path, adaptation = resolve_voice(job, state, discover=True), None
     from .captions import active_captions, task_word_timings, static_planes, write_caption_ass, filter_path
     captions = active_captions(settings["layers"])
@@ -392,7 +397,9 @@ def prepare_static_text(job, state, directory, cancel=None, progress=None, repor
         duration = target_duration(media["duration"], settings, voice_info["duration"])
         if settings["keep_audio"]:
             report("已添加任务人声，自动忽略背景视频原声，避免叠音。")
-    if voice_path or settings["unvoiced_duration_mode"] == "fixed":
+    if still:
+        report(f"图片背景：{duration:.2f}秒；无视频中间缓存。")
+    elif voice_path or settings["unvoiced_duration_mode"] == "fixed":
         fps = source_fps(media)
         adaptation = adaptation_plan(media["duration"], duration, settings, fps)
         report(f"{'人声' if voice_path else '固定成品'} {duration:.2f}秒；背景 {media['duration']:.2f}秒；速度 {adaptation['speed']:.2f}×；"
@@ -465,9 +472,18 @@ def prepare_static_text(job, state, directory, cancel=None, progress=None, repor
         if adaptation and adaptation["repeating"] and (not adaptation["fade"] or
                 media["audio"] and settings["keep_audio"] and not voice_path):
             args += ["-stream_loop", str(adaptation["loops"])]
-        args += ["-i", job["path"]]
+        if still:
+            image_path = materialize(job["path"], temporary/"background.png")
+            args += ["-framerate", str(FPS), "-i", image_path]
+        else:
+            args += ["-i", job["path"]]
         next_index = 1
-        if adaptation and adaptation["fade"]:
+        if still:
+            fit = framing_filter(width, height, settings)
+            motion = motion_filter(width, height, settings, duration)
+            # Decode and fit once. Only one fitted frame lives in FFmpeg's RAM loop.
+            filters = [f"[0:v]{fit},loop=loop=-1:size=1:start=0,setpts=N/({FPS}*TB),{motion}[background]"]
+        elif adaptation and adaptation["fade"]:
             cycle, cycle_duration = prepare_cycle(job["path"], media_directory, ffmpeg, ffprobe, width, height,
                 settings, adaptation, fps, cancel, report, leases=leases)
             prefix = adaptation["clip_duration"] - adaptation["fade"]
@@ -484,10 +500,16 @@ def prepare_static_text(job, state, directory, cancel=None, progress=None, repor
             fit = framing_filter(width, height, settings)
             color = settings['_source_color_filter']
             filters = [f"[0:v]setpts=PTS-STARTPTS,{color + ',' if color else ''}{fit},setsar=1[background]"]
+        from .background_visual import control as background_control
+        if not still and background_control(settings)["visual_animation"] != "none":
+            filters.append(f"[background]{motion_filter(width, height, settings, duration, source_fps(media))}[moving_background]")
+            background_base = "moving_background"
+        else:
+            background_base = "background"
         blur = blur_filter(settings, width)
         if blur:
-            filters.append(f"[background]{blur}[blurred_background]")
-        background = "blurred_background" if blur else "background"
+            filters.append(f"[{background_base}]{blur}[blurred_background]")
+        background = "blurred_background" if blur else background_base
         # Graphics are SDR RGB. Keep their full chroma until the final explicit
         # Rec.709 conversion; intermediate default 4:2:0 overlays may choose a
         # different YUV matrix and then get relabelled later.

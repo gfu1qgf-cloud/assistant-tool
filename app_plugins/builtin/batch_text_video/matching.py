@@ -133,9 +133,10 @@ def merge_entries(state, entries):
 
 
 def assign_backgrounds(state, paths, ids=None):
-    paths = [str(Path(p).resolve()) for p in paths if Path(p).is_file() and Path(p).suffix.casefold() in VIDEO_EXTENSIONS]
+    from .layers import IMAGE_SUFFIXES
+    paths = [str(Path(p).resolve()) for p in paths if Path(p).is_file() and Path(p).suffix.casefold() in VIDEO_EXTENSIONS | IMAGE_SUFFIXES]
     if not paths:
-        raise ValueError("没有可用的背景视频。")
+        raise ValueError("没有可用的背景视频或图片。")
     state["backgrounds"] = list(dict.fromkeys(paths))
     jobs = [job for job in state["jobs"] if (job.get("voice_path") or job.get("task_dir"))
             and (ids is None or job["id"] in ids)]

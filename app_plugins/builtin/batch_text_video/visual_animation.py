@@ -6,6 +6,7 @@ from .overlay_timing import DEFAULTS as WINDOW_DEFAULTS, normalize_timing, resol
 DEFAULTS = {
     "visual_animation": "none", "animation_strength": 8., "animation_period": 2.,
     "animation_start_delay": 0., "animation_end_early": 0.,
+    "animation_direction": "outward", "animation_zoom_seconds": 0.,
 }
 CHOICES = (("无动画", "none"), ("律动 · 节奏缩放", "pulse"), ("呼吸 · 平滑缩放", "breathe"),
            ("轻浮动 · 上下", "float"), ("缓慢推近", "zoom_in"), ("缓慢拉远", "zoom_out"))
@@ -24,7 +25,9 @@ def normalize_animation(layer):
         layer.setdefault(key, value)
     if layer["visual_animation"] not in {value for _, value in CHOICES}:
         raise ValueError("图片动画类型无效。")
-    for key, low, high in (("animation_strength", 0, 100), ("animation_period", .2, 120),
+    if layer["animation_direction"] not in {"outward", "inward"}:
+        raise ValueError("呼吸方向无效。")
+    for key, low, high in (("animation_zoom_seconds", 0, 3600), ("animation_strength", 0, 100), ("animation_period", .2, 120),
                            ("animation_start_delay", 0, 86400), ("animation_end_early", 0, 86400)):
         value = layer[key]
         if type(value) not in (int, float) or not math.isfinite(value) or not low <= value <= high:
@@ -75,11 +78,13 @@ def motion_at(layer, duration, time):
         phase = (t % period)/period
         scale += amount*(math.sin(math.pi*phase/.45)**2 if phase < .45 else 0.)
     elif mode == "breathe":
-        scale += amount*(1-math.cos(2*math.pi*t/period))/2
+        wave = (1-math.cos(2*math.pi*t/period))/2
+        scale += amount*(1-wave if layer["animation_direction"] == "inward" else wave)
     elif mode == "float":
         dy = amount*math.sin(2*math.pi*t/period)
     elif mode in {"zoom_in", "zoom_out"}:
-        progress = t/(finish-start)
+        seconds = layer["animation_zoom_seconds"] or (finish-start)
+        progress = min(1., t/seconds)
         scale += amount*(progress if mode == "zoom_in" else 1-progress)
     return scale, dy
 
@@ -96,10 +101,12 @@ def expressions(layer, duration):
         wave = f"if(lt({phase},{period*.45:.9f}),pow(sin(PI*{phase}/{period*.45:.9f}),2),0)"
         scale = f"1+{amount:.9f}*({wave})"
     elif mode == "breathe":
-        scale = f"1+{amount:.9f}*(1-cos(2*PI*({local})/{period:.9f}))/2"
+        wave = f"(1-cos(2*PI*({local})/{period:.9f}))/2"
+        scale = f"1+{amount:.9f}*({'1-('+wave+')' if layer['animation_direction'] == 'inward' else wave})"
     elif mode == "float":
         dy = f"{amount:.9f}*sin(2*PI*({local})/{period:.9f})"
     elif mode in {"zoom_in", "zoom_out"}:
-        progress = f"({local})/{finish-start:.9f}"
+        seconds = layer["animation_zoom_seconds"] or (finish-start)
+        progress = f"min(1,({local})/{seconds:.9f})"
         scale = f"1+{amount:.9f}*({progress if mode == 'zoom_in' else '1-'+progress})"
     return scale, dy

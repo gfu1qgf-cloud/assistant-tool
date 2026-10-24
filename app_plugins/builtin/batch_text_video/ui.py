@@ -122,7 +122,8 @@ class PreviewWorker(QtCore.QThread):
             if not self.path:
                 self.ready.emit({**identity, "image": b"", "media": None, "voice_duration": voice_duration})
                 return
-            media = probe(self.path, ffprobe)
+            from .image_background import probe_background, is_image
+            media = probe_background(self.path, ffprobe, self.frame_settings) if is_image(self.path) else probe(self.path, ffprobe)
             crop = None
             if self.frame_settings:
                 from .background_framing import prepare_background_settings, framing_filter, preview_size
@@ -143,11 +144,16 @@ class PreviewWorker(QtCore.QThread):
                 frame_filter += f",scale={encoded_width}:{encoded_height}:flags=lanczos"
             if self.cancel.is_set():
                 raise Cancelled("背景预览已取消。")
-            result = subprocess.run([ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "error", "-ss", "0.1",
-                                     "-i", self.path, "-vf", frame_filter, "-frames:v", "1",
-                                     "-f", "image2pipe", "-c:v", "png", "pipe:1"],
-                                    capture_output=True, timeout=20,
-                                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            from model.AppDataStorage import data_io
+            from .image_background import materialize
+            with data_io.TemporaryDirectory(prefix="background-poster-") as temporary:
+                source = materialize(self.path, Path(temporary)/"background.png") if media.get("still_image") else self.path
+                seek = [] if media.get("still_image") else ["-ss", "0.1"]
+                result = subprocess.run([ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "error", *seek,
+                                         "-i", source, "-vf", frame_filter, "-frames:v", "1",
+                                         "-f", "image2pipe", "-c:v", "png", "pipe:1"],
+                                        capture_output=True, timeout=20,
+                                        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
             if result.returncode or not result.stdout:
                 raise ValueError("无法读取预览帧。")
             if self.cancel.is_set():
@@ -316,7 +322,7 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
         form.setFieldGrowthPolicy(QtWidgets.QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
         self.controls = {}
         form.addRow("方案",self.scheme)
-        self._combo(form, "aspect", "画布", [("竖屏 1080×1920", "portrait"), ("横屏 1920×1080", "landscape"), ("原视频规格", "source")])
+        self._combo(form, "aspect", "画布", [("竖屏 1080×1920", "portrait"), ("横屏 1920×1080", "landscape"), ("原素材规格", "source")])
         self._combo(form, "fit", "画面", [("完整显示（不裁切）", "contain"), ("铺满导出画布（会裁边）", "cover")])
         self.controls["fit"].setToolTip("铺满的是所选导出画布，不是整个软件窗口。完整显示可能留黑边；铺满会裁掉超出画布的内容。")
         crop_check = QtWidgets.QCheckBox("自动去除素材自带黑边")
@@ -326,6 +332,8 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
         self.controls["auto_crop_black_bars"] = crop_check
         form.addRow(crop_check)
         self.controls["fit"].currentIndexChanged.connect(lambda *_: crop_check.setEnabled(self.controls["fit"].currentData() == "cover"))
+        self._combo(form, "background_pool_id", "背景池", [("按任务已搭配背景", ""), ("默认背景池（图片／视频）", "builtin:background")])
+        self.controls["background_pool_id"].setToolTip("全项目的底层背景来源。指定池后按队列顺序取用；未指定池时使用各任务已搭配的背景。动画在底层背景视觉控件中调整。")
         for key, label, low, high in (("darkness", "背景压暗 %", 0, 75),):
             form.addRow(label, self._spin(key, low, high))
         form.addRow("背景模糊",self._spin("background_blur",0,40,floating=True))
@@ -390,14 +398,14 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
         voice_check.setChecked(self.state["settings"]["use_voice"])
         self.controls["use_voice"] = voice_check
         self._combo(voice_form, "unvoiced_duration_mode", "无人声时长度",
-                    [("保持素材原长", "source"), ("统一固定时长", "fixed")])
+                    [("视频原长／图片用下方时长", "source"), ("统一固定时长", "fixed")])
         duration_spin = self._spin("unvoiced_duration_seconds", .1, 86400, floating=True)
         duration_spin.setSingleStep(1); duration_spin.setSuffix(" 秒")
-        voice_form.addRow("固定成品时长", duration_spin)
+        voice_form.addRow("固定／图片时长", duration_spin)
         def update_duration_controls(*_):
             unvoiced = not voice_check.isChecked()
             self.controls["unvoiced_duration_mode"].setEnabled(unvoiced)
-            duration_spin.setEnabled(unvoiced and self.controls["unvoiced_duration_mode"].currentData() == "fixed")
+            duration_spin.setEnabled(unvoiced)
         voice_check.toggled.connect(update_duration_controls)
         self.controls["unvoiced_duration_mode"].currentIndexChanged.connect(update_duration_controls)
         update_duration_controls()
@@ -407,7 +415,7 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
         voice_form.addRow("混合最低速度", self._spin("min_speed", 0.1, 1, floating=True))
         self._combo(voice_form, "slow_interpolation", "减速补帧", [("帧采样（重复帧，快）", "repeat"), ("帧混合", "blend"), ("运动补偿（较慢）", "motion")])
         self.controls["slow_interpolation"].setToolTip("运动补偿使用FFmpeg运动估计插帧，并不等同于达芬奇光流算法。运动较大时可能产生扭曲，建议先生成一个样片。")
-        note = QtWidgets.QLabel("固定时长用于无人声视频：长素材截短，短素材按背景适配补足。\n"
+        note = QtWidgets.QLabel("图片背景始终使用上方时长；视频选择固定时长后，长素材截短、短素材按背景适配补足。\n"
             "启用人声后仍跟随人声，不用固定时长截断朗读。人声不足视频长度时截短背景；已有任务人声时忽略背景原声。\n"
             "保留背景原声时会跟随背景变速／循环；原声不参与视频循环交界的叠化。")
         note.setWordWrap(True)
@@ -560,6 +568,7 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
         self.layer_panel.convertRequested.connect(self.convert_component_to_nodes)
         self.layer_panel.changed.connect(self._sync_preview_layers)
         self.layer_panel.selectionChanged.connect(self._sync_preview_layers)
+        self.layer_panel.background_button.clicked.connect(lambda: self.right_tabs.setCurrentIndex(0))
         self.preview.layerSelected.connect(self.layer_panel.select_layer_id)
         self.preview.geometryEdited.connect(self._preview_geometry_edited)
         self.preview.geometryCommitted.connect(self._finish_geometry_edit)
@@ -719,6 +728,7 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
             else:
                 settings[key] = control.text()
         settings.update(output_dir=self.output.text().strip(), ffmpeg_path=self.ffmpeg.text().strip(), scheme=self.scheme.currentData(),
+                        background_visual=self.layer_panel.background_values(),
                         layers=bind_pool_layers(self.layer_panel.values(),self.state),geometry_units=self.layer_panel.units.currentData(),
                         show_layer_bounds=self.show_bounds_checkbox.isChecked())
         return settings
@@ -886,7 +896,11 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
             settings["_color_scope"] = job_color_scope(job)
             voice = resolve_voice(job, {**self.state, "settings": settings})
             from .preview_timeline import editor_duration
-            duration = editor_duration(settings, self._media.get('duration') if self._media else None,
+            from .image_background import is_image, duration as image_duration, scale_at
+            still = is_image(job.get("path", ""))
+            settings['_still_background'] = still
+            source_duration = image_duration(settings) if still else self._media.get("duration") if self._media else None
+            duration = editor_duration(settings, source_duration,
                                        self._voice_duration, has_voice=bool(voice))
             self.animation_timeline.set_duration(duration)
             timing = self.animation_timeline.snapshot()
@@ -897,13 +911,14 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
             self.voice_label.setText("当前人声：" + (Path(displayed).name if displayed else "无") +
                                      ("（未启用）" if displayed and not settings["use_voice"] else ""))
             self.voice_label.setToolTip(displayed)
-            if job.get("path") and self._preview_path:
+            if job.get("path") and (self._preview_path or settings.get('background_pool_id')):
                 self.request_background(job["path"])
             width, height = output_size(settings, self._media)
             self.preview.canvas_size = QtCore.QSize(width,height)
             self.layer_panel.set_canvas_size(width,height)
             self._sync_preview_layers()
             self.preview.cover = settings["fit"] == "cover"
+            self.preview.background_zoom = scale_at(settings, timing["time"] if timing else 0, duration)
             request = (self.title.toPlainText(), self.body.toPlainText(), width, height, settings)
             self._overlay_request = request
             if self.overlay_worker:
@@ -914,7 +929,7 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
                 self._start_overlay(request)
             if settings["use_voice"] and self._voice_duration:
                 text = f"成品跟随人声：{self._voice_duration:.2f}秒"
-                if self._media:
+                if self._media and not still:
                     plan = adaptation_plan(self._media["duration"], self._voice_duration, settings, source_fps(self._media))
                     text += f"；背景{self._media['duration']:.2f}秒 / {plan['speed']:.2f}×"
                     if plan["repeating"]:
@@ -922,10 +937,12 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
                 self.duration_status.setText(text)
             elif voice:
                 self.duration_status.setText("正在读取人声长度。")
+            elif still:
+                self.duration_status.setText(f"图片背景：{image_duration(settings):.2f}秒；选中底层背景视觉控件，在控件属性→动画调整。")
             elif settings["unvoiced_duration_mode"] == "fixed":
                 duration = target_duration(self._media["duration"] if self._media else 0, settings)
                 text = f"无人声固定成品：{duration:.2f}秒"
-                if self._media:
+                if self._media and not still:
                     plan = adaptation_plan(self._media["duration"], duration, settings, source_fps(self._media))
                     text += f"；素材{self._media['duration']:.2f}秒 / {plan['speed']:.2f}×"
                     text += " / 循环" + ("叠化" if plan["fade"] else "直切") if plan["repeating"] else " / 截短" if self._media["duration"] > duration else ""
@@ -992,7 +1009,8 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
             self._overlay_status = "图层预览失败：" + result["error"]
             self._log("图层预览失败：" + result["error"] + "\n" + result.get("traceback", ""))
         else:
-            _, _, width, height, _ = result["request"]
+            _, _, width, height, preview_settings = result["request"]
+            background_label = "图片背景缩放快览" if preview_settings.get('_still_background') else "背景首帧"
             self.preview.overlay = result["image"]
             self.preview.composite_planes = result.get("planes", [])
             info = result["info"]
@@ -1001,7 +1019,7 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
                     +(f"（共{len(sizes)}个）" if len(sizes)>3 else "")) if sizes else (
                     f"自适应字号：标题 {info['title_size']:.0f} / 正文 {info['body_size']:.0f}")
             warnings = result["info"].get("warnings",[])
-            self._overlay_status = ("需调整（导出仍会阻止）："+"；".join(warnings)) if warnings else f"{text}；{width}×{height}（背景首帧）"
+            self._overlay_status = ("需调整（导出仍会阻止）："+"；".join(warnings)) if warnings else f"{text}；{width}×{height}（{background_label}）"
             if any(layer["kind"] == "caption" and layer["enabled"] and layer["opacity"] for layer in result["request"][4]["layers"]):
                 self._overlay_status += "；动态字幕为排版示意，点击播放预览检查真实时机。"
             from .scrolling_text import is_scrolling
@@ -1012,7 +1030,7 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
                 self._overlay_status += '；节点文字按已保存工作流及当前任务快览，不推进资源池。'
             timing = result['request'][4].get('_editor_timing')
             if timing:
-                self._overlay_status += f"；动画时刻 {timing['time']:.2f}/{timing['duration']:.2f} 秒（背景首帧）。"
+                self._overlay_status += f"；动画时刻 {timing['time']:.2f}/{timing['duration']:.2f} 秒（{background_label}）。"
             if result.get('design_notices'):
                 self._overlay_status += '；' + '；'.join(result['design_notices'])
             warning = "；".join(warnings)
@@ -1197,14 +1215,14 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
         self._sync_preview_layers()
         self._loading = False
 
-    def add_files(self, paths):
+    def add_files(self, paths, *, background=False):
         if self.is_batch_busy():
             return
         narration = [path for path in paths if Path(path).is_dir() or Path(path).suffix.casefold() in AUDIO_SUFFIXES and Path(path).stem.casefold() == "task_audio"]
-        images = [path for path in paths if Path(path).suffix.casefold() in IMAGE_SUFFIXES]
+        images = [] if background else [path for path in paths if Path(path).suffix.casefold() in IMAGE_SUFFIXES]
         regular = [path for path in paths if path not in narration]
         self._commit_edit()
-        videos = [path for path in regular if Path(path).suffix.casefold() in VIDEO_SUFFIXES]
+        videos = [path for path in regular if Path(path).suffix.casefold() in (VIDEO_SUFFIXES | IMAGE_SUFFIXES if background else VIDEO_SUFFIXES)]
         music = [path for path in regular if Path(path).suffix.casefold() in AUDIO_SUFFIXES]
         n_video = add_videos(self.state, videos)
         n_music = add_paths(self.state["music"], music, music=True)
@@ -1217,7 +1235,7 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
             self.resources.setCurrentWidget(self.video_pool)
             if self.video_pool.rowCount():
                 self.video_pool.setCurrentCell(0, 0)
-        self.status.setText(f"已添加{n_video}个视频、{n_music}首音乐；重复路径自动忽略。")
+        self.status.setText(f"已添加{n_video}个背景素材、{n_music}首音乐；重复路径自动忽略。")
         if narration:
             self._pending_layer_paths.extend(images)
             self.start_import(narration)
@@ -1294,8 +1312,8 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
             self.refresh_tables()
 
     def add_videos(self):
-        paths, _ = QtWidgets.QFileDialog.getOpenFileNames(self, "添加视频", "", "视频 (*.mp4 *.mov *.mkv *.avi *.webm *.m4v *.mts)")
-        self.add_files(paths)
+        paths, _ = QtWidgets.QFileDialog.getOpenFileNames(self, "添加背景视频／图片", "", "背景素材 (*.mp4 *.mov *.mkv *.avi *.webm *.m4v *.mts *.png *.jpg *.jpeg *.jfif *.webp *.bmp *.tif *.tiff)")
+        self.add_files(paths, background=True)
 
     def add_music(self):
         paths, _ = QtWidgets.QFileDialog.getOpenFileNames(self, "添加音乐", "", "音频 (*.mp3 *.wav *.flac *.aac *.m4a *.ogg *.opus *.wma)")

@@ -264,7 +264,7 @@ class PlaybackController:
         try:
             job = copy.deepcopy(self.active_entry())
             if not job.get("path") or not Path(job["path"]).is_file():
-                raise ValueError("请先选择一个有效的背景视频。")
+                raise ValueError("请先选择一个有效的背景视频或图片。")
             job.update(title=self.title.toPlainText(), body=self.body.toPlainText())
             state = copy.deepcopy(self.state)
             state["settings"] = self.read_settings()

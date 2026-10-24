@@ -9,7 +9,7 @@ from .store import file_identity
 def prepare_current_export(state, entry, copy_id="", queue_id=""):
     path = str(entry.get("path") or "")
     if not path or not Path(path).is_file():
-        raise ValueError("请先选择一个有效的背景视频。")
+        raise ValueError("请先选择一个有效的背景视频或图片。")
     if entry.get("requires_title") and not str(entry.get("title") or "").strip():
         raise ValueError("表格文案没有标题，请补上第一行标题后再导出。")
     result = copy.deepcopy(state)

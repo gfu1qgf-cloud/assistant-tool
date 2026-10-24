@@ -73,6 +73,7 @@ class Preview(QtWidgets.QWidget):
         self.setToolTip("亮边框内是导出画布；外侧空白不属于视频。点击文本框选择；拖动框内移动，拖边角缩放。Esc取消当前拖动。辅助线不会导出。")
         self.background,self.overlay = QtGui.QImage(),QtGui.QImage()
         self.canvas_size = QtCore.QSize(1080,1920)
+        self.background_zoom = 1.0
         self.cover,self.show_bounds = False,True
         self.layers,self.selected_id = [],""
         self._drag = None
@@ -140,6 +141,7 @@ class Preview(QtWidgets.QWidget):
                 size = QtCore.QSizeF(self.background.size())
                 size.scale(canvas.size(),QtCore.Qt.AspectRatioMode.KeepAspectRatioByExpanding if self.cover
                            else QtCore.Qt.AspectRatioMode.KeepAspectRatio)
+                size *= getattr(self, "background_zoom", 1.0)
                 rect = QtCore.QRectF(canvas.center().x()-size.width()/2,canvas.center().y()-size.height()/2,size.width(),size.height())
                 painter.save()
                 painter.setClipRect(canvas)
@@ -156,7 +158,7 @@ class Preview(QtWidgets.QWidget):
                 painter.drawImage(canvas,self.overlay)
             elif self.background.isNull():
                 painter.setPen(QtGui.QColor("#eeeeee"))
-                painter.drawText(canvas,QtCore.Qt.AlignmentFlag.AlignCenter,"选择视频并填写标题／正文")
+                painter.drawText(canvas,QtCore.Qt.AlignmentFlag.AlignCenter,"选择背景视频／图片并填写标题／正文")
             if self.show_bounds:
                 painter.setPen(QtGui.QPen(QtGui.QColor("#8299ac"), 1))
                 painter.setBrush(QtCore.Qt.BrushStyle.NoBrush)

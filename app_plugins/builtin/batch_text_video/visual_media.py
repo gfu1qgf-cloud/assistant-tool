@@ -372,6 +372,12 @@ class VisualProperties(QtWidgets.QWidget):
         mode.currentIndexChanged.connect(self.edit)
         self.controls["visual_animation"] = mode
         animation.addRow("动画效果", mode)
+        direction = Combo()
+        direction.addItem("先向外放大", "outward"); direction.addItem("先向内缩小（预先放大）", "inward")
+        direction.currentIndexChanged.connect(self.edit)
+        self.controls["animation_direction"] = direction
+        animation.addRow("呼吸方向", direction)
+        direction.setToolTip("向内从预放大开始，缩回原适配尺寸后再次放大；不会缩得比控件原尺寸更小。")
         self._last_animation = {}
         self.animation_toggle = QtWidgets.QCheckBox('启用图片／视频动画')
         self.sections.sections['animation'].set_enable_control(self.animation_toggle)
@@ -379,6 +385,7 @@ class VisualProperties(QtWidgets.QWidget):
         for key, label, low, high, suffix in (
             ("animation_strength", "强度", 0, 100, " %"),
             ("animation_period", "每次循环", .2, 120, " 秒"),
+            ("animation_zoom_seconds", "推近／拉远用时", 0, 3600, " 秒"),
             ("animation_start_delay", "开始延迟", 0, 86400, " 秒"),
             ("animation_end_early", "提前结束", 0, 86400, " 秒"),
         ):
@@ -389,6 +396,8 @@ class VisualProperties(QtWidgets.QWidget):
             self.controls[key] = control
             animation.addRow(label, control)
         self.controls["animation_strength"].setToolTip("缩放类：最大放大比例；浮动：相对元素框高度的移动幅度。0为不变化，原素材不会被修改。")
+        self.controls["animation_zoom_seconds"].setSpecialValueText("跟随成品时长")
+        self.controls["animation_zoom_seconds"].setToolTip("0跟随成品时长；指定秒数后在该用时内完成动作，随后保持。与缩放强度独立。")
         self.controls["animation_period"].setToolTip("律动、呼吸和浮动的周期；不是音乐自动踩点。周期越短动作越快。")
         self.controls["animation_start_delay"].setToolTip("开始前保持起点。按最终成品时长计算，启用人声时跟随人声时长。")
         self.controls["animation_end_early"].setToolTip("提前结束动作，余下时间保持结束姿态。与开始延迟之和必须小于最终视频时长。")
@@ -396,8 +405,8 @@ class VisualProperties(QtWidgets.QWidget):
         pair_form_fields(animation,'动画时间',[
             ('start','延迟',self.controls['animation_start_delay']),('end','提前结束',self.controls['animation_end_early'])])
         note = QtWidgets.QLabel("律动：短促放大后恢复，循环重复；呼吸：平滑放大缩小。\n"
-            "推近／拉远覆盖最终成品时长；动态画面请点击“播放预览”。\n"
-            "设计视图显示原尺寸。放大可能超出蓝色元素框，画布之外会裁切；同样适用于图片池、GIF和视频。")
+            "推近／拉远可单独设置用时；0跟随最终成品时长。动态画面可拖动动画快览或播放预览。\n"
+            "拖动动画快览查看缩放位置。放大可能超出元素框，画布之外会裁切；同样适用于图片池、GIF和视频。")
         note.setWordWrap(True)
         note.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored, QtWidgets.QSizePolicy.Policy.Preferred)
         animation.addRow(note)
@@ -433,7 +442,9 @@ class VisualProperties(QtWidgets.QWidget):
         for key in ANIMATION_DEFAULTS:
             if key != "visual_animation":
                 self.controls[key].setEnabled(mode != "none" and (
-                    key != "animation_period" or mode in {"pulse", "breathe", "float"}))
+                    key != "animation_period" or mode in {"pulse", "breathe", "float"}) and (
+                    key != "animation_direction" or mode == "breathe") and (
+                    key != "animation_zoom_seconds" or mode in {"zoom_in", "zoom_out"}))
 
     def _toggle_animation(self, enabled):
         if self.loading or not self.layer:

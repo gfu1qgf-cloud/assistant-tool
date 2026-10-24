@@ -8,7 +8,7 @@ from app_plugins.api import NodeDefinition, NodeParameter, NodePort, ResourcePoo
 from model.node_workflow.contracts import ResourceRef
 
 BUILTIN_POOLS = (("builtin:copy", "文案池", "copy"), ("builtin:image", "图片池", "image"),
-                 ("builtin:background", "视频池", "video"), ("builtin:music", "音乐池", "music"))
+                 ("builtin:background", "背景池（视频／图片）", "video"), ("builtin:music", "音乐池", "music"))
 
 
 def pool_records(data):

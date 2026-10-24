@@ -157,7 +157,7 @@ def render_overlay(title, body, width, height, settings, image_cache=None, *, al
     body = next((layer["text"] for layer in layers if layer["kind"] == "body" and "font_min" not in layer), "") if "body" in enabled else ""
     custom = [layer for layer in layers if layer["kind"] != "image" and "font_min" in layer and layer["enabled"] and layer["opacity"]]
     if not title.strip() and not body.strip() and not any(layer["text"].strip() for layer in custom) and "image" not in enabled:
-        if allow_empty or "node_effect" in enabled:
+        if allow_empty or settings.get('_still_background') or "node_effect" in enabled:
             return compose_layers({}, [], width, height, settings["darkness"], image_cache,
                 settings.get("background_tint_color", "#000000"), settings.get("background_tint_strength", 0)), {
                     "title_size": 0, "body_size": 0, "component_sizes": {}}
