@@ -5,7 +5,7 @@ import shutil
 import threading
 
 from qt_compat import QtCore, QtWidgets
-from model.ProtectedStorage import (migrate, bind, read_bootstrap, read_marker,
+from model.ProtectedStorage import (migrate, initialize_fresh, bind, read_bootstrap, read_marker,
                                     commit_bootstrap, StorageUnavailable, StorageCapacityError, WARN_FREE)
 from model.VeraCryptVolumes import VeraCryptVolumes, VolumeError
 from model.QtThreadLifecycle import connect_thread_finished, thread_is_active
@@ -14,24 +14,30 @@ from model.QtThreadLifecycle import connect_thread_finished, thread_is_active
 class MigrationWorker(QtCore.QThread):
     progress = QtCore.pyqtSignal(str, int)
     outcome = QtCore.pyqtSignal(object)
-    def __init__(self, program_root, provider, volume, parent):
+    def __init__(self, program_root, provider, volume, parent, initial_config=None):
         super().__init__(parent)
         self.program_root, self.provider, self.volume = program_root, provider, volume
+        self.initial_config = initial_config
         self.canceled = threading.Event()
     def run(self):
         def report(message, percent):
             if self.canceled.is_set(): raise StorageUnavailable('迁移已取消，原数据未改变；未完成副本保留在加密卷内。')
             self.progress.emit(message, percent)
-        try: result = migrate(self.program_root, self.provider, self.volume, report)
+        try:
+            if self.initial_config is None:
+                result = migrate(self.program_root, self.provider, self.volume, report)
+            else:
+                result = initialize_fresh(self.program_root, self.provider, self.volume, self.initial_config, report)
         except Exception as error: self.outcome.emit({'error': str(error)})
         else: self.outcome.emit({'result': result})
 
 
 class StorageChooser(QtWidgets.QDialog):
-    def __init__(self, program_root, expected=None, provider=None, parent=None):
+    def __init__(self, program_root, expected=None, provider=None, parent=None, initial_config=None):
         super().__init__(parent)
         self.program_root, self.expected = Path(program_root), expected
         self.provider = provider
+        self.initial_config = initial_config if expected is None else None
         self.worker, self.selection, self.pending = None, None, None
         self.setWindowTitle('VeraCrypt · 选择加密数据卷')
         self.resize(640, 360)
@@ -48,6 +54,9 @@ class StorageChooser(QtWidgets.QDialog):
         buttons = QtWidgets.QDialogButtonBox(self)
         self.use_button = buttons.addButton('使用所选加密数据', QtWidgets.QDialogButtonBox.ButtonRole.AcceptRole)
         self.migrate_button = buttons.addButton('迁移现有数据到所选卷', QtWidgets.QDialogButtonBox.ButtonRole.ActionRole)
+        if self.initial_config is not None:
+            self.migrate_button.setText('新建首次配置到所选卷')
+            self.closed_confirm.setText('我已关闭其他辅助工具实例；此次只在所选密盘内新建配置。')
         self.migrate_button.setVisible(expected is None)
         self.cancel_button = buttons.addButton('退出 / 取消迁移', QtWidgets.QDialogButtonBox.ButtonRole.RejectRole)
         layout.addWidget(buttons)
@@ -96,13 +105,21 @@ class StorageChooser(QtWidgets.QDialog):
         if not volume or self.worker: return
         if not self.closed_confirm.isChecked():
             QtWidgets.QMessageBox.information(self, '先关闭旧实例', '请先关闭其他辅助工具，避免迁移期间旧进程继续写数据。'); return
-        if QtWidgets.QMessageBox.question(self, '确认复制并启用 VC 强制模式',
+        if self.initial_config is not None:
+            title = '首次创建密盘配置'
+            explanation = ('将在所选加密卷内新建首次配置，不在程序目录生成明文副本。\n'
+                           '如果卷内已有数据，请取消并选择“使用已有数据”。\n'
+                           '以后启动需挂载该卷。是否继续？')
+        else:
+            title = '确认复制并启用 VC 强制模式'
+            explanation = (
             '复制配置、凭据、插件数据、索引和日志到已验证的 VC 卷，并逐项校验。\n'
             '任务目录、素材视频和模型权重不搬迁。原文件和旧备份不删除。\n'
-            '以后启动必须选择绑定的已挂载卷；没有卷不能启动。\n\n是否开始？',
+            '以后启动必须选择绑定的已挂载卷；没有卷不能启动。\n\n是否开始？')
+        if QtWidgets.QMessageBox.question(self, title, explanation,
             QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No,
             QtWidgets.QMessageBox.StandardButton.No) != QtWidgets.QMessageBox.StandardButton.Yes: return
-        self.worker = MigrationWorker(self.program_root, self.provider, volume, self)
+        self.worker = MigrationWorker(self.program_root, self.provider, volume, self, initial_config=self.initial_config)
         self.pending = None
         self.worker.progress.connect(self.migration_progress,QtCore.Qt.ConnectionType.QueuedConnection)
         self.worker.outcome.connect(self.migration_outcome,QtCore.Qt.ConnectionType.QueuedConnection)
@@ -137,10 +154,10 @@ class StorageChooser(QtWidgets.QDialog):
         else: super().closeEvent(event)
 
 
-def configure_startup(program_root, *, force=False):
+def configure_startup(program_root, *, force=False, initial_config=None):
     expected = read_bootstrap(program_root)
     if expected is None and not force: return None
-    dialog = StorageChooser(program_root, expected)
+    dialog = StorageChooser(program_root, expected, initial_config=initial_config)
     if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted: raise StorageUnavailable('未选择可用的加密数据卷，程序未启动。')
     provider, volume, root, marker = dialog.selection
     storage = bind(program_root, provider, volume, root, expected)

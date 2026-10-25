@@ -6,7 +6,7 @@
 
 ## 隐私与配置
 
-仓库和发布包不包含任何真实 API Key、OAuth 凭据、Token、表格链接、客户数据或历史运行记录。首次使用时，将 `config.example.json` 复制为 `config.json`，再通过程序设置填写本机参数。
+仓库和发布包不包含任何真实 API Key、OAuth 凭据、Token、表格链接、客户数据或历史运行记录。首次启动没有配置时，会打开[首次使用向导](docs/首次使用向导.md)，可创建普通配置或直接在已挂载的 VeraCrypt 卷内创建配置，之后通过程序设置填写账号与本机参数。已有配置或密盘绑定不会被空配置覆盖。
 
 Google 服务需要用户自行创建 OAuth 桌面客户端，并把相应凭据文件放在程序目录中。程序生成的 `config.json`、Token、监视状态、库存状态和提交日志均已被 Git 忽略。
 
@@ -78,7 +78,7 @@ python -m venv .venv
 
 正式发布由 GitHub Actions 在 Windows runner 上使用 PyInstaller 构建。Release 中的 ZIP 由 `github-actions[bot]` 上传，并带有 GitHub Artifact Attestation。
 
-下载后解压整个目录，复制并填写 `config.example.json`，然后运行 `AssistantTool.exe`。不要只移动 EXE；旁边的 `_internal` 目录是运行所需依赖。
+下载后解压整个目录，运行 `AssistantTool.exe` 并完成首次使用向导。保留 `config.example.json` 作为初始化模板；不要只移动 EXE，旁边的 `_internal` 目录是运行所需依赖。
 
 时间线播放器使用固定版本的官方 mpv Windows 运行库。发布构建会从官方
 GitHub Release 下载并校验 SHA-256；校验失败或文件缺失时会直接终止打包，

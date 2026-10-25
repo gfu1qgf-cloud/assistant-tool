@@ -313,6 +313,51 @@ def migrate(program_root, provider, volume, report=lambda *_: None, *, resume=No
         # deletion and no sensitive backup is made outside the encrypted volume.
 
 
+def initialize_fresh(program_root, provider, volume, initial_config, report=lambda *_: None):
+    """Explicit first-use only; never substitute for missing existing VC data."""
+    from .FirstRun import first_use_state
+    if first_use_state(program_root) != 'fresh':
+        raise StorageUnavailable('存在配置、启动绑定或旧私有数据，不能新建空白配置顶替；请恢复或迁移已有数据。')
+    if not isinstance(initial_config, dict):
+        raise ValueError('首次配置必须是对象。')
+    seed = json.loads(json.dumps(initial_config, ensure_ascii=False, allow_nan=False))
+    target = Path(volume.root) / 'AssistantToolData'
+    provider.verify(volume.root, identity=volume.volume_id, unique_id=volume.unique_id)
+    no_reparse(target, Path(volume.root))
+    if target.exists():
+        raise StorageUnavailable('加密卷已有数据目录，未覆盖；请选择“使用已有数据”。')
+    if shutil.disk_usage(volume.root).free < MIN_FREE:
+        raise StorageUnavailable('加密卷空间不足，首次配置至少需要256MiB运行余量。')
+    stage = Path(volume.root) / ('.AssistantToolData-initialize-' + uuid4().hex)
+    stage.mkdir()
+    session = VolumeSession(provider, volume, stage)
+    try:
+        report('在已验证的加密卷内新建首次配置', 20)
+        session.check(stage / 'config.json', write=True)
+        atomic_json(stage / 'config.json', seed)
+        if json.loads((stage / 'config.json').read_text(encoding='utf-8')) != seed:
+            raise StorageUnavailable('首次配置校验失败，未启用该目录。')
+        marker = {'application': APPLICATION, 'version': 1, 'status': 'complete',
+                  'storage_id': uuid4().hex, 'volume_id': volume.volume_id}
+        session.check(write=True)
+        atomic_json(stage / 'migration.manifest.json', {'version': 1, 'origin': 'first_use',
+            'files': [{'relative': 'config.json', 'bytes': (stage / 'config.json').stat().st_size,
+                       'sha256': hash_file(stage / 'config.json')}], 'redirects': []})
+        atomic_json(stage / MARKER, marker)
+        report('首次配置已校验，准备启用', 90)
+        session.check(write=True)
+        session.close()
+        provider.verify(volume.root, identity=volume.volume_id, unique_id=volume.unique_id)
+        if first_use_state(program_root) != 'fresh' or target.exists():
+            raise StorageUnavailable('初始化期间出现其他配置或目标数据，未覆盖；请重新选择。')
+        stage.rename(target)
+        report('配置已在密盘内创建，没有外部明文副本。', 100)
+        return target, marker
+    finally:
+        # Incomplete directories remain only inside the verified volume.
+        session.close()
+
+
 def bind(program_root, provider, volume, root, expected=None):
     from .AppDataStorage import ApplicationStorage, bind_application_storage
     import app_paths
@@ -350,7 +395,7 @@ def bind(program_root, provider, volume, root, expected=None):
         for name in PRIVATE_DIRECTORIES:
             redirects.append((Path(program_root)/name, Path(root)/name))
         for path in Path(program_root).glob('*.json'):
-            if path.name not in ('config.example.json', BOOTSTRAP): redirects.append((path, Path(root)/path.name))
+            if path.name not in ('config.example.json', 'BUILD_INFO.json', BOOTSTRAP): redirects.append((path, Path(root)/path.name))
         storage = ApplicationStorage(root, guard=session, redirects=redirects)
         storage.directory_at(Path(root)/'Temp').ensure()
         app_paths.bind_data_root(root)

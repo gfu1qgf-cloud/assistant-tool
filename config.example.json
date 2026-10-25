@@ -2,7 +2,12 @@
   "offline_mode": false,
   "ui_theme": "light",
   "plugin_enabled": {
-    "waste_reminder": false
+    "waste_reminder": false,
+    "codex_account_switcher": false,
+    "antigravity_account_switcher": false,
+    "ai_model_client": false,
+    "document_formatter": false,
+    "video_prompt_assistant": false
   },
   "task_path": "",
   "video_sorting_station_path": "",

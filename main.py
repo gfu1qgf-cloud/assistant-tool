@@ -36,14 +36,27 @@ def main():
     app = QtWidgets.QApplication(sys.argv)
     storage = None
     try:
+        from PYUI.first_run_pyui import configure_first_use
+        first_use = configure_first_use(APP_ROOT, force_vc='--configure-veracrypt' in sys.argv)
+        if first_use is None:
+            return 0
+    except Exception as error:
+        QtWidgets.QMessageBox.critical(None, '首次配置未就绪', str(error))
+        return 2
+    try:
         from PYUI.protected_storage_pyui import configure_startup
-        storage = configure_startup(APP_ROOT, force='--configure-veracrypt' in sys.argv)
+        storage = configure_startup(APP_ROOT,
+            force='--configure-veracrypt' in sys.argv or first_use.mode == 'veracrypt',
+            initial_config=first_use.initial_config)
     except Exception as error:
         # No private logger, old config or plugin has been initialized yet.
         QtWidgets.QMessageBox.critical(None, '加密存储未就绪', str(error))
         return 2
     from app_paths import DATA_ROOT
     configure_offline(DATA_ROOT / 'config.json')
+    # The first-use wizard / selected VC may have enabled offline mode after
+    # the early guard was installed. This call is idempotent.
+    install_qt_network_guard(QtCore, QtGui, QtNetwork)
     from model.AppLogger import (configure_application_logging, install_exception_hooks,
         install_qt_message_logging, shutdown_application_logging, remove_qt_message_logging)
     from model.ComboBoxWheelGuard import ComboBoxWheelGuard
@@ -59,7 +72,10 @@ def main():
         globalValue.get_whisper_model()
     except Exception as error:
         if not is_offline():
-            raise
+            app_logger.exception('[启动] Whisper 字幕模型初始化失败')
+            from PYUI.startup_failure import exit_after_whisper_failure
+            return exit_after_whisper_failure(error, app=app, storage=storage,
+                config_path=DATA_ROOT / 'config.json', log_path=app_log_file)
         model_error = str(error)
         app_logger.exception("[离线模式] 本地字幕模型未就绪")
 

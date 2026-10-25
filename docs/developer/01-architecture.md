@@ -51,6 +51,8 @@ tests/test_my_tool.py
 
 ## 安装与兼容性
 
+首次启动由 `PYUI/first_run_pyui.py` 和 `model/FirstRun.py` 在私有服务之前处理。缺配置且没有旧私有数据时，用户明确选择创建方式；发现旧数据或既有 VC 绑定则走恢复/原绑定，不自动替换为空配置。新 VC 配置通过 `ProtectedStorage.initialize_fresh` 在验证卷内创建，不借道外部明文文件；原 `migrate` 仍要求已有主配置。Whisper 在线加载失败由 `PYUI/startup_failure.py` 提示并安全退出，已有配置保留；原离线模式本地功能继续可用的策略保持不变。
+
 当前没有扫描任意文件夹自动执行插件、pip 热安装插件或进程隔离插件的机制。内置插件先在 [`builtin/__init__.py`](../../app_plugins/builtin/__init__.py) 导出，再在宿主安装区显式 `self.plugin_host.install(MyToolPlugin())`。这是新增插件通常需要的少量宿主接线，不把业务实现写进去。
 
 典型接线如下（`MyToolPlugin` 是你自行编写的类，不是已存在的内置插件）：
