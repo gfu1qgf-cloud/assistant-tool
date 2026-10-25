@@ -7,12 +7,14 @@ uses the same math for the editing poster. Protected trimap colours win last.
 import math
 
 DEFAULTS = {"key_despill_mode": "basic", "key_despill_amount": 100.0,
-            "key_despill_width": 4, "key_despill_luma": 50.0}
+            "key_despill_width": 4, "key_despill_luma": 50.0, "key_screen_cleanup": True}
 
 
 def normalize_despill(layer):
     for key, value in DEFAULTS.items():
         layer.setdefault(key, value)
+    if type(layer['key_screen_cleanup']) is not bool:
+        raise ValueError('边缘幕色清理开关无效。')
     if layer["key_despill_mode"] not in {"basic", "edge"}:
         raise ValueError("去色溢方式必须是基础或边缘遮罩。")
     for key in ("key_despill_amount", "key_despill_luma"):

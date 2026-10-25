@@ -767,7 +767,8 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
     def _sync_pool_preview(self, layers, current):
         source = self.layer_panel.content_editor if current and current.get('kind') == 'image' else None
         self.pool_preview.attach_to_source(source)
-        self.pool_preview.sync(layers, current['id'] if current else '', scope=self.state.get('active_profile', ''))
+        self.pool_preview.sync(layers, current['id'] if current else '', scope=self.state.get('active_profile', ''),
+                               assignment=self.active_entry().get('render_assignment'))
 
     def _preview_geometry_edited(self,identifier,values):
         if not self._loading and not self.is_batch_busy() and self.layer_panel.set_geometry(identifier,values):
@@ -908,14 +909,15 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
         try:
             settings = self.read_settings()
             job = self.active_entry()
-            if job.get('render_assignment'):
-                from .render_assignment import apply as apply_assignment
-                job, bound_state = apply_assignment(job, {**self.state, 'settings': settings})
-                settings = bound_state['settings']
             if getattr(self, 'pool_preview', None) is not None:
                 current = self.layer_panel.current()
                 self._sync_pool_preview(settings['layers'], current)
-                settings = self.pool_preview.apply(settings)
+                job, bound_state = self.pool_preview.prepare(job, {**self.state, 'settings': settings})
+                settings = bound_state['settings']
+            elif job.get('render_assignment'):
+                from .render_assignment import apply as apply_assignment
+                job, bound_state = apply_assignment(job, {**self.state, 'settings': settings})
+                settings = bound_state['settings']
             from .text_colors import job_color_scope
             settings["_color_scope"] = job_color_scope(job)
             voice = resolve_voice(job, {**self.state, "settings": settings})

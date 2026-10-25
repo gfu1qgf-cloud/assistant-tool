@@ -6,7 +6,7 @@ DEFAULTS = dict(model='isnet', quality='better', device='auto', black_clip=0., w
                 clean_black=0., clean_white=0., denoise=0, grow=0, smooth=0., blur=0.,
                 in_out=0., opacity=100., invert=False, cleanup=False, cleanup_size=2,
                 despill='none', despill_amount=100., despill_width=4, despill_luma=50., strokes=[],
-                fill_holes=False, hole_threshold=50.)
+                fill_holes=False, hole_threshold=50., screen_cleanup=True)
 
 
 def normalize(values=None):
@@ -18,7 +18,7 @@ def normalize(values=None):
     for name, choices in (('model', {'isnet', 'rvm'}), ('quality', {'fast', 'better'}),
                           ('device', {'auto', 'cpu', 'cuda'}), ('despill', {'none', 'green', 'blue'})):
         if not isinstance(result[name], str) or result[name] not in choices: raise ValueError('抠像选项无效：'+name)
-    for name in ('invert', 'cleanup', 'fill_holes'):
+    for name in ('invert', 'cleanup', 'fill_holes', 'screen_cleanup'):
         if type(result[name]) is not bool: raise ValueError('抠像开关无效：'+name)
     ranges = dict(black_clip=(0, 99.9), white_clip=(.1, 100), clean_black=(0, 100), clean_white=(0, 100),
                   denoise=(0, 5), grow=(-20, 20), smooth=(0, 100), blur=(0, 20), in_out=(-100, 100),
@@ -76,6 +76,8 @@ def refine(rgb, alpha, source_alpha, values, *, source_rgb=None):
     a = np.clip((a-p['black_clip']/100)/((p['white_clip']-p['black_clip'])/100), 0, 1)
     a *= 1-p['clean_black']/100*(1-a)
     a += p['clean_white']/100*a*(1-a)
+    from .matting_screen import screen_removal
+    screen = screen_removal(source_rgb if source_rgb is not None else rgb, a, p)
     if p['fill_holes']:
         # Fill enclosed low-confidence regions. The source alpha and explicit
         # remove strokes are applied later, so genuine user cuts stay holes.
@@ -107,6 +109,9 @@ def refine(rgb, alpha, source_alpha, values, *, source_rgb=None):
         ratio = p['in_out']/100
         side = np.maximum(a, blurred) if ratio >= 0 else np.minimum(a, blurred)
         a = blurred*(1-abs(ratio))+side*abs(ratio)
+    # Apply after hole filling/grow/feather, so these cannot close genuine screen
+    # gaps again. Original alpha and intentional brush edits still win below.
+    if screen is not None: a *= 1-screen
     painted = brush_mask(a.shape, p['strokes'])
     if painted is not None:
         a = np.where(painted == 255, 1, np.where(painted == 0, 0, a))

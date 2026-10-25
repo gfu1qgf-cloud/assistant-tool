@@ -243,6 +243,7 @@ def apply_saved(layer, catalogue=None):
         if options.get('key_despill'):
             color = options.get('key_mode')
             p.update(despill=color if color in {'green', 'blue'} else 'green',
+                     screen_cleanup=options.get('key_screen_cleanup', True),
                      despill_amount=options.get('key_despill_amount', 100),
                      despill_width=int(options.get('key_despill_width', 4)), despill_luma=options.get('key_despill_luma', 50))
         low, high = p['black_clip'], p['white_clip']

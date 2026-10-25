@@ -169,7 +169,8 @@ class MattingDialog(QtWidgets.QDialog, MattingHistory):
             if isinstance(control, QtWidgets.QDoubleSpinBox): control.setDecimals(1)
             control.setRange(low, high); control.setSuffix(suffix); control.valueChanged.connect(self.parameters_changed)
             self.controls[key] = control; form.addRow(label, control)
-        for key, label in (('invert', '反转遮罩'), ('fill_holes', '填补主体内部封闭孔洞'), ('cleanup', '去碎块')):
+        for key, label in (('invert', '反转遮罩'), ('fill_holes', '填补主体内部封闭孔洞'),
+                           ('screen_cleanup', '清除边缘／指缝残留幕色'), ('cleanup', '去碎块')):
             control = QtWidgets.QCheckBox(label); control.toggled.connect(self.parameters_changed)
             self.controls[key] = control; form.addRow(control)
         reset = QtWidgets.QPushButton('重置精修参数'); reset.setAutoDefault(False); reset.clicked.connect(self.reset_values); form.addRow(reset)
@@ -206,6 +207,7 @@ class MattingDialog(QtWidgets.QDialog, MattingHistory):
         self.canvas.strokes = copy.deepcopy(self.values['strokes']); self.canvas.update(); self._loading = False
         self.controls['quality'].setEnabled(self.values['model'] == 'rvm')
         self.controls['cleanup_size'].setEnabled(self.values['cleanup'])
+        self.controls['screen_cleanup'].setEnabled(self.values['despill'] != 'none' and self.values['despill_amount'] > 0)
 
     def parameters_changed(self, *_):
         if self._loading: return
@@ -222,6 +224,7 @@ class MattingDialog(QtWidgets.QDialog, MattingHistory):
         self.values = values
         self.controls['quality'].setEnabled(values['model'] == 'rvm')
         self.controls['cleanup_size'].setEnabled(values['cleanup'])
+        self.controls['screen_cleanup'].setEnabled(values['despill'] != 'none' and values['despill_amount'] > 0)
         control = self.sender()
         key = next((key for key, widget in self.controls.items() if widget is control), None)
         self.record_values(before, values, key if isinstance(control, QtWidgets.QAbstractSpinBox) else None)

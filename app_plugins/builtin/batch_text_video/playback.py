@@ -69,7 +69,7 @@ def preview_key(job, state, node_bundle=None, *, preview_limit=None):
         except OSError:
             fingerprints.append((str(path), None, None))
     from .text_colors import job_color_scope
-    values = ["playback-v28-voice-space-v1", preview_limit, job_color_scope(job), settings, job.get("title", ""), job.get("body", ""),
+    values = ["playback-v29-trial-screen-gaps", preview_limit, job_color_scope(job), settings, job.get("title", ""), job.get("body", ""),
               job.get("requires_title", False), job.get("voice_override", False), fingerprints, music, next_id]
     from .node_effects import cache_snapshot
     values.append(cache_snapshot(node_bundle, job.get('id')))
@@ -270,7 +270,7 @@ class PlaybackController:
             state = copy.deepcopy(self.state)
             state["settings"] = self.read_settings()
             if getattr(self, 'pool_preview', None) is not None:
-                state["settings"] = self.pool_preview.apply(state["settings"])
+                job, state = self.pool_preview.prepare(job, state)
             from .cloud_alignment import prepare_binding
             elevenlabs_binding = prepare_binding(state['settings'], getattr(self, 'context', None))
             from .node_effects import prepare_preview_bundle

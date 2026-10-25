@@ -320,6 +320,11 @@ class VisualProperties(QtWidgets.QWidget):
         despill_mode.currentIndexChanged.connect(self.edit)
         self.controls["key_despill_mode"] = despill_mode
         form.addRow("去色溢方式", despill_mode)
+        screen_cleanup = QtWidgets.QCheckBox('清除边缘／指缝残留幕色（AI）')
+        screen_cleanup.setToolTip('结合原图的绿／蓝幕色清理AI遮罩边缘与窄缝，避免补洞把指缝填回去；保留画笔优先。需要保留边缘绿色装饰时可关闭。')
+        screen_cleanup.toggled.connect(self.edit)
+        self.controls['key_screen_cleanup'] = screen_cleanup
+        form.addRow(screen_cleanup)
         for key, label, low, high, value_suffix in (
             ("key_despill_amount", "去色溢强度", 0, 100, " %"),
             ("key_despill_width", "边缘范围", 1, 12, " px"),
@@ -472,6 +477,8 @@ class VisualProperties(QtWidgets.QWidget):
         self.controls["key_despill"].setEnabled(can_despill)
         active = can_despill and self.controls["key_despill"].isChecked()
         self.controls["key_despill_mode"].setEnabled(active and not ai)
+        self.controls['key_screen_cleanup'].setVisible(ai or self.controls['key_method'].currentData() == 'enhanced')
+        self.controls['key_screen_cleanup'].setEnabled(active and self.controls['key_despill_amount'].value() > 0)
         self.controls['key_despill_mode'].setToolTip('AI模式统一按主体遮罩边缘去色溢；上方绿色／蓝色预设指定要降低的颜色。' if ai else '选择全图保守修正或按遮罩边缘修正。')
         edge = active and (ai or self.controls["key_despill_mode"].currentData() == "edge")
         for key in ("key_despill_amount", "key_despill_width", "key_despill_luma"):

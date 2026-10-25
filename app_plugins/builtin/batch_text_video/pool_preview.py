@@ -60,7 +60,7 @@ class PoolPreview(QtWidgets.QWidget):
             self.setParent(source)
             source.layout().insertWidget(1, self)
 
-    def sync(self, layers, selected='', *, scope=None):
+    def sync(self, layers, selected='', *, scope=None, assignment=None):
         self.loading = True
         if scope is not None and scope != self.scope:
             self.choices.clear()
@@ -68,6 +68,16 @@ class PoolPreview(QtWidgets.QWidget):
         old = self.layer_combo.currentData()
         self.layers = copy.deepcopy([layer for layer in layers
             if layer.get('kind') == 'image' and layer.get('source') == 'pool'])
+        sources = (assignment or {}).get('sources', {})
+        for layer in self.layers:
+            source = sources.get(layer['id'], {})
+            if source.get('field') != 'path': continue
+            from model.PrivateDataPaths import remap_path_fields
+            source = {'path': source['value']}; remap_path_fields(source, {'path'})
+            index = next((i for i, item in enumerate(layer.get('sequence_items', []))
+                          if Path(item['path']) == Path(source['path'])), None)
+            layer['_assigned_trial'] = index is not None
+            if index is not None: layer['sequence_cursor'] = index
         valid = {pool_key(layer): {item['id'] for item in layer.get('sequence_items', [])} for layer in self.layers}
         self.choices = {key: value for key, value in self.choices.items() if value in valid.get(key, set())}
         ids = [layer['id'] for layer in self.layers]
@@ -86,7 +96,10 @@ class PoolPreview(QtWidgets.QWidget):
         layer = self.current_layer()
         items = layer.get('sequence_items', []) if layer else []
         cursor = layer.get('sequence_cursor', 0) % len(items) if items else 0
-        self.item_combo.addItem(f'按生成顺序（下次第{cursor+1}项）' if items else '资源池为空', '')
+        default = (f'按任务分配（第{cursor+1}项）' if layer and layer.get('_assigned_trial') else
+                   '按任务分配（原素材已移出此池）' if layer and '_assigned_trial' in layer else
+                   f'按生成顺序（下次第{cursor+1}项）')
+        self.item_combo.addItem(default if items else '资源池为空', '')
         for index, item in enumerate(items):
             self.item_combo.addItem(f"{index+1}/{len(items)} · {item.get('name') or Path(item['path']).name}", item['id'])
             self.item_combo.setItemData(index+1, item['path'], QtCore.Qt.ItemDataRole.ToolTipRole)
@@ -129,3 +142,22 @@ class PoolPreview(QtWidgets.QWidget):
             index = next((i for i, item in enumerate(layer.get('sequence_items', [])) if item['id'] == selected), None)
             if index is not None: layer['sequence_cursor'] = index
         return result
+
+    def prepare(self, job, state):
+        """Trial overrides only selected visual bindings in a private snapshot.
+
+        Preserve the assignment on the snapshot too: playback's renderer applies
+        it again. Neither the persisted assignment nor its reservation changes.
+        """
+        job = copy.deepcopy(job)
+        state = {**state, 'settings': self.apply(state['settings'])}
+        assignment = job.get('render_assignment')
+        if assignment:
+            for layer in state['settings']['layers']:
+                selected = self.choices.get(pool_key(layer))
+                if layer.get('kind') != 'image' or layer.get('source') != 'pool' or not selected: continue
+                item = next((item for item in layer.get('sequence_items', []) if item['id'] == selected), None)
+                if item:
+                    assignment['sources'][layer['id']] = dict(field='path', value=item['path'])
+        from .render_assignment import apply
+        return apply(job, state)
