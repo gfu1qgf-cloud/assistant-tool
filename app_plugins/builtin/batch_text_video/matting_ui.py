@@ -158,12 +158,12 @@ class MattingDialog(QtWidgets.QDialog, MattingHistory):
         for key, label, low, high, suffix in (
             ('black_clip', '黑色截断', 0, 99.9, ' %'), ('white_clip', '白色截断', .1, 100, ' %'),
             ('clean_black', '清理黑色区域', 0, 100, ' %'), ('clean_white', '清理白色区域', 0, 100, ' %'),
-            ('denoise', '遮罩降噪', 0, 5, ''), ('grow', '收缩－／扩张＋', -20, 20, ' px'),
+            ('denoise', '遮罩降噪', 0, 5, ''), ('grow', '抠像遮罩收缩－／扩展＋', -20, 20, ' px'),
             ('smooth', '边缘引导平滑', 0, 100, ' %'), ('blur', '羽化半径', 0, 20, ' px'),
             ('in_out', '羽化内外比例', -100, 100, ' %'), ('opacity', '遮罩不透明度', 0, 100, ' %'),
             ('cleanup_size', '碎块尺度', 1, 12, ' px'), ('despill_amount', '去色强度', 0, 100, ' %'),
             ('hole_threshold', '补洞前景阈值', 1, 99, ' %'),
-            ('despill_width', '去色边缘范围', 1, 12, ' px'), ('despill_luma', '去色亮度补偿', 0, 100, ' %'),
+            ('despill_width', '去溢色作用范围', 1, 12, ' px'), ('despill_luma', '去色亮度补偿', 0, 100, ' %'),
             ('despill_softness', '去色过渡柔和度', 0, 100, ' %'),
         ):
             control = QtWidgets.QSpinBox() if key in {'denoise', 'cleanup_size', 'despill_width'} else QtWidgets.QDoubleSpinBox()

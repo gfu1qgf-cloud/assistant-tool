@@ -264,6 +264,7 @@ class VisualProperties(QtWidgets.QWidget):
         form = self._page("抠像")
         animation = self._page("动画")
         self.controls = {}
+        self._form_heading(form, '抠像遮罩（透明范围）')
         self.matting_button = QtWidgets.QPushButton('AI抠像工作台…')
         self.matting_button.setToolTip('调整当前素材的AI遮罩；保存参数后用于预览和渲染，不生成透明视频缓存。')
         self.matting_button.clicked.connect(lambda: self.mattingRequested.emit(self.layer['id']) if self.layer else None)
@@ -288,7 +289,7 @@ class VisualProperties(QtWidgets.QWidget):
         self.key_details = KeyDetails()
         self.key_details.changed.connect(self._key_details_changed)
         form.addRow(self.key_details)
-        for key, label, low in (("key_similarity", "颜色容差", .00001), ("key_softness", "边缘柔化", 0)):
+        for key, label, low in (("key_similarity", "颜色容差", .00001), ("key_softness", "抠像边缘柔化", 0)):
             control = QtWidgets.QDoubleSpinBox()
             control.setDecimals(3); control.setRange(low, 1); control.setSingleStep(.01)
             control.valueChanged.connect(self.edit)
@@ -297,6 +298,37 @@ class VisualProperties(QtWidgets.QWidget):
         self.controls['key_softness'].setToolTip(
             '0为硬边，1为最柔。只柔化接近抠像颜色的过渡像素，主体不透明度独立控制。\n'
             '需要调整扣除的颜色范围时，请使用“颜色容差”。')
+        grow = QtWidgets.QDoubleSpinBox(); grow.setRange(-20, 20); grow.setDecimals(2); grow.setSingleStep(.25); grow.setSuffix(' px')
+        grow.setToolTip('调整抠像透明遮罩（Alpha）：负值收缩人物保留范围，正值扩展，0不调整；与去溢色作用范围独立。可先试-0.25或-0.5，过度收缩会损失头发和手指细节。AI模式与工作台已有收边叠加，合计范围为±20像素。')
+        grow.valueChanged.connect(self.edit); self.controls['key_matte_grow'] = grow
+        form.addRow('抠像遮罩收缩－／扩展＋', grow)
+        self.matte_levels = MatteLevels()
+        self.controls.update(self.matte_levels.controls)
+        self.matte_levels.changed.connect(self.edit)
+        form.addRow("抠像遮罩透明度修正", self.matte_levels)
+        note = QtWidgets.QLabel("前景发虚：把右端向左拉；背景残留：把左端向右拉。中间保持平滑过渡。\n"
+            "黑幕会连同前景里的黑色一起扣除，请降低颜色容差；光效／火花也可选滤色（会变亮，不是扣像）。\n"
+            "这些阈值只修正扣像，图层自身不透明度仍独立控制；0 → 100保持原效果。")
+        note.setWordWrap(True)
+        note.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored, QtWidgets.QSizePolicy.Policy.Preferred)
+        form.addRow(note)
+        cleanup = QtWidgets.QCheckBox("去碎块（清除悬空小块）")
+        cleanup.toggled.connect(self.edit)
+        self.controls["key_cleanup"] = cleanup
+        form.addRow(cleanup)
+        cleanup_size = QtWidgets.QSpinBox()
+        cleanup_size.setRange(1, 12); cleanup_size.setSuffix(" px")
+        cleanup_size.valueChanged.connect(self.edit)
+        self.controls["key_cleanup_size"] = cleanup_size
+        form.addRow("碎块尺度", cleanup_size)
+        cleanup.setToolTip("去除与较粗主体分离的细小残片；相连的细发丝保留原轮廓。默认关闭，不修改源文件。")
+        cleanup_size.setToolTip("按源素材像素计算，数值越大清理越强。建议先用1–2；孤立的小饰品可用增强模式白色辅助遮罩保护。")
+        screen_cleanup = QtWidgets.QCheckBox('清除边缘／指缝残留幕色（AI）')
+        screen_cleanup.setToolTip('结合原图的绿／蓝幕色清理AI遮罩边缘与窄缝，避免补洞把指缝填回去；保留画笔优先。需要保留边缘绿色装饰时可关闭。')
+        screen_cleanup.toggled.connect(self.edit)
+        self.controls['key_screen_cleanup'] = screen_cleanup
+        form.addRow(screen_cleanup)
+        self._form_heading(form, '去溢色（颜色修正）')
         for key, label in (("key_despill", "抑制绿／蓝色溢出"), ("media_loop", "素材不足时循环；关闭则播完隐藏")):
             control = QtWidgets.QCheckBox(label)
             control.toggled.connect(self.edit)
@@ -315,21 +347,16 @@ class VisualProperties(QtWidgets.QWidget):
         fade.setToolTip('首尾重叠过渡；过长时按素材长度和可用帧缓冲自动缩短。设计画面显示首帧，交界效果请看播放预览。')
         despill_mode = QtWidgets.QComboBox()
         despill_mode.addItem("基础 · 全图保守", "basic")
-        despill_mode.addItem("边缘 · 遮罩去色溢（推荐）", "edge")
+        despill_mode.addItem("边缘 · 仅修正边缘颜色（推荐）", "edge")
         despill_mode.currentIndexChanged.connect(self.edit)
         self.controls["key_despill_mode"] = despill_mode
         form.addRow("去色溢方式", despill_mode)
-        screen_cleanup = QtWidgets.QCheckBox('清除边缘／指缝残留幕色（AI）')
-        screen_cleanup.setToolTip('结合原图的绿／蓝幕色清理AI遮罩边缘与窄缝，避免补洞把指缝填回去；保留画笔优先。需要保留边缘绿色装饰时可关闭。')
-        screen_cleanup.toggled.connect(self.edit)
-        self.controls['key_screen_cleanup'] = screen_cleanup
-        form.addRow(screen_cleanup)
         for key, label, low, high, value_suffix in (
             ("key_despill_amount", "去色溢强度", 0, 100, " %"),
-            ("key_despill_width", "边缘范围", 1, 12, " px"),
+            ("key_despill_width", "去溢色作用范围", 1, 12, " px"),
             ("key_despill_luma", "亮度补偿", 0, 100, " %"),
             ("key_despill_basic_luma", "亮度补偿", 0, 100, " %"),
-            ("key_despill_softness", "边缘过渡柔和度", 0, 100, " %"),
+            ("key_despill_softness", "去溢色过渡柔和度", 0, 100, " %"),
         ):
             control = QtWidgets.QSpinBox() if key == "key_despill_width" else QtWidgets.QDoubleSpinBox()
             if isinstance(control, QtWidgets.QDoubleSpinBox): control.setDecimals(1)
@@ -342,35 +369,10 @@ class VisualProperties(QtWidgets.QWidget):
         self.controls["key_despill_luma"].setToolTip("用中性色补回部分去色造成的亮度下降；0不补偿，100尽量保持亮度。过亮时降低此值。")
         self.controls['key_despill_basic_luma'].setToolTip('补回基础去色造成的亮度下降。0保留原基础效果；100尽量保持原亮度。与边缘模式的亮度参数分别保存。')
         self.controls['key_despill_softness'].setToolTip('提高后用平滑曲线降低边缘过渡带的过强修正，缓解突兀或偏色的边。0保留原边缘效果；不会额外修改透明度。')
-        grow = QtWidgets.QDoubleSpinBox(); grow.setRange(-20, 20); grow.setDecimals(2); grow.setSingleStep(.25); grow.setSuffix(' px')
-        grow.setToolTip('按源素材像素微调遮罩：负值收缩，正值扩展，0不调整。可先试-0.25或-0.5，过度收缩会损失头发和手指细节。AI模式与工作台已有收边叠加，合计范围为±20像素。')
-        grow.valueChanged.connect(self.edit); self.controls['key_matte_grow'] = grow
-        form.addRow('遮罩收缩－／扩展＋', grow)
-        self.edge_preset = QtWidgets.QPushButton('轻收边＋柔和去色溢')
+        self.edge_preset = QtWidgets.QPushButton('抠像收边＋去溢色（组合预设）')
         self.edge_preset.setAutoDefault(False); self.edge_preset.clicked.connect(self._apply_edge_preset)
-        self.edge_preset.setToolTip('一次设置：收缩0.5px、边缘去色85%、范围4px、亮度补偿75%、过渡柔和70%。不改变抠像算法或来源；可撤销后继续微调。')
+        self.edge_preset.setToolTip('同时调整抠像遮罩与颜色修正：抠像遮罩收缩0.5px、边缘去色85%、范围4px、亮度补偿75%、过渡柔和70%。不改变抠像算法或来源；可撤销后继续微调。')
         form.addRow(self.edge_preset)
-        self.matte_levels = MatteLevels()
-        self.controls.update(self.matte_levels.controls)
-        self.matte_levels.changed.connect(self.edit)
-        form.addRow("扣像透明度修正", self.matte_levels)
-        note = QtWidgets.QLabel("前景发虚：把右端向左拉；背景残留：把左端向右拉。中间保持平滑过渡。\n"
-            "黑幕会连同前景里的黑色一起扣除，请降低颜色容差；光效／火花也可选滤色（会变亮，不是扣像）。\n"
-            "这些阈值只修正扣像，图层自身不透明度仍独立控制；0 → 100保持原效果。")
-        note.setWordWrap(True)
-        note.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored, QtWidgets.QSizePolicy.Policy.Preferred)
-        form.addRow(note)
-        cleanup = QtWidgets.QCheckBox("去碎块（清除悬空小块）")
-        cleanup.toggled.connect(self.edit)
-        self.controls["key_cleanup"] = cleanup
-        form.addRow(cleanup)
-        cleanup_size = QtWidgets.QSpinBox()
-        cleanup_size.setRange(1, 12); cleanup_size.setSuffix(" px")
-        cleanup_size.valueChanged.connect(self.edit)
-        self.controls["key_cleanup_size"] = cleanup_size
-        form.addRow("碎块尺度", cleanup_size)
-        cleanup.setToolTip("去除与较粗主体分离的细小残片；相连的细发丝保留原轮廓。默认关闭，不修改源文件。")
-        cleanup_size.setToolTip("按源素材像素计算，数值越大清理越强。建议先用1–2；孤立的小饰品可用增强模式白色辅助遮罩保护。")
         basic.setToolTip("支持图片、视频和GIF；保留原比例，不加入素材自身音轨。播放预览与成品使用相同抠像和叠加。")
         appearance = self._page('入场与退场')
         self.appearance_toggle = QtWidgets.QCheckBox('启用入场／退场动画')
@@ -429,6 +431,12 @@ class VisualProperties(QtWidgets.QWidget):
         animation.addRow(note)
         self._update_motion_controls()
         self._update_key_controls()
+
+    @staticmethod
+    def _form_heading(form, title):
+        label = QtWidgets.QLabel(title)
+        font = label.font(); font.setBold(True); label.setFont(font)
+        form.addRow(label)
 
     def _page(self, title):
         page = QtWidgets.QWidget()
