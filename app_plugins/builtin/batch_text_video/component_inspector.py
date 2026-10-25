@@ -35,6 +35,7 @@ class ComponentPropertyPanel(PropertySections):
     selectCopy = QtCore.pyqtSignal(str)
     selectImagePool = QtCore.pyqtSignal(str)
     mattingRequested = QtCore.pyqtSignal(str)
+    polygonRequested = QtCore.pyqtSignal(str)
     message = QtCore.pyqtSignal(str)
 
     def __init__(self, *, mode='batch', parent=None):
@@ -123,6 +124,7 @@ class ComponentInspector(QtWidgets.QWidget):
     selectCopy = QtCore.pyqtSignal(str)
     selectImagePool = QtCore.pyqtSignal(str)
     mattingRequested = QtCore.pyqtSignal(str)
+    polygonRequested = QtCore.pyqtSignal(str)
     message = QtCore.pyqtSignal(str)
 
     def __init__(self, services=None, *, mode='batch', parent=None):
@@ -147,7 +149,7 @@ class ComponentInspector(QtWidgets.QWidget):
                 module, function = EDITOR_FACTORIES[kind]
                 factory = getattr(importlib.import_module(module, __package__), function)
                 editor = factory(self.services, mode=self.mode)
-                for name in ('edited','unitChanged','addImages','selectCopy','selectImagePool','mattingRequested','message'):
+                for name in ('edited','unitChanged','addImages','selectCopy','selectImagePool','mattingRequested','polygonRequested','message'):
                     getattr(editor, name).connect(getattr(self, name))
                 self.editors[kind] = editor
             target = self.editors[kind]

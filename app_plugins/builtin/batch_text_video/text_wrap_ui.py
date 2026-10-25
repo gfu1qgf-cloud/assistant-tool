@@ -6,6 +6,7 @@ from .text_wrap import DEFAULTS, SIDES, supported, targetable
 
 class TextWrapProperties(QtWidgets.QWidget):
     changed = QtCore.pyqtSignal(object)
+    polygonRequested = QtCore.pyqtSignal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -19,6 +20,14 @@ class TextWrapProperties(QtWidgets.QWidget):
         self.targets.setMaximumHeight(158)
         root.addWidget(QtWidgets.QLabel('勾选文字需要躲开的控件（可多选）'))
         root.addWidget(self.targets)
+        polygon_row = QtWidgets.QHBoxLayout()
+        self.polygons_button = QtWidgets.QPushButton('绘制／编辑多边形…')
+        self.polygons_button.clicked.connect(lambda: self.polygonRequested.emit(self.layer['id']) if self.layer else None)
+        self.clear_polygons = QtWidgets.QPushButton('清空多边形')
+        self.clear_polygons.clicked.connect(lambda: self.changed.emit({'wrap_polygons': []}) if self.layer else None)
+        polygon_row.addWidget(self.polygons_button, 1); polygon_row.addWidget(self.clear_polygons)
+        root.addLayout(polygon_row)
+        self.polygon_count = QtWidgets.QLabel(); root.addWidget(self.polygon_count)
         form = QtWidgets.QFormLayout()
         from .component_ui import Combo
         from .scrolling_text_ui import MotionSpin
@@ -64,8 +73,12 @@ class TextWrapProperties(QtWidgets.QWidget):
         self.enable_control.setEnabled(bool(layer and supported(layer)))
         self.gap.setValue(layer.get('wrap_gap', DEFAULTS['wrap_gap']) if layer else DEFAULTS['wrap_gap'])
         self.side.setCurrentIndex(self.side.findData(layer.get('wrap_side', 'both') if layer else 'both'))
+        polygons = layer.get('wrap_polygons', []) if layer else []
+        self.polygon_count.setText(f'手绘区域：{sum(item.get("enabled", True) for item in polygons)}/{len(polygons)} 个启用')
+        self.clear_polygons.setEnabled(bool(polygons))
         self.info.setText('适用于普通横排文字；竖排或滚动文字请先关闭对应动画／方向。' if layer and not supported(layer) else
-            '按控件外框避让，移动或缩放控件后自动重排；隐藏的控件不占位。图片动画按静态外框计算。'
+            '勾选对象按外框避让；手绘多边形固定在画布上，可单独使用。要替代图片的矩形，请取消上方该图片勾选。'
+            '\n多边形可拖顶点、整体移动，保存后重排。图片动画不逐帧跟踪。'
             '\n字号会在设定范围内自动缩小；放不下时明确提示。预览与导出使用同一排版。')
         self.loading = False
 

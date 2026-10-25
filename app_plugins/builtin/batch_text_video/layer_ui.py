@@ -42,6 +42,7 @@ class LayerPanel(QtWidgets.QWidget):
     copyRequested = QtCore.pyqtSignal(str)
     imagePoolRequested = QtCore.pyqtSignal(str)
     mattingRequested = QtCore.pyqtSignal(str)
+    polygonRequested = QtCore.pyqtSignal(str)
 
     def _component_menu(self, position):
         item = self.list.itemAt(position)
@@ -152,6 +153,7 @@ class LayerPanel(QtWidgets.QWidget):
         from .component_inspector import ComponentInspector
         self.inspector = ComponentInspector(services, mode=inspector_mode)
         self.inspector.mattingRequested.connect(self.mattingRequested)
+        self.inspector.polygonRequested.connect(self.polygonRequested)
         self.inspector.edited.connect(self._inspector_edited)
         self.inspector.unitChanged.connect(lambda unit: self.units.setCurrentIndex(self.units.findData(unit)))
         self.inspector.addImages.connect(self.append_sequence_images)

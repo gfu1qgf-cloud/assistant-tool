@@ -4,7 +4,7 @@ import math
 import unicodedata
 from qt_compat import QtCore, QtGui
 
-DEFAULTS = {'wrap_enabled': False, 'wrap_targets': [], 'wrap_gap': 12., 'wrap_side': 'both'}
+DEFAULTS = {'wrap_enabled': False, 'wrap_targets': [], 'wrap_gap': 12., 'wrap_side': 'both', 'wrap_polygons': []}
 SIDES = (('两侧环绕', 'both'), ('只走较宽一侧', 'largest'), ('只走左侧', 'left'), ('只走右侧', 'right'))
 
 
@@ -29,6 +29,8 @@ def normalize_wrap(layer):
         raise ValueError('文字避让间距须为0–300像素，按1080宽画布计算。')
     if layer['wrap_side'] not in {value for _, value in SIDES}:
         raise ValueError('文字环绕方向无效。')
+    from .polygon_wrap import normalize_polygons
+    normalize_polygons(layer['wrap_polygons'])
     if layer['wrap_enabled'] and not supported(layer):
         raise ValueError('文字环绕仅支持普通横排文字，请先关闭环绕再启用竖排或滚动。')
 
@@ -63,13 +65,20 @@ def bind_exclusions(layers, context=None):
 
 def exclusions(layer, width, height, extra=0.):
     gap = layer.get('wrap_gap', 12)*width/1080 + extra
-    return [QtCore.QRectF(x*width/100, y*height/100, w*width/100, h*height/100)
+    rectangles = [QtCore.QRectF(x*width/100, y*height/100, w*width/100, h*height/100)
             .adjusted(-gap, -gap, gap, gap) for x, y, w, h in layer.get('_wrap_rects', ())]
+    from .polygon_wrap import polygon_exclusions
+    return rectangles + polygon_exclusions(layer.get('wrap_polygons', []), width, height, gap)
 
 
 def intervals(width, y, height, rectangles, side='both'):
-    blocks = sorted((max(0., rect.left()), min(width, rect.right())) for rect in rectangles
-                    if rect.top() < y+height and rect.bottom() > y and rect.right() > 0 and rect.left() < width)
+    from .polygon_wrap import PolygonExclusion
+    blocks = []
+    for rect in rectangles:
+        if rect.top() < y+height and rect.bottom() > y and rect.right() > 0 and rect.left() < width:
+            spans = rect.band_intervals(y, height) if isinstance(rect, PolygonExclusion) else [(rect.left(), rect.right())]
+            blocks.extend((max(0., left), min(width, right)) for left, right in spans if right > 0 and left < width)
+    blocks.sort()
     result, left = [], 0.
     for start, end in blocks:
         if start > left:
@@ -143,7 +152,11 @@ def _flow(text, font, box, rectangles, layer, scale, start, line_height):
                 if not spans:
                     bottoms = [rect.bottom() for rect in rectangles
                                if rect.top() < y+band and rect.bottom() > y]
-                    y = max(y+stride, min(bottoms)) if bottoms else y+stride
+                    # A sloping/concave contour may open again on the next row.
+                    from .polygon_wrap import PolygonExclusion
+                    curved = any(isinstance(rect, PolygonExclusion) and rect.top() < y+band and rect.bottom() > y
+                                 for rect in rectangles)
+                    y = max(y+stride, min(bottoms)) if bottoms and not curved else y+stride
                 else:
                     y += stride
         finally:

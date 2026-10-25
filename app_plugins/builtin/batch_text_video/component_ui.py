@@ -764,6 +764,7 @@ def text_property_panel(services=None, *, mode='batch'):
     if mode == 'batch':
         from .text_wrap_ui import TextWrapProperties
         panel.wrap_properties = panel.add_bound('text_wrap', '文字环绕／避让控件', TextWrapProperties())
+        panel.wrap_properties.polygonRequested.connect(panel.polygonRequested)
         section = panel.sections['text_wrap']
         panel.body.removeWidget(section); panel.body.insertWidget(2, section)
     return panel

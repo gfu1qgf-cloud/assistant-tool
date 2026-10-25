@@ -128,9 +128,9 @@ def render_text_box(layer, width, height, *, _local_surface=False):
         if obstacles:
             clip = QtGui.QPainterPath()
             clip.addRect(QtCore.QRectF(0, 0, width, height))
+            from .polygon_wrap import exclusion_path
             for rect in obstacles:
-                hole = QtGui.QPainterPath(); hole.addRect(rect)
-                clip = clip.subtracted(hole)
+                clip = clip.subtracted(exclusion_path(rect))
             painter.setClipPath(clip)
         from .text_background import draw_background
         draw_background(painter,layer,groups,box.left(),y,scale,background_box)

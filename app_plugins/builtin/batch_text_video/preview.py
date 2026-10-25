@@ -135,28 +135,8 @@ class Preview(QtWidgets.QWidget):
         try:
             painter.fillRect(self.rect(),QtGui.QColor("#20242a"))
             canvas = self.canvas_rect()
-            painter.fillRect(canvas,QtCore.Qt.GlobalColor.black)
-            painter.setRenderHint(QtGui.QPainter.RenderHint.SmoothPixmapTransform)
-            if not self.background.isNull():
-                size = QtCore.QSizeF(self.background.size())
-                size.scale(canvas.size(),QtCore.Qt.AspectRatioMode.KeepAspectRatioByExpanding if self.cover
-                           else QtCore.Qt.AspectRatioMode.KeepAspectRatio)
-                size *= getattr(self, "background_zoom", 1.0)
-                rect = QtCore.QRectF(canvas.center().x()-size.width()/2,canvas.center().y()-size.height()/2,size.width(),size.height())
-                painter.save()
-                painter.setClipRect(canvas)
-                painter.drawImage(rect,self.background)
-                painter.restore()
-            if getattr(self, "composite_planes", None):
-                for mode, image in self.composite_planes:
-                    painter.setCompositionMode({"normal": QtGui.QPainter.CompositionMode.CompositionMode_SourceOver,
-                        "add": QtGui.QPainter.CompositionMode.CompositionMode_Plus,
-                        "screen": QtGui.QPainter.CompositionMode.CompositionMode_Screen}[mode])
-                    painter.drawImage(canvas, image)
-                painter.setCompositionMode(QtGui.QPainter.CompositionMode.CompositionMode_SourceOver)
-            elif not self.overlay.isNull():
-                painter.drawImage(canvas,self.overlay)
-            elif self.background.isNull():
+            self._paint_composition(painter, canvas)
+            if self.background.isNull() and self.overlay.isNull() and not getattr(self, 'composite_planes', None):
                 painter.setPen(QtGui.QColor("#eeeeee"))
                 painter.drawText(canvas,QtCore.Qt.AlignmentFlag.AlignCenter,"选择背景视频／图片并填写标题／正文")
             if self.show_bounds:
@@ -202,6 +182,38 @@ class Preview(QtWidgets.QWidget):
                 painter.restore()
         finally:
             painter.end()
+
+    def _paint_composition(self, painter, canvas):
+        """The polygon editor reuses the actual composition without selection guides."""
+        painter.fillRect(canvas, QtCore.Qt.GlobalColor.black)
+        painter.setRenderHint(QtGui.QPainter.RenderHint.SmoothPixmapTransform)
+        if not self.background.isNull():
+            size = QtCore.QSizeF(self.background.size())
+            size.scale(canvas.size(), QtCore.Qt.AspectRatioMode.KeepAspectRatioByExpanding if self.cover
+                       else QtCore.Qt.AspectRatioMode.KeepAspectRatio)
+            size *= self.background_zoom
+            rect = QtCore.QRectF(canvas.center().x()-size.width()/2, canvas.center().y()-size.height()/2, size.width(), size.height())
+            painter.save(); painter.setClipRect(canvas); painter.drawImage(rect, self.background); painter.restore()
+        if getattr(self, 'composite_planes', None):
+            for mode, image in self.composite_planes:
+                painter.setCompositionMode({'normal': QtGui.QPainter.CompositionMode.CompositionMode_SourceOver,
+                    'add': QtGui.QPainter.CompositionMode.CompositionMode_Plus,
+                    'screen': QtGui.QPainter.CompositionMode.CompositionMode_Screen}[mode])
+                painter.drawImage(canvas, image)
+            painter.setCompositionMode(QtGui.QPainter.CompositionMode.CompositionMode_SourceOver)
+        elif not self.overlay.isNull():
+            painter.drawImage(canvas, self.overlay)
+
+    def composition_image(self):
+        size = self.canvas_size.scaled(QtCore.QSize(1200, 1200), QtCore.Qt.AspectRatioMode.KeepAspectRatio)
+        image = QtGui.QImage(size, QtGui.QImage.Format.Format_ARGB32_Premultiplied)
+        image.fill(QtCore.Qt.GlobalColor.black)
+        painter = QtGui.QPainter(image)
+        try:
+            self._paint_composition(painter, QtCore.QRectF(image.rect()))
+        finally:
+            painter.end()
+        return image
 
     def create_context_menu(self, position):
         layer, _handle = self.hit_test(position)

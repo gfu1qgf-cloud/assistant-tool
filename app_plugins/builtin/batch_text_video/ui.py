@@ -575,6 +575,7 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
         self.scheme.currentIndexChanged.connect(self.schedule_edit)
         self.layer_panel.changed.connect(self.schedule_edit)
         self.layer_panel.convertRequested.connect(self.convert_component_to_nodes)
+        self.layer_panel.polygonRequested.connect(self._edit_wrap_polygons)
         self.layer_panel.changed.connect(self._sync_preview_layers)
         self.layer_panel.selectionChanged.connect(self._sync_preview_layers)
         self.layer_panel.background_button.clicked.connect(lambda: self.right_tabs.setCurrentIndex(0))
@@ -742,6 +743,10 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
                         layers=bind_pool_layers(self.layer_panel.values(),self.state),geometry_units=self.layer_panel.units.currentData(),
                         show_layer_bounds=self.show_bounds_checkbox.isChecked())
         return settings
+
+    def _edit_wrap_polygons(self, identifier):
+        from .polygon_editor import edit_polygons
+        edit_polygons(self, identifier)
 
     def _sync_preview_layers(self,*_args):
         values = self.layer_panel.values()
