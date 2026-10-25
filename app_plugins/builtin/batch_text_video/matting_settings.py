@@ -6,7 +6,7 @@ DEFAULTS = dict(model='isnet', quality='better', device='auto', black_clip=0., w
                 clean_black=0., clean_white=0., denoise=0, grow=0, smooth=0., blur=0.,
                 in_out=0., opacity=100., invert=False, cleanup=False, cleanup_size=2,
                 despill='none', despill_amount=100., despill_width=4, despill_luma=50., strokes=[],
-                fill_holes=False, hole_threshold=50., screen_cleanup=True)
+                fill_holes=False, hole_threshold=50., screen_cleanup=True, despill_softness=0.)
 
 
 def normalize(values=None):
@@ -23,12 +23,12 @@ def normalize(values=None):
     ranges = dict(black_clip=(0, 99.9), white_clip=(.1, 100), clean_black=(0, 100), clean_white=(0, 100),
                   denoise=(0, 5), grow=(-20, 20), smooth=(0, 100), blur=(0, 20), in_out=(-100, 100),
                   opacity=(0, 100), cleanup_size=(1, 12), despill_amount=(0, 100),
-                  despill_width=(1, 12), despill_luma=(0, 100), hole_threshold=(1, 99))
+                  despill_width=(1, 12), despill_luma=(0, 100), hole_threshold=(1, 99), despill_softness=(0, 100))
     for name, (low, high) in ranges.items():
         value = result[name]
         if type(value) not in (int, float) or not math.isfinite(value) or not low <= value <= high:
             raise ValueError('抠像参数超出范围：'+name)
-        if name in {'denoise', 'grow', 'cleanup_size', 'despill_width'} and type(value) is not int:
+        if name in {'denoise', 'cleanup_size', 'despill_width'} and type(value) is not int:
             raise ValueError('抠像参数须为整数：'+name)
     if result['white_clip']-result['black_clip'] < .1: raise ValueError('白色截断必须大于黑色截断，至少相差0.1%。')
     strokes = result['strokes']
@@ -92,8 +92,8 @@ def refine(rgb, alpha, source_alpha, values, *, source_rgb=None):
     if p['denoise']:
         a = cv2.medianBlur(np.rint(a*255).astype(np.uint8), p['denoise']*2+1).astype(np.float32)/255
     if p['grow']:
-        method = cv2.dilate if p['grow'] > 0 else cv2.erode
-        a = method(a, np.ones((3, 3), np.uint8), iterations=abs(p['grow']), borderType=cv2.BORDER_REPLICATE)
+        from .matte_geometry import shift
+        a = shift(a, p['grow'])
     if p['smooth']:
         guide = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY).astype(np.float32)/255
         radius = 1+round(p['smooth']*.11)
@@ -124,7 +124,8 @@ def refine(rgb, alpha, source_alpha, values, *, source_rgb=None):
     if p['despill'] != 'none' and p['despill_amount']:
         from .chroma_despill import correct_rgb
         layer = dict(key_mode=p['despill'], key_despill_amount=p['despill_amount'],
-                     key_despill_width=p['despill_width'], key_despill_luma=p['despill_luma'])
+                     key_despill_width=p['despill_width'], key_despill_luma=p['despill_luma'],
+                     key_despill_softness=p['despill_softness'])
         protection = (painted == 255).astype(np.float32) if painted is not None else np.zeros(a.shape, np.float32)
         correct_rgb(data, layer, protection)
     data[:, :, 3] = np.rint(data[:, :, 3].astype(np.float32)*(float(p['opacity'])/100)).astype(np.uint8)

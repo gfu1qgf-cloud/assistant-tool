@@ -69,7 +69,7 @@ def preview_key(job, state, node_bundle=None, *, preview_limit=None):
         except OSError:
             fingerprints.append((str(path), None, None))
     from .text_colors import job_color_scope
-    values = ["playback-v29-trial-screen-gaps", preview_limit, job_color_scope(job), settings, job.get("title", ""), job.get("body", ""),
+    values = ["playback-v30-fractional-matte", preview_limit, job_color_scope(job), settings, job.get("title", ""), job.get("body", ""),
               job.get("requires_title", False), job.get("voice_override", False), fingerprints, music, next_id]
     from .node_effects import cache_snapshot
     values.append(cache_snapshot(node_bundle, job.get('id')))

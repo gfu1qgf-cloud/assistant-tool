@@ -164,9 +164,11 @@ class MattingDialog(QtWidgets.QDialog, MattingHistory):
             ('cleanup_size', '碎块尺度', 1, 12, ' px'), ('despill_amount', '去色强度', 0, 100, ' %'),
             ('hole_threshold', '补洞前景阈值', 1, 99, ' %'),
             ('despill_width', '去色边缘范围', 1, 12, ' px'), ('despill_luma', '去色亮度补偿', 0, 100, ' %'),
+            ('despill_softness', '去色过渡柔和度', 0, 100, ' %'),
         ):
-            control = QtWidgets.QSpinBox() if key in {'denoise', 'grow', 'cleanup_size', 'despill_width'} else QtWidgets.QDoubleSpinBox()
+            control = QtWidgets.QSpinBox() if key in {'denoise', 'cleanup_size', 'despill_width'} else QtWidgets.QDoubleSpinBox()
             if isinstance(control, QtWidgets.QDoubleSpinBox): control.setDecimals(1)
+            if key == 'grow': control.setDecimals(2); control.setSingleStep(.25)
             control.setRange(low, high); control.setSuffix(suffix); control.valueChanged.connect(self.parameters_changed)
             self.controls[key] = control; form.addRow(label, control)
         for key, label in (('invert', '反转遮罩'), ('fill_holes', '填补主体内部封闭孔洞'),

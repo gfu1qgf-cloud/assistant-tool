@@ -233,9 +233,11 @@ def apply_saved(layer, catalogue=None):
     from .matting_settings import normalize
     base_parameters = normalize(record.get('base_parameters', record.get('parameters', {})))
     refine_ai = (inline_ai or options.get('key_method') == 'enhanced' or options.get('key_cleanup')
-                 or options.get('key_despill') or options.get('key_alpha_low', 0) != 0 or options.get('key_alpha_high', 100) != 100)
+                 or options.get('key_despill') or options.get('key_matte_grow', 0) != 0
+                 or options.get('key_alpha_low', 0) != 0 or options.get('key_alpha_high', 100) != 100)
     if record.get('mode') == 'dynamic' or refine_ai:
         p = copy.deepcopy(base_parameters)
+        p['grow'] += options.get('key_matte_grow', 0)
         if options.get('key_method') in {'ai', 'enhanced'}:
             p['fill_holes'] = bool(options.get('key_protect_inside', True))
         if options.get('key_cleanup'):
@@ -244,6 +246,7 @@ def apply_saved(layer, catalogue=None):
             color = options.get('key_mode')
             p.update(despill=color if color in {'green', 'blue'} else 'green',
                      screen_cleanup=options.get('key_screen_cleanup', True),
+                     despill_softness=options.get('key_despill_softness', 0),
                      despill_amount=options.get('key_despill_amount', 100),
                      despill_width=int(options.get('key_despill_width', 4)), despill_luma=options.get('key_despill_luma', 50))
         low, high = p['black_clip'], p['white_clip']

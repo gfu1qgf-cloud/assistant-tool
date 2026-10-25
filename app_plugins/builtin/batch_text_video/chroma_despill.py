@@ -7,7 +7,8 @@ uses the same math for the editing poster. Protected trimap colours win last.
 import math
 
 DEFAULTS = {"key_despill_mode": "basic", "key_despill_amount": 100.0,
-            "key_despill_width": 4, "key_despill_luma": 50.0, "key_screen_cleanup": True}
+            "key_despill_width": 4, "key_despill_luma": 50.0, "key_screen_cleanup": True,
+            "key_despill_basic_luma": 0.0, "key_despill_softness": 0.0}
 
 
 def normalize_despill(layer):
@@ -17,7 +18,7 @@ def normalize_despill(layer):
         raise ValueError('边缘幕色清理开关无效。')
     if layer["key_despill_mode"] not in {"basic", "edge"}:
         raise ValueError("去色溢方式必须是基础或边缘遮罩。")
-    for key in ("key_despill_amount", "key_despill_luma"):
+    for key in ("key_despill_amount", "key_despill_luma", "key_despill_basic_luma", "key_despill_softness"):
         value = layer[key]
         if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or not 0 <= value <= 100:
             raise ValueError("去色溢强度和亮度补偿必须为0–100%。")
@@ -46,8 +47,27 @@ def edge_mask(alpha, layer):
     band = table[core]
     blur = min(radius, min(alpha.shape)//2)
     soft = cv2.blur(band, (blur*2+1, blur*2+1), borderType=cv2.BORDER_REFLECT)
-    gain = np.floor(np.minimum(255, values*1.5)).astype(np.uint8)
+    ratio = layer.get('key_despill_softness', 0)/100
+    smooth = 255*(values/255)**2*(3-2*values/255)
+    gain = np.floor(np.minimum(255, values*1.5)*(1-ratio)+smooth*ratio).astype(np.uint8)
     return gain[soft]
+
+
+def correct_basic(data, layer, protection):
+    """Legacy max-other rule with adjustable gain and neutral luma recovery."""
+    if not layer.get('key_despill_amount', 100): return
+    import numpy as np
+    from .chroma_key import despill_type
+    channel = 1 if despill_type(layer) == 'green' else 2
+    others = [i for i in range(3) if i != channel]
+    rgb = data[:, :, :3]
+    excess = np.maximum(0, rgb[:, :, channel].astype(np.float32)-np.maximum(rgb[:, :, others[0]], rgb[:, :, others[1]]))
+    excess *= layer.get('key_despill_amount', 100)/100
+    luma = (.587 if channel == 1 else .114)*layer.get('key_despill_basic_luma', 0)/100
+    for index in range(3):
+        if not luma and index != channel: continue
+        clean = np.clip(rgb[:, :, index]+excess*(luma-(index == channel)), 0, 255)
+        data[:, :, index] = np.rint(clean*(1-protection)+rgb[:, :, index]*protection).astype(np.uint8)
 
 
 def correct_rgb(data, layer, protection):
@@ -77,10 +97,11 @@ def add_native(filters, layer, rgb, alpha, protection, root):
     """Consume RGB, mask alpha and optional protection; return corrected RGB."""
     from .chroma_key import despill_type
     radius = layer.get("key_despill_width", 4)
+    ratio = layer.get('key_despill_softness', 0)/100
     morph = ",".join(["erosion=coordinates=255"]*radius)
     filters.append(f"[{alpha}]{morph},lut=y='255*(1-pow(val/255,2))',"
         f"boxblur=lr='min({radius},floor(min(w,h)/2))':lp=1,"
-        f"lut=y='min(255,val*1.5)',format=gray[{root}_band]")
+        f"lut=y='min(255,val*1.5)*{1-ratio:.9f}+255*pow(val/255,2)*(3-2*val/255)*{ratio:.9f}',format=gray[{root}_band]")
     if protection:
         filters.append(f"[{rgb}]split=2[{root}_input][{root}_saved]")
         rgb = root + "_input"

@@ -93,7 +93,7 @@ class MattingTests(unittest.TestCase):
         self.assertEqual(kept[24, 32, 3], 255)
 
     def test_invalid_parameters_and_independent_defaults(self):
-        for p in ([1], {'opacity': True}, {'white_clip': 40, 'black_clip': 50}, {'grow': 1.5}, {'blur': float('nan')}, {'unknown': 1}):
+        for p in ([1], {'opacity': True}, {'white_clip': 40, 'black_clip': 50}, {'denoise': 1.5}, {'blur': float('nan')}, {'unknown': 1}):
             with self.subTest(p=p), self.assertRaises(ValueError): normalize(p)
         first = normalize(); first['strokes'].append('bad'); self.assertEqual(normalize()['strokes'], [])
 

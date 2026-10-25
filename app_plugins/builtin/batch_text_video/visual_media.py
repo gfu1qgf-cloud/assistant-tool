@@ -122,6 +122,8 @@ def keyed_image(image, layer):
         alpha, protection = enhanced_alpha(alpha, layer, trimap)
     else:
         alpha = remap(alpha, layer)
+        from .matte_geometry import shift
+        alpha = shift(alpha, layer.get('key_matte_grow', 0))
     if layer.get("key_cleanup", False):
         alpha = np.floor(alpha*255)/255
         data[:, :, 3] = np.floor(data[:, :, 3]*alpha).astype(np.uint8)
@@ -136,11 +138,8 @@ def keyed_image(image, layer):
     if enabled(layer):
         correct_rgb(data, layer, protection)
     elif spill and layer.get("key_despill_mode", "basic") == "basic":
-        channel = 1 if spill == "green" else 2
-        other = [index for index in range(3) if index != channel]
-        original = data[:, :, channel].astype(np.float32)
-        cleaned = np.minimum(original, np.maximum(data[:, :, other[0]], data[:, :, other[1]]))
-        data[:, :, channel] = np.rint(cleaned*(1-protection)+original*protection).astype(np.uint8)
+        from .chroma_despill import correct_basic
+        correct_basic(data, layer, protection)
     return QtGui.QImage(data.tobytes(), rgba.width(), rgba.height(), rgba.width()*4,
                         QtGui.QImage.Format.Format_RGBA8888).copy()
 
@@ -329,6 +328,8 @@ class VisualProperties(QtWidgets.QWidget):
             ("key_despill_amount", "去色溢强度", 0, 100, " %"),
             ("key_despill_width", "边缘范围", 1, 12, " px"),
             ("key_despill_luma", "亮度补偿", 0, 100, " %"),
+            ("key_despill_basic_luma", "亮度补偿", 0, 100, " %"),
+            ("key_despill_softness", "边缘过渡柔和度", 0, 100, " %"),
         ):
             control = QtWidgets.QSpinBox() if key == "key_despill_width" else QtWidgets.QDoubleSpinBox()
             if isinstance(control, QtWidgets.QDoubleSpinBox): control.setDecimals(1)
@@ -339,6 +340,16 @@ class VisualProperties(QtWidgets.QWidget):
         despill_mode.setToolTip("边缘方式从抠像透明度生成柔和遮罩，只修正轮廓附近的绿／蓝偏色；不会改变透明度。旧项目保留基础方式。")
         self.controls["key_despill_width"].setToolTip("按源素材像素计算；范围越大，越向主体内部延伸。遮罩柔化后最远影响约两倍范围。")
         self.controls["key_despill_luma"].setToolTip("用中性色补回部分去色造成的亮度下降；0不补偿，100尽量保持亮度。过亮时降低此值。")
+        self.controls['key_despill_basic_luma'].setToolTip('补回基础去色造成的亮度下降。0保留原基础效果；100尽量保持原亮度。与边缘模式的亮度参数分别保存。')
+        self.controls['key_despill_softness'].setToolTip('提高后用平滑曲线降低边缘过渡带的过强修正，缓解突兀或偏色的边。0保留原边缘效果；不会额外修改透明度。')
+        grow = QtWidgets.QDoubleSpinBox(); grow.setRange(-20, 20); grow.setDecimals(2); grow.setSingleStep(.25); grow.setSuffix(' px')
+        grow.setToolTip('按源素材像素微调遮罩：负值收缩，正值扩展，0不调整。可先试-0.25或-0.5，过度收缩会损失头发和手指细节。AI模式与工作台已有收边叠加，合计范围为±20像素。')
+        grow.valueChanged.connect(self.edit); self.controls['key_matte_grow'] = grow
+        form.addRow('遮罩收缩－／扩展＋', grow)
+        self.edge_preset = QtWidgets.QPushButton('轻收边＋柔和去色溢')
+        self.edge_preset.setAutoDefault(False); self.edge_preset.clicked.connect(self._apply_edge_preset)
+        self.edge_preset.setToolTip('一次设置：收缩0.5px、边缘去色85%、范围4px、亮度补偿75%、过渡柔和70%。不改变抠像算法或来源；可撤销后继续微调。')
+        form.addRow(self.edge_preset)
         self.matte_levels = MatteLevels()
         self.controls.update(self.matte_levels.controls)
         self.matte_levels.changed.connect(self.edit)
@@ -481,13 +492,30 @@ class VisualProperties(QtWidgets.QWidget):
         self.controls['key_screen_cleanup'].setEnabled(active and self.controls['key_despill_amount'].value() > 0)
         self.controls['key_despill_mode'].setToolTip('AI模式统一按主体遮罩边缘去色溢；上方绿色／蓝色预设指定要降低的颜色。' if ai else '选择全图保守修正或按遮罩边缘修正。')
         edge = active and (ai or self.controls["key_despill_mode"].currentData() == "edge")
-        for key in ("key_despill_amount", "key_despill_width", "key_despill_luma"):
+        self.controls['key_despill_amount'].setEnabled(active)
+        for key in ("key_despill_width", "key_despill_luma", "key_despill_softness"):
             self.controls[key].setEnabled(edge)
+        self.controls['key_despill_basic_luma'].setEnabled(active and not edge)
+        form = self.controls['key_despill_luma'].parentWidget().layout()
+        for key, visible in (('key_despill_luma', ai or self.controls['key_despill_mode'].currentData() == 'edge'),
+                             ('key_despill_basic_luma', not ai and self.controls['key_despill_mode'].currentData() == 'basic')):
+            self.controls[key].setVisible(visible)
+            label = form.labelForField(self.controls[key])
+            if label: label.setVisible(visible)
+        self.controls['key_matte_grow'].setEnabled(active_matte)
+        self.edge_preset.setEnabled(can_despill)
         self.controls["key_cleanup"].setEnabled(active_matte)
         self.controls["key_cleanup_size"].setEnabled(active_matte and self.controls["key_cleanup"].isChecked())
         self.matte_levels.setEnabled(active_matte)
         self.key_details.set_layer(self.layer)
         self.key_details.setVisible(not ai)
+
+    def _apply_edge_preset(self):
+        if not self.layer: return
+        value = dict(self.layer, key_matte_grow=-.5, key_despill=True, key_despill_mode='edge',
+                     key_despill_amount=85., key_despill_width=4, key_despill_luma=75., key_despill_softness=70.)
+        self.set_layer(value)
+        self.changed.emit(dict(self.layer))
     def _key_details_changed(self, changes):
         if self.loading or not self.layer: return
         self.layer.update(changes)

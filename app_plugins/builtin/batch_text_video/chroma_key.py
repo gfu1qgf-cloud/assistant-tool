@@ -8,10 +8,11 @@ from pathlib import Path
 import re
 from .chroma_despill import DEFAULTS as DESPILL_DEFAULTS, normalize_despill
 from .chroma_cleanup import DEFAULTS as CLEANUP_DEFAULTS, normalize_cleanup
+from .matte_geometry import DEFAULTS as GEOMETRY_DEFAULTS, normalize as normalize_geometry
 
 KEY_COLORS = {"green": (0, 255, 0), "blue": (0, 0, 255), "black": (0, 0, 0)}
 DEFAULTS = {"key_method": "normal", "key_color": "#00ff00",
-            "key_protect_inside": True, "key_mask_path": "", **DESPILL_DEFAULTS, **CLEANUP_DEFAULTS}
+            "key_protect_inside": True, "key_mask_path": "", **DESPILL_DEFAULTS, **CLEANUP_DEFAULTS, **GEOMETRY_DEFAULTS}
 COLOR_PATTERN = re.compile(r"#[0-9a-fA-F]{6}\Z")
 MASK_SUFFIXES = frozenset({".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff",
                           ".gif", ".mp4", ".mov", ".mkv", ".avi", ".webm", ".m4v"})
@@ -20,6 +21,7 @@ MASK_SUFFIXES = frozenset({".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".t
 def normalize_key(layer):
     normalize_despill(layer)
     normalize_cleanup(layer)
+    normalize_geometry(layer)
     for key, value in DEFAULTS.items():
         layer.setdefault(key, value)
     if layer.get("key_mode", "none") not in {"none", "custom", *KEY_COLORS}:
@@ -67,9 +69,17 @@ def despill_filter(layer):
     spill = despill_type(layer) if layer.get("key_despill") else ""
     if not spill or layer.get("key_despill_mode", "basic") != "basic":
         return ""
+    amount = layer.get('key_despill_amount', 100)/100
+    if not amount: return ''
     channels = {name: f"{name}(X,Y)" for name in ("r", "g", "b")}
     channel, others = ("g", ("r", "b")) if spill == "green" else ("b", ("r", "g"))
-    channels[channel] = f"min({channel}(X,Y),max({others[0]}(X,Y),{others[1]}(X,Y)))"
+    delta = f"max(0,{channel}(X,Y)-max({others[0]}(X,Y),{others[1]}(X,Y)))*{amount:.9f}"
+    luma = (.587 if channel == 'g' else .114)*layer.get('key_despill_basic_luma', 0)/100
+    if amount == 1 and luma == 0:
+        channels[channel] = f"min({channel}(X,Y),max({others[0]}(X,Y),{others[1]}(X,Y)))"
+    else:
+        channels = {name: (value if not luma and name != channel else
+                    f'clip({value}+({delta})*{luma-(name == channel):.9f},0,255)') for name, value in channels.items()}
     return "geq=" + ":".join(f"{key}='{value}'" for key, value in channels.items()) + ":a='alpha(X,Y)':interpolation=nearest"
 
 
@@ -116,7 +126,8 @@ def enhanced_alpha(raw, layer, trimap=None):
     protection = inside_protection(raw) if layer.get("key_protect_inside", True) else np.zeros_like(raw)
     def quantize(value):
         return np.floor(value*255)/255 if layer.get("key_cleanup", False) else value
-    alpha = np.maximum(quantize(remap(raw, layer)), protection)
+    from .matte_geometry import shift
+    alpha = np.maximum(quantize(shift(remap(raw, layer), layer.get('key_matte_grow', 0))), protection)
     if trimap is not None:
         keep, remove = trimap_channels(trimap)
         keep, remove = quantize(keep), quantize(remove)
@@ -136,6 +147,7 @@ def add_keyed_source(args, filters, layer, input_index, label, fps, is_animated,
     """
     from .chroma_matte import key_filters, levels
     from .chroma_despill import enabled, add_native
+    from .matte_geometry import add_native as add_shift
     edge = enabled(layer)
     cleanup = layer.get("key_cleanup", False)
     cleanup_protection = None
@@ -151,17 +163,19 @@ def add_keyed_source(args, filters, layer, input_index, label, fps, is_animated,
     if not enhanced:
         filters.append(f"[{root}_input]" + ",".join(key_filters(layer)) +
                        f",split=2[{root}_rgb][{root}_alpha_source]")
-        filters.append(f"[{root}_alpha_source]alphaextract,format=gray[{root}_final_alpha]")
+        filters.append(f"[{root}_alpha_source]alphaextract,format=gray[{root}_unshifted]")
+        add_shift(filters, root+'_unshifted', root+'_final_alpha', layer.get('key_matte_grow', 0))
         color_pad = root + "_rgb"
     else:
-        spill = (despill_type(layer) if layer.get("key_despill") and
+        spill = (despill_type(layer) if layer.get("key_despill") and layer.get('key_despill_amount', 100) > 0 and
                  (edge or layer.get("key_despill_mode", "basic") == "basic") else "")
         raw_layer = dict(layer, key_alpha_low=0, key_alpha_high=100, key_despill=False)
         filters.append(f"[{root}_input]" + ",".join(key_filters(raw_layer)) +
                        f",alphaextract,format=gray,split=2[{root}_raw][{root}_regions]")
         low, high = levels(layer)
         filters.append(f"[{root}_raw]lut=y='clip((val-{low*2.55:.9f})*"
-                       f"{100/(high-low):.9f},0,255)',format=gray[{root}_base_alpha]")
+                       f"{100/(high-low):.9f},0,255)',format=gray[{root}_unshifted]")
+        add_shift(filters, root+'_unshifted', root+'_base_alpha', layer.get('key_matte_grow', 0))
         if layer.get("key_protect_inside", True):
             # Pad connects every image border; unlike corner-only seeding this
             # works even if a foreground body touches one or several edges.
