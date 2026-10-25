@@ -1,11 +1,10 @@
-"""Bounded encode pipeline with ordered, success-only rotation commits.
+"""Bounded encode pipeline with fixed native assignments and independent saves.
 
 Qt/font/model preparation uses one stable thread; music uses bounded read-ahead
 workers. The coordinator can publish finished encodes during model waits.
-Speculative results never become
-visible files until their predecessors have committed. If a reservation fails,
-dependent in-flight results are canceled/discarded and prepared against the last
-committed state, so neither music nor pool cursors skip failed work.
+Native sources/music reserve once before encoding, then publish in completion
+order. Failed tasks retain their assignment. Node-owned rotations keep the
+legacy ordered reservation/replay contract until they provide frozen inputs.
 """
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor, TimeoutError, wait
@@ -50,15 +49,18 @@ def execute_parallel_batch(store, state, ids, cancel, progress, message, done, p
     outputs = {}
     completed = failed = 0
     paths, failures = [], []
+    paths_by_id = {}
     error = ''
     workers = min(pipeline_workers(state['settings'], node_effects), max(1, len(ids)))
     started = time.monotonic()
-    message(f'本批导出：本项目最多{workers}路最终编码；音乐独立预取，结果及轮换仅成功后按序保存。')
+    message(f'本批导出：本项目最多{workers}路最终编码；原生任务编码前固定分配、完成即保存，失败重试沿用原分配；节点轮换保留原安全顺序。')
 
-    def fail(job_id, exc):
+    def fail(job_id, exc, prepared=None):
         nonlocal state, failed
         job = next(item for item in state['jobs'] if item['id'] == job_id)
         job.update(status='需处理', error=str(exc))
+        from .render_timing import save_item_timing
+        save_item_timing(state, job_id, progress, '需处理', getattr(prepared, 'duration', None))
         state = store.save(state, state['revision'])
         failed += 1
         failures.append(f"{Path(job['path']).name}：{exc}")
@@ -111,7 +113,9 @@ def execute_parallel_batch(store, state, ids, cancel, progress, message, done, p
                             identity = file_identity(prepared.output)
                             if identity in outputs and outputs[identity] != job_id:
                                 raise ValueError('本批次多个任务指向同一成品文件，已阻止覆盖；请检查任务文件名。')
-                            reservation = store.completion_state(speculative, job_id, prepared.output,
+                            from .render_assignment import reserve
+                            state, reserved = reserve(store, state, job_id, prepared)
+                            reservation = copy.deepcopy(state) if reserved else store.completion_state(speculative, job_id, prepared.output,
                                 prepared.music, prepared.sequence_plan)
                             outputs[identity] = job_id
                             entry['future'] = executor.submit(prepared.encode)
@@ -126,7 +130,7 @@ def execute_parallel_batch(store, state, ids, cancel, progress, message, done, p
                             if entry is not None: preparation.cleanup(entry)
                             if cancel.is_set():
                                 break
-                            fail(job_id, exc)
+                            fail(job_id, exc, entry['prepared'] if entry else None)
                             if not pending:
                                 speculative = copy.deepcopy(state)
                     if cancel.is_set():
@@ -136,7 +140,10 @@ def execute_parallel_batch(store, state, ids, cancel, progress, message, done, p
                     if not pending:
                         preparation.wait_for()
                         continue
-                    entry = pending[0]
+                    # Independent outputs can commit immediately. Resource-based
+                    # reservations retain ordered commits and failure rollback.
+                    entry = next((item for item in pending if item['future'].done()
+                                  and not item['prepared'].music and not item['prepared'].sequence_plan), pending[0])
                     if not entry['future'].done():
                         preparation.wait_for(entry['future'])
                         continue
@@ -151,7 +158,7 @@ def execute_parallel_batch(store, state, ids, cancel, progress, message, done, p
                         exc = caught
                     else:
                         exc = None
-                    pending.popleft()
+                    pending.remove(entry)
                     prepared, job_id = entry['prepared'], entry['job_id']
                     try:
                         if exc is None:
@@ -169,7 +176,7 @@ def execute_parallel_batch(store, state, ids, cancel, progress, message, done, p
                         if exc is not None:
                             if isinstance(exc, Cancelled) and cancel.is_set():
                                 break
-                            fail(job_id, exc)
+                            fail(job_id, exc, prepared)
                             if prepared.music or prepared.sequence_plan:
                                 # Resource-dependent lookahead used this reservation.
                                 redo = [(item['index'], item['job_id']) for item in pending]
@@ -183,9 +190,12 @@ def execute_parallel_batch(store, state, ids, cancel, progress, message, done, p
                             elif not pending:
                                 speculative = copy.deepcopy(state)
                             continue
+                        from .render_timing import save_item_timing
+                        save_item_timing(state, job_id, progress, '已完成', getattr(prepared, 'duration', None))
                         state = store.completed(state, job_id, output, prepared.music,
                                                 sequence_plan=prepared.sequence_plan)
                         paths.append(str(output))
+                        paths_by_id[job_id] = str(output)
                         completed += 1
                         progress(job_id, 100)
                         done(job_id, '已完成')
@@ -205,7 +215,7 @@ def execute_parallel_batch(store, state, ids, cancel, progress, message, done, p
         message(traceback.format_exc())
         error = f'记录保存或并发调度异常，已安全停止：{type(exc).__name__}：{exc}；已完成{completed}个，未提交的轮换已保留。'
     result = {'completed': completed, 'failed': failed, 'cancelled': cancel.is_set(),
-              'paths': paths, 'failures': failures}
+              'paths': [paths_by_id[job_id] for job_id in ids if job_id in paths_by_id], 'failures': failures}
     if error:
         result['error'] = error
     message(f'本批导出总耗时 {time.monotonic()-started:.2f}秒，完成{completed}个，失败{failed}个。')

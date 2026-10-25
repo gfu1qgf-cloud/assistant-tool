@@ -9,7 +9,7 @@ AUDIO_ROLES = {
     "voice": {"title": "人声控件", "pool_key": "voice_pool_id", "color": "#5088b5",
               "default": "选择自建人声池…", "note": "从头完整播放，成品长度跟随人声。"},
     "music": {"title": "背景音乐控件", "pool_key": "music_pool_id", "color": "#ac8441",
-              "default": "默认音乐池", "note": "轮换并记住续播位置；导出成功才推进。"},
+              "default": "默认音乐池", "note": "编码前固定音乐分配并预留续播位置；失败重试沿用。"},
 }
 
 

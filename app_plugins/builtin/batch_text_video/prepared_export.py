@@ -29,6 +29,7 @@ class PreparedExport:
     quality: str = 'high'
     render_scope: str = ''
     source_paths: tuple = field(default_factory=tuple)
+    assignment: dict = field(default_factory=dict)
 
     def encode(self):
         from .render_slots import render_slot

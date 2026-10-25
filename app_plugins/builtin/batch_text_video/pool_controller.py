@@ -133,6 +133,10 @@ class PoolController(CustomPoolController, MattingController):
         if item and not item.isSelected():
             table.selectRow(item.row())
         menu = QtWidgets.QMenu(table)
+        if key == 'jobs':
+            from .render_assignment import clear_selected
+            menu.addAction('重新分配所选任务素材（不回退池位置）', lambda: clear_selected(self)).setEnabled(bool(table.identifiers()))
+            menu.addSeparator()
         if key.startswith("pool:"):
             pool = get_pool(self.state, key[5:])
             menu.addAction("添加文件…", self.choose_custom_files)
@@ -225,6 +229,9 @@ class PoolController(CustomPoolController, MattingController):
         return self._active_background(source or {"path": self.preview_video})
 
     def _active_background(self, source):
+        if source.get('render_assignment'):
+            value = source['render_assignment']
+            return dict(source, path=value['background'], voice_path=value['voice'], voice_override=True)
         from .background_visual import background_job
         settings = dict(self.state["settings"])
         if "background_pool_id" in getattr(self, "controls", {}):

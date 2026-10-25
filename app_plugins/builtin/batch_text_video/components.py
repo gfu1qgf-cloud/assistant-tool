@@ -1,7 +1,7 @@
 """Reusable component content sources, independent of widgets and FFmpeg.
 
-Sequence selection is read-only. Progress is committed only with a completed
-video, so previews, cancellation and failed exports cannot consume entries.
+Sequence selection is read-only. Native exports reserve a fixed assignment
+before encoding; failed/canceled jobs retain it for retry. Previews never reserve.
 """
 from model.AppDataStorage import data_file
 import copy

@@ -209,7 +209,8 @@ class Catalogue:
 
 
 def apply_saved(layer, catalogue=None):
-    if layer.get('kind') != 'image' or not layer.get('use_saved_matte', True): return layer
+    inline_ai = layer.get('key_method') == 'ai'
+    if layer.get('kind') != 'image' or not (inline_ai or layer.get('use_saved_matte', True)): return layer
     source = layer.get('path', '')
     if not source: return layer
     existing = layer.get('_matting_binding')
@@ -223,19 +224,44 @@ def apply_saved(layer, catalogue=None):
             verify_record(record)
     else:
         record = (catalogue or Catalogue()).lookup(source)
-    if record is None: return layer
+    if record is None:
+        if not inline_ai: return layer
+        from .matting_settings import normalize
+        source_record = fingerprint(source)
+        record = dict(id='inline-ai-'+source_record['sha256'][:16], mode='dynamic', source=source_record, parameters=normalize())
+    options = layer.get('_matting_post_options') or {key: value for key, value in layer.items() if key.startswith('key_')}
+    from .matting_settings import normalize
+    base_parameters = normalize(record.get('base_parameters', record.get('parameters', {})))
+    refine_ai = (inline_ai or options.get('key_method') == 'enhanced' or options.get('key_cleanup')
+                 or options.get('key_despill') or options.get('key_alpha_low', 0) != 0 or options.get('key_alpha_high', 100) != 100)
+    if record.get('mode') == 'dynamic' or refine_ai:
+        p = copy.deepcopy(base_parameters)
+        if options.get('key_method') in {'ai', 'enhanced'}:
+            p['fill_holes'] = bool(options.get('key_protect_inside', True))
+        if options.get('key_cleanup'):
+            p.update(cleanup=True, cleanup_size=int(options.get('key_cleanup_size', 2)))
+        if options.get('key_despill'):
+            color = options.get('key_mode')
+            p.update(despill=color if color in {'green', 'blue'} else 'green',
+                     despill_amount=options.get('key_despill_amount', 100),
+                     despill_width=int(options.get('key_despill_width', 4)), despill_luma=options.get('key_despill_luma', 50))
+        low, high = p['black_clip'], p['white_clip']
+        p.update(black_clip=low+(high-low)*options.get('key_alpha_low', 0)/100,
+                 white_clip=low+(high-low)*options.get('key_alpha_high', 100)/100)
+        record = dict(id=record['id'], mode='dynamic', source=record['source'],
+                      parameters=normalize(p), base_parameters=base_parameters)
     # Keep the source/sequence identities intact; only the resolved rendering
     # path changes, after the successful-export rotation plan has been built.
     result = copy.deepcopy(layer)
     result.update(path=record['source']['path'] if record.get('mode') == 'dynamic' else record['result']['path'],
                   thumbnail='', key_mode='none', key_cleanup=False, key_despill=False,
-                  _matting_binding=freeze(record))
+                  _matting_binding=freeze(record), _matting_post_options=copy.deepcopy(options))
     return result
 
 
 def freeze(record):
-    keys = ('id', 'mode', 'source', 'parameters') if record.get('mode') == 'dynamic' else ('id', 'source', 'result')
-    return copy.deepcopy({key: record[key] for key in keys})
+    keys = ('id', 'mode', 'source', 'parameters', 'base_parameters') if record.get('mode') == 'dynamic' else ('id', 'source', 'result', 'parameters')
+    return copy.deepcopy({key: record[key] for key in keys if key in record})
 
 
 def verify_record(record):
@@ -260,7 +286,7 @@ def snapshot_layers(layers, catalogue=None):
     from .components import walk_components
     result = copy.deepcopy(layers); catalogue = catalogue or Catalogue()
     for layer in walk_components(result):
-        if layer.get('kind') != 'image' or not layer.get('use_saved_matte', True): continue
+        if layer.get('kind') != 'image' or not (layer.get('use_saved_matte', True) or layer.get('key_method') == 'ai'): continue
         if '_matting_snapshot' in layer: continue
         paths = [layer.get('source_file') or layer.get('path')]
         paths += [item.get('path') for item in layer.get('sequence_items', [])]

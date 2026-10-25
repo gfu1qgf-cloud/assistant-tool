@@ -56,7 +56,7 @@ class EnhancedKeyTests(unittest.TestCase):
         self.assertEqual(despill_type(value), "")
         self.assertEqual(despill_type(layer(key_mode="custom", key_color="#11DD22")), "green")
         for key, bad in (("key_color", "red"), ("key_color", "#00ff00,evil"),
-                         ("key_method", "ai"), ("key_protect_inside", 1), ("key_mask_path", "bad\npath")):
+                         ("key_method", "unknown"), ("key_protect_inside", 1), ("key_mask_path", "bad\npath")):
             with self.subTest(key=key), self.assertRaises(ValueError):
                 normalize_key({key: bad})
 

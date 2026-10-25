@@ -253,13 +253,15 @@ class Store:
             data_file(self.path).write_json(state, indent=2)
             return plan
 
-    def update_render_plan(self, plan_id, status, task_id='', error=''):
+    def update_render_plan(self, plan_id, status, task_id='', error='', *, timing=None):
         with _LOCK:
             state = self.load()
             plan = next((p for p in state['render_plans'] if p['id'] == plan_id), None)
             if plan is None:
                 return
             plan.update(status=status, task_id=task_id or plan.get('task_id', ''), error=str(error))
+            if isinstance(timing, dict):
+                plan['render_timing'] = copy.deepcopy({key: value for key, value in timing.items() if key != 'items'})
             state['revision'] += 1
             data_file(self.path).write_json(state, indent=2)
 

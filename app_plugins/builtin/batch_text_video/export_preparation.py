@@ -59,6 +59,9 @@ class PreparationWorker:
         return entry
 
     def cleanup(self, entry):
+        timing = getattr(self.progress, 'timing', None)
+        if timing is not None and entry.get('job_id'):
+            timing.pause(entry['job_id'])
         self.cleanups.append(self.executor.submit(entry['scope'].close))
 
     def wait_for(self, future=None):
@@ -84,7 +87,7 @@ class PreparationWorker:
                 return [(entry['index'], entry['job_id'])]
             except Exception:
                 return [(entry['index'], entry['job_id'])]
-        self.cleanup(value)
+        self.cleanup({**entry, **value})
         return [(entry['index'], entry['job_id'])]
 
     def __exit__(self, *_args):

@@ -13,6 +13,8 @@ from .matting_settings import normalize, refine
 
 _POSTERS, _LOCK = OrderedDict(), threading.RLock()
 POSTER_LIMIT = 32*1024**2
+_BASES = OrderedDict()
+BASE_LIMIT = 32*1024**2
 
 
 def dynamic(layer):
@@ -29,7 +31,19 @@ def poster(binding, bounds, *, cancel=None, ffmpeg=''):
         image = _POSTERS.get(key)
         if image is not None:
             _POSTERS.move_to_end(key); return image.copy()
-    base = infer(path, p, cancel=cancel, ffmpeg=ffmpeg)
+    inference_key = (str(path), binding['source']['sha256'], p['model'], p['quality'], p['device'])
+    with _LOCK:
+        base = _BASES.get(inference_key)
+        if base is not None: _BASES.move_to_end(inference_key)
+    if base is None:
+        base = infer(path, p, cancel=cancel, ffmpeg=ffmpeg)
+        check_cancel(cancel)
+        size = sum(getattr(value, 'nbytes', 0) for value in base.values())
+        if size <= BASE_LIMIT:
+            with _LOCK:
+                _BASES[inference_key] = base
+                while sum(sum(getattr(value, 'nbytes', 0) for value in item.values()) for item in _BASES.values()) > BASE_LIMIT:
+                    _BASES.popitem(last=False)
     image = qimage(refined(base, p))
     image = image.scaled(bounds, QtCore.Qt.AspectRatioMode.KeepAspectRatio,
                          QtCore.Qt.TransformationMode.SmoothTransformation)
@@ -152,7 +166,7 @@ class Feed:
                         if len(data) != needed: raise ValueError('AI抠像素材帧解码不完整。')
                         source = np.frombuffer(data, np.uint8).reshape(spec.height, spec.width, 4)
                         rgb, alpha = predictor.predict(source[:, :, :3])
-                        result = refine(rgb, alpha, source[:, :, 3], p).tobytes()
+                        result = refine(rgb, alpha, source[:, :, 3], p, source_rgb=source[:, :, :3]).tobytes()
                         frames += 1; written += 1
                         yield result
                     check_cancel(self.cancel)

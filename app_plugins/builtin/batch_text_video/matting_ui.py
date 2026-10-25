@@ -162,13 +162,14 @@ class MattingDialog(QtWidgets.QDialog, MattingHistory):
             ('smooth', '边缘引导平滑', 0, 100, ' %'), ('blur', '羽化半径', 0, 20, ' px'),
             ('in_out', '羽化内外比例', -100, 100, ' %'), ('opacity', '遮罩不透明度', 0, 100, ' %'),
             ('cleanup_size', '碎块尺度', 1, 12, ' px'), ('despill_amount', '去色强度', 0, 100, ' %'),
+            ('hole_threshold', '补洞前景阈值', 1, 99, ' %'),
             ('despill_width', '去色边缘范围', 1, 12, ' px'), ('despill_luma', '去色亮度补偿', 0, 100, ' %'),
         ):
             control = QtWidgets.QSpinBox() if key in {'denoise', 'grow', 'cleanup_size', 'despill_width'} else QtWidgets.QDoubleSpinBox()
             if isinstance(control, QtWidgets.QDoubleSpinBox): control.setDecimals(1)
             control.setRange(low, high); control.setSuffix(suffix); control.valueChanged.connect(self.parameters_changed)
             self.controls[key] = control; form.addRow(label, control)
-        for key, label in (('invert', '反转遮罩'), ('cleanup', '去碎块')):
+        for key, label in (('invert', '反转遮罩'), ('fill_holes', '填补主体内部封闭孔洞'), ('cleanup', '去碎块')):
             control = QtWidgets.QCheckBox(label); control.toggled.connect(self.parameters_changed)
             self.controls[key] = control; form.addRow(control)
         reset = QtWidgets.QPushButton('重置精修参数'); reset.setAutoDefault(False); reset.clicked.connect(self.reset_values); form.addRow(reset)

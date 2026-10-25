@@ -300,7 +300,7 @@ class ContentSourceEditor(QtWidgets.QWidget):
         if sequence:
             cursor = layer["sequence_cursor"] % len(items) if items else 0
             self.note.setText(("绑定“" + layer.get("pool_name", "图片池" if not text else "文案池") + "”，" if layer["source"] == "pool" else "")+
-                (f"共{len(items)}项；下次使用第{cursor+1}项。仅导出成功才推进，预览不消耗。" if items else "没有可轮换内容，请先向资源池添加内容。"))
+                (f"共{len(items)}项；下次分配第{cursor+1}项。任务固定分配后预留，失败重试沿用；预览不占用。" if items else "没有可轮换内容，请先向资源池添加内容。"))
             self.reset.setEnabled(bool(items))
             if task_pool and layer.get('copy_binding', 'task') == 'task':
                 self.note.setText('已搭配的任务／文案按同一条记录取标题和正文，不受轮换游标、重试或重新导入影响。未搭配的纯视频才按池顺序使用。')

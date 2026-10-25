@@ -329,6 +329,8 @@ def choose_music(state, duration, cache, ffmpeg, ffprobe, cancel, report):
                                                ffmpeg, ffprobe, cancel, report)
             path, total, key = analysis
             cursor = float(item.get("cursor") or 0) % total if item.get("audio_key") == key else 0
+            if '_assigned_music_start' in state:
+                cursor = float(state['_assigned_music_start']) % total
             return {"id": item["id"], "path": str(path), "start": cursor, "pool_id": pool["id"] if pool else "",
                     "cursor": (cursor + duration) % total, "audio_key": key,
                     "name": Path(item["path"]).name, "duration": total,
@@ -389,6 +391,9 @@ def prepare_static_text(job, state, directory, cancel=None, progress=None, repor
     if cancel and cancel.is_set():
         raise Cancelled("已取消。")
     from .background_visual import background_job
+    original_sources = source_paths(state) if job.get('render_assignment') else []
+    from .render_assignment import apply as apply_assignment
+    job, state = apply_assignment(job, state)
     job = background_job(job, state)
     settings = dict(state["settings"])
     from .voice_effects import active as voice_fx_active, normalized as normalize_voice_fx, PRESETS
@@ -464,7 +469,7 @@ def prepare_static_text(job, state, directory, cancel=None, progress=None, repor
     if job.get("requires_title") and not job.get("task_dir"):
         raise ValueError("表格任务缺少绑定的任务目录，请重新导入；未写入其他目录。")
     folder = output_folder(job, settings)
-    inputs = source_paths(state) + source_paths({'settings': settings})
+    inputs = original_sources + source_paths(state) + source_paths({'settings': settings})
     if voice_path:
         inputs.append(voice_path)
     from .task_naming import output_stem
@@ -650,13 +655,15 @@ def prepare_static_text(job, state, directory, cancel=None, progress=None, repor
         if node_effects is not None:
             sequence_plan.extend(copy.deepcopy(node_effects.sequence_plan))
         from .prepared_export import PreparedExport
+        from .render_assignment import capture as capture_assignment
+        assignment = capture_assignment(job, state, settings['layers'], music, voice_path)
         stage(progress, '等待编码名额')
         yield PreparedExport(args, target, output, ffprobe, encoded_duration, has_audio, music,
             sequence_plan, cancel, progress, report, settings['overwrite'], encoder,
             settings['encoder_fallback'], preview, workers, effects=node_effects if effects else None,
             cwd=temporary if effects else None, timings={'prepare_seconds': time.monotonic()-started},
             quality=settings['export_quality'], render_scope='' if preview else file_identity(Path(directory)/'state.json'),
-            source_paths=tuple(inputs))
+            source_paths=tuple(inputs), assignment=assignment)
 
 
 def render_static_text(job, state, directory, cancel=None, progress=None, report=None, preview=False, *, node_effects=None, preview_limit=None):

@@ -24,8 +24,8 @@ def normalize_key(layer):
         layer.setdefault(key, value)
     if layer.get("key_mode", "none") not in {"none", "custom", *KEY_COLORS}:
         raise ValueError("颜色抠像预设无效。")
-    if layer["key_method"] not in {"normal", "enhanced"}:
-        raise ValueError("抠像算法必须是普通或增强。")
+    if layer["key_method"] not in {"normal", "enhanced", "ai"}:
+        raise ValueError("抠像算法必须是普通、增强或AI主体抠像。")
     if not isinstance(layer["key_color"], str) or not COLOR_PATTERN.fullmatch(layer["key_color"]):
         raise ValueError("抠像基准颜色须为 #RRGGBB，例如 #00ff00。")
     layer["key_color"] = layer["key_color"].lower()

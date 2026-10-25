@@ -60,7 +60,7 @@ def infer(path, parameters, *, models=None, cancel=None, report=None, ffmpeg='')
 
 
 def refined(base, parameters):
-    return refine(base['rgb'], base['alpha'], base['source'][:, :, 3], parameters)
+    return refine(base['rgb'], base['alpha'], base['source'][:, :, 3], parameters, source_rgb=base['source'][:, :, :3])
 
 
 def _temporary(catalogue, suffix):
@@ -165,7 +165,7 @@ def _video(path, target, p, models, ffmpeg, cancel, report, progress):
             if length != needed: raise ValueError('素材帧解码不完整。')
             source = np.frombuffer(b''.join(chunks), np.uint8).reshape(h, w, 4)
             rgb, alpha = predictor.predict(source[:, :, :3])
-            data = refine(rgb, alpha, source[:, :, 3], p)
+            data = refine(rgb, alpha, source[:, :, 3], p, source_rgb=source[:, :, :3])
             data_file(target)._check(write=True)
             encode.stdin.write(data.tobytes())
             frames += 1; progress(min(99, round(frames/total*100)))

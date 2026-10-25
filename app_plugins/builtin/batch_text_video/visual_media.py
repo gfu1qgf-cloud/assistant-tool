@@ -219,16 +219,17 @@ def add_plane(args, filters, layer, input_index, background, label, width, heigh
             effect.append(f"scale=w='max(1,round(iw*({scale})))':h='max(1,round(ih*({scale})))':eval=frame")
     effect += [f"colorchannelmixer=aa={layer['opacity']/100:.8f}", f"trim=duration={local_duration:.9f}", "setsar=1"]
     filters.append(f"[{input_label}]" + ",".join(effect) + f"[{label}_source]")
-    filters.append(f"color=c=black@0:s={width}x{height}:r={float(fps):.9f}:d={local_duration:.9f},format=rgba[{label}_canvas]")
-    # With looping disabled, hide the overlay when it ends instead of freezing it.
-    filters.append(f"[{label}_canvas][{label}_source]overlay=x='{width*layer['x']/100:.4f}-overlay_w/2':"
-        f"y='{height*layer['y']/100:.4f}-overlay_h/2+{box_h}*({movement})':eval=frame:"
-        f"format=auto:eof_action=pass:repeatlast=0[{label}_plane]")
-    plane = label + "_plane"
     if timing:
         from .overlay_timing import add_timed_plane
-        plane = add_timed_plane(filters, plane, label + "_timed", width, height, duration, fps, timing,
-                                center=(width*layer['x']/100, height*layer['y']/100))
+        plane = add_timed_plane(filters, label+'_source', label + "_timed", width, height, duration, fps, timing,
+                                center=(width*layer['x']/100, height*layer['y']/100),
+                                raw_object=True, vertical_movement=f'{box_h}*({movement})')
+    else:
+        filters.append(f"color=c=black@0:s={width}x{height}:r={float(fps):.9f}:d={local_duration:.9f},format=rgba[{label}_canvas]")
+        filters.append(f"[{label}_canvas][{label}_source]overlay=x='{width*layer['x']/100:.4f}-overlay_w/2':"
+            f"y='{height*layer['y']/100:.4f}-overlay_h/2+{box_h}*({movement})':eval=frame:"
+            f"format=auto:eof_action=pass:repeatlast=0[{label}_plane]")
+        plane = label + "_plane"
     if layer["blend_mode"] == "normal":
         filters.append(f"[{background}][{plane}]overlay=0:0:format=auto:eof_action=pass[{label}]")
     else:
@@ -269,11 +270,11 @@ class VisualProperties(QtWidgets.QWidget):
         self.matting_button.clicked.connect(lambda: self.mattingRequested.emit(self.layer['id']) if self.layer else None)
         self.matting_button.hide(); form.addRow(self.matting_button)
         saved = QtWidgets.QCheckBox('优先使用此素材已保存的抠像结果')
-        saved.setToolTip('为每个素材独立保存AI抠像参数。启用后预览和渲染动态抠像，跳过下方颜色抠像；关闭可使用原素材。')
+        saved.setToolTip('优先使用每个素材保存的AI参数；主体遮罩不再重复颜色扣除，补洞、去碎块和透明度修正仍生效。选择AI算法可直接对当前素材抠像。')
         saved.toggled.connect(self.edit); self.controls['use_saved_matte'] = saved; form.addRow(saved)
         for key, label, choices in (("blend_mode", "叠加模式", (("普通", "normal"), ("添加", "add"), ("滤色", "screen"))),
                                     ("key_mode", "抠像颜色", (("关闭", "none"), ("绿色预设", "green"), ("蓝色预设", "blue"), ("黑色预设", "black"), ("自定义颜色", "custom"))),
-                                    ("key_method", "抠像算法", (("普通 · 颜色扣除", "normal"), ("增强 · 轮廓保护", "enhanced")))):
+                                    ("key_method", "抠像算法", (("普通 · 颜色扣除", "normal"), ("增强 · 轮廓保护", "enhanced"), ("AI · 主体抠像", "ai")))):
             control = QtWidgets.QComboBox()
             for name, value in choices:
                 control.addItem(name, value)
@@ -458,22 +459,28 @@ class VisualProperties(QtWidgets.QWidget):
         self.controls['media_loop_fade'].setEnabled(self.controls['media_loop'].isChecked()
             and self.controls['media_loop_transition'].currentData() == 'fade')
         mode = self.controls["key_mode"].currentData()
+        ai = self.controls['key_method'].currentData() == 'ai'
+        active_matte = ai or mode != 'none'
         for key in ("key_similarity", "key_softness"):
-            self.controls[key].setEnabled(mode != "none")
-        self.controls["key_method"].setEnabled(mode != "none")
-        self.controls["key_protect_inside"].setVisible(self.controls["key_method"].currentData() == "enhanced")
-        self.controls["key_protect_inside"].setEnabled(mode != "none")
-        can_despill = mode != "none" and bool(self.layer) and bool(despill_type(self.layer))
+            self.controls[key].setEnabled(mode != 'none' and not ai)
+        self.controls["key_method"].setEnabled(bool(self.layer))
+        self.controls["key_protect_inside"].setVisible(self.controls["key_method"].currentData() in {'enhanced', 'ai'})
+        self.controls['key_protect_inside'].setText('补洞：填补主体内部封闭孔洞' if ai else '保护轮廓内封闭的同色装饰')
+        self.controls['key_protect_inside'].setToolTip('修复AI误扣的封闭内部区域；与外部连通的缺口需在AI工作台用保留画笔修正。原图自带透明区域与去除画笔仍优先保留。')
+        self.controls["key_protect_inside"].setEnabled(active_matte)
+        can_despill = bool(self.layer) and (ai or mode != 'none' and bool(despill_type(self.layer)))
         self.controls["key_despill"].setEnabled(can_despill)
         active = can_despill and self.controls["key_despill"].isChecked()
-        self.controls["key_despill_mode"].setEnabled(active)
-        edge = active and self.controls["key_despill_mode"].currentData() == "edge"
+        self.controls["key_despill_mode"].setEnabled(active and not ai)
+        self.controls['key_despill_mode'].setToolTip('AI模式统一按主体遮罩边缘去色溢；上方绿色／蓝色预设指定要降低的颜色。' if ai else '选择全图保守修正或按遮罩边缘修正。')
+        edge = active and (ai or self.controls["key_despill_mode"].currentData() == "edge")
         for key in ("key_despill_amount", "key_despill_width", "key_despill_luma"):
             self.controls[key].setEnabled(edge)
-        self.controls["key_cleanup"].setEnabled(mode != "none")
-        self.controls["key_cleanup_size"].setEnabled(mode != "none" and self.controls["key_cleanup"].isChecked())
-        self.matte_levels.setEnabled(mode != "none")
+        self.controls["key_cleanup"].setEnabled(active_matte)
+        self.controls["key_cleanup_size"].setEnabled(active_matte and self.controls["key_cleanup"].isChecked())
+        self.matte_levels.setEnabled(active_matte)
         self.key_details.set_layer(self.layer)
+        self.key_details.setVisible(not ai)
     def _key_details_changed(self, changes):
         if self.loading or not self.layer: return
         self.layer.update(changes)

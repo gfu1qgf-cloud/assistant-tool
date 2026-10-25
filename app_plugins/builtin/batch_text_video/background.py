@@ -49,6 +49,17 @@ def validate_batch_outputs(state, ids):
 
 
 def execute_batch(store, state, ids, cancel, progress, message, done, renderers=None, *, node_effects=None, elevenlabs_binding=None):
+    from .render_timing import BatchTiming, summary
+    timing = BatchTiming(ids)
+    measured_progress, measured_done = timing.callbacks(progress, done)
+    result, state = _execute_batch(store, state, ids, cancel, measured_progress, message, measured_done,
+        renderers, node_effects=node_effects, elevenlabs_binding=elevenlabs_binding)
+    result['timing'] = timing.result(result)
+    message('本批计时：'+summary(result['timing']))
+    return result, state
+
+
+def _execute_batch(store, state, ids, cancel, progress, message, done, renderers=None, *, node_effects=None, elevenlabs_binding=None):
     state = copy.deepcopy(state)
     from .render_slots import configure
     from .store import file_identity
@@ -104,6 +115,8 @@ def execute_batch(store, state, ids, cancel, progress, message, done, renderers=
                 if Path(job.get("output") or "__missing__").is_file():
                     message("请检查既有输出，未推进音乐位置。")
                 job["status"], job["error"] = "需处理", str(exc)
+                from .render_timing import save_item_timing
+                save_item_timing(state, job_id, progress, '需处理')
                 state = store.save(state, state["revision"])
                 failed += 1
                 failures.append(f"{Path(job['path']).name}：{exc}")
@@ -112,6 +125,8 @@ def execute_batch(store, state, ids, cancel, progress, message, done, renderers=
                 continue
             if node_effects is not None:
                 sequence_plan.extend(copy.deepcopy(getattr(node_effects, 'sequence_plan', [])))
+            from .render_timing import save_item_timing
+            save_item_timing(state, job_id, progress, '已完成')
             state = store.completed(state, job_id, output, plan, sequence_plan=sequence_plan)
             paths.append(str(output))
             progress(job_id, 100)

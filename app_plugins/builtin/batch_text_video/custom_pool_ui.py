@@ -95,7 +95,7 @@ class ImagePoolBindingDialog(QtWidgets.QDialog):
         self.image.setEnabled(fixed)
         self.buttons.button(QtWidgets.QDialogButtonBox.StandardButton.Ok).setEnabled(not fixed or self.image.count() > 0)
         self.note.setText("固定图片不随池变更。" if fixed else
-            f"共 {len(self.items())} 张；每个成品换下一张，用完循环，仅导出成功才推进。空池可以预先绑定，但需添加图片后才能导出。")
+            f"共 {len(self.items())} 张；按任务固定分配，用完循环，失败重试沿用。空池可以预先绑定，但需添加图片后才能导出。")
 
 
 class CustomPoolController:

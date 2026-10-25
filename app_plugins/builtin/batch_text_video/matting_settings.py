@@ -5,7 +5,8 @@ import math
 DEFAULTS = dict(model='isnet', quality='better', device='auto', black_clip=0., white_clip=100.,
                 clean_black=0., clean_white=0., denoise=0, grow=0, smooth=0., blur=0.,
                 in_out=0., opacity=100., invert=False, cleanup=False, cleanup_size=2,
-                despill='none', despill_amount=100., despill_width=4, despill_luma=50., strokes=[])
+                despill='none', despill_amount=100., despill_width=4, despill_luma=50., strokes=[],
+                fill_holes=False, hole_threshold=50.)
 
 
 def normalize(values=None):
@@ -17,12 +18,12 @@ def normalize(values=None):
     for name, choices in (('model', {'isnet', 'rvm'}), ('quality', {'fast', 'better'}),
                           ('device', {'auto', 'cpu', 'cuda'}), ('despill', {'none', 'green', 'blue'})):
         if not isinstance(result[name], str) or result[name] not in choices: raise ValueError('抠像选项无效：'+name)
-    for name in ('invert', 'cleanup'):
+    for name in ('invert', 'cleanup', 'fill_holes'):
         if type(result[name]) is not bool: raise ValueError('抠像开关无效：'+name)
     ranges = dict(black_clip=(0, 99.9), white_clip=(.1, 100), clean_black=(0, 100), clean_white=(0, 100),
                   denoise=(0, 5), grow=(-20, 20), smooth=(0, 100), blur=(0, 20), in_out=(-100, 100),
                   opacity=(0, 100), cleanup_size=(1, 12), despill_amount=(0, 100),
-                  despill_width=(1, 12), despill_luma=(0, 100))
+                  despill_width=(1, 12), despill_luma=(0, 100), hole_threshold=(1, 99))
     for name, (low, high) in ranges.items():
         value = result[name]
         if type(value) not in (int, float) or not math.isfinite(value) or not low <= value <= high:
@@ -65,7 +66,7 @@ def brush_mask(shape, strokes):
     return mask
 
 
-def refine(rgb, alpha, source_alpha, values):
+def refine(rgb, alpha, source_alpha, values, *, source_rgb=None):
     """RGB8 + predicted alpha -> RGBA8; native transparent pixels never revive."""
     import cv2
     import numpy as np
@@ -75,6 +76,17 @@ def refine(rgb, alpha, source_alpha, values):
     a = np.clip((a-p['black_clip']/100)/((p['white_clip']-p['black_clip'])/100), 0, 1)
     a *= 1-p['clean_black']/100*(1-a)
     a += p['clean_white']/100*a*(1-a)
+    if p['fill_holes']:
+        # Fill enclosed low-confidence regions. The source alpha and explicit
+        # remove strokes are applied later, so genuine user cuts stay holes.
+        outside = np.pad((a < p['hole_threshold']/100).astype(np.uint8), 1, constant_values=1)
+        cv2.floodFill(outside, None, (0, 0), 2, flags=4)
+        holes = outside[1:-1, 1:-1] == 1
+        a = np.maximum(a, holes.astype(np.float32))
+        if source_rgb is not None:
+            # A foreground estimator may return black where its alpha was zero.
+            # Restoring opacity must also restore the real subject's RGB there.
+            rgb = np.where(holes[:, :, None], source_rgb, rgb)
     if p['denoise']:
         a = cv2.medianBlur(np.rint(a*255).astype(np.uint8), p['denoise']*2+1).astype(np.float32)/255
     if p['grow']:

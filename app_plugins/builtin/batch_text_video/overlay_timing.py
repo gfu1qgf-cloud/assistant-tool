@@ -109,7 +109,7 @@ def transform_at(window, time):
     return opacity, scale, x, y
 
 
-def add_timed_plane(filters, plane, label, width, height, duration, fps, window, *, center=None):
+def add_timed_plane(filters, plane, label, width, height, duration, fps, window, *, center=None, raw_object=False, vertical_movement='0'):
     """Input is a full-canvas RGBA layer on its source clock; output is global RGBA.
 
     Entrance/exit affect only this plane. The full-canvas output continues before
@@ -139,10 +139,11 @@ def add_timed_plane(filters, plane, label, width, height, duration, fps, window,
         elif mode in {"small", "large"}:
             sign = -1 if mode == "small" else 1
             scale.append(f"{sign*window.distance:.9f}*({progress})")
+    factor = "1+" + "+".join(scale) if scale and window.distance else '1'
     if scale and window.distance:
-        factor = "1+" + "+".join(scale)
-        effect.append(f"scale=w='max(2,round({width}*({factor})/2)*2)':"
-                      f"h='max(2,round({height}*({factor})/2)*2)':eval=frame")
+        base_w, base_h = ('iw', 'ih') if raw_object else (str(width), str(height))
+        effect.append(f"scale=w='max(2,round({base_w}*({factor})/2)*2)':"
+                      f"h='max(2,round({base_h}*({factor})/2)*2)':eval=frame")
     # Apply opacity after resizing: bicubic alpha ringing must not make a
     # fading edge more opaque than the intended fade amount.
     if window.fade_in:
@@ -155,6 +156,11 @@ def add_timed_plane(filters, plane, label, width, height, duration, fps, window,
     # Compensate scaling around the object's center, not the video corner.
     xx = f"{cx:.9f}*(1-overlay_w/{width})" + ("+" + "+".join(x) if x else "")
     yy = f"{cy:.9f}*(1-overlay_h/{height})" + ("+" + "+".join(y) if y else "")
+    if raw_object:
+        import re
+        movement = re.sub(r'\bt\b', f'(t-{window.start:.9f})', vertical_movement) if window.clock == 'restart' else vertical_movement
+        xx = f'{cx:.9f}-overlay_w/2' + ('+'+'+'.join(x) if x else '')
+        yy = f'{cy:.9f}-overlay_h/2+({movement})*({factor})' + ('+'+'+'.join(y) if y else '')
     enabled = f"gte(t,{window.start:.9f})*lt(t,{window.end:.9f})"
     filters.append(f"[{label}_blank][{label}_moving]overlay=x='{xx}':y='{yy}':eval=frame:"
                    f"enable='{enabled}':format=auto:eof_action=pass:repeatlast=0[{label}]")

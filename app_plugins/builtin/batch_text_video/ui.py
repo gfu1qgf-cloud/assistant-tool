@@ -237,13 +237,16 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
         self.scheme.setCurrentIndex(max(0, self.scheme.findData(self.state["settings"]["scheme"])))
         self.splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
         self.tabs = QtWidgets.QTabWidget()
-        self.jobs = ResourceTable(["任务／成品", "状态", "进度"])
+        self.jobs = ResourceTable(["任务／成品", "状态", "进度", "耗时"])
+        self.jobs.setColumnWidth(1, 85)
+        self.jobs.setColumnWidth(2, 55)
+        self.jobs.setColumnWidth(3, 76)
         self.jobs.itemChanged.connect(self._render_check_changed)
         self.jobs.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
         self.jobs.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.ExtendedSelection)
         self.jobs.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
         self.jobs.horizontalHeader().setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeMode.Stretch)
-        for column, width in ((1, 108), (2, 60)):
+        for column, width in ((1, 80), (2, 50)):
             self.jobs.setColumnWidth(column, width)
         from .row_progress import install_row_progress
         install_row_progress(self.jobs)
@@ -251,7 +254,7 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
         self.jobs.cellDoubleClicked.connect(self.open_result)
         music_page = QtWidgets.QWidget()
         music_layout = QtWidgets.QVBoxLayout(music_page)
-        note = QtWidgets.QLabel("按列表轮换，每首音乐记住播放位置。\n箭头表示下一首；只有导出成功才推进。")
+        note = QtWidgets.QLabel("按列表分配音乐并记住播放位置。\n原生任务编码前固定分配，失败重试沿用；箭头表示下一份可分配位置。")
         note.setWordWrap(True)
         music_layout.addWidget(note)
         self.music = ResourceTable(["音乐", "续用位置", "上次使用"])
@@ -904,11 +907,15 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
             return
         try:
             settings = self.read_settings()
+            job = self.active_entry()
+            if job.get('render_assignment'):
+                from .render_assignment import apply as apply_assignment
+                job, bound_state = apply_assignment(job, {**self.state, 'settings': settings})
+                settings = bound_state['settings']
             if getattr(self, 'pool_preview', None) is not None:
                 current = self.layer_panel.current()
                 self._sync_pool_preview(settings['layers'], current)
                 settings = self.pool_preview.apply(settings)
-            job = self.active_entry()
             from .text_colors import job_color_scope
             settings["_color_scope"] = job_color_scope(job)
             voice = resolve_voice(job, {**self.state, "settings": settings})
@@ -1081,6 +1088,9 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
             self._start_overlay(request)
 
     def active_voice(self, job=None):
+        bound_job = job or self.active_entry()
+        if bound_job.get('render_assignment'):
+            return bound_job['render_assignment']['voice']
         settings = dict(self.state["settings"])
         settings.update(use_voice=self.controls["use_voice"].isChecked(),
                         voice_pool_id=self.controls["voice_pool_id"].currentData(),
@@ -1200,7 +1210,8 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
             except (ValueError, OSError) as error:
                 voice, label = str(error), "来源需调整"
             display = job.get('label') or job.get('name') or Path(job['path']).stem
-            job_rows.append((job["id"], [display, job["status"], ''],
+            from .render_timing import clock_text
+            job_rows.append((job["id"], [display, job["status"], '', clock_text(job['render_timing'].get('elapsed_seconds')) if job.get('render_timing') else '—'],
                 "\n".join(part for part in ('成品：'+job.get('name',''), '背景：'+(job['path'] or '未分配'),
                     '人声：'+(voice or label), job.get("error"), job.get("task_dir")) if part), ""))
         self.jobs.populate(job_rows)
@@ -1610,6 +1621,7 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
                 if plan:
                     self.store.update_render_plan(plan['id'], 'submitted', handle.task_id)
                 self._host_plans[profile_id] = handle
+                self.render_queue_panel.timing.begin(profile_id, ids)
                 self._render_progress[profile_id] = dict.fromkeys(ids, 0)
                 self._render_stages[profile_id] = dict.fromkeys(ids, '排队中')
                 handle.itemProgress.connect(lambda job_id, value, p=profile_id: self._host_item_progress(p, job_id, value))
@@ -1627,6 +1639,7 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
                     except Exception:
                         pass
                 self._host_plans.pop(profile_id, None)
+                self.render_queue_panel.timing.finish(profile_id)
                 self._render_progress.pop(profile_id, None)
                 self._render_stages.pop(profile_id, None)
                 self._quick_export_ids.pop(profile_id, None)
@@ -1644,6 +1657,7 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
             return False
         self.worker = BatchWorker(self.store, self.state, ids, self, node_bundle=bundle, node_registry=registry,
             elevenlabs_binding=elevenlabs_binding)
+        self.render_queue_panel.timing.begin(profile_id, ids, queued=False)
         self.worker.message.connect(self._log, QtCore.Qt.ConnectionType.QueuedConnection)
         self.worker.progress.connect(self._progress, QtCore.Qt.ConnectionType.QueuedConnection)
         self.worker.jobDone.connect(self._job_done, QtCore.Qt.ConnectionType.QueuedConnection)
@@ -1660,6 +1674,7 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
             self.context.log(message, level=logging.ERROR if "Traceback" in message else logging.INFO)
 
     def _progress(self, _id, value):
+        self.render_queue_panel.timing.progress(self.state['active_profile'], _id, value)
         values = getattr(self, '_batch_percentages', {})
         if _id in values:
             values[_id] = max(0, min(100, int(value)))
@@ -1673,12 +1688,14 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
                 break
 
     def _job_done(self, job_id, status):
+        self.render_queue_panel.timing.stage(self.state['active_profile'], job_id, status)
         self._progress(job_id, 100)
         for row in range(self.jobs.rowCount()):
             if self.jobs.item(row, 0).data(QtCore.Qt.ItemDataRole.UserRole) == job_id:
                 self.jobs.item(row, 1).setText(status)
 
     def _batch_result(self, result):
+        self.render_queue_panel.timing.finish(self.state['active_profile'], result)
         self.status.setText(result.get("error") or f"已完成{result['completed']}个，需处理{result['failed']}个。" +
                             ("已停止，剩余队列与音乐位置已保留。" if result.get("cancelled") else "音乐轮换进度已保存。"))
         if result.get('failed') or result.get('error'):
@@ -1686,6 +1703,7 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
             show_export_warning(self,result)
 
     def _host_item_progress(self, profile_id, job_id, value):
+        self.render_queue_panel.timing.progress(profile_id, job_id, value)
         self._render_progress.setdefault(profile_id, {})[job_id] = value
         self.render_queue_panel.update_progress(profile_id)
         if profile_id == self.state['active_profile']:
@@ -1698,6 +1716,7 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
                     break
 
     def _host_item_stage(self, profile_id, job_id, stage):
+        self.render_queue_panel.timing.stage(profile_id, job_id, stage)
         self._render_stages.setdefault(profile_id, {})[job_id] = stage
         self.render_queue_panel.update_progress(profile_id)
         if profile_id == self.state['active_profile']:
@@ -1714,6 +1733,7 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
                 self.progress_bar.setValue(value)
 
     def _host_batch_result(self, handle, profile_id, result):
+        self.render_queue_panel.timing.finish(profile_id, result)
         if profile_id == self.state['active_profile']:
             self._batch_result(result)
         if profile_id == self.state['active_profile'] and not result.get("failed") and not result.get("error") and not result.get("cancelled"):
@@ -1728,10 +1748,11 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
             self.status.setText(message)
 
     def _host_render_finished(self, profile_id, handle, plan):
+        self.render_queue_panel.timing.finish(profile_id)
         status = handle.manager.get(handle.task_id)['status']
         if plan:
             try:
-                self.store.update_render_plan(plan['id'], status)
+                self.store.update_render_plan(plan['id'], status, timing=self.render_queue_panel.timing.metrics(profile_id))
             except Exception as error:
                 self._log('渲染计划状态保存失败：' + str(error))
         self._host_plans.pop(profile_id, None)

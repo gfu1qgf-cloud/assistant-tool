@@ -29,14 +29,15 @@ class GlobalRenderQueuePanel(QtWidgets.QWidget):
         global_widget = QtWidgets.QWidget()
         global_layout = QtWidgets.QVBoxLayout(global_widget)
         global_layout.setContentsMargins(0, 0, 0, 0)
-        self.table = QtWidgets.QTableWidget(0, 3)
-        self.table.setHorizontalHeaderLabels(['项目／视频数', '状态', '进度'])
+        self.table = QtWidgets.QTableWidget(0, 4)
+        self.table.setHorizontalHeaderLabels(['项目／视频数', '状态', '进度', '用时'])
         self.table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.SingleSelection)
         self.table.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.horizontalHeader().setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeMode.Stretch)
-        self.table.setColumnWidth(1, 185)
+        self.table.setColumnWidth(1, 130)
         self.table.setColumnWidth(2, 65)
+        self.table.setColumnWidth(3, 82)
         self.table.setMinimumHeight(95)
         self.table.setMaximumHeight(185)
         self.table.itemActivated.connect(self.open_selected_project)
@@ -78,6 +79,9 @@ class GlobalRenderQueuePanel(QtWidgets.QWidget):
         self.current_label = QtWidgets.QLabel()
         self.current_label.setWordWrap(True)
         layout.addWidget(self.current_label)
+        from .render_timing_ui import RenderTimingPanel
+        self.timing = RenderTimingPanel(owner, self)
+        layout.addWidget(self.timing)
         from .queue_tools import QueueTools
         self.tools = QueueTools(owner, self)
         layout.addWidget(self.tools)
@@ -119,7 +123,7 @@ class GlobalRenderQueuePanel(QtWidgets.QWidget):
                 label = '待重试'
             if plan['id'] in self.pending_removals:
                 label = '正在停止，结束后移除'
-            values = [f"{plan['name']} · {len(plan['ids'])} 条", label, '']
+            values = [f"{plan['name']} · {len(plan['ids'])} 条", label, '', '']
             for column, value in enumerate(values):
                 item = QtWidgets.QTableWidgetItem(value)
                 item.setData(QtCore.Qt.ItemDataRole.UserRole, plan['id'])
@@ -130,6 +134,7 @@ class GlobalRenderQueuePanel(QtWidgets.QWidget):
             if plan['id'] == selected_id:
                 self.table.selectRow(row)
         self.refresh_current_label()
+        self.timing.refresh()
         self.refresh_settings_summary()
         self.tools.refresh()
         self.start_button.setEnabled(any(plan['status'] == 'staged' for plan in plans))
