@@ -1,5 +1,7 @@
 # 节点和工作流扩展
 
+> 并非所有使用节点画布的窗口都是工作流。任务表结构编辑器只复用画布交互，使用“筛选器→最终数据结构”两类 UI 描述，最后编译回原 `task_table_schema`，不注册平台节点、不创建可运行工作流。实现见 [`task_schema_canvas.py`](../../PYUI/task_schema_canvas.py)、[`TaskSchemaMapping.py`](../../model/TaskSchemaMapping.py)，用户说明见[节点式结构编辑](../任务表格-节点式结构.md)。
+
 [返回目录](README.md) · [节点示例](examples/sample_plugin.py)
 
 ## 优先从纯函数节点开始

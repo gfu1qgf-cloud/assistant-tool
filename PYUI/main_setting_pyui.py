@@ -1029,6 +1029,15 @@ class MainSettingDialog(QtWidgets.QDialog, Ui_MainSettingDialog):
         self.edit_task_schema_button.clicked.connect(self.edit_task_table_schema)
         layout.addWidget(self.edit_task_schema_button)
 
+        self.edit_task_schema_nodes_button = QtWidgets.QPushButton(
+            '节点式编辑结构…', self.task_schema_tab,
+        )
+        self.edit_task_schema_nodes_button.setMinimumHeight(36)
+        self.edit_task_schema_nodes_button.clicked.connect(
+            lambda checked=False: self.edit_task_table_schema(node_editor=True)
+        )
+        layout.addWidget(self.edit_task_schema_nodes_button)
+
         note = QtWidgets.QLabel(
             '高级配置保存在程序根目录 config.json 的 task_table_schema 中。通常直接使用上面的图形界面即可。',
             self.task_schema_tab,
@@ -1092,13 +1101,17 @@ class MainSettingDialog(QtWidgets.QDialog, Ui_MainSettingDialog):
             self.task_schema_status_label.setText('结构配置异常：{}'.format(error))
             self.task_schema_status_label.setStyleSheet('color:#B3261E;font-weight:bold;')
 
-    def edit_task_table_schema(self):
+    def edit_task_table_schema(self, checked=False, *, node_editor=False):
         try:
             schema = load_task_table_schema()
         except (OSError, TaskTableSchemaError) as error:
             QMessageBox.critical(self, '任务表格结构', str(error))
             return
-        new_schema = TaskTableSchemaDialog.get_schema(
+        editor = TaskTableSchemaDialog
+        if node_editor:
+            from PYUI.task_schema_node_pyui import TaskTableSchemaNodeDialog
+            editor = TaskTableSchemaNodeDialog
+        new_schema = editor.get_schema(
             schema,
             self._current_task_ods_path(),
             self,
