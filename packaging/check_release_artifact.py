@@ -81,6 +81,12 @@ def validate_release_archive(path: str | Path) -> int:
                     continue
                 normalized = "/".join(parts)
                 seen.add(normalized)
+                # Project developer docs are source-only. Do not reject legal
+                # README/license files supplied by third-party dependencies.
+                if any(parts[index:index + 2] == ['docs', 'developer']
+                       for index in range(len(parts) - 1)):
+                    violations.append(name)
+                    continue
                 if (
                     any(part in PRIVATE_DIRECTORIES for part in parts)
                     or (parts and parts[-1] in PRIVATE_FILES)
@@ -103,7 +109,7 @@ def validate_release_archive(path: str | Path) -> int:
         if missing:
             details.append("缺少必要文件：" + "、".join(missing))
         if violations:
-            details.append("发现私有数据或不安全路径：" + "、".join(violations[:10]))
+            details.append("发现私有数据、仅供源码的开发文档或不安全路径：" + "、".join(violations[:10]))
         raise ValueError("；".join(details))
     return len(entries)
 
