@@ -74,16 +74,22 @@ def render_text_box(layer, width, height, *, _local_surface=False):
     box.adjust(padding,padding,-padding,-padding)
     if box.width() <= 1 or box.height() <= 1:
         raise TextDoesNotFit(layer["name"]+"：文本框没有足够的可见空间。")
+    from .text_wrap import exclusions, flow_layout
+    obstacles = exclusions(layer, width, height, padding) if layer.get('wrap_enabled') else []
+    obstacles = [rect for rect in obstacles if rect.intersects(box)]
     def measure(fraction):
         size = (layer["font_min"]+fraction*(layer["font_max"]-layer["font_min"]))*scale
+        if obstacles:
+            groups, total, start = flow_layout(layer, size, box, obstacles, scale)
+            return groups, total, size, box.width(), start
         if layer.get("writing_mode", "horizontal") != "horizontal":
             from .vertical_text import text_layout
             groups, total, used_width = text_layout(layer["text"], layer["font"], size,
                 box.width(), box.height(), layer["align"], layer["line_spacing"], layer, scale)
-            return groups, total, size, used_width
+            return groups, total, size, used_width, None
         groups, total = _text_layout(layer["text"],layer["font"],size,
                                      box.width(),layer["align"],layer["line_spacing"],layer,scale)
-        return groups,total,size,box.width()
+        return groups,total,size,box.width(),None
     def fits(candidate):
         return candidate[1] <= box.height()+1e-6 and candidate[3] <= box.width()+1e-6
     chosen = measure(0)
@@ -101,8 +107,10 @@ def render_text_box(layer, width, height, *, _local_surface=False):
                 low,chosen = middle,candidate
             else:
                 high = middle
-    groups,total,size,_ = chosen
-    y = box.top()+(box.height()-total)*{"top":0,"center":.5,"bottom":1}[layer["vertical"]]
+    groups,total,size,_,start = chosen
+    # Flow groups already contain their absolute local Y; a second alignment
+    # translation would move text back through the excluded controls.
+    y = box.top() if start is not None else box.top()+(box.height()-total)*{"top":0,"center":.5,"bottom":1}[layer["vertical"]]
     if _local_surface:
         expansion = max(layer.get("background_extra_" + side, 0) for side in ("left", "right", "top", "bottom"))
         shadow = shadow_extent(layer)
@@ -117,6 +125,13 @@ def render_text_box(layer, width, height, *, _local_surface=False):
     try:
         if _local_surface:
             painter.translate(bleed - background_box.left(), bleed - background_box.top())
+        if obstacles:
+            clip = QtGui.QPainterPath()
+            clip.addRect(QtCore.QRectF(0, 0, width, height))
+            for rect in obstacles:
+                hole = QtGui.QPainterPath(); hole.addRect(rect)
+                clip = clip.subtracted(hole)
+            painter.setClipPath(clip)
         from .text_background import draw_background
         draw_background(painter,layer,groups,box.left(),y,scale,background_box)
         draw_text_groups(painter, groups, layer, box.left(), y, scale)

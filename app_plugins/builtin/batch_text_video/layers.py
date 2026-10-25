@@ -138,6 +138,8 @@ def normalize_layers(value=None):
         elif kind in TEXT_KINDS and positioned:
             from .scrolling_text import normalize_scroll
             normalize_scroll(layer)
+            from .text_wrap import normalize_wrap
+            normalize_wrap(layer)
     for default in DEFAULT_LAYERS:
         # A converted title/body owns that original slot; do not resurrect a
         # second drawing of the same text. Removing the effect restores defaults.

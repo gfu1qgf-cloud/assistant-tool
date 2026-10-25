@@ -588,7 +588,7 @@ def static_planes(title, body, width, height, settings, image_cache):
             ids = {item["id"] for item in group}
             selected = group + [dict(default, enabled=False) for default in DEFAULT_LAYERS if default["id"] not in ids]
             image, _ = render_overlay(title, body, width, height,
-                {**settings, "layers": selected, "darkness": settings["darkness"] if first else 0,
+                {**settings, "layers": selected, "_text_wrap_layers": layers, "darkness": settings["darkness"] if first else 0,
                  "background_tint_strength": settings.get("background_tint_strength",0) if first else 0},
                 image_cache, allow_empty=True)
         else:

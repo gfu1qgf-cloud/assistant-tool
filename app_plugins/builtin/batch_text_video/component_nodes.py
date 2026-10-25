@@ -31,6 +31,9 @@ def component_graph(layer, settings, registry):
     original = copy.deepcopy(layer)
     if original['kind'] == 'node_effect':
         raise ValueError('这个控件已经是节点效果，请直接编辑它的工作流。')
+    if original.get('wrap_enabled') or any(item.get('wrap_enabled') and
+            original['id'] in item.get('wrap_targets', []) for item in settings.get('layers', [])):
+        raise ValueError('这个控件参与了文字环绕；节点效果暂不能保留跨控件避让关系。请保留普通控件，或先关闭相关文字的环绕，再转换。')
     # Legacy title/body styles are materialized before copying parameters.
     layer = next(v for v in componentize_layers([original], settings) if v['id'] == original['id'])
     graph = empty_graph()

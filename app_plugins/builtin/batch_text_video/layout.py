@@ -58,6 +58,8 @@ def render_preview_overlay(title, body, width, height, settings, image_cache=Non
         layers, _ = resolve_sources(expand_watermarks(design_layers(normalize_layers(settings.get("layers")), title, body)), title, body)
         from .text_colors import resolve_colors
         layers = resolve_colors(layers, settings.get("_color_scope", "design"))
+        from .text_wrap import bind_exclusions
+        bind_exclusions(layers, settings.get('_text_wrap_layers'))
         active = [layer for layer in layers if layer["kind"] != "image" and layer["enabled"] and layer["opacity"]]
         if not active or any("font_min" not in layer for layer in active) or sum(len(layer["text"]) for layer in active) > 40000:
             raise
@@ -99,7 +101,7 @@ def render_preview_overlay(title, body, width, height, settings, image_cache=Non
             "component_sizes":sizes,"warnings":warnings,"export_blocked":True}
 
 
-def _text_layout(text, family, size, width, alignment, spacing,font_options=None,scale=1):
+def _text_font(family, size, font_options=None, scale=1):
     options = font_options or {}
     from .fonts import weight_font
     font = weight_font(family, int(options.get("font_weight",400)), options.get("italic",False))
@@ -113,6 +115,12 @@ def _text_layout(text, family, size, width, alignment, spacing,font_options=None
         font.setLetterSpacing(QtGui.QFont.SpacingType.AbsoluteSpacing,options["letter_spacing"]*scale)
     if options.get("word_spacing"):
         font.setWordSpacing(options["word_spacing"]*scale)
+    return font
+
+
+def _text_layout(text, family, size, width, alignment, spacing,font_options=None,scale=1):
+    options = font_options or {}
+    font = _text_font(family, size, options, scale)
     layouts, height = [], 0.0
     flags = {"left": QtCore.Qt.AlignmentFlag.AlignLeft,
              "center": QtCore.Qt.AlignmentFlag.AlignHCenter,
@@ -152,6 +160,8 @@ def render_overlay(title, body, width, height, settings, image_cache=None, *, al
     layers, _ = resolve_sources(expand_watermarks(design_layers(normalize_layers(settings.get("layers")), title, body)), title, body)
     from .text_colors import resolve_colors
     layers = resolve_colors(layers, settings.get("_color_scope", "design"))
+    from .text_wrap import bind_exclusions
+    bind_exclusions(layers, settings.get('_text_wrap_layers'))
     enabled = {layer["kind"] for layer in layers if layer["enabled"] and layer["opacity"] > 0}
     title = next((layer["text"] for layer in layers if layer["kind"] == "title" and "font_min" not in layer), "") if "title" in enabled else ""
     body = next((layer["text"] for layer in layers if layer["kind"] == "body" and "font_min" not in layer), "") if "body" in enabled else ""

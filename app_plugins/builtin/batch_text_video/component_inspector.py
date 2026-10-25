@@ -139,7 +139,7 @@ class ComponentInspector(QtWidgets.QWidget):
         self.setMinimumWidth(0)
         self.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored, QtWidgets.QSizePolicy.Policy.Preferred)
 
-    def show_layer(self, layer, canvas_size, state, unit):
+    def show_layer(self, layer, canvas_size, state, unit, *, layers=None):
         target = None
         if layer:
             kind = layer['kind']
@@ -161,6 +161,8 @@ class ComponentInspector(QtWidgets.QWidget):
                 self.body.addWidget(target); target.show()
         self.empty.setVisible(target is None)
         if target:
+            if hasattr(target, 'wrap_properties'):
+                target.wrap_properties.set_layers(layers if layers is not None else state.get('settings', {}).get('layers', []))
             target.bind(layer, canvas_size, state, unit)
             if hasattr(target, 'visual_properties'):
                 target.visual_properties.matting_button.setVisible(self.matting_available and layer['kind'] != 'background')

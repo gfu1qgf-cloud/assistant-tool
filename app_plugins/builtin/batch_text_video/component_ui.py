@@ -761,4 +761,9 @@ def text_property_panel(services=None, *, mode='batch'):
     panel.scroll_properties = panel.add_bound('scroll', '文字滚动动画', ScrollTextProperties())
     scroll=panel.sections['scroll']
     panel.body.removeWidget(scroll); panel.body.insertWidget(2,scroll)
+    if mode == 'batch':
+        from .text_wrap_ui import TextWrapProperties
+        panel.wrap_properties = panel.add_bound('text_wrap', '文字环绕／避让控件', TextWrapProperties())
+        section = panel.sections['text_wrap']
+        panel.body.removeWidget(section); panel.body.insertWidget(2, section)
     return panel

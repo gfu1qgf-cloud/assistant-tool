@@ -383,7 +383,7 @@ class LayerPanel(QtWidgets.QWidget):
             self.header.setVisible(not self._catalog_hidden and bool(layer and layer['kind'] not in {'caption', 'background'}))
             self.name.setText(layer['name'] if layer else '')
             self.opacity.setValue(layer['opacity'] if layer else 100)
-            self.inspector.show_layer(layer,self.canvas_size,self._pool_state,self.units.currentData())
+            self.inspector.show_layer(layer,self.canvas_size,self._pool_state,self.units.currentData(),layers=self._layers)
             kind=layer['kind'] if layer else ''
             self.hint.setText('底层背景固定铺在所有图层下方；背景池在项目设置选择，动画在本控件中调整。' if kind=='background' else
                 '效果顺序由图层位置决定；元素的位置和样式在工作流中调整。' if kind=='node_effect' else
@@ -419,7 +419,7 @@ class LayerPanel(QtWidgets.QWidget):
         layer.update(candidate)
         self._loading = True
         try:
-            self.inspector.show_layer(layer,self.canvas_size,self._pool_state,self.units.currentData())
+            self.inspector.show_layer(layer,self.canvas_size,self._pool_state,self.units.currentData(),layers=self._layers)
             item = self.list.currentItem()
             if item:
                 item.setText(layer['name']+(' · 轮换' if layer['source'] in {'sequence','pool'} else ''))
