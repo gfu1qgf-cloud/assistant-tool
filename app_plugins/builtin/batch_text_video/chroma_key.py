@@ -138,7 +138,7 @@ def enhanced_alpha(raw, layer, trimap=None):
     return alpha, protection
 
 
-def add_keyed_source(args, filters, layer, input_index, label, fps, is_animated, *, duration):
+def add_keyed_source(args, filters, layer, input_index, label, fps, is_animated, *, duration, single_frame=False):
     """Native RGBA/trimap compositing, no Python video loop or intermediate file.
 
     Returns (output pad, consumed input count); caller already added source -i.
@@ -157,7 +157,8 @@ def add_keyed_source(args, filters, layer, input_index, label, fps, is_animated,
     root = label + "_key"
     split = (f"split=3[{root}_original][{root}_native_alpha_source][{root}_input]" if enhanced else
              f"split=2[{root}_native_alpha_source][{root}_input]")
-    filters.append(f"[{input_index}:v]setpts=PTS-STARTPTS,trim=duration={duration:.9f},fps={float(fps):.9f},format=rgba,"
+    once = 'trim=end_frame=1,' if single_frame else ''
+    filters.append(f"[{input_index}:v]setpts=PTS-STARTPTS,trim=duration={duration:.9f},fps={float(fps):.9f},format=rgba,{once}"
                    + split)
     filters.append(f"[{root}_native_alpha_source]alphaextract,format=gray[{root}_native_mask]")
     if not enhanced:
@@ -199,7 +200,7 @@ def add_keyed_source(args, filters, layer, input_index, label, fps, is_animated,
                 args += ["-loop", "1", "-i", mask]
             consumed += 1
             filters.append(f"[{input_index+1}:v]setpts=PTS-STARTPTS,trim=duration={duration:.9f},fps={float(fps):.9f},"
-                           f"format=rgba[{root}_trimap_input]")
+                           f"format=rgba{',trim=end_frame=1' if single_frame else ''}[{root}_trimap_input]")
             filters.append(f"[{root}_trimap_input][{original_pad}]scale2ref=w=iw:h=ih:"
                            f"flags=bilinear[{root}_trimap][{root}_source_rgb]")
             original_pad = root + "_source_rgb"

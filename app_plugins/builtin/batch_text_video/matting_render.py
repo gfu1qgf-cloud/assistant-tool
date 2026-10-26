@@ -132,10 +132,8 @@ def _video(path, target, p, models, ffmpeg, cancel, report, progress):
     ffmpeg, ffprobe = resolve_tools(ffmpeg)
     info = probe(path, ffprobe); stream = info['video']
     if not stream: raise ValueError('素材没有视频画面。')
-    w, h = stream.get('display_width', stream['width']), stream.get('display_height', stream['height'])
-    rotation = stream.get('tags', {}).get('rotate', 0)
-    rotation = next((v.get('rotation', rotation) for v in stream.get('side_data_list', []) if 'rotation' in v), rotation)
-    if abs(float(rotation)) % 180 == 90: w, h = h, w
+    from .video_geometry import decoded_size
+    w, h = decoded_size(stream)
     if max(w, h) > 8192 or w*h > 40_000_000: raise ValueError('素材画幅过大，请先缩小后抠像。')
     try: fps = Fraction(stream.get('avg_frame_rate', '25/1'))
     except (ValueError, ZeroDivisionError): fps = Fraction(25)

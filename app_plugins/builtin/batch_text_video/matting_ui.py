@@ -88,6 +88,8 @@ class MattingDialog(QtWidgets.QDialog, MattingHistory, MattingVideoController):
 
     def __init__(self, sources=(), parent=None, *, catalogue=None, ffmpeg='', models=None):
         super().__init__(parent)
+        from .numeric_wheel import protect_numeric_wheels
+        protect_numeric_wheels(self)
         self.catalogue, self.ffmpeg, self.models = catalogue or Catalogue(), ffmpeg, models
         self.path, self.base, self.worker = '', None, None
         self.values, self._drafts, self._pending = normalize(), {}, None

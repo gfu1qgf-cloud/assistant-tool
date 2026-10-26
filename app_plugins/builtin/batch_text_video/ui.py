@@ -48,13 +48,14 @@ class OverlayWorker(QtCore.QThread):
         title, body, width, height, settings = self.request
         try:
             settings = dict(settings)
-            settings['layers'], _ = resolve_sources(settings['layers'], title, body, job=self.design_job)
-            from .design_preview import design_layers
+            from .design_preview import design_layers, resolve_preview_sources
+            settings['layers'], source_notices = resolve_preview_sources(settings['layers'], title, body,
+                job=self.design_job, cancel=self.cancel)
             settings, notices = design_layers(settings, self.design_job, self.design_bundle,
                 self.design_registry, width, height, self.directory, self.cancel)
             from .caption_follow_preview import prepare as prepare_follow_preview
             settings,follow_notices=prepare_follow_preview(settings,self.design_job,self.directory,self.cancel)
-            notices=list(notices)+follow_notices
+            notices=source_notices+list(notices)+follow_notices
             image, info = render_preview_overlay(title, body, width, height, settings, self.cache)
             from .visual_media import needs_plane, preview_planes
             layers, _ = resolve_sources(settings["layers"], title, body)
@@ -189,6 +190,8 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
         from .component_inspector import require_editor_api
         require_editor_api(LayerPanel)
         super().__init__(parent)
+        from .numeric_wheel import protect_numeric_wheels
+        protect_numeric_wheels(self)
         ensure_fonts()
         self.context, self.store = context, store or Store()
         if not callable(getattr(self.store,'sync_render_selection',None)):

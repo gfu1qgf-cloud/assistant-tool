@@ -4,7 +4,7 @@ from app_plugins.api import MAIN_MENU, TASK_CONTEXT_MENU, PluginCommand
 class BatchTextVideoPlugin:
     plugin_id = "batch_text_video"
     display_name = "批量文案视频"
-    version = "1.43"
+    version = "1.44"
     required_api_version = 1
 
     def __init__(self):
@@ -34,7 +34,8 @@ class BatchTextVideoPlugin:
         ))
 
     def start(self):
-        pass
+        from .numeric_wheel import protect_numeric_wheels
+        protect_numeric_wheels()
 
     def workflow_runtime_context(self):
         from .project_runtime import project_payload

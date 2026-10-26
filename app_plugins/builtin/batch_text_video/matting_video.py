@@ -12,10 +12,8 @@ from .matting_models import check_cancel, MattingCancelled
 def describe(media):
     stream = media['video']
     if not stream: raise ValueError('素材没有视频画面。')
-    width, height = stream['width'], stream['height']
-    rotation = stream.get('tags', {}).get('rotate', 0)
-    rotation = next((entry.get('rotation', rotation) for entry in stream.get('side_data_list', []) if 'rotation' in entry), rotation)
-    if abs(float(rotation)) % 180 == 90: width, height = height, width
+    from .video_geometry import decoded_size
+    width, height = decoded_size(stream)
     if max(width, height) > 8192 or width*height > 40_000_000: raise ValueError('视频画幅过大。')
     try: rate = Fraction(stream.get('avg_frame_rate') or stream.get('r_frame_rate') or '25/1')
     except (ValueError, ZeroDivisionError): rate = Fraction(25)

@@ -183,6 +183,10 @@ def add_plane(args, filters, layer, input_index, background, label, width, heigh
         raise ValueError('视觉图层放大后像素过大，请减小宽度／高度；未启动可能耗尽内存的缩放。')
     from .matting_live import dynamic, StreamInput
     from .visual_loop import enabled as loop_fade_enabled, LoopInput
+    from .chroma_key import active_mask
+    # A still source with a moving trimap is still time-dependent. Live AI and
+    # video/GIF sources also keep their existing stream semantics.
+    static_source = not (is_animated(path) or dynamic(layer) or is_animated(active_mask(layer)))
     candidate = loop_fade_enabled(layer)
     executable = ''
     if dynamic(layer) or candidate:
@@ -202,6 +206,8 @@ def add_plane(args, filters, layer, input_index, background, label, width, heigh
         args += ["-loop", "1", "-i", path]
     # Fraction gained float-style formatting after our Python 3.10 runtime.
     effect = [f"setpts=PTS-STARTPTS,fps={float(fps):.9f},format=rgba"]
+    if static_source:
+        effect.append('trim=end_frame=1')
     input_label = f"{input_index}:v"
     consumed = 1
     if layer["key_mode"] != "none" and not live_loop:
@@ -209,9 +215,14 @@ def add_plane(args, filters, layer, input_index, background, label, width, heigh
         # Keep that native mask separate so transparent PNG/GIF/MOV pixels do
         # not become visible when the keyed matte is made more opaque.
         input_label, consumed = add_keyed_source(args, filters, layer, input_index, label, fps, is_animated,
-                                                duration=local_duration)
+                                                duration=local_duration, single_frame=static_source)
         effect = []
     effect += [f"scale={box_w}:{box_h}:force_original_aspect_ratio=decrease"]
+    if static_source:
+        # Cache one fully keyed, despilled, scaled RGBA frame inside FFmpeg.
+        # Rebuild the clock before animated scaling, movement and fades. No PNG
+        # intermediates, Python frame producer, or unbounded frame cache.
+        effect += ['loop=loop=-1:size=1:start=0', f'setpts=N/({float(fps):.9f}*TB)']
     movement = "0"
     if layer["visual_animation"] != "none":
         from .visual_animation import expressions
@@ -252,6 +263,8 @@ class VisualProperties(QtWidgets.QWidget):
     mattingRequested = QtCore.pyqtSignal(str)
     def __init__(self, parent=None):
         super().__init__(parent)
+        from .numeric_wheel import protect_numeric_wheels
+        protect_numeric_wheels(self)
         self.layer, self.loading = None, False
         root = QtWidgets.QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)

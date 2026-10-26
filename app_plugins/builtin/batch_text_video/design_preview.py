@@ -6,6 +6,26 @@ import json
 from .node_effects import active_effects, prepare_preview_bundle, EffectRuntime
 
 
+def resolve_preview_sources(layers, title='', body='', *, job=None, cancel=None):
+    """Isolate source errors in a private editing snapshot; export stays strict."""
+    from .components import resolve_sources
+    resolved, notices = [], []
+    for layer in layers:
+        if cancel is not None and cancel.is_set():
+            from .engine import Cancelled
+            raise Cancelled('已取消图层预览。')
+        try:
+            items, _ = resolve_sources([layer], title, body, job=job)
+            resolved.extend(items)
+        except (OSError, ValueError, RuntimeError) as error:
+            if cancel is not None and cancel.is_set(): raise
+            snapshot = copy.deepcopy(layer)
+            snapshot['enabled'] = False
+            resolved.append(snapshot)
+            notices.append(f"{layer.get('name', '图层')}暂未显示：{error}（仅编辑预览跳过，导出仍需处理）")
+    return resolved, notices
+
+
 def check_design_graph(graph, registry):
     from model.node_workflow.graph import validate
     errors, order, _ = validate(graph, registry)
