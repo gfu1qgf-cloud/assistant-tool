@@ -48,6 +48,9 @@ def frame(path, bounds):
     """Poster decode is used only by image/overlay workers, never a paint call."""
     from .engine import resolve_tools
     ffmpeg, _ = resolve_tools()
+    from .dnx_alpha import poster
+    native = poster(path, bounds, ffmpeg=ffmpeg)
+    if native is not None: return native
     result = subprocess.run([ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "error", "-i", str(path),
         "-vf", f"scale={bounds.width()}:{bounds.height()}:force_original_aspect_ratio=decrease",
         "-frames:v", "1", "-f", "image2pipe", "-vcodec", "png", "pipe:1"],
@@ -210,12 +213,18 @@ def add_plane(args, filters, layer, input_index, background, label, width, heigh
         effect.append('trim=end_frame=1')
     input_label = f"{input_index}:v"
     consumed = 1
+    if not (dynamic(layer) or live_loop):
+        from .dnx_alpha import add_source
+        input_label, consumed = add_source(args, filters, path, input_index, label+'_dnx',
+                                          loop=layer['media_loop'], ffmpeg=ffmpeg)
     if layer["key_mode"] != "none" and not live_loop:
         # colorkey replaces (rather than multiplies) an existing alpha channel.
         # Keep that native mask separate so transparent PNG/GIF/MOV pixels do
         # not become visible when the keyed matte is made more opaque.
-        input_label, consumed = add_keyed_source(args, filters, layer, input_index, label, fps, is_animated,
-                                                duration=local_duration, single_frame=static_source)
+        input_label, keyed_count = add_keyed_source(args, filters, layer, input_index, label, fps, is_animated,
+                                                duration=local_duration, single_frame=static_source,
+                                                source_label=input_label, auxiliary_index=input_index+consumed)
+        consumed += keyed_count-1
         effect = []
     effect += [f"scale={box_w}:{box_h}:force_original_aspect_ratio=decrease"]
     if static_source:

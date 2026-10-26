@@ -1,5 +1,6 @@
 """Bounded, cancellable in-memory video frames for the matting workbench."""
 import copy
+from contextlib import ExitStack
 from fractions import Fraction
 import math
 import subprocess
@@ -67,7 +68,7 @@ class MattingVideoWorker(QtCore.QThread):
         from . import matting_render as render
         from .matting_assets import fingerprint
         from .engine import resolve_tools
-        request = self.request; process = None
+        request = self.request; process = None; stack = ExitStack()
         try:
             info, path, values = request['info'], request['path'], request['values']
             expected = fingerprint(path)
@@ -83,7 +84,11 @@ class MattingVideoWorker(QtCore.QThread):
             args = [executable, '-nostdin', '-hide_banner', '-loglevel', 'error', '-threads', '1',
                     *seek_args(info, start), '-i', path, '-vf', 'fps='+info['rate'], '-an', '-sn',
                     '-threads', '1', '-f', 'rawvideo', '-pix_fmt', 'rgba', 'pipe:1']
-            process = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            from .dnx_alpha import raw_args
+            from .matting_live import Inputs
+            native = raw_args(path, executable, vf='fps='+info['rate'], first=first, cancel=self.cancel)
+            inputs = stack.enter_context(Inputs(native or args, cancel=self.cancel, report=report))
+            process = subprocess.Popen(inputs.args, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                                        creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
             with self._lock: self._process = process
             check_cancel(self.cancel)
@@ -127,3 +132,4 @@ class MattingVideoWorker(QtCore.QThread):
             render._stop(process)
             if process and process.stdout: process.stdout.close()
             with self._lock: self._process = None
+            stack.close()

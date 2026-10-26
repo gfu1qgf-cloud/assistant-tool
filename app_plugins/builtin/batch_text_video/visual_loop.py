@@ -1,6 +1,6 @@
 """Alpha-correct loop joins; only overlap heads/tails are held in RAM."""
 from collections import deque
-from contextlib import closing
+from contextlib import closing, ExitStack
 import math
 import subprocess
 
@@ -89,11 +89,14 @@ def cycle(feed):
     args = [spec.ffmpeg, '-nostdin', '-hide_banner', '-loglevel', 'error', '-filter_complex_threads', '1',
             '-threads', '2', '-i', str(spec)]
     filters, label = [], '0:v'
+    from .dnx_alpha import add_source
+    label, native_count = add_source(args, filters, str(spec), 0, 'loop_dnx', ffmpeg=spec.ffmpeg, cancel=feed.cancel)
     if not ai and spec.loop_layer.get('key_mode', 'none') != 'none':
         from .chroma_key import add_keyed_source
         from .visual_media import is_animated
         label, _ = add_keyed_source(args, filters, spec.loop_layer, 0, 'loop_matte', spec.fps,
-                                    is_animated, duration=spec.clip_duration)
+                                    is_animated, duration=spec.clip_duration,
+                                    source_label=label, auxiliary_index=native_count)
     if ai:
         w, h = spec.source_width, spec.source_height
         filters.append(f'[{label}]fps={float(spec.fps):.9f},format=rgba[decoded]')
@@ -102,11 +105,13 @@ def cycle(feed):
         filters.append(f'[{label}]fps={float(spec.fps):.9f},format=rgba,scale={w}:{h},setsar=1[decoded]')
     args += ['-filter_complex', ';'.join(filters), '-map', '[decoded]', '-an', '-sn', '-f', 'rawvideo',
              '-threads', '1', '-pix_fmt', 'rgba', 'pipe:1']
-    process = None; frames = 0
+    process = None; frames = 0; stack = ExitStack()
     try:
+        from .matting_live import Inputs
+        inputs = stack.enter_context(Inputs(args, cancel=feed.cancel))
         with feed._process_lock:
             check_cancel(feed.cancel)
-            process = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            process = subprocess.Popen(inputs.args, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                 creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
             feed.decoder = process
         while True:
@@ -130,6 +135,7 @@ def cycle(feed):
             render._stop(process)
             if process and process.stdout: process.stdout.close()
             feed.decoder = None
+        stack.close()
 
 
 def frames(feed):

@@ -1,0 +1,13 @@
+[package]
+name = "dnx-alpha"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+
+[dependencies]
+veloster-dnx = { version = "=0.1.10", default-features = false }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+panic = "abort"

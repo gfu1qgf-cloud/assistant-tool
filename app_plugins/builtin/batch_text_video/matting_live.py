@@ -1,5 +1,6 @@
 """Frame-at-a-time AI input for both playback and final FFmpeg composition."""
 from collections import OrderedDict
+from contextlib import ExitStack
 import copy
 from fractions import Fraction
 import json
@@ -147,13 +148,19 @@ class Feed:
                 check_cancel(self.cancel)
                 # Temporal state belongs to this material and one loop only.
                 predictor = render.Predictor(p['model'], p['device'], p['quality'], cancel=self.cancel)
-                process = None
+                process = None; stack = ExitStack()
                 try:
                     with self._process_lock:
                         check_cancel(self.cancel)
-                        process = subprocess.Popen([spec.ffmpeg, '-nostdin', '-hide_banner', '-loglevel', 'error',
+                        args = [spec.ffmpeg, '-nostdin', '-hide_banner', '-loglevel', 'error',
                             '-threads', '2', '-i', str(path), '-vf', f'fps={float(spec.fps):.9f}', '-an', '-sn', '-f', 'rawvideo',
-                            '-threads', '1', '-pix_fmt', 'rgba', 'pipe:1'], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                            '-threads', '1', '-pix_fmt', 'rgba', 'pipe:1']
+                    from .dnx_alpha import raw_args
+                    native = raw_args(path, spec.ffmpeg, vf=f'fps={float(spec.fps):.9f}', cancel=self.cancel)
+                    inputs = stack.enter_context(Inputs(native or args, cancel=self.cancel))
+                    with self._process_lock:
+                        check_cancel(self.cancel)
+                        process = subprocess.Popen(inputs.args, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                             creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
                         self.decoder = process
                     frames = 0; needed = spec.width*spec.height*4
@@ -175,6 +182,7 @@ class Feed:
                         render._stop(process)
                         if process and process.stdout: process.stdout.close()
                         self.decoder = None
+                    stack.close()
                 if not spec.loop: break
         verify_file(spec.binding['source'], '原素材')
 
@@ -190,14 +198,21 @@ class Feed:
 
 class Inputs:
     """Fresh, bounded feeds for one encoder attempt (including CPU retries)."""
-    def __init__(self, args):
+    def __init__(self, args, cancel=None, progress=None, report=None):
         self.args, self.feeds = list(args), []
+        self.cancel, self.progress, self.stack = cancel, progress, ExitStack()
+        self.report = report
 
     def __enter__(self):
         try:
             expanded = []
+            from .dnx_alpha import MaskInput, mask
             for value in self.args:
-                if isinstance(value, StreamInput):
+                if isinstance(value, MaskInput):
+                    from .render_progress import stage
+                    report = self.report or (lambda text: stage(self.progress, text))
+                    expanded.append(self.stack.enter_context(mask(value.info, self.cancel, report)))
+                elif isinstance(value, StreamInput):
                     if not expanded or expanded.pop() != '-i': raise ValueError('内存抠像输入参数无效。')
                     feed = Feed(value); self.feeds.append(feed)
                     expanded += value.options() + ['-i', feed.pipe.name]
@@ -214,7 +229,9 @@ class Inputs:
 
     def __exit__(self, kind, error, traceback):
         for feed in self.feeds: feed.cancel.set()
-        for feed in self.feeds: feed.close()
+        try:
+            for feed in self.feeds: feed.close()
+        finally: self.stack.__exit__(kind, error, traceback)
         if kind is None:
             self.check()
             for feed in self.feeds:

@@ -41,11 +41,14 @@ def load_source(path, cancel=None, ffmpeg='', *, position=0.):
         position = frame_position(video, position)
         # Decode at native dimensions. The general poster helper scales small
         # video up to its requested bounds, unsuitable for AI source pixels.
-        decoded = subprocess.run([executable, '-nostdin', '-hide_banner', '-loglevel', 'error', *seek_args(video, position), '-i', str(path),
-            '-frames:v', '1', '-f', 'image2pipe', '-vcodec', 'png', 'pipe:1'], capture_output=True,
-            timeout=30, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
-        source = QtGui.QImage.fromData(decoded.stdout)
-        if decoded.returncode or source.isNull(): raise ValueError('无法读取所选视频帧。')
+        from .dnx_alpha import poster
+        source = poster(path, ffmpeg=executable, cancel=cancel, position=position)
+        if source is None:
+            decoded = subprocess.run([executable, '-nostdin', '-hide_banner', '-loglevel', 'error', *seek_args(video, position), '-i', str(path),
+                '-frames:v', '1', '-f', 'image2pipe', '-vcodec', 'png', 'pipe:1'], capture_output=True,
+                timeout=30, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+            source = QtGui.QImage.fromData(decoded.stdout)
+            if decoded.returncode or source.isNull(): raise ValueError('无法读取所选视频帧。')
         video.update(width=source.width(), height=source.height())
     else: source = read_image(path, QtCore.QSize(8192, 8192))
     check_cancel(cancel)
@@ -148,8 +151,13 @@ def _video(path, target, p, models, ffmpeg, cancel, report, progress):
             handle, filename = data_io.mkstemp(prefix=label+'-', suffix='.log', dir=target.parent)
             os.close(handle); logs.append(Path(filename))
         decode_log, encode_log = [stack.enter_context(data_file(filename).open('w+b')) for filename in logs]
-        decode = subprocess.Popen([ffmpeg, '-nostdin', '-hide_banner', '-loglevel', 'error', '-i', str(path),
-            '-vf', f'fps={float(fps):.9f}', '-f', 'rawvideo', '-pix_fmt', 'rgba', 'pipe:1'],
+        decode_args = [ffmpeg, '-nostdin', '-hide_banner', '-loglevel', 'error', '-i', str(path),
+            '-vf', f'fps={float(fps):.9f}', '-f', 'rawvideo', '-pix_fmt', 'rgba', 'pipe:1']
+        from .dnx_alpha import raw_args
+        from .matting_live import Inputs
+        native = raw_args(path, ffmpeg, vf=f'fps={float(fps):.9f}', cancel=cancel)
+        inputs = stack.enter_context(Inputs(native or decode_args, cancel=cancel, report=report))
+        decode = subprocess.Popen(inputs.args,
             stdout=subprocess.PIPE, stderr=decode_log, creationflags=flags)
         encode = subprocess.Popen([ffmpeg, '-y', '-nostdin', '-hide_banner', '-loglevel', 'error',
             '-f', 'rawvideo', '-pix_fmt', 'rgba', '-s', f'{w}x{h}', '-r', str(fps), '-i', 'pipe:0',

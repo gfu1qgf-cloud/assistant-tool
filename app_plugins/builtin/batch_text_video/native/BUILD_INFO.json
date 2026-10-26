@@ -1,0 +1,7 @@
+{
+  "version": "0.1.0",
+  "rust": "1.99.1",
+  "target": "x86_64-pc-windows-gnu",
+  "upstream": "veloster-dnx 0.1.10",
+  "sha256": "c4378d5a500a5f4d67bc0f47b8dcb56ad9575ee84e73e190e452c1ceab6e2fa9"
+}

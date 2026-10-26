@@ -51,8 +51,9 @@ def decode(payload, cancel):
     source = source or legacy
     storage.check(source)
     stamp = source.stat()
-    if not source.is_file() or stamp.st_size > 200*1024**2: return QtGui.QImage()
-    key = hashlib.sha256(('thumbnail-v2\0'+str(source)+'\0'+str(stamp.st_size)+'\0'+str(stamp.st_mtime_ns)).encode()).hexdigest()
+    from .visual_media import is_animated
+    if not source.is_file() or (not is_animated(source) and stamp.st_size > 200*1024**2): return QtGui.QImage()
+    key = hashlib.sha256(('thumbnail-v3\0'+str(source)+'\0'+str(stamp.st_size)+'\0'+str(stamp.st_mtime_ns)).encode()).hexdigest()
     root = cache_root('thumbnails'); target = root/(key+'.png')
     if not target.is_symlink() and target.is_file() and target.stat().st_size <= 1024**2:
         image = QtGui.QImage(str(target))
@@ -60,26 +61,29 @@ def decode(payload, cancel):
     if cancel.is_set(): return QtGui.QImage()
     from .visual_media import is_animated
     if is_animated(source):
-        # Existing video imports have no poster file. Decode just one small frame.
-        import subprocess
-        from .engine import resolve_tools
-        ffmpeg, _ = resolve_tools()
-        process = subprocess.Popen([ffmpeg, '-nostdin', '-v', 'error', '-threads', '1', '-i', str(source),
-            '-vf', 'scale=128:128:force_original_aspect_ratio=decrease', '-frames:v', '1',
-            '-threads', '1', '-f', 'image2pipe', '-c:v', 'png', 'pipe:1'],
-            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-            creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
-        try:
-            deadline = time.monotonic()+8
-            while True:
-                if cancel.is_set() or time.monotonic() >= deadline:
-                    process.kill(); process.communicate(); return QtGui.QImage()
-                try:
-                    output, _ = process.communicate(timeout=.1); break
-                except subprocess.TimeoutExpired: pass
-            image = QtGui.QImage.fromData(output) if process.returncode == 0 else QtGui.QImage()
-        finally:
-            if process.poll() is None: process.kill(); process.communicate()
+        from .dnx_alpha import poster
+        image = poster(source, QtCore.QSize(128, 128), cancel=cancel)
+        if image is None:
+            # Existing video imports have no poster file. Decode just one small frame.
+            import subprocess
+            from .engine import resolve_tools
+            ffmpeg, _ = resolve_tools()
+            process = subprocess.Popen([ffmpeg, '-nostdin', '-v', 'error', '-threads', '1', '-i', str(source),
+                '-vf', 'scale=128:128:force_original_aspect_ratio=decrease', '-frames:v', '1',
+                '-threads', '1', '-f', 'image2pipe', '-c:v', 'png', 'pipe:1'],
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+            try:
+                deadline = time.monotonic()+8
+                while True:
+                    if cancel.is_set() or time.monotonic() >= deadline:
+                        process.kill(); process.communicate(); return QtGui.QImage()
+                    try:
+                        output, _ = process.communicate(timeout=.1); break
+                    except subprocess.TimeoutExpired: pass
+                image = QtGui.QImage.fromData(output) if process.returncode == 0 else QtGui.QImage()
+            finally:
+                if process.poll() is None: process.kill(); process.communicate()
     else:
         # Old private thumbnails are copied lazily; the original remains untouched.
         image = QtGui.QImage()

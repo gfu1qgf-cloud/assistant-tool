@@ -191,6 +191,13 @@ def compile_layer(operation, directory, context, video_info, *, timing=None):
             raise ValueError("静态／视觉节点不能生成字幕层。")
         input_index += 1
         background = label
+    from .dnx_alpha import MaskInput
+    if any(isinstance(value, MaskInput) for value in args):
+        from .matting_live import Inputs
+        class Cancellation:
+            def is_set(self):
+                context.check_canceled(); return False
+        context.deferred_input_factory = lambda command: Inputs(command, cancel=Cancellation(), report=context.log)
     groups, current = [], []
     for item in args:
         current.append(item)

@@ -55,7 +55,7 @@ def resolve_tools(configured=""):
 
 def _run(args, cancel=None, progress=None, duration=0, timeout=3600, *, cwd=None):
     from .matting_live import Inputs
-    with Inputs(args) as inputs:
+    with Inputs(args, cancel=cancel, progress=progress) as inputs:
         return _run_inputs(inputs, cancel, progress, duration, timeout, cwd=cwd)
 
 

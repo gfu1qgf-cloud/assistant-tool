@@ -78,6 +78,15 @@ if missing_ffmpeg_files:
 for runtime_name in required_ffmpeg_files:
     datas.append((str(ffmpeg_runtime / runtime_name), "runtime/ffmpeg"))
 
+# Native DNxHR alpha decoder and complete source/licence provenance.
+dnx_runtime = project_root / "app_plugins" / "builtin" / "batch_text_video" / "native"
+for resource in ("dnx-alpha.exe", "LICENSE-APACHE.txt", "THIRD_PARTY_NOTICES.txt", "RUST-THIRD-PARTY.html", "BUILD_INFO.json"):
+    if not (dnx_runtime / resource).is_file():
+        raise SystemExit("Missing DNxHR alpha resource: " + resource)
+for resource in dnx_runtime.rglob("*"):
+    if resource.is_file() and resource.suffix in {".exe", ".txt", ".html", ".json", ".toml", ".lock", ".rs"}:
+        datas.append((str(resource), resource.parent.relative_to(project_root).as_posix()))
+
 # Generate and collect the Windows UI Automation wrapper used by the external
 # Flow parameter guard. This avoids trying to create comtypes.gen files beside
 # the installed executable at runtime.

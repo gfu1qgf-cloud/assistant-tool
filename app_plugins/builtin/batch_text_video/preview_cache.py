@@ -4,7 +4,7 @@ from pathlib import Path
 
 
 def cache_root(kind):
-    if kind not in {'thumbnails', 'audition'}:
+    if kind not in {'thumbnails', 'audition', 'dnx-alpha'}:
         raise ValueError('未知预览缓存类型。')
     from model.MediaStorage import private_volume_path
     from model.PrivateDataCatalog import no_reparse

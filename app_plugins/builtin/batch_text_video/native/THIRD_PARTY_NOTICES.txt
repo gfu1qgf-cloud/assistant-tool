@@ -1,0 +1,21 @@
+DNxHR alpha compatibility helper, version 0.1.0
+Source: src/main.rs. Licensed under Apache-2.0; see LICENSE-APACHE.txt.
+
+veloster-dnx 0.1.10 and veloster-bitstream 0.1.10:
+Authors: Veloster Multimedia Contributors
+https://github.com/magosam/veloster
+https://crates.io/crates/veloster-dnx/0.1.10
+https://crates.io/crates/veloster-bitstream/0.1.10
+Both declare MIT OR Apache-2.0. Distributed here under Apache-2.0.
+Pinned upstream source checksums and build dependencies are in Cargo.lock.
+No upstream source modifications. This wrapper limits formats and allocations.
+
+Rust standard library 1.99.1: MIT OR Apache-2.0; distributed under Apache-2.0.
+Additional standard-library component notices: RUST-THIRD-PARTY.html.
+Thiserror and proc-macro dependencies are compile-time only; no Rayon, no SDK.
+
+Rebuild on Windows x64 with Rust 1.99.1 GNU:
+cargo build --locked --release --target x86_64-pc-windows-gnu
+The tested build used bundled rust-lld.exe as linker with RUSTFLAGS:
+-C linker-flavor=ld.lld -C link-self-contained=yes
+No Rust installation, DaVinci Resolve, Avid SDK, or network is needed at runtime.
