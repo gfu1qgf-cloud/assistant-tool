@@ -6,9 +6,11 @@ from model.FirstRun import (FirstUseDecision, first_use_state, initial_settings,
 
 
 class FirstRunDialog(QtWidgets.QDialog):
-    def __init__(self, program_root, *, force_vc=False, parent=None):
+    def __init__(self, program_root, *, force_vc=False, parent=None, initial_config=None, draft_only=False):
         super().__init__(parent)
         self.program_root = Path(program_root)
+        self.draft_only = bool(draft_only)
+        force_vc = force_vc or self.draft_only
         self.force_vc = bool(force_vc)
         self.state = first_use_state(self.program_root)
         self.decision = None
@@ -53,6 +55,16 @@ class FirstRunDialog(QtWidgets.QDialog):
         self.offline = QtWidgets.QCheckBox('离线安全模式：不联网，不下载模型', options)
         from model.OfflineMode import is_offline
         self.offline.setChecked(is_offline())
+        # Reopening from the storage chooser edits its in-memory draft only.
+        # Never load the former plaintext config of a bound VC installation.
+        if self.state == 'fresh' and isinstance(initial_config, dict):
+            self.task_path.setText(str(initial_config.get('task_path', '')))
+            settings = initial_config.get('smart_video_editor', {})
+            if isinstance(settings, dict):
+                index = self.model.findData(settings.get('whisper_model_size', 'base'))
+                if index >= 0:
+                    self.model.setCurrentIndex(index)
+            self.offline.setChecked(is_offline() or bool(initial_config.get('offline_mode', False)))
         if is_offline():
             self.offline.setEnabled(False)
             self.offline.setToolTip('本次启动已强制离线，不能在向导中取消。')
@@ -67,6 +79,7 @@ class FirstRunDialog(QtWidgets.QDialog):
         layout.addWidget(plugins)
         self.restore = QtWidgets.QPushButton('已有配置？从备份恢复…', self)
         self.restore.clicked.connect(self.restore_config)
+        self.restore.setVisible(not self.draft_only)
         layout.addWidget(self.restore)
         self.status = QtWidgets.QLabel(self)
         self.status.setWordWrap(True)
@@ -105,6 +118,8 @@ class FirstRunDialog(QtWidgets.QDialog):
         super().accept()
 
     def restore_config(self):
+        if self.draft_only:
+            return
         path, _ = QtWidgets.QFileDialog.getOpenFileName(self, '选择已有配置备份', '', 'JSON 配置 (*.json);;所有文件 (*)')
         if not path:
             return

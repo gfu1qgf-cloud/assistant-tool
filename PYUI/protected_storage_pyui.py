@@ -1,5 +1,6 @@
 """Startup chooser runs before private stores, log files and plugins exist."""
 from pathlib import Path
+import copy
 import queue
 import shutil
 import threading
@@ -45,6 +46,9 @@ class StorageChooser(QtWidgets.QDialog):
         hint = QtWidgets.QLabel('请先在 VeraCrypt 中手动挂载卷。本程序不接收密码，也不会自动挂载或卸载。\n'
             '仅列出驱动确认的加密卷。启用后，卷不可用时不会回退明文配置。', self)
         hint.setWordWrap(True); layout.addWidget(hint)
+        self.guide_button = QtWidgets.QPushButton('首次使用／配置向导…', self)
+        self.guide_button.setToolTip('新用户可填写首次配置；已有用户也可随时查看启动步骤，不重置现有数据。')
+        layout.addWidget(self.guide_button)
         self.volumes = QtWidgets.QComboBox(self); layout.addWidget(self.volumes)
         self.refresh_button = QtWidgets.QPushButton('刷新已挂载的 VC 卷', self); layout.addWidget(self.refresh_button)
         self.status = QtWidgets.QLabel(self); self.status.setWordWrap(True); layout.addWidget(self.status)
@@ -61,6 +65,7 @@ class StorageChooser(QtWidgets.QDialog):
         self.cancel_button = buttons.addButton('退出 / 取消迁移', QtWidgets.QDialogButtonBox.ButtonRole.RejectRole)
         layout.addWidget(buttons)
         self.refresh_button.clicked.connect(self.refresh)
+        self.guide_button.clicked.connect(self.open_guide)
         self.use_button.clicked.connect(self.use_existing)
         self.migrate_button.clicked.connect(self.start_migration)
         self.cancel_button.clicked.connect(self.reject)
@@ -84,6 +89,31 @@ class StorageChooser(QtWidgets.QDialog):
     def selected_changed(self):
         ready = self.volumes.currentData() is not None and self.worker is None
         self.use_button.setEnabled(ready); self.migrate_button.setEnabled(ready)
+        self.guide_button.setEnabled(self.worker is None)
+
+    def open_guide(self):
+        if self.worker is not None:
+            return
+        from .startup_guide_pyui import StartupGuideDialog
+        from model.FirstRun import first_use_state
+        dialog = StartupGuideDialog(self.program_root, bound=self.expected is not None,
+                                   initial_config=self.initial_config, parent=self)
+        try:
+            result = dialog.exec()
+            draft = copy.deepcopy(dialog.initial_config)
+        finally:
+            dialog.deleteLater()
+        if result != QtWidgets.QDialog.DialogCode.Accepted:
+            return
+        if draft is not None and self.expected is None:
+            # Configuration may have appeared while a child dialog was open.
+            if first_use_state(self.program_root) != 'fresh':
+                self.status.setText('检测到已有配置或旧数据，未采用新配置；请继续选择已有加密数据。')
+                return
+            self.initial_config = draft
+            self.migrate_button.setText('新建首次配置到所选卷')
+            self.closed_confirm.setText('我已关闭其他辅助工具实例；此次只在所选密盘内新建配置。')
+            self.status.setText('首次配置已填写，尚未写入。请选择密盘，再点击“新建首次配置到所选卷”。')
 
     def use_existing(self):
         volume = self.volumes.currentData()
