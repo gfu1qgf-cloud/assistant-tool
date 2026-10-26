@@ -46,7 +46,7 @@ class AiRefinementTests(unittest.TestCase):
 
     def test_inline_ai_option_and_shared_refinement_controls_are_available(self):
         panel = VisualProperties()
-        panel.set_layer(normalize_layers([dict(id='p', kind='image', path='source.png')])[0])
+        panel.set_layer(normalize_layers([dict(id='p', kind='image', path='source.png', use_saved_matte=False)])[0])
         panel.controls['key_method'].setCurrentIndex(panel.controls['key_method'].findData('ai'))
         self.assertEqual(panel.layer['key_method'], 'ai')
         self.assertTrue(panel.controls['key_protect_inside'].isEnabled())
@@ -80,7 +80,7 @@ class AiRefinementTests(unittest.TestCase):
             self.assertEqual(poster.pixelColor(24, 20).alpha(), 255)
             self.assertEqual(poster.pixelColor(25, 21).alpha(), 0)
 
-    def test_saved_static_ai_result_can_use_enhanced_refinement_without_color_rekey(self):
+    def test_saved_static_ai_result_ignores_outer_refinement_and_color_rekey(self):
         rgb, alpha, native = self.arrays()
         with tempfile.TemporaryDirectory() as root:
             source, result = Path(root)/'source.png', Path(root)/'result.png'
@@ -88,10 +88,11 @@ class AiRefinementTests(unittest.TestCase):
             Image.fromarray(refine(rgb, alpha, native, {})).save(result)
             record = dict(id='saved', source=assets.fingerprint(source), result=assets.fingerprint(result), parameters=normalize())
             before = copy.deepcopy(record)
-            layer = normalize_layers([dict(id='p', kind='image', path=str(source), key_method='enhanced', key_mode='green')])[0]
+            layer = normalize_layers([dict(id='p', kind='image', path=str(source), key_method='enhanced', key_mode='green', use_saved_matte=True)])[0]
             class Catalogue:
                 def lookup(self, _): return record
             bound = assets.apply_saved(layer, Catalogue())
-            self.assertEqual(bound['_matting_binding']['mode'], 'dynamic')
-            self.assertTrue(bound['_matting_binding']['parameters']['fill_holes'])
+            self.assertNotEqual(bound['_matting_binding'].get('mode'), 'dynamic')
+            self.assertFalse(bound['_matting_binding']['parameters']['fill_holes'])
+            self.assertEqual(bound['path'], str(result))
             self.assertEqual(bound['key_mode'], 'none'); self.assertEqual(record, before)

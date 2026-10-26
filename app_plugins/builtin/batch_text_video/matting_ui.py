@@ -10,6 +10,7 @@ from .matting_models import MattingCancelled, check_cancel
 from .matting_render import load_source, infer, refined, save_dynamic as save, qimage
 from .matting_canvas import MattingCanvas
 from .matting_history import MattingHistory
+from .matting_video_ui import MattingVideoController
 
 INFERENCE_KEYS = ('model', 'quality', 'device')
 
@@ -30,8 +31,9 @@ class MattingWorker(QtCore.QThread):
         try:
             action, path, values = request['action'], request['path'], request['values']
             if action == 'load':
-                base = load_source(path, self.cancel, request.get('ffmpeg', ''))
+                base = load_source(path, self.cancel, request.get('ffmpeg', ''), position=request.get('position', 0))
                 result['original'] = qimage(base['source'])
+                result.update(video=base.get('video'), expected=base['expected'])
                 metadata = self.catalogue.load()['assets'].get(identity(path))
                 result['metadata'] = metadata
                 try:
@@ -40,21 +42,21 @@ class MattingWorker(QtCore.QThread):
                         result['metadata'] = metadata or record
                         if record.get('mode') == 'dynamic':
                             base = infer(path, record['parameters'], models=request.get('models'), cancel=self.cancel,
-                                         report=self.message.emit, ffmpeg=request.get('ffmpeg', ''))
+                                         report=self.message.emit, ffmpeg=request.get('ffmpeg', ''), position=request.get('position', 0))
                             result.update(base=base, base_values=record['parameters'], image=qimage(refined(base, record['parameters'])))
                         else:
-                            result['image'] = qimage(load_source(record['result']['path'], self.cancel, request.get('ffmpeg', ''))['source'])
+                            result['image'] = qimage(load_source(record['result']['path'], self.cancel, request.get('ffmpeg', ''), position=request.get('position', 0))['source'])
                 except (ValueError, FileNotFoundError) as error: result['notice'] = str(error)
             elif action in {'infer', 'refine'}:
                 base = request.get('base') if action == 'refine' else None
                 if base is None:
                     base = infer(path, values, models=request.get('models'), cancel=self.cancel, report=self.message.emit,
-                                 ffmpeg=request.get('ffmpeg', ''))
+                                 ffmpeg=request.get('ffmpeg', ''), position=request.get('position', 0))
                 result.update(base=base, original=qimage(base['source']), image=qimage(refined(base, values)))
                 result['notice'] = '本地AI设备：'+base['device']+'；画笔可保留／去除区域，滚轮缩放、中键平移。'
             elif action == 'save':
                 base = request.get('base') or infer(path, values, models=request.get('models'), cancel=self.cancel,
-                                                  report=self.message.emit, ffmpeg=request.get('ffmpeg', ''))
+                                                  report=self.message.emit, ffmpeg=request.get('ffmpeg', ''), position=request.get('position', 0))
                 record = save(path, values, self.catalogue, base=base, models=request.get('models'),
                               ffmpeg=request.get('ffmpeg', ''), cancel=self.cancel,
                               report=self.message.emit, progress=self.progress.emit)
@@ -81,7 +83,7 @@ class MattingWorker(QtCore.QThread):
         self.ready.emit(result)
 
 
-class MattingDialog(QtWidgets.QDialog, MattingHistory):
+class MattingDialog(QtWidgets.QDialog, MattingHistory, MattingVideoController):
     saved = QtCore.pyqtSignal(str)
 
     def __init__(self, sources=(), parent=None, *, catalogue=None, ffmpeg='', models=None):
@@ -110,6 +112,7 @@ class MattingDialog(QtWidgets.QDialog, MattingHistory):
         self.files.currentItemChanged.connect(self.select_source)
         center = QtWidgets.QWidget(); center_layout = QtWidgets.QVBoxLayout(center); center_layout.setContentsMargins(0, 0, 0, 0)
         self.canvas = MattingCanvas(); center_layout.addWidget(self.canvas, 1); self.canvas.strokeAdded.connect(self.add_stroke)
+        self.init_video_preview(center_layout)
         row = QtWidgets.QHBoxLayout()
         self.view = QtWidgets.QComboBox()
         for title, value in (('合成／透明棋盘', 'composite'), ('黑白遮罩', 'mask'), ('原始素材', 'original'), ('叠加遮罩', 'overlay')):
@@ -139,7 +142,7 @@ class MattingDialog(QtWidgets.QDialog, MattingHistory):
         row.addWidget(undo); row.addWidget(redo); row.addWidget(clear); row.addStretch(1); center_layout.addLayout(row)
         self.view_note = QtWidgets.QLabel(); self.view_note.setWordWrap(True); center_layout.addWidget(self.view_note)
         hint = QtWidgets.QLabel('生成AI遮罩后，选择“保留区域＋”或“去除区域－”，按住鼠标左键涂抹；松开算一笔。\n'
-            '视频预览显示首帧，画笔固定在素材坐标，不自动跟踪运动。')
+            '视频可播放、暂停和拖动定位；逐帧AI预览可能低于原速。暂停后可涂抹，画笔固定在素材坐标，不自动跟踪运动。')
         hint.setWordWrap(True); center_layout.addWidget(hint); split.addWidget(center)
         scroll = QtWidgets.QScrollArea(); scroll.setWidgetResizable(True); scroll.setMinimumWidth(280)
         self.parameter_page = QtWidgets.QWidget(); form = QtWidgets.QFormLayout(self.parameter_page)
@@ -233,6 +236,7 @@ class MattingDialog(QtWidgets.QDialog, MattingHistory):
         self.queue_preview(before)
 
     def queue_preview(self, before):
+        self.pause_video()
         self._serial += 1; self._pending = None; self._user_cancelled = False
         if any(before[key] != self.values[key] for key in INFERENCE_KEYS):
             self.base = None
@@ -265,6 +269,7 @@ class MattingDialog(QtWidgets.QDialog, MattingHistory):
         if item is None: return
         if self.path: self._drafts[identity(self.path)] = copy.deepcopy(self.values)
         self.path = item.data(QtCore.Qt.ItemDataRole.UserRole); self.base = None; self.timer.stop(); self.canvas.fit()
+        self.reset_video_source(self.path)
         self.select_history()
         self.canvas.trace = self.canvas.pan = None
         self.brush.setCurrentIndex(0)
@@ -274,13 +279,15 @@ class MattingDialog(QtWidgets.QDialog, MattingHistory):
 
     def submit(self, action, **options):
         if not self.path or (action != 'load' and not self._parameters_valid): return
+        self.pause_video()
         self.timer.stop(); self._serial += 1; self._user_cancelled = False
         request = dict(action=action, path=self.path, values=copy.deepcopy(self.values), base=self.base,
-                       serial=self._serial, models=self.models, ffmpeg=self.ffmpeg, **options)
+                       serial=self._serial, models=self.models, ffmpeg=self.ffmpeg, position=self.video_position, **options)
         if self.worker:
             previous = self.worker.request
             reusable = (action == 'refine' and previous['action'] in {'infer', 'refine'}
                         and previous['path'] == request['path']
+                        and previous.get('position', 0) == request['position']
                         and all(previous['values'][key] == request['values'][key] for key in INFERENCE_KEYS))
             if not reusable: self.worker.cancel.set()
             self._pending = request
@@ -312,6 +319,7 @@ class MattingDialog(QtWidgets.QDialog, MattingHistory):
         # rendered image must never replace the user's newer parameter state.
         if (result.get('base') is not None and not result.get('error') and not result.get('cancelled')
                 and not self._user_cancelled and result['path'] == self.path
+                and abs(result['base'].get('position', 0)-self.video_position) < .000001
                 and all(base_values[key] == self.values[key] for key in INFERENCE_KEYS)):
             self.base = result['base']
             if self._pending and self._pending['action'] == 'refine': self._pending['base'] = self.base
@@ -321,6 +329,7 @@ class MattingDialog(QtWidgets.QDialog, MattingHistory):
         if result['action'] == 'export':
             self.status.setText(result.get('notice', '已另存透明结果。')); return
         if result['action'] == 'load':
+            if result.get('video'): self.configure_video(result['video'], result.get('expected'))
             metadata = result.get('metadata')
             if metadata and identity(self.path) not in self._drafts:
                 try: self.set_values(metadata['parameters'])
@@ -345,36 +354,43 @@ class MattingDialog(QtWidgets.QDialog, MattingHistory):
             self.refresh_enabled()
 
     def parameters_locked(self):
+        if self.video_worker is not None and not self._video_playing: return True
         return self.worker is not None and (self.worker.request['action'] != 'refine'
             or self.worker.request['path'] != self.path or bool(self._pending and self._pending['action'] != 'refine'))
 
     def refresh_enabled(self):
         busy = self.worker is not None
+        video_busy = self.video_worker is not None
         locking = self.parameters_locked()
         self.parameter_page.setEnabled(not locking)
-        self.generate.setEnabled(bool(self.path) and not busy and self._parameters_valid)
-        self.save_button.setEnabled(bool(self.path) and not busy and self._parameters_valid)
-        self.export_button.setEnabled(bool(self.path) and not busy); self.disable_result.setEnabled(bool(self.path) and not busy)
+        self.generate.setEnabled(bool(self.path) and not busy and not video_busy and self._parameters_valid)
+        self.save_button.setEnabled(bool(self.path) and not busy and not video_busy and self._parameters_valid)
+        self.export_button.setEnabled(bool(self.path) and not busy and not video_busy); self.disable_result.setEnabled(bool(self.path) and not busy and not video_busy)
         self.brush.setEnabled(self.base is not None and not locking)
         for mode, button in self.brush_buttons.items():
-            button.setEnabled(not locking and (mode == 'view' or (self.base is not None and self._parameters_valid)))
+            button.setEnabled(not locking and (mode == 'view' or (self.base is not None and self._parameters_valid and not self._video_playing)))
         self.brush_size.setEnabled(self.base is not None and not locking)
-        self.canvas.editable = self.base is not None and not locking and self._parameters_valid
+        self.canvas.editable = self.base is not None and not locking and self._parameters_valid and not self._video_playing
         self.undo_button.setEnabled(bool(self.path) and not locking and (bool(self.history.past) or not self._parameters_valid))
         self.redo_button.setEnabled(bool(self.path) and not locking and self._parameters_valid and bool(self.history.future))
         self.clear_button.setEnabled(self.canvas.editable and bool(self.values['strokes']))
-        self.cancel_button.setEnabled(busy); self.progress.setVisible(busy)
+        self.cancel_button.setEnabled(busy or video_busy); self.progress.setVisible(busy)
+        self.refresh_video_controls()
 
     def cancel_work(self):
+        self.pause_video()
         self.timer.stop(); self._pending = None; self._serial += 1; self._user_cancelled = True
         if self.worker: self.worker.cancel.set(); self.status.setText('正在取消处理…')
+        elif self.video_worker: self.status.setText('正在停止视频预览…')
 
     def change_view(self):
         self.canvas.view = self.view.currentData(); self.canvas.update()
+        self.video_view_changed()
         if hasattr(self, 'view_note'):
             self.view_note.setText('原始素材对比视图；参数效果请切换到合成／透明棋盘或黑白遮罩。' if self.canvas.view == 'original' else
                                    '参数自动更新当前预览；保存后才会应用到资源池和成品。')
     def change_brush(self, *_):
+        if self.brush.currentData() != 'view': self.pause_video()
         self.canvas.mode, self.canvas.brush_size = self.brush.currentData(), self.brush_size.value()
         self.brush_buttons[self.canvas.mode].setChecked(True); self.canvas.update()
 
@@ -420,13 +436,17 @@ class MattingDialog(QtWidgets.QDialog, MattingHistory):
         except (ValueError, OSError) as error: self.status.setText(str(error))
 
     def closeEvent(self, event):
-        if self.worker:
+        if self.worker or self.video_worker:
             self._closing = True; self.cancel_work(); event.ignore(); return
-        self.timer.stop(); event.accept()
+        self.timer.stop(); self.video_seek_timer.stop(); event.accept()
 
     def showEvent(self, event):
         self._closing = False
         super().showEvent(event)
+
+    def hideEvent(self, event):
+        self.pause_video()
+        super().hideEvent(event)
 
     def reject(self):
         self.close()

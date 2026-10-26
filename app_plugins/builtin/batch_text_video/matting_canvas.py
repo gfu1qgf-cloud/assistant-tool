@@ -15,6 +15,10 @@ class MattingCanvas(QtWidgets.QWidget):
         self.zoom, self.offset = 1., QtCore.QPointF()
         self.strokes, self.trace, self.pan = [], None, None
         self.background = QtGui.QColor('#657181')
+        self._checker = QtGui.QPixmap(32, 32); self._checker.fill(QtGui.QColor('#e4e8ee'))
+        tile = QtGui.QPainter(self._checker)
+        tile.fillRect(16, 0, 16, 16, QtGui.QColor('#b5bdc8')); tile.fillRect(0, 16, 16, 16, QtGui.QColor('#b5bdc8'))
+        tile.end()
         self.setMinimumSize(300, 240); self.setMouseTracking(True)
         self.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Expanding)
 
@@ -47,9 +51,7 @@ class MattingCanvas(QtWidgets.QWidget):
             painter.drawText(self.rect(), QtCore.Qt.AlignmentFlag.AlignCenter, '选择素材，然后点击“生成AI遮罩”')
             return
         painter.save(); painter.setClipRect(rect)
-        for y in range(0, self.height(), 16):
-            for x in range(0, self.width(), 16):
-                painter.fillRect(x, y, 16, 16, QtGui.QColor('#b5bdc8' if (x//16+y//16)%2 else '#e4e8ee'))
+        painter.drawTiledPixmap(self.rect(), self._checker)
         painter.setRenderHint(QtGui.QPainter.RenderHint.SmoothPixmapTransform)
         if self.view == 'original' or self.cutout.isNull():
             painter.drawImage(rect, self.original)

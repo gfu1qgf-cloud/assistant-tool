@@ -87,7 +87,7 @@ class AssignedPoolPreviewTests(unittest.TestCase):
             items[index]['path'] = str(video)
         layers = owner.layer_panel.values()
         layers[0].update(key_method='normal', key_mode='green', key_similarity=.05, key_softness=.1,
-                         key_despill=True, key_despill_mode='edge')
+                         key_despill=True, key_despill_mode='edge', use_saved_matte=False)
         owner.layer_panel.set_layers(layers); owner.layer_panel.select_layer_id('one'); owner.edit_timer.stop()
         job = self.job(items); background = root/'gray.mp4'
         processor.ffmpeg(['-f', 'lavfi', '-i', 'color=c=gray:s=320x200:r=10:d=0.2',

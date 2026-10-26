@@ -26,33 +26,37 @@ def qimage(data):
     return QtGui.QImage(data.tobytes(), w, h, w*4, QtGui.QImage.Format.Format_RGBA8888).copy()
 
 
-def load_source(path, cancel=None, ffmpeg=''):
+def load_source(path, cancel=None, ffmpeg='', *, position=0.):
     from qt_compat import QtCore, QtGui
     from .layers import read_image
     from .visual_media import is_animated
     check_cancel(cancel)
     before = fingerprint(path)
+    video = None
     if is_animated(path):
         from .engine import resolve_tools, probe
+        from .matting_video import describe, frame_position, seek_args
         executable, ffprobe = resolve_tools(ffmpeg)
-        stream = probe(path, ffprobe)['video']
-        if not stream or stream['width']*stream['height'] > 40_000_000 or max(stream['width'], stream['height']) > 8192:
-            raise ValueError('素材画幅过大或没有视频画面。')
+        video = describe(probe(path, ffprobe))
+        position = frame_position(video, position)
         # Decode at native dimensions. The general poster helper scales small
         # video up to its requested bounds, unsuitable for AI source pixels.
-        decoded = subprocess.run([executable, '-nostdin', '-hide_banner', '-loglevel', 'error', '-i', str(path),
+        decoded = subprocess.run([executable, '-nostdin', '-hide_banner', '-loglevel', 'error', *seek_args(video, position), '-i', str(path),
             '-frames:v', '1', '-f', 'image2pipe', '-vcodec', 'png', 'pipe:1'], capture_output=True,
             timeout=30, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
         source = QtGui.QImage.fromData(decoded.stdout)
-        if decoded.returncode or source.isNull(): raise ValueError('无法读取素材首帧。')
+        if decoded.returncode or source.isNull(): raise ValueError('无法读取所选视频帧。')
+        video.update(width=source.width(), height=source.height())
     else: source = read_image(path, QtCore.QSize(8192, 8192))
     check_cancel(cancel)
-    return dict(source=image_array(source), expected=before)
+    result = dict(source=image_array(source), expected=before, position=position if video else 0.)
+    if video: result['video'] = video
+    return result
 
 
-def infer(path, parameters, *, models=None, cancel=None, report=None, ffmpeg=''):
+def infer(path, parameters, *, models=None, cancel=None, report=None, ffmpeg='', position=0.):
     p = normalize(parameters)
-    base = load_source(path, cancel, ffmpeg)
+    base = load_source(path, cancel, ffmpeg, position=position)
     predictor = Predictor(p['model'], p['device'], p['quality'], models, cancel, report)
     rgb, alpha = predictor.predict(base['source'][:, :, :3])
     base.update(rgb=rgb, alpha=alpha, device=predictor.device, model=p['model'], quality=p['quality'])

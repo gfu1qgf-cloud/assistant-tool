@@ -135,7 +135,7 @@ class MattingTests(unittest.TestCase):
         second = self.publish(opacity=0)
         self.assertNotEqual(first['id'], second['id']); self.assertEqual(Path(first['result']['path']).read_bytes(), before)
         with patch.object(render, 'Predictor', side_effect=AssertionError('pool must not run AI')):
-            resolved = resolve_sources([self.layer(key_mode='green')])[0][0]
+            resolved = resolve_sources([self.layer(key_mode='green', use_saved_matte=True)])[0][0]
             self.assertEqual(resolved['path'], second['result']['path']); self.assertEqual(resolved['key_mode'], 'none')
         np.testing.assert_array_equal(np.array(Image.open(self.source)), self.pixels)
 
@@ -299,7 +299,7 @@ class MattingTests(unittest.TestCase):
         self.publish(); background = self.root/'background.mp4'
         subprocess.run([FFMPEG, '-y', '-v', 'error', '-f', 'lavfi', '-i', 'color=c=blue:s=240x160:r=10:d=0.4',
                         '-c:v', 'libx264', str(background)], check=True, capture_output=True)
-        layer = self.layer(key_mode='green', width=100, height=100)
+        layer = self.layer(key_mode='green', width=100, height=100, use_saved_matte=True)
         registry = fallback_registry(); graph, _ = component_graph(layer, DEFAULTS, registry)
         library = WorkflowLibrary(self.root/'workflows'); stored = library.save(graph, 'matting test', registry)
         effect = new_effect(); effect['workflow_id'] = stored['workflow_id']

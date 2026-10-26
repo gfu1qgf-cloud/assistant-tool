@@ -20,6 +20,10 @@ def is_animated(path):
     return Path(str(path)).suffix.casefold() in ANIMATED_SUFFIXES
 
 def normalize_visual(layer):
+    # Legacy inline key settings without an explicit ownership flag keep using
+    # their inline configuration. An explicit saved-result choice is exclusive.
+    if 'use_saved_matte' not in layer:
+        layer['use_saved_matte'] = not (layer.get('key_mode', 'none') != 'none' or layer.get('key_method') == 'ai')
     for key, value in DEFAULTS.items():
         layer.setdefault(key, value)
     normalize_key(layer)
@@ -269,9 +273,12 @@ class VisualProperties(QtWidgets.QWidget):
         self.matting_button.setToolTip('调整当前素材的AI遮罩；保存参数后用于预览和渲染，不生成透明视频缓存。')
         self.matting_button.clicked.connect(lambda: self.mattingRequested.emit(self.layer['id']) if self.layer else None)
         self.matting_button.hide(); form.addRow(self.matting_button)
-        saved = QtWidgets.QCheckBox('优先使用此素材已保存的抠像结果')
-        saved.setToolTip('优先使用每个素材保存的AI参数；主体遮罩不再重复颜色扣除，补洞、去碎块和透明度修正仍生效。选择AI算法可直接对当前素材抠像。')
+        saved = QtWidgets.QCheckBox('使用工作台已保存的抠像结果／参数')
+        saved.setToolTip('勾选后完全使用每个素材在工作台保存的参数，下面的抠像选项停用。没有保存结果的素材保留原样；取消勾选后才使用下面的统一抠像配置。')
         saved.toggled.connect(self.edit); self.controls['use_saved_matte'] = saved; form.addRow(saved)
+        self.saved_matte_note = QtWidgets.QLabel(); self.saved_matte_note.setWordWrap(True)
+        self.saved_matte_note.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored, QtWidgets.QSizePolicy.Policy.Preferred)
+        form.addRow(self.saved_matte_note)
         for key, label, choices in (("blend_mode", "叠加模式", (("普通", "normal"), ("添加", "add"), ("滤色", "screen"))),
                                     ("key_mode", "抠像颜色", (("关闭", "none"), ("绿色预设", "green"), ("蓝色预设", "blue"), ("黑色预设", "black"), ("自定义颜色", "custom"))),
                                     ("key_method", "抠像算法", (("普通 · 颜色扣除", "normal"), ("增强 · 轮廓保护", "enhanced"), ("AI · 主体抠像", "ai")))):
@@ -485,6 +492,7 @@ class VisualProperties(QtWidgets.QWidget):
         mode = self.controls["key_mode"].currentData()
         ai = self.controls['key_method'].currentData() == 'ai'
         active_matte = ai or mode != 'none'
+        self.controls['key_mode'].setEnabled(bool(self.layer))
         for key in ("key_similarity", "key_softness"):
             self.controls[key].setEnabled(mode != 'none' and not ai)
         self.controls["key_method"].setEnabled(bool(self.layer))
@@ -517,6 +525,14 @@ class VisualProperties(QtWidgets.QWidget):
         self.matte_levels.setEnabled(active_matte)
         self.key_details.set_layer(self.layer)
         self.key_details.setVisible(not ai)
+        saved = self.controls['use_saved_matte'].isChecked()
+        self.saved_matte_note.setText('以工作台保存的每素材参数为准；下方抠像选项停用，未保存的素材使用原素材。' if saved else
+                                      '使用下方统一抠像参数；暂不套用工作台的已存抠像结果。')
+        self.key_details.setEnabled(not saved)
+        if saved:
+            for key, control in self.controls.items():
+                if key.startswith('key_'): control.setEnabled(False)
+            self.matte_levels.setEnabled(False); self.edge_preset.setEnabled(False)
 
     def _apply_edge_preset(self):
         if not self.layer: return

@@ -123,17 +123,17 @@ class MatteEdgeControlTests(unittest.TestCase):
                                key_matte_grow=-.25, key_despill_luma=75)
             processor.compare(helper.sample(), layer)
 
-    def test_saved_ai_grow_composes_once_with_layer_adjustment(self):
+    def test_saved_ai_grow_is_not_overridden_by_layer_adjustment(self):
         from app_plugins.builtin.batch_text_video import matting_assets as assets
         from app_plugins.builtin.batch_text_video.layers import normalize_layers
         with tempfile.TemporaryDirectory() as folder:
             source = Path(folder)/'source.png'; helper.sample().save(str(source))
             record = dict(id='ai', mode='dynamic', source=assets.fingerprint(source), parameters=normalize(dict(grow=.5)))
-            layer = normalize_layers([dict(id='p', kind='image', path=str(source), key_method='ai',
+            layer = normalize_layers([dict(id='p', kind='image', path=str(source), key_method='ai', use_saved_matte=True,
                 key_matte_grow=-.25, key_despill=True, key_mode='green', key_despill_softness=65)])[0]
             with patch.object(assets.Catalogue, 'lookup', return_value=record): bound = assets.apply_saved(layer)
             parameters = bound['_matting_binding']['parameters']
-            self.assertEqual(parameters['grow'], .25); self.assertEqual(parameters['despill_softness'], 65)
+            self.assertEqual(parameters['grow'], .5); self.assertEqual(parameters['despill_softness'], 0)
             self.assertEqual(assets.apply_saved(bound)['_matting_binding']['parameters'], parameters)
 
     def test_save_reload_and_node_conversion_keep_adjustments(self):

@@ -2,6 +2,8 @@ import copy
 import os
 from pathlib import Path
 import tempfile
+import threading
+from contextlib import contextmanager
 import unittest
 from unittest.mock import patch
 from qt_compat import QtCore, QtWidgets
@@ -63,6 +65,28 @@ class RenderTimingTests(unittest.TestCase):
 
     def test_independent_finished_outputs_publish_before_slow_first_without_rerender(self):
         fixture = self.fixture(); fixture.no_resources = True
+        # Ordering must not depend on 55ms/120ms sleeps on a loaded Windows
+        # machine. Hold job 0 until another result is actually published.
+        published = threading.Event(); original_renderer = fixture.renderer
+        def renderer():
+            render = original_renderer(); original_prepare = render.prepare_export
+            @contextmanager
+            def prepare(*args, **kwargs):
+                with original_prepare(*args, **kwargs) as item:
+                    encode, publish = item.encode, item.publish
+                    def gated_encode():
+                        if item.job['id'] == 'job-0' and not published.wait(5):
+                            raise AssertionError('Later independent result could not publish')
+                        return encode()
+                    def notify_publish():
+                        result = publish()
+                        if item.job['id'] != 'job-0': published.set()
+                        return result
+                    item.encode, item.publish = gated_encode, notify_publish
+                    yield item
+            render.prepare_export = prepare
+            return render
+        fixture.renderer = renderer
         result, state = fixture.run_batch()
         self.assertEqual(result['completed'], 4)
         self.assertNotEqual(fixture.published[0], 'job-0')

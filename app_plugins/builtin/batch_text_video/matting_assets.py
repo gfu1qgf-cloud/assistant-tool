@@ -210,20 +210,35 @@ class Catalogue:
 
 def apply_saved(layer, catalogue=None):
     inline_ai = layer.get('key_method') == 'ai'
-    if layer.get('kind') != 'image' or not (inline_ai or layer.get('use_saved_matte', True)): return layer
+    use_saved = layer.get('use_saved_matte', True)
+    if layer.get('kind') != 'image' or not (inline_ai or use_saved): return layer
     source = layer.get('path', '')
     if not source: return layer
     existing = layer.get('_matting_binding')
-    if existing and identity(source) in {identity(existing['source']['path']), identity(existing.get('result', existing['source'])['path'])}:
+    if (existing and (use_saved != existing['id'].startswith('inline-ai-'))
+            and identity(source) in {identity(existing['source']['path']), identity(existing.get('result', existing['source'])['path'])}):
         verify_record(existing)
         record = existing
-    elif '_matting_snapshot' in layer:
+    elif use_saved and '_matting_snapshot' in layer:
         record = layer['_matting_snapshot'].get(identity(source))
         if record and record.get('error'): raise ValueError(record['error'])
         if record:
             verify_record(record)
-    else:
+    elif use_saved:
         record = (catalogue or Catalogue()).lookup(source)
+    else: record = None
+    if use_saved:
+        # The workbench owns the complete matte. Never run a second fill,
+        # cleanup, alpha curve, colour key or despill pass from the outer layer.
+        result = copy.deepcopy(layer)
+        result.update(key_mode='none', key_method='normal', key_cleanup=False, key_despill=False,
+                      key_matte_grow=0., key_alpha_low=0., key_alpha_high=100.)
+        result.pop('_matting_post_options', None)
+        if record is not None:
+            result.update(path=record['source']['path'] if record.get('mode') == 'dynamic' else record['result']['path'],
+                          thumbnail='', _matting_binding=freeze(record))
+        else: result.pop('_matting_binding', None)
+        return result
     if record is None:
         if not inline_ai: return layer
         from .matting_settings import normalize
@@ -290,7 +305,7 @@ def snapshot_layers(layers, catalogue=None):
     from .components import walk_components
     result = copy.deepcopy(layers); catalogue = catalogue or Catalogue()
     for layer in walk_components(result):
-        if layer.get('kind') != 'image' or not (layer.get('use_saved_matte', True) or layer.get('key_method') == 'ai'): continue
+        if layer.get('kind') != 'image' or not layer.get('use_saved_matte', True): continue
         if '_matting_snapshot' in layer: continue
         paths = [layer.get('source_file') or layer.get('path')]
         paths += [item.get('path') for item in layer.get('sequence_items', [])]
