@@ -43,6 +43,7 @@ PRIVATE_FILES = {
     "taskreferencedownloadstate.json",
 }
 PRIVATE_DIRECTORIES = {
+    "本地分发",
     "plugindata",
     ".venv",
     ".git",
