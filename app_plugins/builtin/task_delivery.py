@@ -407,8 +407,9 @@ class TaskDeliveryPlugin:
         else:
             dialog.show_external_records(result["records"], day=dialog.folder_day.date().toString("yyyy-MM-dd"))
         self.context.log(
-            f"每日数量检索：已检查 {result['checked']} 个视频，"
-            f"待分类 {len(result['pending'])} 个，已忽略 {len(result['ignored'])} 个；未修改云端数字。"
+            f"每日数量清单检索（只读）：已检查 {result['checked']} 个视频，"
+            f"待分类 {len(result['pending'])} 个，已忽略 {len(result['ignored'])} 个；"
+            "数量写入结果请看“每日数量统计”日志。"
         )
 
     def _daily_quantity_inspection_failed(self, error):

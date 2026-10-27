@@ -1423,9 +1423,28 @@ def reconcile_daily_quantity(
         category_options = _category_options(
             label_snapshots, str(config.get("task_submission_creator") or "").strip()
         )
-        period_columns = {sheet: _period_columns(rows) for sheet, rows in snapshots.items()}
+        # Date headers commonly descend through formulas (=G1-1, ...).
+        # FORMULA is essential for protecting numeric target cells, but cannot
+        # identify those dates. Read only the two header rows as calculated
+        # serials, independent of the spreadsheet's date display/locale.
+        header_ranges = [sheet_range(name, "A1:{}{}".format(
+            column_to_letter(sizes[name].get("columnCount", 1)),
+            min(2, sizes[name].get("rowCount", 1)),
+        )) for name in names]
+        header_response = service.spreadsheets().values().batchGet(
+            spreadsheetId=spreadsheet_id,
+            ranges=header_ranges,
+            valueRenderOption="UNFORMATTED_VALUE",
+            dateTimeRenderOption="SERIAL_NUMBER",
+        ).execute() if header_ranges else {"valueRanges": []}
+        header_values = header_response.get("valueRanges", [])
+        if len(header_values) != len(names):
+            raise RuntimeError("日期/时段表头读取不完整；本次未写入，请稍后重试。")
+        header_snapshots = {name: item.get("values", [])
+                            for name, item in zip(names, header_values)}
+        period_columns = {sheet: _period_columns(rows) for sheet, rows in header_snapshots.items()}
         date_headers = {sheet: tuple(_date(raw) for raw in rows[0]) if rows else ()
-                        for sheet, rows in snapshots.items()}
+                        for sheet, rows in header_snapshots.items()}
         retirement_cache = {}
         def retired(key):
             identity = tuple(key[:3])
@@ -1436,7 +1455,7 @@ def reconcile_daily_quantity(
             return retirement_cache[identity]
         allowed_dates = {
             parsed
-            for rows in snapshots.values()
+            for rows in header_snapshots.values()
             for raw in (rows[0] if rows else [])
             if (parsed := _date(raw))
         }
