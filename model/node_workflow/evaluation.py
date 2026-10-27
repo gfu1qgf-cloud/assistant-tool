@@ -149,7 +149,7 @@ class GraphEvaluator:
         try:
             # Inputs are evaluated before acquisition. Do not hold a downstream
             # lock while recursively computing unrelated upstream nodes.
-            with node_mutex(definition.mutex, self.context):
+            with node_mutex(getattr(definition, 'mutex', ''), self.context):
                 outputs = bound if bound is not None else definition.build(inputs, copy.deepcopy(node["params"]), self.context)
             self.check_outputs(node_id, outputs)
             return {port.key: outputs.get(port.key) for port in definition.result_ports(node['params'])}
