@@ -177,8 +177,15 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 self.ports[(output, port.key)] = PortItem(self, port, output, index)
         scene.addItem(self)
         self.setPos(*data.get("position", [0,0]))
+        mutex = getattr(definition, 'mutex', '')
+        self.mutex_badge = None
+        if mutex:
+            from .node_mutex_badge import NodeMutexBadge
+            self.mutex_badge = NodeMutexBadge(mutex, self)
         from model.node_workflow.loops import BEGIN, END, paired_blocks
         tooltip = definition.description
+        if mutex:
+            tooltip += '\n执行互斥锁：' + mutex + '（同一程序内共享，不锁定参数）'
         if data["kind"] in {BEGIN, END}:
             by_end, by_begin, _errors = paired_blocks(scene.graph)
             paired = by_begin.get(data["id"]) if data["kind"] == BEGIN else by_end.get(data["id"])
@@ -202,8 +209,9 @@ class NodeItem(QtWidgets.QGraphicsObject):
         font = painter.font()
         font.setBold(True)
         painter.setFont(font)
-        painter.drawText(QtCore.QRectF(12,5,self.WIDTH-24,30), QtCore.Qt.AlignmentFlag.AlignVCenter,
-                         self.definition.title)
+        title_width = self.WIDTH - (47 if self.mutex_badge is not None else 24)
+        title = painter.fontMetrics().elidedText(self.definition.title, QtCore.Qt.TextElideMode.ElideRight, int(title_width))
+        painter.drawText(QtCore.QRectF(12,5,title_width,30), QtCore.Qt.AlignmentFlag.AlignVCenter, title)
         font.setBold(False)
         painter.setFont(font)
         for output, ports in ((False,self.inputs),(True,self.outputs)):

@@ -52,6 +52,8 @@ class NodeRegistry:
     def register(self, owner, definition):
         if not isinstance(definition, NodeDefinition):
             raise TypeError("节点接口只接受 NodeDefinition。")
+        from .mutexes import validate_mutex_name
+        validate_mutex_name(definition.mutex)
         if (not re.fullmatch(r"[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*", definition.kind)
                 or not definition.kind.startswith(owner + ".")
                 or type(definition.version) is not int or definition.version < 1

@@ -79,6 +79,9 @@ class NodeDefinition:
     # Trusted plugin compiler for a deferred, multi-video source recipe.
     compile_source: Callable = None
     output_factory: Callable = None
+    # Fixed, process-global name. Empty = independent; only build() is guarded.
+    # Implementation metadata, never a user parameter or a saved lock object.
+    mutex: str = ""
 
     def input_ports(self, params=None):
         if self.input_factory is None:

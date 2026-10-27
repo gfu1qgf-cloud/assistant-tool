@@ -9,6 +9,7 @@ from .loops import (BEGIN, END, LoopBlock, LoopResults, paired_blocks,
                     loop_dependencies, freeze_result, result_bytes, MAX_COLLECT_BYTES)
 from .python_values import PythonValue, validate_data
 from .video_stream import VideoStream
+from .mutexes import node_mutex
 
 MAX_NODE_BUILDS = 100000
 MAX_LOOP_DEPTH = 16
@@ -146,7 +147,10 @@ class GraphEvaluator:
             self.reported_nodes.add(node_id)
             self.last_report = now
         try:
-            outputs = bound if bound is not None else definition.build(inputs, copy.deepcopy(node["params"]), self.context)
+            # Inputs are evaluated before acquisition. Do not hold a downstream
+            # lock while recursively computing unrelated upstream nodes.
+            with node_mutex(definition.mutex, self.context):
+                outputs = bound if bound is not None else definition.build(inputs, copy.deepcopy(node["params"]), self.context)
             self.check_outputs(node_id, outputs)
             return {port.key: outputs.get(port.key) for port in definition.result_ports(node['params'])}
         except Exception as error:

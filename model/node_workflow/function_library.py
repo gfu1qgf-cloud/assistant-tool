@@ -11,7 +11,7 @@ from .contracts import NodeDefinition
 
 
 def node_function(*, kind, title, inputs=(), outputs=(), parameters=(),
-                  category="Python 原生", keywords=(), description="", version=1, execution_scope="any"):
+                  category="Python 原生", keywords=(), description="", version=1, execution_scope="any", mutex=""):
     """Decorate a trusted pure function using explicit port/parameter contracts.
 
 Arguments use port/parameter keys. One output can return a scalar; multiple
@@ -46,7 +46,7 @@ No context, Qt widget, filesystem handle or hidden plugin state is injected.
 
         function.__node_definition__ = NodeDefinition(kind, title, tuple(inputs), tuple(outputs),
             tuple(parameters), build, version, description=description or inspect.getdoc(function) or "",
-            execution="compute", execution_scope=execution_scope, category=category, keywords=tuple(keywords))
+            execution="compute", execution_scope=execution_scope, category=category, keywords=tuple(keywords), mutex=mutex)
         return function
     return decorate
 

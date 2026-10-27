@@ -227,4 +227,5 @@ def edit_node(services):
                         choices=(("inherit", "沿用智能剪辑设置"), ("on", "开启"), ("off", "关闭"))),
                     NodeParameter("pause_threshold_ms", "句内气口阈值 ms（-1 沿用设置）", "integer", -1, -1, 10000)),
         build=build_edit, prepare=lambda task, params, _host: prepare_edit(task, params, services), execution="compute", version=2,
+        mutex="whisper",
         description="必填：视频列表、文案。可选语言会覆盖默认识别语言；任务编号／名称仅用于任务标识与日志，不改变剪辑策略。未连接时编号用目录名，名称留空。支持 Detail 和 Line，只处理连线数据，不隐式读取当前任务；复用缓存，输出剪辑计划与对齐字幕，最后一次编码。")
