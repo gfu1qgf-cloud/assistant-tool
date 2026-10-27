@@ -1067,6 +1067,7 @@ class DailyQuantityDialog(QtWidgets.QDialog):
         # A partial response must never clear the user-owned local catalog.
         warnings = result.get("warnings", [])
         updated = result.get("updated", [])
+        retired = result.get("retired_periods", [])
         self._daily_counts = list(result.get("daily_counts", []))
         self._overall_count = int(result.get("counted", 0))
         self._has_summary = True
@@ -1075,9 +1076,11 @@ class DailyQuantityDialog(QtWidgets.QDialog):
             self.show_sync_progress(result["sync_progress"])
         self._show_daily_summary()
         self.status.setText(
-            f"全部日期已归类视频 {self._overall_count} 个；本次更新数字格 {len(updated)} 个；"
+            f"本次同步范围已归类视频 {self._overall_count} 个；本次更新数字格 {len(updated)} 个；"
             f"待处理提示 {len(warnings)} 条"
         )
+        if retired:
+            self.status.setText(self.status.text() + f"；旧时段正常略过 {len(retired)} 组（历史保留）")
         if warnings and not updated:
             self.status.setText("本次未写入，有待处理问题；不能据此判断线上数量已完整。 " + self.status.text())
         lines = [
@@ -1089,7 +1092,13 @@ class DailyQuantityDialog(QtWidgets.QDialog):
         lines.extend(f"{item['range']} → {item['count']}" for item in updated)
         if not updated:
             lines.append("本次未改写数字格；仍有待处理问题，部分数量可能未写入。" if warnings
+                         else "保留时段无需改写；已移除的旧时段正常略过，不重建或回写。" if retired
                          else "本次无需改写数字格，现有表格已是最新。")
+        if retired:
+            lines += ["", f"已移除的旧日期/时段（{len(retired)} 组，历史记录保留，不作为失败）："]
+            lines.extend(f"• {item['sheet']} / {item['date']} / {item['slot']}" for item in retired[:8])
+            if len(retired) > 8:
+                lines.append(f"另有 {len(retired) - 8} 组旧时段同样正常略过。")
         duplicates = result.get("duplicate_exclusions", [])
         if duplicates:
             lines += ["", f"重复副本已排除（{len(duplicates)} 个，不增加数量）："]

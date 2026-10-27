@@ -40,7 +40,8 @@ from model.DailyQuantityDedup import (
 )
 
 
-def _prepare_video_content(groups, records, cache, drive_service=None, verify=False):
+def _prepare_video_content(groups, records, cache, drive_service=None, verify=False,
+                           verify_keys=None):
     """Recover legacy fingerprints; verify unresolved items before live counting.
 
     History and versioned metadata cache avoid fetching the same hashes on every
@@ -65,7 +66,7 @@ def _prepare_video_content(groups, records, cache, drive_service=None, verify=Fa
                 source = cache.get(cache_key) or historical.get(file_id) or {}
                 if video_content_key(source):
                     video.update(video_content_fields(source))
-            if verify and not video_content_key(video):
+            if verify and (verify_keys is None or key in verify_keys) and not video_content_key(video):
                 label = str(video.get("file_name") or "未知视频")
                 if not file_id:
                     raise ValueError(f"{label}：缺少网盘文件 ID，无法核实重复内容；本次未写入数量。")
@@ -426,19 +427,47 @@ def collect_assignments(config, root, records=None, allowed_dates=None,
     return groups, warnings
 
 
-def _find_cell(rows, day, slot, creator, category, label_rows=None):
+def _period_columns(rows):
+    """Index the same first date block used by the numeric-cell writer."""
+    if len(rows) < 2:
+        return {}
+    dates = [(col, _date(raw)) for col, raw in enumerate(rows[0]) if _date(raw)]
+    result, seen = {}, set()
+    for index, (start, date_text) in enumerate(dates):
+        if date_text in seen:
+            continue
+        seen.add(date_text)
+        end = dates[index + 1][0] if index + 1 < len(dates) else len(rows[1])
+        for slot, labels in _PERIOD_LABELS.items():
+            result[(date_text, slot)] = [col for col in range(start, end)
+                if any(label in str(_value(rows, 1, col)) for label in labels)]
+    return result
+
+
+def _retired_period(columns, day, slot, date_headers=()):
+    """Only a missing historical prefix is retired, never a gap or bad match.
+
+    Each sheet/period has its own retention boundary. Existing (including
+    duplicated) columns, current/future dates and unrecognizable headers keep
+    the normal validation path rather than being silently treated as removed.
+    """
+    if (slot not in _PERIOD_LABELS or _date(day) != day
+            or day >= date.today().isoformat() or columns.get((day, slot))
+            or date_headers.count(day) > 1):
+        return False
+    dates = {current for current, _slot in columns}
+    if dates and day < min(dates):
+        return True
+    period_dates = {current for (current, current_slot), matches in columns.items()
+                    if current_slot == slot and matches}
+    return bool(period_dates and day < min(period_dates))
+
+
+def _find_cell(rows, day, slot, creator, category, label_rows=None, period_columns=None):
     if len(rows) < 2:
         raise ValueError("缺少日期/时段表头")
-    dates = [(col, _date(raw)) for col, raw in enumerate(rows[0]) if _date(raw)]
-    columns = []
-    for index, (start, date_text) in enumerate(dates):
-        if date_text != day:
-            continue
-        end = dates[index + 1][0] if index + 1 < len(dates) else len(rows[1])
-        labels = _PERIOD_LABELS[slot]
-        columns = [col for col in range(start, end)
-                   if any(label in str(_value(rows, 1, col)) for label in labels)]
-        break
+    header = _period_columns(rows) if period_columns is None else period_columns
+    columns = header.get((day, slot), [])
     if len(columns) != 1:
         raise ValueError(f"{day} / {slot} 时段列匹配到 {len(columns)} 列")
 
@@ -1394,6 +1423,17 @@ def reconcile_daily_quantity(
         category_options = _category_options(
             label_snapshots, str(config.get("task_submission_creator") or "").strip()
         )
+        period_columns = {sheet: _period_columns(rows) for sheet, rows in snapshots.items()}
+        date_headers = {sheet: tuple(_date(raw) for raw in rows[0]) if rows else ()
+                        for sheet, rows in snapshots.items()}
+        retirement_cache = {}
+        def retired(key):
+            identity = tuple(key[:3])
+            if identity not in retirement_cache:
+                sheet, day, slot = identity
+                retirement_cache[identity] = (sheet in period_columns and
+                    _retired_period(period_columns[sheet], day, slot, date_headers[sheet]))
+            return retirement_cache[identity]
         allowed_dates = {
             parsed
             for rows in snapshots.values()
@@ -1431,13 +1471,23 @@ def reconcile_daily_quantity(
         for key, videos in external_groups.items():
             groups.setdefault(key, []).extend(videos)
         warnings.extend(external_warnings)
+        # Keep old local records and known hashes as deduplication evidence,
+        # but do not query unavailable old media for cells no longer on the
+        # sheet. A removed date must not block today's independent work.
+        retired_periods = sorted({tuple(key[:3])
+            for key in list(groups) + [json.loads(key) for key in old_cells]
+            if selected(key) and retired(key)})
+        retired_periods = [{"sheet": sheet, "date": day, "slot": slot}
+                           for sheet, day, slot in retired_periods]
+        verify_keys = {key for key in groups if selected(key) and not retired(key)}
         content_cache = dict(previous.get("content_cache", {}))
         groups = _prepare_video_content(groups, records, content_cache,
-                                        drive_service, verify=verify_content)
+                                        drive_service, verify=verify_content, verify_keys=verify_keys)
         groups, duplicate_exclusions = deduplicate_video_groups(groups)
-        groups = {key: videos for key, videos in groups.items() if selected(key)}
+        groups = {key: videos for key, videos in groups.items() if selected(key) and not retired(key)}
         duplicate_exclusions = [item for item in duplicate_exclusions if selected((
-            item["sheet"], item["date"], item["slot"], item["category"], ""))]
+            item["sheet"], item["date"], item["slot"], item["category"], "")) and not retired((
+            item["sheet"], item["date"], item["slot"]))]
         duration_cache = dict(previous.get("duration_cache", {}))
         groups, duration_warnings, adjustments = _adjust_fl_oral_counts(
             groups, category_options, duration_cache, drive_service, read_remote=True
@@ -1448,15 +1498,18 @@ def reconcile_daily_quantity(
         desired = {
             json.dumps(key, ensure_ascii=False): videos for key, videos in groups.items()
         }
-        relevant = {key for key in set(desired) | set(old_cells) if selected(json.loads(key))}
+        relevant = {key for key in set(desired) | set(old_cells)
+                    if selected(json.loads(key)) and not retired(json.loads(key))}
         if not relevant:
             next_state = {**previous, "last_refresh_warning_count": len(warnings),
                           "updated_at": datetime.now().astimezone().isoformat(timespec="seconds")}
             if not dry_run:
-                _record_manual_refresh(next_state, manual_refresh, {})
+                if not retired_periods:
+                    _record_manual_refresh(next_state, manual_refresh, {})
                 state[scope] = next_state
                 _save_state(state_path, state)
             return {"updated": [], "warnings": warnings, "counted": 0,
+                    "retired_periods": retired_periods,
                     "duplicate_exclusions": duplicate_exclusions,
                     "automatic_classifications": adjustments,
                     "category_options": category_options, "daily_counts": daily_counts,
@@ -1473,7 +1526,7 @@ def reconcile_daily_quantity(
                 continue
             try:
                 row, col = _find_cell(snapshots[sheet], day, slot, creator,
-                                      category, label_snapshots.get(sheet))
+                                      category, label_snapshots.get(sheet), period_columns[sheet])
                 raw = _value(snapshots[sheet], row, col)
                 current = _number(raw)
             except (ValueError, TypeError) as exc:
@@ -1524,11 +1577,13 @@ def reconcile_daily_quantity(
                             "last_refresh_warning_count": len(warnings),
                             "updated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
                             "cells": next_cells}
-            _record_manual_refresh(state[scope], manual_refresh, verified_cells)
+            if verified_cells or not retired_periods:
+                _record_manual_refresh(state[scope], manual_refresh, verified_cells)
             _save_state(state_path, state)
         return {"updated": [{"range": a1, "count": number}
                             for _, _, a1, number in pending],
                 "warnings": warnings,
+                "retired_periods": retired_periods,
                 "duplicate_exclusions": duplicate_exclusions,
                 "automatic_classifications": adjustments,
                 "counted": counted,

@@ -711,6 +711,10 @@ class TaskDeliveryPlugin:
             f"每日数量统计：已归类 {result.get('counted', 0)} 个视频，"
             f"更新 {len(result.get('updated', []))} 格，待处理 {len(warnings)} 条。"
         )
+        retired = result.get("retired_periods", [])
+        if retired:
+            self.context.log(f"每日数量：正常略过 {len(retired)} 组已移除的旧日期/时段列；"
+                             "历史记录保留，不重建旧列，不影响当前统计。")
         duplicates = result.get("duplicate_exclusions", [])
         if duplicates:
             self.context.log(f"每日数量：按内容去重，排除 {len(duplicates)} 个重复副本；不增加数量。")
