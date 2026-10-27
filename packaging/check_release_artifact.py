@@ -23,6 +23,7 @@ REQUIRED_FILES = {
 }
 PRIVATE_FILES = {
     "config2.json",
+    "storage_bootstrap.json",
     "dailyquantitycategories.json",
     "googledrivecredentials.json",
     "googledrivetoken.json",
@@ -94,6 +95,8 @@ def validate_release_archive(path: str | Path) -> int:
                     or (parts and (parts[-1] == ".env" or
                         (parts[-1].startswith('.env.') and parts[-1] != '.env.example')))
                     or (parts[:2] == ['config', 'waste_reminder'])
+                    or any(part.startswith('组内分享配置') for part in parts)
+                    or (parts and parts[-1].startswith('config') and '.json.bak' in parts[-1])
                     or (parts and parts[-1].startswith('.~lock.'))
                     or (parts and parts[-1].startswith('deliverytodos.sqlite3'))
                     or (len(parts) == 1 and parts[0].startswith('config')

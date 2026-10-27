@@ -45,6 +45,8 @@ Remove-Item Env:LZX_DOC_SCREENSHOTS
 
 [`check_release_artifact.py`](../../packaging/check_release_artifact.py) 会拒绝项目开发文档路径；防止以后改成整目录复制时悄悄把手册、截图和示例带给用户。第三方依赖自带的合法文档/许可证不应被通用的“删所有 README”规则误删。
 
+组内分享配置是独立的私有分发资料，不随公开源码或 EXE 发布。检查器拒绝任何层级的“组内分享配置”目录／ZIP（含日期后缀）、密盘启动绑定和配置备份；即使已经清理凭据，也不能把组内列名、分类和业务设置顺带公开。更新私有分享包时必须核对 ZIP 与展开目录一致，避免只修改目录却分发旧 ZIP。此检查只覆盖已知路径，不替代内容审查。
+
 ```powershell
 python packaging/check_release_artifact.py dist_final/AssistantTool-Windows.zip
 ```
