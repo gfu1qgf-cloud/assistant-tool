@@ -14,10 +14,11 @@ from .layers import DEFAULT_LAYERS, normalize_layers
 from .effects import blur_strength
 from .voice_effects import DEFAULTS as VOICE_FX_DEFAULTS, normalized as normalize_voice_fx
 from .image_background import DEFAULTS as IMAGE_BACKGROUND_DEFAULTS, normalized as normalize_image_background
+from .canvas_settings import DEFAULTS as CANVAS_DEFAULTS, normalized as normalize_canvas
 
 SCHEMES = {"static_text": "静态文字版"}
 DEFAULTS = {
-    "scheme": "static_text", "aspect": "portrait", "fit": "contain",
+    "scheme": "static_text", **CANVAS_DEFAULTS, "fit": "contain",
     "auto_crop_black_bars": True,
     "geometry_units": "percent", "show_layer_bounds": True,
     "background_tint_color":"#000000","background_tint_strength":0,
@@ -97,6 +98,7 @@ class Store:
             if 'background_visual' not in old_settings and 'image_background_motion' in old_settings:
                 old_settings.update(normalize_image_background(old_settings))
             state["settings"] = {**copy.deepcopy(DEFAULTS), **old_settings}
+            state['settings'].update(normalize_canvas(state['settings']))
             state['settings'].update(normalize_voice_fx(state['settings']))
             state['settings'].update(normalize_image_background(state['settings']))
             from .adaptation import normalize_duration
@@ -157,6 +159,7 @@ class Store:
             state = copy.deepcopy(state)
             apply_global(state, DEFAULTS)
             from .adaptation import normalize_duration
+            state['settings'].update(normalize_canvas(state['settings']))
             state['settings'].update(normalize_voice_fx(state['settings']))
             state['settings'].update(normalize_image_background(state['settings']))
             normalize_duration(state["settings"])
@@ -192,6 +195,7 @@ class Store:
                 state.update(copy.deepcopy(profile['data']))
             state['active_profile'] = identifier
             state['revision'] = profile.get('revision', 0)
+            state['settings'].update(normalize_canvas(state['settings']))
             from .render_settings import apply_global
             apply_global(state, DEFAULTS)
             return state

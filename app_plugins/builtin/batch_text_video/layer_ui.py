@@ -64,7 +64,8 @@ class LayerPanel(QtWidgets.QWidget):
         from .background_visual import control
         self._background = control(self.settings)
         self._background_selected = False
-        self.canvas_size = QtCore.QSize(1920,1080) if self.settings.get("aspect") == "landscape" else QtCore.QSize(1080,1920)
+        from .canvas_settings import output_size
+        self.canvas_size = QtCore.QSize(*output_size(self.settings))
         self._layers = componentize_layers(layers,self.settings)
         self._loading, self.worker = False, None
         self._catalog_hidden = False

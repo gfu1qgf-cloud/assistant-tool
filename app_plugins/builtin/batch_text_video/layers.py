@@ -170,7 +170,8 @@ def componentize_layers(value, settings):
     bottom = 100-float(settings.get("margin_bottom", 18))
     area = max(2, bottom-top)
     width = max(1,100-2*float(settings.get("margin_x",8)))
-    canvas_height = 1080 if settings.get("aspect") == "landscape" else 1920
+    from .canvas_settings import output_size
+    canvas_height = output_size(settings)[1]
     gap = min(area/4,float(settings.get("gap",22))/canvas_height*100)
     title_height = (area-gap)*.24
     body_height = area-gap-title_height

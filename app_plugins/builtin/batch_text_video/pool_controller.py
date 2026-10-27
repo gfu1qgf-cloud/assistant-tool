@@ -62,6 +62,10 @@ class PoolController(CustomPoolController, MattingController):
         self.profile_menu = self.file_menu
         self.file_menu.aboutToShow.connect(self.rebuild_profile_menu)
         self.rebuild_profile_menu()
+        self.settings_menu = self.menu_bar.addMenu('设置')
+        from .canvas_ui import edit_canvas
+        self.canvas_settings_action = self.settings_menu.addAction('画布比例与尺寸…', lambda: edit_canvas(self))
+        self.canvas_settings_action.setToolTip('当前项目：常用画面比例、跟随原素材或自定义宽高。')
         resources = self.menu_bar.addMenu("资源")
         resources.addAction("新建资源池…", self.new_resource_pool)
         resources.addAction("添加文件到当前池…", self.choose_custom_files)
@@ -682,6 +686,8 @@ class PoolController(CustomPoolController, MattingController):
             table.selectionModel().setCurrentIndex(QtCore.QModelIndex(),QtCore.QItemSelectionModel.SelectionFlag.NoUpdate)
         self._loading = False
         self.clear_editor()
+        from .canvas_ui import refresh_summary
+        refresh_summary(self)
         self.refresh_tables()
         self.tabs.setCurrentWidget(self.resources)
         self.apply_profile_title()

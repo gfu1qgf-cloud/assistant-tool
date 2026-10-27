@@ -334,8 +334,8 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
         form.setFieldGrowthPolicy(QtWidgets.QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
         self.controls = {}
         form.addRow("方案",self.scheme)
-        self._combo(form, "aspect", "画布", [("竖屏 1080×1920", "portrait"), ("横屏 1920×1080", "landscape"), ("原素材规格", "source")])
-        self.controls["aspect"].setToolTip("没有底层背景时，请选择需要的竖屏或横屏；“原素材规格”在无背景时使用竖屏1080×1920。")
+        from .canvas_ui import install_controls
+        install_controls(self, form)
         self._combo(form, "fit", "画面", [("完整显示（不裁切）", "contain"), ("铺满导出画布（会裁边）", "cover")])
         self.controls["fit"].setToolTip("铺满的是所选导出画布，不是整个软件窗口。完整显示可能留黑边；铺满会裁掉超出画布的内容。")
         crop_check = QtWidgets.QCheckBox("自动去除素材自带黑边")
@@ -944,8 +944,10 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
             if ((job.get("path") and (self._preview_path or settings.get('background_pool_id')))
                     or (empty and (self._preview_path is not None or voice))):
                 self.request_background(job.get("path", ""))
-            width, height = output_size(settings, self._media)
+            width, height = output_size(settings, None if empty else self._media)
             self.preview.canvas_size = QtCore.QSize(width,height)
+            from .canvas_ui import refresh_summary
+            refresh_summary(self)
             self.layer_panel.set_canvas_size(width,height)
             self._sync_preview_layers()
             self.preview.cover = settings["fit"] == "cover"
@@ -1131,8 +1133,10 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
             return
         request = (path, voice, self.ffmpeg.text().strip())
         frame_settings = {key:self.controls[key].currentData() for key in ("aspect","fit")}
+        frame_settings.update({key: self.controls[key].value() for key in ('canvas_width', 'canvas_height')})
         frame_settings["auto_crop_black_bars"] = self.controls["auto_crop_black_bars"].isChecked()
         request += (frame_settings["aspect"],frame_settings["fit"],frame_settings["auto_crop_black_bars"],blur_strength({"background_blur":self.controls["background_blur"].value()}))
+        request += (frame_settings['canvas_width'], frame_settings['canvas_height'])
         if not force:
             cancel = getattr(self.preview_worker, "cancel", None)
             if self._preview_pending == request or (self._preview_path == request and not (cancel and cancel.is_set())):
@@ -1156,7 +1160,7 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
             self._media = self._voice_duration = None
             self.preview.background = QtGui.QImage()
         self._background_error = ""
-        self.preview_worker = PreviewWorker(path, self.ffmpeg.text().strip(), self, voice_path=voice, blur=request[-1], frame_settings=frame_settings, cache_directory=self.store.directory)
+        self.preview_worker = PreviewWorker(path, self.ffmpeg.text().strip(), self, voice_path=voice, blur=request[6], frame_settings=frame_settings, cache_directory=self.store.directory)
         self.preview_worker.ready.connect(self._background_ready, QtCore.Qt.ConnectionType.QueuedConnection)
         connect_thread_finished(self.preview_worker, self, 'preview_worker', self._background_finished)
         self.preview_worker.start()
@@ -1164,6 +1168,8 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
     def _background_ready(self, result):
         if result.get("cancelled"):
             return
+        for key in ('canvas_width', 'canvas_height'):
+            if result.get(key, self.controls[key].value()) != self.controls[key].value(): return
         job = self.active_entry()
         try:
             voice = self.active_voice(job)

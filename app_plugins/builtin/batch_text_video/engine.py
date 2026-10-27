@@ -153,19 +153,8 @@ def probe(path, ffprobe, audio_only=False):
 
 
 def output_size(settings, media=None):
-    if settings["aspect"] == "landscape":
-        return 1920, 1080
-    if settings["aspect"] == "source" and media and media.get("video"):
-        stream = media["video"]
-        width, height = int(stream["width"]), int(stream["height"])
-        rotation = stream.get("tags", {}).get("rotate", 0)
-        rotation = next((s.get("rotation", rotation) for s in stream.get("side_data_list", []) if "rotation" in s), rotation)
-        if abs(float(rotation)) % 180 == 90:
-            width, height = height, width
-        if width * height > 16_777_216:
-            raise ValueError("原素材分辨率过大，请选1080p画布。")
-        return max(2, width // 2 * 2), max(2, height // 2 * 2)
-    return 1080, 1920
+    from .canvas_settings import output_size as canvas_size
+    return canvas_size(settings, media)
 
 
 def output_folder(job, settings):

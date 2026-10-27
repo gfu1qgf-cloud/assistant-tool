@@ -127,7 +127,7 @@ class PreviewParityTests(unittest.TestCase):
                 dialog = BatchTextVideoDialog(store=Store(root))
             dialog.active_entry = Mock(return_value={"path":"source.mp4"})
             dialog.active_voice = Mock(return_value="")
-            request = ("source.mp4","","","portrait","contain",True,0)
+            request = ("source.mp4","","","portrait","contain",True,0,1080,1920)
             dialog._preview_path = request
             dialog._preview_pending = ("source.mp4","","","portrait","cover",True,0)
             cancel = threading.Event(); cancel.set()

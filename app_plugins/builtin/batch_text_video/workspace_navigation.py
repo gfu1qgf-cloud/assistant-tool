@@ -104,6 +104,7 @@ class WorkspaceNavigation:
         if not hasattr(self, 'project_selector'): return
         self.project_selector.setEnabled(not busy or self.state['active_profile'] in self._host_plans)
         self.save_project_button.setEnabled(not busy)
+        self.canvas_settings_action.setEnabled(not busy)
         self.workflow_buttons['pairing'].setEnabled(not busy)
         self.render_queue_panel.tools.set_editable(not busy)
 
