@@ -1,5 +1,6 @@
 """The user's three tariffs apply end-to-end, without live Flow billing."""
 import unittest
+from types import SimpleNamespace
 from flow_reference_fixtures import upload_receipt
 
 import test_flow_assistant as fixtures
@@ -93,12 +94,16 @@ class FixedPricingTests(unittest.TestCase):
             store.update(row['id'], 'queued', remote={'environment_error': True, 'profile': profile})
         store.save_settings({'browser_blocks': {'profile:Ten': '页面费用无法读取，请填写单条积分预算或修正网页后恢复。',
             'profile:Four': '页面费用无法读取，请填写单条积分预算或修正网页后恢复。', 'profile:Other': '模型核对失败'}})
-        service = self.service()
+        # Exercise the price migration itself, before the separate new-session
+        # browser reset. Startup intentionally rechecks all automatic faults.
+        from app_plugins.builtin.flow_assistant.operations import FlowOperations
+        service = SimpleNamespace(store=store, preferences=store.settings())
+        FlowOperations.recover_fixed_price_blocks(service)
         self.assertNotIn('profile:Ten', service.preferences['browser_blocks'])
         self.assertIn('profile:Four', service.preferences['browser_blocks'])
         self.assertIn('profile:Other', service.preferences['browser_blocks'])
-        self.assertTrue(service.paused); self.assertFalse(service.released); self.assertFalse(service.pending)
         self.assertFalse(service.store.get(first['id'])['remote']['environment_error'])
+        self.assertTrue(service.store.get(second['id'])['remote']['environment_error'])
 
 
 if __name__ == '__main__': unittest.main()

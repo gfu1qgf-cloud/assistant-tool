@@ -21,6 +21,14 @@ REQUIRED_FILES = {
     "_internal/runtime/ffmpeg/ffprobe.exe",
     "_internal/runtime/ffmpeg/license",
 }
+REQUIRED_FLOW_BRIDGE_FILES = {
+    "background.js", "content-isolated.js", "lzx-background.js", "lzx-content.js",
+    "lzx-options.js", "lzx-page.js", "lzx-reference.js", "manifest.json",
+    "options.html", "source.json", "upstream_license", "upstream_license.list",
+    "injects/flow-proxy.js", "injects/ui.css", "injects/ui.js",
+}
+REQUIRED_FILES.update("browser_extensions/flow_bridge/" + name
+                      for name in REQUIRED_FLOW_BRIDGE_FILES)
 PRIVATE_FILES = {
     "config2.json",
     "storage_bootstrap.json",
@@ -45,6 +53,12 @@ PRIVATE_FILES = {
 PRIVATE_DIRECTORIES = {
     "本地分发",
     "plugindata",
+    "aimodelclient",
+    "nodeworkflows",
+    "smartvideosearch",
+    "smartimageassignment",
+    "assistanttooldata",
+    "codexaccountprofiles",
     ".venv",
     ".git",
     ".github",
@@ -95,7 +109,12 @@ def validate_release_archive(path: str | Path) -> int:
                     or (len(parts) == 1 and parts[0] == "config.json")
                     or (parts and (parts[-1] == ".env" or
                         (parts[-1].startswith('.env.') and parts[-1] != '.env.example')))
-                    or (parts[:2] == ['config', 'waste_reminder'])
+                    # Program-owned config is private; a dependency's own
+                    # nested config/schema resources are not user settings.
+                    or (parts and parts[0] in {'config', 'externaldata', 'legacydata'})
+                    or (len(parts) > 1 and parts[0] == '_internal'
+                        and parts[1] in {'config', 'externaldata', 'legacydata'})
+                    or any(part.startswith('.assistanttooldata-migration-') for part in parts)
                     or any(part.startswith('组内分享配置') for part in parts)
                     or (parts and parts[-1].startswith('config') and '.json.bak' in parts[-1])
                     or (parts and parts[-1].startswith('.~lock.'))

@@ -24,7 +24,14 @@ class RenderCheckboxTests(unittest.TestCase):
         for name in ('request_background','_start_overlay'):
             p=patch.object(BatchTextVideoDialog,name);p.start();self.addCleanup(p.stop)
         dialog=BatchTextVideoDialog(store=self.store)
-        self.addCleanup(dialog.close)
+        def dispose():
+            # Production closeEvent hides this reusable plugin window. Tests
+            # own it outright: destroy it on Qt's thread before QApplication
+            # and Python's native wrappers enter unordered interpreter teardown.
+            dialog.close()
+            dialog.deleteLater()
+            self.app.sendPostedEvents(None,QtCore.QEvent.Type.DeferredDelete)
+        self.addCleanup(dispose)
         return dialog
 
     def test_opening_lists_pending_videos_without_starting_render_and_old_buttons_are_removed(self):

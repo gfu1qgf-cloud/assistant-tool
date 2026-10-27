@@ -4,9 +4,10 @@ from pathlib import Path
 from runpy import run_path
 from zipfile import ZipFile
 
-validate_release_archive = run_path(
+release_guard = run_path(
     str(Path(__file__).resolve().parents[1] / "packaging" / "check_release_artifact.py")
-)["validate_release_archive"]
+)
+validate_release_archive = release_guard["validate_release_archive"]
 
 
 REQUIRED = (
@@ -22,7 +23,8 @@ REQUIRED = (
     "_internal/runtime/ffmpeg/ffmpeg.exe",
     "_internal/runtime/ffmpeg/ffprobe.exe",
     "_internal/runtime/ffmpeg/LICENSE",
-)
+) + tuple("browser_extensions/flow_bridge/" + name
+          for name in sorted(release_guard["REQUIRED_FLOW_BRIDGE_FILES"]))
 
 
 class ReleaseArtifactTests(unittest.TestCase):

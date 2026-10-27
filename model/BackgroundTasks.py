@@ -34,6 +34,16 @@ class BackgroundTaskResultError(RuntimeError):
         self.result = result
 
 
+def _normalize_result(result):
+    """One contract for successful, partial and already-running old workers."""
+    if isinstance(result, dict) and "paths" in result:
+        paths = result["paths"]
+        if not isinstance(paths, (list, tuple)):
+            raise TypeError("后台任务结果 paths 必须为路径列表。")
+        result = {**result, "paths": [str(path) for path in paths]}
+    return result
+
+
 def directory_resource(path):
     """Use the same canonical resource key for every writer of a directory."""
     return "directory:" + str(Path(path).expanduser().resolve()).casefold()
@@ -174,12 +184,7 @@ class _TaskWorker(QtCore.QThread):
         )
         try:
             context.check_canceled()
-            result = self.runner(self.payload, context)
-            if isinstance(result, dict) and "paths" in result:
-                paths = result["paths"]
-                if not isinstance(paths, (list, tuple)):
-                    raise TypeError("后台任务结果 paths 必须为路径列表。")
-                result = {**result, "paths": [str(path) for path in paths]}
+            result = _normalize_result(self.runner(self.payload, context))
             outcome = {"status": "canceled" if context.is_canceled() else "succeeded", "result": result}
         except BackgroundTaskCanceled:
             outcome = {"status": "canceled", "error": "操作已取消。"}
@@ -444,6 +449,18 @@ class BackgroundTaskManager(QtCore.QObject):
         task_id = worker.task_id
         self._notifying.add(task_id)
         outcome = self._outcomes.pop(task_id, {"status": "failed", "error": "工作线程没有返回结果。"})
+        try:
+            result = _normalize_result(outcome.get("result"))
+        except Exception as error:
+            # Partial-failure results and workers already running an older
+            # implementation can bypass the worker's success-path check.
+            # Contain their errors before entering the GUI/result callbacks,
+            # then continue normal worker/resource release and dispatch.
+            result = None
+            outcome = {"status": "failed", "error": redact_sensitive_text(
+                (outcome.get("error", "") + "\n" if outcome.get("error") else "")
+                + f"后台任务返回结果无效：{type(error).__name__}: {error}"),
+                "traceback": redact_sensitive_text(traceback.format_exc())}
         # A cancellation can reach the GUI after the worker emitted its result
         # but before the queued finished slot runs. Respect that late request.
         if worker.canceled.is_set():
@@ -451,7 +468,6 @@ class BackgroundTaskManager(QtCore.QObject):
         row = self._records[task_id]
         row.update(status=outcome["status"], finished_at=time.time(),
                    error=outcome.get("error", ""), traceback=outcome.get("traceback", ""))
-        result = outcome.get("result")
         if isinstance(result, dict):
             row["paths"] = [str(path) for path in result.get("paths", [])]
         row["stage"] = {"succeeded": "已完成", "failed": "失败", "canceled": "已取消"}.get(row["status"], "结束")

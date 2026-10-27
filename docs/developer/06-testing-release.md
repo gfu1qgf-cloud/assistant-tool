@@ -49,6 +49,12 @@ Remove-Item Env:LZX_DOC_SCREENSHOTS
 
 本机固定入口为程序根目录 `本地分发/`：内部版保留内部工作配置；外部版只维护通用基础列名，各自有 `当前配置/`、配置 ZIP 和 `配套资源/`。旧版本只进入 `历史归档/`，`分发清单.json` 记录当前包。整个根目录由 Git 忽略且被公开发行包检查拒绝；不能以“外部版”或“通用配置”为理由强行加入 Git。维护脚本必须使用清单／固定路径，不再扫描、猜测多个 config 副本。
 
+Flow 扩展是运行必需的数据资源，不是开发文档。spec 在 `COLLECT` 后通过 [`flow_bridge_resources.py`](../../packaging/flow_bridge_resources.py) 从固定上游及桥接源码重新构建，并仅复制已校验的15项文件到 EXE 同级 `browser_extensions/flow_bridge/`。不要直接复制开发者正在使用的扩展目录，更不要复制整个仓库。主程序要求版本、构建器版本、manifest 与来源清单必须一致；缺文件、额外配置、空文件或危险资源引用均阻止打包。上游新增资源时，须同步审查资源白名单及发行包必需文件测试。
+
+冻结程序从 EXE 同级查找扩展；`_internal` 中的 Python 模块路径不作为 Chrome 安装路径。完整发行包已带构建后的资源，运行时不需要 `tools/` 或上游源码；若 EXE 与扩展版本不匹配，应恢复完整包，不在用户机器上临时运行源码构建工具。`test_flow_release_bundle` 会真实执行本地固定构建器、检查模拟冻结目录和 ZIP 缺项；它不启动 Chrome、不发起生成，也不等于完成真实 EXE 验收。
+
+发行包隐私检查同时覆盖节点工作流、AI 试用台、素材分配／视频检索缓存、卷内数据副本及迁移暂存。`test_release_privacy_inventory` 将源码私有目录清单与拦截规则对照，避免增加新数据目录却忘记更新发布保护；依赖自己的深层 `config/` 资源和内置公开日历仍允许携带。
+
 ```powershell
 python packaging/check_release_artifact.py dist_final/AssistantTool-Windows.zip
 ```

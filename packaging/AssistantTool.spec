@@ -174,3 +174,10 @@ coll = COLLECT(
     upx_exclude=[],
     name="AssistantTool",
 )
+
+# Chrome must load this editable/unpacked resource beside the EXE, not from
+# PyInstaller's internal Python directory. Build from pinned upstream inputs;
+# do not copy the developer's currently active extension or private settings.
+from runpy import run_path
+stage_flow_bridge = run_path(str(project_root / 'packaging/flow_bridge_resources.py'))['stage_flow_bridge']
+stage_flow_bridge(project_root, Path(DISTPATH) / 'AssistantTool')
