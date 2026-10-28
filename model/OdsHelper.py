@@ -1,3 +1,4 @@
+import io
 import re
 import unicodedata
 
@@ -231,11 +232,13 @@ class TaskData:
     def safe_filename(name: str, replacement: str = "_") -> str:
         return re.sub(r'[\\/:*?"<>|]', replacement, str(name or "")).strip()
 
-def ReadTaskOds2(doc_path, schema=None, return_report=False):
+def ReadTaskOds2(doc_path, schema=None, return_report=False, *, source_bytes=None, cancelled=None):
     effective_schema = (
         load_task_table_schema() if schema is None else normalize_task_table_schema(schema)
     )
-    doc = load(str(doc_path))
+    if cancelled is not None and cancelled():
+        raise InterruptedError('任务读取已取消')
+    doc = load(str(doc_path) if source_bytes is None else io.BytesIO(source_bytes))
     sheet, sheet_name = _select_sheet(doc, effective_schema)
     rows = sheet.getElementsByType(TableRow)
     header_index, headers, header_score = _find_header(rows, effective_schema)
@@ -245,6 +248,8 @@ def ReadTaskOds2(doc_path, schema=None, return_report=False):
     invalid_required_rows = []
     defaulted_counts = {field_name: 0 for field_name in FIELD_ORDER}
     for physical_index in range(header_index + 1, len(rows)):
+        if cancelled is not None and cancelled():
+            raise InterruptedError('任务读取已取消')
         records = _row_records(rows[physical_index], len(headers))
         if len(records) < len(headers):
             records.extend([("", "")] * (len(headers) - len(records)))

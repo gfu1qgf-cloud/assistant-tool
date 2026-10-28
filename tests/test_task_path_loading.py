@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import tempfile
 import textwrap
+import time
 import unittest
 from unittest.mock import Mock, patch
 
@@ -14,6 +15,9 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from qt_compat import QtCore, QtTest, QtWidgets
 from QTUI.main_ui import Ui_MainDialog
 from PYUI.main_pyui import MainDialog
+import PYUI.main_pyui as main_module
+from PYUI.task_loading import TaskLoadController
+from model.TaskLoading import TaskLoadEngine
 
 
 class TaskLoadWindow(QtWidgets.QDialog, Ui_MainDialog):
@@ -21,6 +25,8 @@ class TaskLoadWindow(QtWidgets.QDialog, Ui_MainDialog):
         super().__init__()
         self.setupUi(self)
         self.config = {"task_table_file_name": "任务登记表格.ods"}
+        self.config_name = str(Path(root) / 'config.json')
+        self.task_loader = None
         self.logs = []
         self.errors = []
         self.task_list = ["previous-task"]
@@ -38,7 +44,22 @@ class TaskLoadWindow(QtWidgets.QDialog, Ui_MainDialog):
 
     chooseTaskPath = MainDialog.chooseTaskPath
     getTodayDir = MainDialog.getTodayDir
-    loadTask = MainDialog.loadTask
+    def loadTask(self):
+        # The public production entry point is asynchronous. Keep these older
+        # path-diagnostic assertions synchronous only inside this test adapter.
+        if self.task_loader is None:
+            engine = TaskLoadEngine(reader=main_module.ReadTaskOds2,
+                schema_loader=main_module.load_task_table_schema,
+                config_reader=lambda _path: dict(self.config), detector=lambda text: 'unknown',
+                missing_message=main_module._missing_task_table_message)
+            self.task_loader = TaskLoadController(self, engine=engine)
+        MainDialog.loadTask(self)
+        end = time.monotonic() + 3
+        while self.task_loader.busy and time.monotonic() < end:
+            QtWidgets.QApplication.processEvents()
+            time.sleep(.002)
+        if self.task_loader.busy:
+            raise AssertionError('Task path diagnostic did not finish')
     clearLoadedProject = MainDialog.clearLoadedProject
 
     def load_config(self):
@@ -63,6 +84,8 @@ class TaskPathLoadingTests(unittest.TestCase):
         self.window = TaskLoadWindow(self.root)
 
     def tearDown(self):
+        if self.window.task_loader is not None:
+            self.window.task_loader.shutdown()
         self.window.close()
         self.window.deleteLater()
         self.app.sendPostedEvents(None, QtCore.QEvent.Type.DeferredDelete)
@@ -122,7 +145,7 @@ class TaskPathLoadingTests(unittest.TestCase):
         self.assertIn("文件名必须为：任务登记表格.ods", message)
         self.assertIn("目标日期目录", message)
         self.assertIn("创建任务文件夹", message)
-        self.assertEqual(self.window.logs[-1][0], message)
+        self.assertEqual(self.window.logs[-1][0], '[任务加载] ' + message)
         reader.assert_not_called()
         self.assertFalse((self.root / "1005").exists())
         self.assertEqual(self.window.task_list, ["previous-task"])
@@ -183,15 +206,15 @@ class TaskPathLoadingTests(unittest.TestCase):
         self.window.task_path_edit.setText("  " + str(self.root) + "  ")
         with patch("PYUI.main_pyui.ReadTaskOds2", return_value=(["new-task"], {})) as reader, patch(
             "PYUI.main_pyui.load_task_table_schema", return_value={}
-        ), patch("PYUI.main_pyui.format_task_table_report", return_value="report"), patch(
+        ), patch("PYUI.task_loading.format_task_table_report", return_value="report"), patch(
             "PYUI.main_pyui.QMessageBox.warning"
         ) as warning:
             self.window.loadTask()
         self.assertEqual(reader.call_args.args[0], table)
         self.assertEqual(self.window.task_list, ["new-task"])
         self.assertEqual(self.window.loaded_project_dir, project.resolve())
-        self.window.refreshTaskWidget.assert_called_once_with()
-        self.window.file_explorer_tree_view.load_directory.assert_called_once_with(project)
+        self.window.refreshTaskWidget.assert_called_once_with(languages=['unknown'])
+        self.window.file_explorer_tree_view.load_directory.assert_called_once_with(project, validated=True)
         self.window.updateGoogleSheetDownloadTarget.assert_called_once_with()
         self.window.startTaskReferenceDownloads.assert_called_once_with(project)
         self.assertTrue((project / "result").is_dir())

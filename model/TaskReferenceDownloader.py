@@ -6,6 +6,7 @@ import os
 import re
 import time
 from dataclasses import dataclass
+from types import SimpleNamespace
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 
@@ -218,14 +219,36 @@ class TaskReferenceDownloadThread(QtCore.QThread):
     log = QtCore.pyqtSignal(str)
     completed = QtCore.pyqtSignal(object)
 
-    def __init__(self, jobs, parent=None, retries=3, timeout=60, cache_path=None):
+    def __init__(self, jobs, parent=None, retries=3, timeout=60, cache_path=None, *, tasks=None, root_dir=None):
         super().__init__(parent)
         self.jobs = list(jobs)
         self.retries = max(1, int(retries))
         self.timeout = max(1, int(timeout))
         self.cache_path = cache_path
+        self.tasks = None if tasks is None else tuple(SimpleNamespace(
+            task_id=getattr(task, 'task_id', ''), task_type=getattr(task, 'task_type', ''),
+            task_reference_link=getattr(task, 'task_reference_link', '')) for task in tasks)
+        self.root_dir = root_dir
 
     def run(self):
+        try:
+            self._run()
+        except (Exception, SystemExit) as error:
+            # A slow/unavailable reference disk must not escape a QThread slot
+            # and abort the whole application, nor break task-table loading.
+            self.log.emit('参考文件后台核对失败：{}；已加载的任务不受影响。'.format(error))
+            result = getattr(self, '_result', {'total': len(self.jobs), 'downloaded': 0,
+                'repaired': 0, 'skipped': 0, 'cached': 0, 'failed': 0})
+            result['failed'] += 1
+            self.completed.emit(result)
+
+    def _run(self):
+        if self.tasks is not None:
+            if self.isInterruptionRequested():
+                return
+            self.jobs, warnings = build_task_reference_jobs(self.tasks, self.root_dir)
+            for warning in warnings:
+                self.log.emit(warning)
         result = {
             "total": len(self.jobs),
             "downloaded": 0,
@@ -234,6 +257,7 @@ class TaskReferenceDownloadThread(QtCore.QThread):
             "cached": 0,
             "failed": 0,
         }
+        self._result = result
         cache = TaskReferenceDownloadCache(self.cache_path)
         if cache.warning:
             self.log.emit(cache.warning)
@@ -242,13 +266,10 @@ class TaskReferenceDownloadThread(QtCore.QThread):
                 break
 
             cached_target = cache.cached_path(job)
+            if self.isInterruptionRequested():
+                break
             if cached_target is not None:
                 result["cached"] += 1
-                self.log.emit(
-                    "任务 {} 参考文件命中本地索引，不访问 Google：{}".format(
-                        job.task_id, cached_target.name
-                    )
-                )
                 continue
 
             self.log.emit(
@@ -320,4 +341,10 @@ class TaskReferenceDownloadThread(QtCore.QThread):
                             )
                         )
 
+        if result['cached']:
+            self.log.emit('参考文件本地索引命中 {} 个，已跳过 Google 网络请求。'.format(result['cached']))
+        try:
+            cache.save()
+        except OSError as error:
+            self.log.emit('参考文件下载索引无法更新：{}'.format(error))
         self.completed.emit(result)

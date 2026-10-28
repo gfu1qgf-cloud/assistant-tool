@@ -11,6 +11,9 @@ class FileExplorerTreeView(QTreeView):
         super(FileExplorerTreeView, self).__init__(parent)
         # 创建文件系统模型
         self.model = QFileSystemModel()
+        # Avoid Windows probing each directory's custom icon on removable or
+        # network disks. File contents and navigation are unchanged.
+        self.model.setOption(QFileSystemModel.Option.DontUseCustomDirectoryIcons, True)
         self.model.setRootPath('')
 
         # 设置过滤器（显示所有文件和文件夹）
@@ -42,9 +45,9 @@ class FileExplorerTreeView(QTreeView):
         self.right_menu_action_list = []
 
 
-    def load_directory(self, path):
+    def load_directory(self, path, *, validated=False):
         """加载指定目录"""
-        if os.path.exists(path):
+        if validated or os.path.exists(path):
             index = self.model.index(str(path))
             self.setRootIndex(index)
             self.expand(index)

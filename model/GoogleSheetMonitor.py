@@ -170,9 +170,12 @@ class GoogleSheetMonitorThread(QtCore.QThread):
         self._wake_event = threading.Event()
         self._last_error = ""
 
-    def set_project_dir(self, project_dir):
+    def set_project_dir(self, project_dir, *, validated=False):
+        # Loader results are already absolute/canonical. Do not repeat a slow
+        # disk resolution on the GUI, or hold the target lock during IO.
+        target = (Path(project_dir) if validated else Path(project_dir).resolve()) if project_dir else None
         with self._target_lock:
-            self._project_dir = Path(project_dir).resolve() if project_dir else None
+            self._project_dir = target
         self.request_check()
 
     def request_check(self):

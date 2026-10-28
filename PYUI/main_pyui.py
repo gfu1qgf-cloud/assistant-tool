@@ -117,6 +117,7 @@ from model.TaskTableSchema import (
 )
 from model.UiInterval import IntervalPrompt
 from model.VideoHelper import FeatureMatcher
+from PYUI.task_loading import TaskLoadController
 
 
 def _missing_task_table_message(today_dir, file_name):
@@ -359,6 +360,7 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
         self.task_reference_download_root = None
         self._task_result_button_text = ''
         self.loaded_project_dir = None
+        self.task_loader = None
         self.google_sheet_monitor_settings = normalize_monitor_settings({})
         self.google_sheet_monitor_thread = None
         self.google_sheet_monitor_status = "未启动"
@@ -1058,6 +1060,9 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
             self.notification_tray_icon.showMessage(title, message, icon, 10_000)
 
     def clearLoadedProject(self, _value=None):
+        loader = getattr(self, 'task_loader', None)
+        if loader is not None:
+            loader.cancel('任务路径或日期已改变，旧读取已取消。')
         self.loaded_project_dir = None
         thread = self.google_sheet_monitor_thread
         if thread is not None:
@@ -1066,7 +1071,7 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
     def updateGoogleSheetDownloadTarget(self):
         thread = self.google_sheet_monitor_thread
         if thread is not None:
-            thread.set_project_dir(self.loaded_project_dir)
+            thread.set_project_dir(self.loaded_project_dir, validated=True)
 
     def startGoogleSheetMonitor(self):
         if is_offline():
@@ -1231,6 +1236,8 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
         self.file_explorer_tree_view.setVisible(expanded)
         if expanded:
             self.workspace_layout.restore_directory()
+            if self.loaded_project_dir is not None:
+                self.file_explorer_tree_view.load_directory(self.loaded_project_dir, validated=True)
         self.task_directory_toggle_btn.setArrowType(
             QtCore.Qt.DownArrow if expanded else QtCore.Qt.RightArrow
         )
@@ -1381,54 +1388,27 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
         QMessageBox.critical(self, "错误", text)
 
     def loadTask(self):
-        today_dir = self.getTodayDir()
-        if today_dir is None:
-            return
+        # Capture only widget values here. Config, directory checks, ODS and
+        # language detection all run outside the GUI thread.
+        if getattr(self, 'task_loader', None) is None:
+            self.task_loader = TaskLoadController(self, reader=ReadTaskOds2,
+                schema_loader=load_task_table_schema, missing_message=_missing_task_table_message)
+        return self.task_loader.request(self.task_path_edit.text(),
+            self.dateEdit.date().toString('MMdd'), self.config_name)
 
-        table_file_name = str(
-            self.load_config().get("task_table_file_name") or "tasks.ods"
-        ).strip()
-        if (table_file_name in {"", ".", ".."}
-                or pathlib.Path(table_file_name).name != table_file_name):
-            self.Critical("任务表格文件名无效；只能填写文件名，不能填写目录或完整路径。")
-            return
-        doc_path = today_dir / table_file_name
-        if not doc_path.is_file():
-            message = _missing_task_table_message(today_dir, table_file_name)
-            self.appendLog(message, level=logging.WARNING)
-            QMessageBox.warning(self, "没有找到任务登记表", message)
-            return
-
-
+    def refreshTaskWidget(self, languages=None):
+        table = self.task_table_widget
+        updates = table.updatesEnabled()
+        blocker = QtCore.QSignalBlocker(table)
+        table.setUpdatesEnabled(False)
         try:
-            data_directory(today_dir / "result").ensure(parents=True, exist_ok=True)
-            schema = load_task_table_schema()
-            self.task_list, table_report = ReadTaskOds2(
-                doc_path,
-                schema=schema,
-                return_report=True,
-            )
-        except Exception as error:
-            message = (
-                "任务表格读取失败：{}\n登记表路径：{}\n\n"
-                "请打开“程序设置 → 任务表格”检查工作表、表头行和字段别名。"
-            ).format(error, doc_path.resolve())
-            self.appendLog(message)
-            self.Critical(message)
-            return
-        self.refreshTaskWidget()
+            self._fillTaskWidget(languages)
+        finally:
+            table.setUpdatesEnabled(updates)
+            del blocker
 
-        self.file_explorer_tree_view.load_directory(today_dir)
-
-        self.loaded_project_dir = pathlib.Path(today_dir).resolve()
-        self.updateGoogleSheetDownloadTarget()
-        self.appendLog(format_task_table_report(table_report))
-        self.task_status_label.setText("已加载 {} 个任务".format(len(self.task_list)))
-        self.appendLog("加载完成！！")
-        self.startTaskReferenceDownloads(today_dir)
-
-
-    def refreshTaskWidget(self):
+    def _fillTaskWidget(self, languages=None):
+        self.task_table_widget.clearSelection()
         self.task_table_widget.setRowCount(len(self.task_list))
         task: TaskData
         for index, task in enumerate(self.task_list):
@@ -1447,7 +1427,7 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
                 self.task_table_widget.setItem(index, c_i, item)
 
         # 加载完成后立即标记异常语言，不需要再手动点击检测按钮。
-        self.markTaskLanguages()
+        self.markTaskLanguages(languages)
 
     def openTaskDirectoryForRow(self, row, _column):
         if row < 0 or row >= len(self.task_list):
@@ -1631,38 +1611,17 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
             self.task_reference_download_thread is not None
             and thread_is_active(self.task_reference_download_thread)
         ):
-            self.appendLog("参考文件仍在后台下载，本次加载不重复启动。")
+            self._pending_task_reference_project = pathlib.Path(today_dir)
+            self.appendLog("参考文件仍在后台处理，当前项目已排队核对，不重复启动下载。")
             return
 
-        jobs, warnings = build_task_reference_jobs(self.task_list, today_dir)
-        for warning in warnings:
-            self.appendLog(warning)
-        if not jobs:
-            return
-
-        jobs, cached_jobs, cache_warnings = partition_cached_reference_jobs(jobs)
-        for warning in cache_warnings:
-            self.appendLog(warning)
-        if cached_jobs:
-            self.appendLog(
-                "参考文件本地索引命中 {} 个，已跳过 Google 网络请求。".format(
-                    len(cached_jobs)
-                )
-            )
-        if not jobs:
-            return
-
-        thread = TaskReferenceDownloadThread(jobs, self)
+        thread = TaskReferenceDownloadThread([], self, tasks=self.task_list, root_dir=today_dir)
         thread.log.connect(self.onTaskReferenceDownloadLog)
         thread.completed.connect(self.onTaskReferenceDownloadCompleted)
         connect_thread_finished(thread, self, 'task_reference_download_thread', self.onTaskReferenceDownloadFinished)
         self.task_reference_download_thread = thread
         self.task_reference_download_root = pathlib.Path(today_dir)
-        self.appendLog(
-            "发现 {} 个未缓存的 Google Drive 参考文件，已在后台开始下载。".format(
-                len(jobs)
-            )
-        )
+        self.appendLog("正在后台核对参考文件和本地下载索引；不阻塞任务列表。")
         thread.start()
 
     def onTaskReferenceDownloadLog(self, text):
@@ -1675,9 +1634,11 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
                 **result
             )
         )
-        if self.task_reference_download_root is not None:
+        if (self.task_reference_download_root is not None
+                and self.loaded_project_dir == self.task_reference_download_root
+                and self.file_explorer_tree_view.isVisible()):
             self.file_explorer_tree_view.load_directory(
-                self.task_reference_download_root
+                self.task_reference_download_root, validated=True
             )
 
     def onTaskReferenceDownloadFinished(self):
@@ -1686,9 +1647,16 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
         self.task_reference_download_root = None
         if thread is not None:
             thread.deleteLater()
+        pending = getattr(self, '_pending_task_reference_project', None)
+        self._pending_task_reference_project = None
+        if pending is not None and self.loaded_project_dir == pending:
+            self.startTaskReferenceDownloads(pending)
 
     def detectTaskLanguage(self, task):
         try:
+            loader = getattr(self, 'task_loader', None)
+            if loader is not None:
+                return loader.engine.language(task.task_audio_text or '')[0]
             return get_text_language(task.task_audio_text or "") or "unknown"
         except Exception as error:
             print(f"语言检测失败（任务 {task.task_id}）: {error}")
@@ -1703,14 +1671,16 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
     def getTaskLanguageName(self, language_code):
         return self.task_language_names.get(language_code, language_code)
 
-    def markTaskLanguages(self):
+    def markTaskLanguages(self, languages=None):
         """检测任务语音语言并给非斯洛伐克语任务整行着色。"""
         self._task_language_by_row = {}
         self._task_language_color_by_code = {}
         language_counts = {}
 
+        if languages is not None and len(languages) != len(self.task_list):
+            raise ValueError('语言检测结果与当前任务不一致，未应用旧结果。')
         for row, task in enumerate(self.task_list):
-            language_code = self.detectTaskLanguage(task)
+            language_code = languages[row] if languages is not None else self.detectTaskLanguage(task)
             self._task_language_by_row[row] = language_code
             language_counts[language_code] = language_counts.get(language_code, 0) + 1
 
@@ -1976,6 +1946,10 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
                    if previous.get(key) != current.get(key)}
         if not changed:
             return set()
+        if changed & {'task_table_schema', 'task_table_file_name'}:
+            loader = getattr(self, 'task_loader', None)
+            if loader is not None:
+                loader.cancel('任务表格配置已改变，请重新加载。')
         if OFFLINE_CONFIG_KEY in changed:
             self.updateOfflineModeIndicator(current)
         applied, retry = set(), set()
@@ -2245,6 +2219,7 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
             return
         reference_thread = self.task_reference_download_thread
         if thread_is_active(reference_thread):
+            self._pending_task_reference_project = None
             reference_thread.requestInterruption()
             event.ignore()
             QMessageBox.warning(
@@ -2329,6 +2304,8 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
             self.notification_tray_icon.hide()
         if hasattr(self, 'node_workspace'):
             self.node_workspace.hide()
+        if getattr(self, 'task_loader', None) is not None:
+            self.task_loader.shutdown()
               
         super().closeEvent(event)
 
@@ -2461,6 +2438,12 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
         return private_config(existing_config)
 
     def load(self,dic):
+        signature = json.dumps({key: dic.get(key) for key in ('task_table_schema', 'task_table_file_name')},
+                               sort_keys=True, ensure_ascii=False)
+        previous = getattr(self, '_task_table_settings_signature', signature)
+        self._task_table_settings_signature = signature
+        if previous != signature and getattr(self, 'task_loader', None) is not None:
+            self.task_loader.cancel('任务表格配置已改变，请重新加载。')
         self.workspace_layout.load(dic)
         task_path =dic.get("task_path")
         if task_path is not None:
