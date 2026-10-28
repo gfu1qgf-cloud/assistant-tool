@@ -326,8 +326,8 @@ class PoolTests(unittest.TestCase):
             state["settings"]["darkness"] = 9
             store.save(state,state["revision"])
             dialog = BatchTextVideoDialog(store=store)
-            self.assertEqual([a.text() for a in dialog.menu_bar.actions()],["文件","编辑","资源","抠像","批量","视图"])
-            opened = next(a.menu() for a in dialog.file_menu.actions() if a.text() == "打开配置")
+            self.assertEqual([a.text() for a in dialog.menu_bar.actions()],["文件","编辑","设置","资源","抠像","批量","视图"])
+            opened = next(a.menu() for a in dialog.file_menu.actions() if a.text() == "打开项目")
             self.assertEqual([a.text() for a in opened.actions()], ["默认配置", "祷告词"])
             self.assertEqual([dialog.resources.tabText(i) for i in range(4)],["背景","文案","图片","音乐"])
             dialog.switch_profile(original)

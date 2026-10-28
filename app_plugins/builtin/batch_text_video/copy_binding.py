@@ -2,6 +2,12 @@
 import copy
 
 
+def imported_task(job):
+    """Import provenance is independent of whether the title is required."""
+    return bool(job and (job.get('requires_title') or
+        job.get('text_source') in {'task_audio_text', 'task_name'}))
+
+
 def bind_task_copy(layer, job, *, source_profile=''):
     """Return a frozen text source, or None when ordinary rotation applies.
 
@@ -14,7 +20,7 @@ def bind_task_copy(layer, job, *, source_profile=''):
             or layer.get('source') != 'pool' or layer.get('pool_id')
             or layer.get('copy_binding', 'task') == 'rotate'):
         return None
-    if not (job.get('copy_id') or job.get('requires_title')):
+    if not (job.get('copy_id') or imported_task(job)):
         return None
     current_profile = job.get('copy_profile_id', '')
     if source_profile and current_profile and source_profile != current_profile:

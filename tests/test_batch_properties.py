@@ -47,8 +47,8 @@ class PropertyAndTableTests(unittest.TestCase):
             self.assertEqual(panel.current()["align"],"right")
             self.assertEqual(panel.current()["x"],35)
         self.assertEqual(panel.editor.sections["font"].toggle.text(),"字体")
-        self.assertEqual(panel.editor.sections["position"].toggle.text(),"位置与尺寸")
-        self.assertEqual(panel.editor.sections["source"].toggle.text(),"内容与来源")
+        self.assertIs(panel.editor.targets['position'],panel.editor.geometry_editor)
+        self.assertIs(panel.editor.targets['source'],panel.editor.content_editor)
 
     def test_nine_alignments_really_change_rendering_and_legacy_fields_no_longer_override(self):
         layers = componentize_layers(None,DEFAULTS)
@@ -150,7 +150,9 @@ class PropertyAndTableTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             store = Store(folder)
             state = fresh_state()
-            state["jobs"] = [{"id":"x","path":"bg.mp4","title":"","body":"Body","requires_title":True,"status":"待生成"}]
+            background=Path(folder)/'bg.mp4';background.touch()
+            state['settings']['output_dir']=folder
+            state["jobs"] = [{"id":"x","path":str(background),"name":"title-check","title":"","body":"Body","requires_title":True,"status":"待生成"}]
             state = store.save(state,0)
             with patch.dict("app_plugins.builtin.batch_text_video.ui.RENDERERS",{"static_text":lambda *_:self.fail("invalid title exported")}):
                 BatchWorker(store,state,["x"]).run()

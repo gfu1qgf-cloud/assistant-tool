@@ -3,8 +3,14 @@ from pathlib import Path
 from .matching import folder_entry, file_identity
 
 
-def split_title_body(value):
-    lines = str(value or "").replace("\r\n","\n").replace("\r","\n").split("\n")
+def split_title_body(value, *, no_title=False):
+    if type(no_title) is not bool: raise ValueError('无标题选项无效。')
+    text = str(value or "").replace("\r\n","\n").replace("\r","\n")
+    if no_title:
+        body = text.strip().lstrip('\ufeff').strip()
+        if not body: raise ValueError('正文为空，请填写需要导入的文字。')
+        return '', body
+    lines = text.split("\n")
     title = lines[0].strip().lstrip("\ufeff")
     if not title:
         raise ValueError("第一行没有标题，请在表格中补上标题。")
@@ -66,13 +72,13 @@ def read_sheet_records(path):
     return records,report
 
 
-def entry_from_record(record, source="task_audio_text"):
-    title,body = split_title_body(record.get(source,""))
+def entry_from_record(record, source="task_audio_text", *, no_title=False):
+    title,body = split_title_body(record.get(source,""), no_title=no_title)
     entry = folder_entry(record["target_dir"],{"text_only":True,"title":title,"body":body,
         "label":record["task_id"],"task_name":record.get("task_name",""),"audio_name":record.get("audio_name","")})
     entry.update(task_id=record["task_id"],task_type=record["task_type"],
                  source_sheet=record.get("source_sheet",""),source_row=record.get("source_row"),
-                 text_source=source,requires_title=True,task_voice_optional=True,name=record["task_id"]+"_文字版")
+                 text_source=source,requires_title=not no_title,task_voice_optional=True,name=record["task_id"]+"_文字版")
     entry["task_date"] = record.get("task_date", "")
     if record.get("task_year"): entry["task_year"] = record["task_year"]
     from .task_naming import output_stem

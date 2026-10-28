@@ -4,7 +4,7 @@ from app_plugins.api import MAIN_MENU, TASK_CONTEXT_MENU, PluginCommand
 class BatchTextVideoPlugin:
     plugin_id = "batch_text_video"
     display_name = "批量文案视频"
-    version = "1.46"
+    version = "1.47"
     required_api_version = 1
 
     def __init__(self):
@@ -30,7 +30,7 @@ class BatchTextVideoPlugin:
         context.register_command(PluginCommand(
             command_id="tasks", title="批量文案视频（表格文案）…", callback=self.import_tasks,
             locations=frozenset({TASK_CONTEXT_MENU}), order=70, enabled=lambda rows: bool(rows),
-            tooltip="读取所选任务文案，第一行标题、其余正文；可选择原文或中文，背景可统一分配",
+            tooltip="读取所选任务文案，可选第一行标题或无标题全文正文；支持原文／中文及统一分配背景",
         ))
 
     def start(self):

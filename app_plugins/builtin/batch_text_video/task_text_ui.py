@@ -30,9 +30,9 @@ class TaskTextImportDialog(QtWidgets.QDialog):
         self.entries = []
         self.worker = None
         layout = QtWidgets.QVBoxLayout(self)
-        note = QtWidgets.QLabel("第一行作为标题，其余内容作为正文；保留换行。同时导入任务已有的人声和 SRT 字幕，没有则跳过。只读取，不修改表格或原文件。")
-        note.setWordWrap(True)
-        layout.addWidget(note)
+        self.note = QtWidgets.QLabel()
+        self.note.setWordWrap(True)
+        layout.addWidget(self.note)
         tools = QtWidgets.QHBoxLayout()
         tools.addWidget(QtWidgets.QLabel("文案来源"))
         self.source = Combo()
@@ -52,6 +52,11 @@ class TaskTextImportDialog(QtWidgets.QDialog):
         self.minimum.textChanged.connect(self.rebuild)
         tools.addWidget(self.minimum)
         layout.addLayout(tools)
+        self.no_title = QtWidgets.QCheckBox('无标题（全部文字作为正文）')
+        self.no_title.setAccessibleName('无标题，全部文字作为正文')
+        self.no_title.setToolTip('包括第一行在内的全部文字进入正文，保留段落；单行文案也可导入。标题控件是否显示仍由你自行勾选。')
+        self.no_title.toggled.connect(lambda *_: self.rebuild(preserve_checks=True))
+        layout.addWidget(self.no_title)
         self.list = QtWidgets.QTableWidget(0,4)
         self.list.setHorizontalHeaderLabels(["任务","类型","第一行标题","检查结果"])
         self.list.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -122,16 +127,33 @@ class TaskTextImportDialog(QtWidgets.QDialog):
         self.kind.blockSignals(False)
         self.rebuild()
 
-    def rebuild(self,*_args):
+    @staticmethod
+    def record_key(record):
+        return tuple(str(record.get(key, '')) for key in ('task_type', 'task_id', 'source_row', 'target_dir'))
+
+    def rebuild(self,*_args,preserve_checks=False):
+        previous, current = {}, None
+        if preserve_checks:
+            for row, record in enumerate(getattr(self, 'visible_records', [])):
+                key = self.record_key(record)
+                previous[key] = (self.list.item(row, 0).checkState(), self.list.item(row, 3).text() == '可导入')
+                if row == self.list.currentRow(): current = key
         minimum = int(self.minimum.text() or 0)
         kind = self.kind.currentData()
+        no_title = self.no_title.isChecked()
+        self.note.setText(('全部文字（包括第一行）作为正文，标题留空；保留换行，单行文案也可导入。' if no_title else
+            '第一行作为标题，其余内容作为正文；保留换行。') +
+            '同时导入任务已有的人声和 SRT 字幕，没有则跳过。只读取，不修改表格或原文件。')
+        self.list.setHorizontalHeaderLabels(['任务', '类型', '正文预览' if no_title else '第一行标题', '检查结果'])
+        self.preview.setPlaceholderText('选中任务查看完整正文（不生成标题）' if no_title else '选中任务查看完整标题和正文')
         self.visible_records = [record for record in self.records if (not kind or record["task_type"] == kind)
             and (not minimum or record["task_id"].isdigit() and int(record["task_id"]) >= minimum)]
         self.list.setRowCount(len(self.visible_records))
         errors = 0
         for row,record in enumerate(self.visible_records):
             try:
-                title,_ = split_title_body(record.get(self.source.currentData(),""))
+                title,body = split_title_body(record.get(self.source.currentData(),""), no_title=no_title)
+                if no_title: title = body.split('\n', 1)[0][:120]
                 issue = "可导入"
             except ValueError as error:
                 title,issue = "",str(error)
@@ -141,20 +163,29 @@ class TaskTextImportDialog(QtWidgets.QDialog):
                 item.setToolTip(value)
                 if column == 0:
                     item.setFlags(item.flags() | QtCore.Qt.ItemFlag.ItemIsUserCheckable)
-                    item.setCheckState(QtCore.Qt.CheckState.Unchecked if issue != "可导入" else QtCore.Qt.CheckState.Checked)
+                    check = QtCore.Qt.CheckState.Unchecked if issue != '可导入' else QtCore.Qt.CheckState.Checked
+                    old = previous.get(self.record_key(record))
+                    if issue == '可导入' and old and old[1]: check = old[0]
+                    item.setCheckState(check)
                 if issue != "可导入":
                     item.setForeground(QtGui.QColor("#bd3030"))
                 self.list.setItem(row,column,item)
-        self.status.setText(f"显示{len(self.visible_records)}条，其中{errors}条标题/正文无效（未勾选）；可筛选reels和起始编号。")
+        invalid = '正文为空' if no_title else '标题/正文无效'
+        self.status.setText(f'显示{len(self.visible_records)}条，其中{errors}条{invalid}（未勾选）；可筛选reels和起始编号。')
         if self.visible_records:
-            self.list.setCurrentCell(0,0)
-            self.show_copy(0)
+            row = next((i for i, record in enumerate(self.visible_records) if self.record_key(record) == current), 0)
+            self.list.setCurrentCell(row,0)
+            self.show_copy(row)
         else:
             self.preview.clear()
 
     def show_copy(self,row,*_args):
         if 0 <= row < len(getattr(self,"visible_records",[])):
-            self.preview.setPlainText(self.visible_records[row].get(self.source.currentData(),""))
+            text = self.visible_records[row].get(self.source.currentData(), '')
+            if self.no_title.isChecked():
+                try: _, text = split_title_body(text, no_title=True)
+                except ValueError: text = ''
+            self.preview.setPlainText(text)
 
     def check_all(self,checked):
         for row in range(self.list.rowCount()):
@@ -202,7 +233,7 @@ class TaskTextImportDialog(QtWidgets.QDialog):
             if self.list.item(row,0).checkState() != QtCore.Qt.CheckState.Checked:
                 continue
             try:
-                entries.append(entry_from_record(record,self.source.currentData()))
+                entries.append(entry_from_record(record,self.source.currentData(), no_title=self.no_title.isChecked()))
             except (ValueError,OSError) as error:
                 issues.append(f"任务{record['task_id']}：{error}")
         if issues:

@@ -80,7 +80,7 @@ class CaptionParameterWindowTests(unittest.TestCase):
         QtTest.QTest.mouseDClick(window.table.viewport(), QtCore.Qt.MouseButton.LeftButton, pos=point)
         QtTest.QTest.qWait(80)
         target = owner.effects_editor.controls['floating_amplitude']
-        self.assertFalse(window.isVisible())
+        self.assertTrue(window.isVisible())
         self.assertIsNotNone(window.flash); self.assertIs(window.flash.parentWidget(), target)
         self.assertEqual(window.flash.animation.loopCount(), 4)
         self.assertTrue(window.flash.testAttribute(QtCore.Qt.WidgetAttribute.WA_TransparentForMouseEvents))
@@ -101,6 +101,29 @@ class CaptionParameterWindowTests(unittest.TestCase):
         for key in (('effect', 'color_high'), ('layer', 'font_min'), ('layer', 'width')):
             window.locate(self.items(window)[key]); QtTest.QTest.qWait(60)
             self.assertIs(window.flash.parentWidget(), parameter_targets(panel.caption_properties)[key][0])
+            self.assertTrue(window.isVisible())
+
+    def test_repeated_double_click_keeps_overview_and_filters_until_explicit_close(self):
+        panel, _ = self.panel(); window = self.window(panel)
+        window.only_changed.setChecked(False)
+        window.mode.setCurrentIndex(window.mode.findData('overrides'))
+        window.search.setText('字号')
+        before=copy.deepcopy(panel.current())
+        for key in (('layer','font_min'),('layer','font_max')):
+            item=self.items(window)[key];window.table.scrollToItem(item);self.app.processEvents()
+            point=window.table.visualItemRect(item).center()
+            QtTest.QTest.mouseClick(window.table.viewport(),QtCore.Qt.MouseButton.LeftButton,pos=point)
+            QtTest.QTest.mouseDClick(window.table.viewport(),QtCore.Qt.MouseButton.LeftButton,pos=point)
+            QtTest.QTest.qWait(60)
+            self.assertTrue(window.isVisible())
+            self.assertEqual(window.mode.currentData(),'overrides')
+            self.assertFalse(window.only_changed.isChecked())
+            self.assertEqual(window.search.text(),'字号')
+            self.assertIs(window.flash.parentWidget(),parameter_targets(panel.caption_properties)[key][0])
+        self.assertEqual(panel.current(),before)
+        buttons=window.findChild(QtWidgets.QDialogButtonBox)
+        buttons.button(QtWidgets.QDialogButtonBox.StandardButton.Close).click()
+        self.assertFalse(window.isVisible())
 
     def test_selection_change_clears_stale_rows_and_pending_navigation(self):
         panel, _ = self.panel(); window = self.window(panel)

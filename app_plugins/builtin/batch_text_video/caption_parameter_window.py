@@ -149,7 +149,7 @@ class CaptionParameterWindow(QtWidgets.QDialog):
         self.resize(980, 590)
         root = QtWidgets.QVBoxLayout(self)
         self.title = QtWidgets.QLabel(); self.title.setWordWrap(True); root.addWidget(self.title)
-        self.note = QtWidgets.QLabel('比较界面中可调参数的数值差异；保留的位置、字号也计入差异。双击后窗口收起，定位参数并闪烁4次。')
+        self.note = QtWidgets.QLabel('比较界面中可调参数的数值差异；保留的位置、字号也计入差异。双击定位并闪烁4次；窗口保持打开，可连续查看。')
         self.note.setWordWrap(True); root.addWidget(self.note)
         row = QtWidgets.QHBoxLayout(); root.addLayout(row)
         self.mode = QtWidgets.QComboBox()
@@ -246,8 +246,6 @@ class CaptionParameterWindow(QtWidgets.QDialog):
             if isinstance(parent, PropertySection): parent.set_expanded(True)
             parent = parent.parentWidget()
         self.pending = (self.layer_id, key)
-        self.hide()
-        self.owner.window().raise_(); self.owner.window().activateWindow()
         self.layout_timer.start(0)
 
     def _prepare_locate(self):
@@ -279,3 +277,4 @@ class CaptionParameterWindow(QtWidgets.QDialog):
             try: self.flash.stop()
             except RuntimeError: pass  # The previous control may have been destroyed with its panel.
         self.flash = ParameterFlash(control)
+        if self.isVisible(): self.raise_()

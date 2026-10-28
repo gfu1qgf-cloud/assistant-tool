@@ -49,7 +49,7 @@ def active_effects(settings):
 def task_snapshot(job):
     fields = {key: copy.deepcopy(job.get(key, '')) for key in
         ('task_id', 'task_type', 'task_date', 'task_name', 'title', 'body', 'source_sheet', 'source_row',
-         'copy_id', 'requires_title', 'copy_profile_id')}
+         'copy_id', 'requires_title', 'copy_profile_id', 'text_source')}
     fields['task_audio_text'] = '\n'.join(value for value in (str(job.get('title', '')), str(job.get('body', ''))) if value)
     fields['task_name'] = str(job.get('task_name') or job.get('label') or job.get('name') or '')
     path = job.get('task_dir') or job.get('_composition_dir')

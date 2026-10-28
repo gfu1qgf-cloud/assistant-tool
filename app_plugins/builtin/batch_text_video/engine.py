@@ -455,7 +455,8 @@ def prepare_static_text(job, state, directory, cancel=None, progress=None, repor
         adaptation = adaptation_plan(media["duration"], duration, settings, fps)
         report(f"{'人声' if voice_path else '固定成品'} {duration:.2f}秒；背景 {media['duration']:.2f}秒；速度 {adaptation['speed']:.2f}×；"
                f"{'循环叠化' if adaptation['fade'] else '循环直切' if adaptation['repeating'] else '单次播放'}")
-    if job.get("requires_title") and not job.get("task_dir"):
+    from .copy_binding import imported_task
+    if imported_task(job) and not job.get("task_dir"):
         raise ValueError("表格任务缺少绑定的任务目录，请重新导入；未写入其他目录。")
     folder = output_folder(job, settings)
     inputs = original_sources + source_paths(state) + source_paths({'settings': settings})
