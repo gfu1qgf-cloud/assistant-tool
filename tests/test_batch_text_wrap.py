@@ -102,8 +102,10 @@ class TextWrapTests(unittest.TestCase):
         for words, options in (('مرحبا بالعالم '*50, {}),
                 ('jiffy Typography '*12, dict(italic=True, font_weight=800, font_min=70,
                     font_max=70, letter_spacing=1, word_spacing=3))):
-            layer = text(text=words, **options)
-            box, rects, groups, total, _ = self.shape(layer, [obstacle(y=40)])
+            layer = text(text=words, font='Arial', **options)
+            # Put the obstacle in the text's actual path on both desktop and
+            # Server fonts; a paragraph ending above it cannot prove ordering.
+            box, rects, groups, total, _ = self.shape(layer, [obstacle(y=25)])
             self.assert_complete_and_clear(layer, box, rects, groups, total)
             if words.startswith('مرحبا'):
                 rows = {}

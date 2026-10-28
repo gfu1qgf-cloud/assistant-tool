@@ -169,7 +169,7 @@ class CaptionProperties(QtWidgets.QWidget):
         self.controls['caption_context_opacity'].setToolTip('朗读开始前的不透明度，默认40%。0%隐藏，100%正常显示；相对于控件总不透明度。不会让被显示方式隐藏的未读文字提前出现。')
         self.controls['caption_active_opacity'].setToolTip('当前词从开始到结束时刻的不透明度，默认100%。与未读、已读分别控制；相对于控件总不透明度。')
         self.controls['caption_read_opacity'].setToolTip('当前词朗读结束后的不透明度，默认100%，恢复正常文字显示。可独立设为0%隐藏或降低亮度；相对于控件总不透明度。')
-        self.controls['caption_clip_feather'].setToolTip('朗读跟随字幕框四边向内渐隐，数值相对框的短边。0%为硬裁切，可先试8%；作用于字幕图层及其描边、阴影和底色，不模糊字形、不影响背景视频。')
+        self.controls['caption_clip_feather'].setToolTip('朗读跟随字幕框四边向内渐隐，数值相对框的短边。0%为硬裁切，可先试8%；关闭跟随时可预先设置并保留，开启跟随后生效。作用于字幕图层及其描边、阴影和底色，不模糊字形、不影响背景视频。')
         self._organize_sections(form)
         from .caption_effect_ui import CaptionEffectEditor
         from .property_sections import PropertySection
@@ -332,8 +332,6 @@ class CaptionProperties(QtWidgets.QWidget):
 
     def update_display_controls(self):
         if not self.layer: return
-        from .caption_follow import enabled as follow_enabled
-        self.controls['caption_clip_feather'].setEnabled(follow_enabled(self.layer))
         self.display_note.setText(DISPLAY_NOTES.get(
             self.controls['caption_display_mode'].currentData(), '选择字幕显示方式。'))
         self.random_widget.show()

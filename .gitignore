@@ -79,6 +79,7 @@ Thumbs.db
 /build/
 /dist/
 /dist_final/
+/test-results/
 /*.spec
 
 # Pinned third-party player binaries are fetched by packaging/fetch_mpv.py

@@ -247,7 +247,17 @@ def _record_api_key_status_locked(config_path, api_key, **updates):
     try:
         with data_io.open(temp_path, 'w', encoding='utf-8') as config_file:
             config_file.write(json.dumps(config, indent=4, ensure_ascii=False))
-        data_io.replace(temp_path, config_path)
+        # Windows scanners/readers can briefly deny an otherwise atomic replace.
+        # Retry only sharing/access errors, bounded below half a second. Each
+        # attempt still goes through live encrypted-storage validation.
+        for attempt in range(5):
+            try:
+                data_io.replace(temp_path, config_path)
+                break
+            except PermissionError as error:
+                if os.name != 'nt' or getattr(error, 'winerror', None) not in {5, 32, 33} or attempt == 4:
+                    raise
+                time.sleep(.025 * 2**attempt)
     finally:
         try:
             data_file(temp_path).unlink()

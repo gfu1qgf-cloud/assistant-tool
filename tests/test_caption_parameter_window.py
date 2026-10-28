@@ -99,7 +99,14 @@ class CaptionParameterWindowTests(unittest.TestCase):
     def test_color_and_paired_font_fields_locate_the_real_controls(self):
         panel, _ = self.panel(); window = self.window(panel); window.only_changed.setChecked(False)
         for key in (('effect', 'color_high'), ('layer', 'font_min'), ('layer', 'width')):
-            window.locate(self.items(window)[key]); QtTest.QTest.qWait(60)
+            window.locate(self.items(window)[key])
+            target = parameter_targets(panel.caption_properties)[key][0]
+            # Layout/scroll updates span two queued turns; CI is not a 60ms clock.
+            for _ in range(200):
+                QtTest.QTest.qWait(10)
+                if window.pending is None and window.flash is not None and window.flash.parentWidget() is target:
+                    break
+            self.assertIsNotNone(window.flash)
             self.assertIs(window.flash.parentWidget(), parameter_targets(panel.caption_properties)[key][0])
             self.assertTrue(window.isVisible())
 

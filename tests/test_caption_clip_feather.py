@@ -69,7 +69,9 @@ class CaptionClipFeatherTests(unittest.TestCase):
         changes=[];panel.changed.connect(changes.append);control.setValue(12)
         self.assertEqual(changes[-1]['caption_clip_feather'],12)
         self.assertEqual(parameter_targets(panel)[('layer','caption_clip_feather')][1],'裁切边缘柔化')
-        panel.set_layer(self.layer(caption_follow_mode='none'));self.assertFalse(control.isEnabled())
+        panel.set_layer(self.layer(caption_follow_mode='none'));self.assertTrue(control.isEnabled())
+        control.setValue(16)
+        self.assertEqual(changes[-1]['caption_clip_feather'],16)
         qa=os.environ.get('LZX_CAPTION_CLIP_UI')
         if qa:
             panel.set_layer(layer);panel.resize(520,1000);panel.show();self.app.processEvents()

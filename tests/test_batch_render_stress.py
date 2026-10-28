@@ -85,7 +85,9 @@ class RenderStressTests(unittest.TestCase):
             print(f'stress attempts={calls} injected={forced} detected_stalls={real_stalls}', flush=True)
             self.assertEqual((result['completed'], result['failed']), (48, 0), (result, messages[-12:]))
             self.assertNotIn('error', result)
-            self.assertEqual([identifier for identifier, _ in completed], list(map(str, range(48))))
+            # Encoders finish independently; every original job must finish
+            # exactly once, but completion order is intentionally unconstrained.
+            self.assertCountEqual([identifier for identifier, _ in completed], list(map(str, range(48))))
             self.assertTrue(all(status == '已完成' for _, status in completed))
             self.assertTrue(all(Path(path).is_file() for path in result['paths']))
             expected_cursor = sum(engine.probe(voices[i%3], str(Path(FFMPEG).with_name('ffprobe.exe')), True)['duration']

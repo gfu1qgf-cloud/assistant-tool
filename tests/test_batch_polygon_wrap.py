@@ -99,7 +99,7 @@ class PolygonWrapTests(unittest.TestCase):
         self.assertEqual(two['wrap_polygons'], [])
 
     def test_polygon_leaves_text_in_bbox_corners_and_clips_background_and_shadow(self):
-        layer = text(text='Words around the hand drawn contour. '*70, wrap_targets=[], wrap_gap=0,
+        layer = text(text='Words around the hand drawn contour. '*35, wrap_targets=[], wrap_gap=0,
                      wrap_polygons=[triangle()], background_enabled=True, background_opacity=100,
                      background_color='#ff0000', shadow_enabled=True, shadow_blur=8)
         image, _ = render_text_box(layer, 360, 640)

@@ -77,7 +77,9 @@ class ManualQuantityTests(unittest.TestCase):
             dialog.show_sync_progress({'latest_date': '2026-09-27', 'updated_at': '2026-09-27T22:00:00+02:00',
                 'manual_refresh': {'latest_date': '2026-09-26', 'updated_at': '2026-09-26T20:00:00+02:00'}})
             self.assertIn('手动刷新至：2026-09-26', dialog.sync_progress_heading.text())
-            self.assertIn('2026-09-26 20:00', dialog.sync_progress_heading.text())
+            from datetime import datetime
+            expected = datetime.fromisoformat('2026-09-26T20:00:00+02:00').astimezone().strftime('%Y-%m-%d %H:%M')
+            self.assertIn(expected, dialog.sync_progress_heading.text())
             self.assertIn('仍需手动刷新', dialog.sync_progress_note.text())
         finally:
             dialog.close()

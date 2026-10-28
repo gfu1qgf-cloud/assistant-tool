@@ -2,10 +2,11 @@
   "repository": "https://github.com/dedeyuyu/FlowCue",
   "commit": "a5a4a3607e55c85c9c0c2e8e4700f2140eefb36d",
   "upstream_version": "1.1.6",
-  "bridge_version": "1.1.59",
+  "bridge_version": "1.1.60",
   "protocol": 1,
   "patch_module": "tools/flow_bridge_patches.py",
   "patches": [
+    "page storage whitelist excludes pairing and host journals; native file drag requires a live desktop-approved exact-path grant; webpage cannot close all browser windows",
     "optional confirmed-progress UI lease renewal on the same token; serialized desktop expiry and stop acknowledgement include in-flight native input before handoff",
     "read-only loaded project-video catalog with bounded thumbnail previews; explicit desktop user selection creates a separate download-only binding without altering generation receipts or page ownership",
     "explicit pasted video detail URLs select the exact existing tab without moving the generation owner; bounded authenticated exact-ID lookup also works without a rendered result tile",

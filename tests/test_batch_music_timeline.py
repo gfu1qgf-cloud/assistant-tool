@@ -66,7 +66,8 @@ class MusicTimelineTests(unittest.TestCase):
             music = dict(path=str(song), duration=1., start=.1, audio_key='a'*64,
                          source_ranges=((1., 2.),))
             with self.assertRaises(engine.Cancelled), ExitStack() as leases, \
-                    patch.object(engine, '_run', side_effect=engine.Cancelled('cancelled')):
+                    patch.object(engine, '_run', side_effect=engine.Cancelled('cancelled')), \
+                    patch.object(engine, 'filter_file_option', return_value='-filter_complex_script'):
                 append_inputs([], [], music, 0, 100., cache, 'ffmpeg', 'ffprobe',
                               threading.Event(), lambda _: None, leases)
             self.assertEqual(list(cache.iterdir()), [])
