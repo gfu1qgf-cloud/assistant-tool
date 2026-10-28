@@ -58,7 +58,7 @@ class BulkCloseTests(unittest.TestCase):
         self.sweep(service)
         self.assertEqual([p['client'] for p in service.pending.values()],[idle['id']])
         report = batch_summary(service)
-        self.assertEqual(report['skipped'],1); self.assertIn('1.1.34',report['detail'])
+        self.assertEqual(report['skipped'],1); self.assertIn('1.1.39',report['detail'])
 
     def test_progress_counts_actual_acknowledgements_and_failures_and_deduplicates_clicks(self):
         service = self.service(); one = self.ready(service,'One',points=5); two = self.ready(service,'Two',points=0)

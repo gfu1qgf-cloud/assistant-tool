@@ -44,23 +44,24 @@ class ProjectStartupTests(unittest.TestCase):
         self.assertEqual(occupied_profiles(service),{client['profile']})
         self.assertFalse(any(r['action']=='run_tasks' for r in service.pending.values()))
 
-    def test_whole_host_to_gui_path_launches_exact_url_without_new_window(self):
+    def test_whole_host_to_gui_path_reuses_online_tab_without_native_launch(self):
         service,client=self.cold(); opens=[];snapshots=[]
         service.project_open_requested.connect(opens.append);service.changed.connect(snapshots.append)
         self.missing_response(service,client)
         dialog,launcher,commands=self.ui();plugin=dialog.plugin
         plugin.snapshot=snapshots[-1]
+        plugin.command.connect(service.execute);service.tab_reused.connect(plugin._tab_reused)
         launcher.chrome_path='chrome.exe'
         launcher.launch_profile=lambda *args,**kwargs:ChromeRunnerDialog.launch_profile(launcher,*args,**kwargs)
         with patch('PYUI.chrome_runner_pyui.subprocess.Popen') as popen:
             plugin._open_missing_project(opens[0])
             plugin._open_missing_project(opens[0])
-        self.assertEqual(popen.call_count,1)
-        args=popen.call_args.args[0]
-        self.assertNotIn('--new-window',args)
-        self.assertEqual(args[-1],client['saved_project'])
+        self.assertEqual(popen.call_count,0)
+        reuse=[(key,p) for key,p in service.pending.items() if p.get('tab_reuse_request')]
+        self.assertEqual(len(reuse),1)
+        self.assertEqual(reuse[0][1]['action'],'reuse_project_tab')
+        service._response(client,{'request_id':reuse[0][0],'success':True,'data':{'tab_id':7,'reused':True}})
         self.assertTrue(commands[-1]['opened'])
-        service.execute(commands[-1])
         self.assertIn(client['profile'],occupied_profiles(service))
 
     def test_generic_unready_page_never_triggers_native_reopen(self):

@@ -176,7 +176,7 @@ class TransferTests(unittest.TestCase):
         snapshot = {'batch_id': row['attempt'], 'running': True, 'tasks': [{
             'taskId': 'task', 'download_path': service.download_name(row), 'mediaBindings': row['remote']['bindings']}]}
         service._snapshot(client, snapshot); current = service.store.get(row['id'])
-        self.assertEqual(current['status'], 'download_failed'); self.assertTrue(current['remote']['cloud_finished'])
+        self.assertEqual(current['status'], 'download_parked'); self.assertTrue(current['remote']['cloud_finished'])
         self.assertEqual(retry_info(current, 'download')['next_at'], planned)
         service.store.update(row['id'], 'generating', remote={**row['remote'], 'cloud_finished': False})
         service._snapshot(client, snapshot)
@@ -236,7 +236,7 @@ class TransferTests(unittest.TestCase):
         row, client = self.bound_row(service); service.watch_transfer_retries()
         self.assertTrue(retry_info(service.store.get(row['id']), 'download')['stopped'])
         service.retry_download(service.store.get(row['id']))
-        self.assertEqual(service.store.get(row['id'])['status'], 'downloading')
+        self.assertEqual(service.store.get(row['id'])['status'], 'download_parked')
         self.assertIn('手动', retry_detail(service.store.get(row['id']), service.preferences))
 
     def test_limits_status_text_and_explicit_ui_entry(self):

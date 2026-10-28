@@ -99,10 +99,10 @@ class ReportTests(unittest.TestCase):
 
     def test_ui_contract_survives_minor_release_and_rejects_incompatible_api(self):
         from app_plugins.builtin.flow_assistant.ui import FlowDialog
-        plugin = SimpleNamespace(version='0.4.999', ui_api_version=2, command=MagicMock(),
+        plugin = SimpleNamespace(version='0.4.999', ui_api_version=4, command=MagicMock(),
             context=SimpleNamespace(parent_widget=SimpleNamespace()))
         view = FlowDialog(plugin); self.addCleanup(view.close)
-        for version in (1,3):
+        for version in (1,2,3,5):
             plugin.ui_api_version = version
             with self.assertRaises(RuntimeError): FlowDialog(plugin)
 

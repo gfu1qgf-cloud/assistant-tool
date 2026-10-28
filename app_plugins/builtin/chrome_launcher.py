@@ -38,6 +38,11 @@ class ChromeLauncherQuickActions(QtWidgets.QWidget):
         self.next_button.clicked.connect(
             lambda _checked=False: plugin.launch_next_profile()
         )
+        if getattr(plugin, 'flow_controller', None) is not None:
+            self.open_button.setText('浏览器配置／分组')
+            self.flow_button = QtWidgets.QPushButton('Flow 视频生成', self)
+            layout.addWidget(self.flow_button)
+            self.flow_button.clicked.connect(lambda _checked=False: plugin.flow_controller.open_flow_queue())
 
 
 class ChromeLauncherSettingsPage:
@@ -61,8 +66,8 @@ class ChromeLauncherSettingsPage:
 
         hint = QtWidgets.QLabel(
             "该快捷键在主程序运行时全局生效。Chrome Profile、预设网站、"
-            "分组及各分组的迭代位置继续保存在原配置中，可从插件菜单打开"
-            "Chrome 启动器维护。",
+            "分组及各分组的迭代位置继续保存在原配置中，可从"
+            "浏览器配置页维护。",
             self.widget,
         )
         hint.setWordWrap(True)
@@ -111,6 +116,8 @@ class ChromeLauncherPlugin:
         self.hotkey_manager = None
         self.global_hotkey = DEFAULT_CHROME_NEXT_HOTKEY
         self.quick_actions = None
+        self.flow_controller = None
+        self.profile_skip_factory = None
 
     def register(self, context):
         self.context = context
@@ -169,6 +176,7 @@ class ChromeLauncherPlugin:
             language_storage=self.context.storage,
             bookmark_context=self.context,
         )
+        self.dialog.profile_skip_factory = self.profile_skip_factory
         self.hotkey_manager = GlobalHotkeyManager(
             self.context.parent_widget,
             hotkey_id=CHROME_NEXT_HOTKEY_ID,
@@ -216,7 +224,8 @@ class ChromeLauncherPlugin:
         )
         if open_button is not None:
             open_button.setToolTip(
-                "打开 Chrome 启动器；配置由 Chrome 插件管理。"
+                "打开统一浏览器配置、分组、外语环境及书签管理。" if self.flow_controller is not None
+                else "打开 Chrome 启动器；配置由 Chrome 插件管理。"
             )
         next_button = (
             self.quick_actions.next_button if self.quick_actions is not None
@@ -225,19 +234,22 @@ class ChromeLauncherPlugin:
         if next_button is not None:
             next_button.setToolTip(
                 "启动已保存迭代队列中的下一个 Chrome Profile。"
+                + ("自动跳过 Flow 已确认积分不足且仍在冷却的账号。" if self.flow_controller is not None else "") +
                 f"系统全局快捷键：{self.global_hotkey}"
             )
 
     def open_launcher(self):
         if self.dialog is None:
             raise RuntimeError("Chrome 启动器尚未初始化")
+        if self.flow_controller is not None:
+            return self.flow_controller.open_browser_manager()
         return self.dialog.exec()
 
     def open_bookmarks(self):
         if self.dialog is None: raise RuntimeError('浏览器插件尚未初始化。')
         self.dialog.environment_tabs.setCurrentWidget(self.dialog.bookmarks_panel)
         self.dialog.bookmarks_panel.refresh()
-        return self.dialog.exec()
+        return self.open_launcher()
 
     def launch_next_profile(self):
         if self.dialog is None:

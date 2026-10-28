@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Flow 视频助手 · 辅助工具桥接",
-  "version": "1.1.36",
-  "description": "基于 FlowCue 1.1.5 的辅助工具桥接：任务调度、自动下载与任务目录归档。",
+  "version": "1.1.59",
+  "description": "基于 FlowCue 1.1.6 的辅助工具桥接：任务调度、自动下载与任务目录归档。",
   "permissions": [
     "storage",
     "downloads",

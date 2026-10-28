@@ -4,6 +4,7 @@ from pathlib import Path
 import shutil
 import time
 import re
+import math
 from urllib.parse import urlparse, parse_qs
 
 from .policy import block_for, estimated_cost
@@ -23,6 +24,11 @@ class FlowOperations(TransferRecovery, TaskReset):
         value = copy.deepcopy(preferences)
         self.store.save_settings(value)
         self.preferences = value
+        pending = getattr(self, 'high_credit_pending', None)
+        if pending:
+            from .high_credit import is_high
+            if not is_high({'account':pending['account']}, value):
+                self.high_credit_pending = None
 
     def recover_fixed_price_blocks(self):
         """Retire only old unreadable-price blocks now covered by user's tariff.
@@ -117,7 +123,8 @@ class FlowOperations(TransferRecovery, TaskReset):
         for client in self.clients.values():
             if browser_keys(client) & keys:
                 client.pop('prepare_wait', None)
-                client.pop('reuse_recovery',None)
+                from .browser_reuse import reset_recovery
+                reset_recovery(self,client)
                 client.pop('runtime_close', None)
                 self.connection_recoveries.pop(client.get('profile'),None)
                 client.pop('connection_recovery',None)
@@ -159,6 +166,10 @@ class FlowOperations(TransferRecovery, TaskReset):
         for row in self.store.rows():
             if row['status'] not in {'generating', 'downloading'}:
                 continue
+            from .ui_mutex import state as mutex_state
+            if any(entry['client'] == row['browser'] and entry['operation'] == 'submit' and
+                    entry.get('batch_id') == row['attempt'] for entry in mutex_state(self)['queue']):
+                continue
             remote = row['remote']
             if row['status'] == 'downloading':
                 # Download recovery has its own bounded counter; the generation
@@ -193,23 +204,51 @@ class FlowOperations(TransferRecovery, TaskReset):
         elif action == 'retry_download_selected':
             for row in self.store.rows():
                 if row['id'] in command.get('ids', []):
+                    from .suspicious_download import preserve
+                    if row['remote'].get('unverified_download') and preserve(self, row, retry=True): continue
                     if row['status'] == 'archive_failed' and row['remote'].get('download', {}).get('state') == 'complete':
                         self.archive(row['id'])
                     else:
                         self.retry_download(row)
         elif action == 'delete_records':
-            # File workers and in-flight download retries must finish first.
+            force=command.get('force') is True
+            # Ordinary deletion waits for active file/transfer workers.
             busy = set(self.archiving)
             for request in self.pending.values():
                 if request['job'] and request['action'] in {'run_tasks', 'retry_download', 'upload_images'}:
                     row = self.store.get(request['job'])
                     if row and row['attempt'] == request['attempt'] and row['browser'] == request['client']:
                         busy.add(row['id'])
+            holds={}
+            if force:
+                from .timing import request_timeout
+                now=time.time()
+                for row in self.store.rows():
+                    if row['id'] not in command.get('ids',[]):continue
+                    requests=[p for p in self.pending.values() if p['job']==row['id'] and
+                        p['attempt']==row['attempt'] and p['client']==row['browser']]
+                    deadlines=[]
+                    for pending in requests:
+                        at=pending.get('at',row['updated'])
+                        if type(at) not in (int,float) or not math.isfinite(at):at=now
+                        deadlines.append(min(now,at)+request_timeout(self.preferences,pending['action']))
+                    until=max(deadlines,default=0)
+                    if until>now:holds[row['id']]=until
             result = self.store.delete_records(command.get('ids', []),
-                confirmed_finished=command.get('confirmed_finished') is True, busy_ids=busy)
+                confirmed_finished=command.get('confirmed_finished') is True, busy_ids=busy, force=force, holds=holds)
             deleted = set(result['deleted'])
             self.released.difference_update(deleted)
-            self.pending = {key: value for key, value in self.pending.items() if value['job'] not in deleted}
+            if force:
+                for request in self.pending.values():
+                    if request['job'] in deleted:
+                        request['retired']=True
+                        for client in self.clients.values():
+                            if client.get('id')==request['client']:
+                                client.pop('prepare_snapshot',None)
+                                if request['action']=='run_tasks':client['batch_running']=True
+                self.refresh_reset_holds()
+            else:
+                self.pending = {key: value for key, value in self.pending.items() if value['job'] not in deleted}
             self.records_deleted.emit({'success': True, 'request_id': command.get('request_id'), **result})
         elif action == 'draft_save':
             self.store.save_draft(command['key'], command['value'])
@@ -218,11 +257,31 @@ class FlowOperations(TransferRecovery, TaskReset):
             self.resume_browser(command)
         elif action == 'release_download':
             self.release_download(command)
+        elif action in {'list_project_videos', 'bind_download_video'}:
+            from .video_catalog import load, bind
+            (load if action == 'list_project_videos' else bind)(self, command)
         elif action == 'refresh_download_url':
             row = self.store.get(command['job'])
             if not row or row['status'] not in {'download_failed', 'download_parked'}:
                 raise ValueError('只更新已结束生成、等待下载的原媒体地址。')
             url = str(command['url']).strip(); parsed = urlparse(url)
+            from .setup_support import video_page, project_identity
+            page = video_page(url)
+            if page:
+                original = row['remote'].get('page') or self.preferences.get('profile_projects', {}).get(row['remote'].get('profile'))
+                if not original or project_identity(page['project']) != project_identity(original):
+                    raise ValueError('这个视频页面不属于原任务保存的项目，请打开原任务的视频后复制地址栏链接。')
+                from .media_identity import generated_bindings
+                binding = next((b for b in generated_bindings(row['remote']) if
+                    b['taskId'] == row['remote'].get('upstream_task') and page['media_id'] in b['mediaIds']), None)
+                if not binding:
+                    raise ValueError('这个页面的视频编号与原任务已保存的生成回执不一致，未下载其他视频；请选择对应任务后重试。')
+                remote = {**row['remote'], 'download_refresh': {
+                    **page,'video_page':page['project']+'/edit/'+page['media_id']}}
+                remote.pop('manual_download_selection', None)
+                self.store.update(row['id'], 'download_failed', remote=remote)
+                self.retry_download(self.store.get(row['id']))
+                return True
             media = None
             if parsed.scheme == 'https' and not parsed.username and not parsed.password and parsed.port in (None, 443):
                 if parsed.hostname == 'flow-content.google':
@@ -239,6 +298,8 @@ class FlowOperations(TransferRecovery, TaskReset):
             binding = next((b for b in remote.get('bindings', []) if b and b.get('schema') == 2 and media in b.get('mediaIds', [])), None)
             if not media or binding is None:
                 raise ValueError('地址必须属于已保存的原 Google 媒体 ID；不能换成其他任务的视频。')
+            remote.pop('manual_download_selection', None)
+            remote.pop('download_refresh', None)
             binding.setdefault('urls', {})[media] = url
             binding['readyIds'] = list(dict.fromkeys(binding.get('readyIds', []) + [media]))
             remote.update(cloud_finished=True, released_at=remote.get('released_at') or time.time())
@@ -276,7 +337,7 @@ class FlowOperations(TransferRecovery, TaskReset):
             for row in self.store.rows():
                 if row['id'] not in command['ids']:
                     continue
-                if row['status'] != 'queued' or row['attempt']:
+                if row['status'] not in {'collected','queued'} or row['attempt']:
                     raise ValueError('只能修改尚未提交的排队任务。')
                 payload = dict(row['payload'])
                 if action == 'priority':

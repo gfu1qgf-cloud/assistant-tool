@@ -105,5 +105,29 @@ class ReferenceImageTests(unittest.TestCase):
         request = [value for value in self.actions(client) if value['action'] == 'upload_images'][-1]
         self.assertEqual(request['params']['reference_reset'], revision)
 
+    def test_bulk_reset_and_legacy_per_clip_revisions_do_not_force_one_upload_per_clip(self):
+        service=self.service()
+        service.store.enqueue(self.jobs(count=3))
+        rows=service.store.rows()
+        versions={row['id']:{key:row[key] for key in ('status','attempt','browser')} for row in rows}
+        service.store.reset_tasks([row['id'] for row in rows],versions=versions)
+        rows=service.store.rows()
+        revisions={row['payload']['reference_reset'] for row in rows}
+        self.assertEqual(len(revisions),1,'one bulk reset must not create a new image revision for every clip')
+        sha=rows[0]['payload']['image_identity']['sha256']
+        self.assertEqual(service.store.reference_revision(sha),next(iter(revisions)))
+        # Old versions stored a different token on each clip. The newest
+        # explicit reset is now canonical for all remaining clips of that image.
+        for index,row in enumerate(rows):
+            payload={**row['payload'],'reference_reset':f'{index+1:032x}'}
+            service.store.set_payload(row['id'],payload)
+        selected=service.store.reference_revision(sha)
+        self.assertEqual(selected,f'{len(rows):032x}')
+        first=service.store.get(rows[0]['id'])
+        service.store.reset_tasks([first['id']],versions={first['id']:{key:first[key] for key in ('status','attempt','browser')}})
+        fresh=service.store.get(first['id'])['payload']['reference_reset']
+        self.assertNotEqual(fresh,selected)
+        self.assertEqual(service.store.reference_revision(sha),fresh,'a later explicit reset invalidates an old cached asset once')
+
 
 if __name__ == '__main__': unittest.main()

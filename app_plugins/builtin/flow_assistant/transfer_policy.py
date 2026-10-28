@@ -24,12 +24,19 @@ def ready_bindings(remote):
 
 
 def retry_detail(row, preferences, now=None):
-    stage = 'upload' if row['status'] == 'uploading' or row['status'] == 'failed' and retry_info(row, 'upload').get('stopped') else 'download' if row['status'] in {'download_failed', 'downloading'} else None
+    if row['remote'].get('image_upload_abandoned'):return row.get('error','图片上传失败5次，已放弃所有同图未提交任务。')
+    stage = 'upload' if row['status'] == 'uploading' or row['status'] == 'failed' and retry_info(row, 'upload').get('stopped') else 'download' if row['status'] in {'download_failed', 'downloading'} or row['status']=='download_parked' and row['remote'].get('download_backlog') else None
     if not stage: return ''
     info = retry_info(row, stage)
     if not info: return ''
     count, limit = info.get('count', 0), retry_limit(preferences, stage)
     label = LABELS[stage]
+    cycle=row['remote'].get('upload_cycle',{})
+    if stage=='upload' and cycle and not cycle.get('confirmed') and not info.get('permanent'):
+        if str(info.get('waiting','')).startswith('原图3分钟'):return info['waiting']
+        if not info.get('stopped') and count>=limit:
+            remaining=max(0,math.ceil(cycle['at']+180-(time.time() if now is None else now)))
+            return f'原图尚未确认，{remaining} 秒后重新拖拽上传（距上次上传满3分钟）'
     if info.get('stopped'):
         if not limit: return f'{label}自动重试已关闭：' + info.get('last_error', '')
         return f'{label}自动重试已停止（{count}/{limit}）：' + info.get('last_error', '')

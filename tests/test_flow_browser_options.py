@@ -28,8 +28,8 @@ class BrowserOptionsTests(unittest.TestCase):
         return dialog, panel, plugin, host, file
 
     def test_default_enabled_and_non_boolean_values_cannot_enable_or_disable_it(self):
-        self.assertEqual(snapshot({}), {'focus_before_action': True})
-        self.assertEqual(normalize({'focus_before_action': False}), {'focus_before_action': False})
+        self.assertEqual(snapshot({}), {'focus_before_action': True, 'visual_upload_fallback': True, 'ui_mutex':False, 'auto_close_low_credit':True, 'auto_reopen_page_faults':True, 'credit_packs':True, 'auto_bridge_recovery':True})
+        self.assertEqual(normalize({'focus_before_action': False}), {'focus_before_action': False, 'visual_upload_fallback': True, 'ui_mutex':False, 'auto_close_low_credit':True, 'auto_reopen_page_faults':True, 'credit_packs':True, 'auto_bridge_recovery':True})
         for bad in ('false', 'true', 0, 1, None, [], {}):
             with self.subTest(bad=bad), self.assertRaises(ValueError):
                 normalize({'focus_before_action': bad})
@@ -39,7 +39,7 @@ class BrowserOptionsTests(unittest.TestCase):
         dialog, panel, plugin, host, file = self.options_panel()
         self.assertTrue(panel.focus_before_action.isChecked())
         index = dialog.settingTabWidget.indexOf(panel)
-        self.assertEqual(dialog.settings_navigation.items[index].parent().text(0), 'Flow 视频助手')
+        self.assertEqual(dialog.settings_navigation.items[index].parent().text(0), 'Chrome 与 Flow 助手')
         self.assertEqual(dialog.settings_navigation.items[index].parent().parent().text(0), '插件设置')
         self.assertIn('浏览器操作', dialog.settings_navigation.items[index].text(0))
         before = file.read_json(); commands = []; plugin.command.connect(commands.append)
@@ -57,9 +57,9 @@ class BrowserOptionsTests(unittest.TestCase):
         plugin.command.connect(service.execute); service.preferences_saved.connect(plugin._preferences_saved)
         panel.focus_before_action.setChecked(False)
         dialog.accept()
-        self.assertEqual(file.read_json()[CONFIG_KEY], {'focus_before_action': False})
+        self.assertEqual(normalize(file.read_json()[CONFIG_KEY]), {'focus_before_action': False, 'visual_upload_fallback': True, 'ui_mutex':False, 'auto_close_low_credit':True, 'auto_reopen_page_faults':True, 'credit_packs':True, 'auto_bridge_recovery':True})
         self.assertTrue(dict(host.apply_settings(file.read_json()))['flow_assistant'])
-        self.assertEqual(service.store.settings()['browser_options'], {'focus_before_action': False})
+        self.assertEqual(service.store.settings()['browser_options'], {'focus_before_action': False, 'visual_upload_fallback': True, 'ui_mutex':False, 'auto_close_low_credit':True, 'auto_reopen_page_faults':True, 'credit_packs':True, 'auto_bridge_recovery':True})
         synced = [json.loads(call.args[0]) for call in client['socket'].sendTextMessage.call_args_list
                   if json.loads(call.args[0]).get('type') == 'timing_settings']
         self.assertFalse(synced[-1]['browser_options']['focus_before_action'])
@@ -71,7 +71,7 @@ class BrowserOptionsTests(unittest.TestCase):
         self.assertFalse(panel.focus_before_action.isChecked())
         panel.focus_before_action.setChecked(True)
         dialog.accept()
-        self.assertTrue(file.read_json()[CONFIG_KEY]['focus_before_action'])
+        self.assertTrue(normalize(file.read_json()[CONFIG_KEY])['focus_before_action'])
 
     def test_worker_restart_takes_authoritative_program_setting(self):
         service = self.service()
@@ -89,10 +89,22 @@ class BrowserOptionsTests(unittest.TestCase):
         reconnected = self.hello(service, client)
         messages = [json.loads(call.args[0]) for call in reconnected['socket'].sendTextMessage.call_args_list]
         welcome = next(message for message in messages if message.get('type') == 'welcome')
-        self.assertEqual(welcome['browser_options'], {'focus_before_action': False})
+        self.assertEqual(welcome['browser_options'], {'focus_before_action': False, 'visual_upload_fallback': True, 'ui_mutex':False, 'auto_close_low_credit':True, 'auto_reopen_page_faults':True, 'credit_packs':True, 'auto_bridge_recovery':True})
         for message in messages:
             if message.get('action'):
-                self.assertEqual(message['browser_options'], {'focus_before_action': False})
+                self.assertEqual(message['browser_options'], {'focus_before_action': False, 'visual_upload_fallback': True, 'ui_mutex':False, 'auto_close_low_credit':True, 'auto_reopen_page_faults':True, 'credit_packs':True, 'auto_bridge_recovery':True})
+
+    def test_screenshot_switch_saves_and_cancel_keeps_previous_value(self):
+        dialog,panel,plugin,host,file=self.options_panel()
+        self.assertTrue(panel.visual_upload_fallback.isChecked())
+        panel.visual_upload_fallback.setChecked(False)
+        dialog.accept()
+        self.assertFalse(file.read_json()[CONFIG_KEY]['visual_upload_fallback'])
+        self.assertTrue(normalize(file.read_json()[CONFIG_KEY])['focus_before_action'])
+        before=file.read_json()
+        dialog2,panel2,_,_,file2=self.options_panel({CONFIG_KEY:before[CONFIG_KEY]})
+        panel2.visual_upload_fallback.setChecked(True);dialog2.reject()
+        self.assertFalse(file2.read_json()[CONFIG_KEY]['visual_upload_fallback'])
 
     def test_invalid_option_rejects_entire_preferences_edit(self):
         service = self.service(); before = copy.deepcopy(service.preferences); failures = []
@@ -110,6 +122,18 @@ class BrowserOptionsTests(unittest.TestCase):
         self.assertNotIn('browser_options', commands[-1]['value'])
         service.execute(commands[-1])
         self.assertFalse(service.preferences['browser_options']['focus_before_action'])
+
+    def test_mutex_option_default_off_save_cancel_and_explicit_disable(self):
+        dialog,panel,plugin,host,file=self.options_panel()
+        self.assertFalse(panel.ui_mutex.isChecked());panel.ui_mutex.setChecked(True)
+        dialog.accept();self.assertTrue(file.read_json()[CONFIG_KEY]['ui_mutex'])
+        dialog2,panel2,_,_,file2=self.options_panel({CONFIG_KEY:file.read_json()[CONFIG_KEY]})
+        self.assertTrue(panel2.ui_mutex.isChecked());panel2.ui_mutex.setChecked(False);dialog2.reject()
+        self.assertTrue(file2.read_json()[CONFIG_KEY]['ui_mutex'])
+        dialog3,panel3,_,_,file3=self.options_panel({CONFIG_KEY:file.read_json()[CONFIG_KEY]})
+        panel3.ui_mutex.setChecked(False);dialog3.accept()
+        self.assertFalse(file3.read_json()[CONFIG_KEY]['ui_mutex'])
+        with self.assertRaises(ValueError):normalize({'ui_mutex':'true'})
 
 
 if __name__ == '__main__':

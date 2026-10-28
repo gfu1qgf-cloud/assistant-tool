@@ -36,10 +36,10 @@ def row_color(client, preferences, status, jobs=()):
     recovering = any(row.get('status') in {'uncertain','download_failed'} or
         row.get('status') == 'uploading' and row.get('remote',{}).get('transfer_retries',{}).get('upload',{}).get('last_error')
         for row in affected)
-    if (failed or recovering or (client.get('reuse_recovery') or {}).get('state') == 'stopped' or status['state'] in {'需处理','账号已隔离'} or
+    if (failed or recovering or (client.get('reuse_recovery') or {}).get('state') == 'stopped' or status['state'] in {'需处理','账号已隔离','恢复失败／已跳过'} or
             (client.get('credit_check') or {}).get('state') == 'failed' or
             (client.get('connection_recovery') or {}).get('state') in {'failed','stopped'}): return '#ffd6d6'
-    if credit_hold(client,preferences) or balance_ready(client,preferences=preferences) and client['credits'] < 10: return '#fff0a6'
+    if status['state'] == '积分不足当前任务' or credit_hold(client,preferences) or balance_ready(client,preferences=preferences) and client['credits'] < 10: return '#fff0a6'
     if is_high(client,preferences): return '#d9eaff'
     if status['state'] in {'执行中','可接单','网页队列收尾中'}: return '#d8f0d8'
     return ''

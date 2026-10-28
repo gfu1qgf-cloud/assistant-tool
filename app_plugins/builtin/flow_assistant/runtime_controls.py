@@ -8,6 +8,8 @@ from .timing import value
 
 
 def refresh(service, client, *, automatic=False):
+    from .browser_reuse import stopped, reset_recovery
+    if automatic and stopped(service,client):return False
     if 'runtime_controls_v1' not in client.get('capabilities',[]):
         client['runtime_note']='当前扩展尚未加载运行时 F5 支持；相关浏览器正常重启后可用。'
         return False
@@ -21,7 +23,11 @@ def refresh(service, client, *, automatic=False):
     if automatic and (info.get('count', 0) >= value(service.preferences, 'connection_repair_attempts') or
                       now < info.get('next_at', 0)): return False
     if not service.request(client, 'repair_project', {'idle': True, 'url':client.get('saved_project'), 'force_reload':True}): return False
-    if not automatic: client.pop('reuse_recovery',None)
+    if automatic:
+        for pending in service.pending.values():
+            if pending['client']==client['id'] and pending['action']=='repair_project':
+                pending['f5_previous_count']=info.get('count',0)
+    if not automatic: reset_recovery(service,client)
     client['f5_recovery'] = {'count':info.get('count',0)+int(automatic),
         'next_at':now+value(service.preferences,'connection_repair_wait_seconds')}
     client['runtime_note'] = '已请求 F5 刷新原项目，等待扩展再次核对空闲及原页面。'

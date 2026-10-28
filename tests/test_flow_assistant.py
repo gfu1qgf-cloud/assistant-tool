@@ -45,6 +45,13 @@ class FlowTests(unittest.TestCase):
 
     def service(self):
         self.namespace.file('pairing.json').write_json({'token': 'x' * 40, 'port': 0})
+        # Existing regression fixtures exercise immediate-dispatch mode.
+        # Collection-mode tests explicitly opt in or remove this stored choice.
+        seed = QueueStore(self.namespace)
+        preferences = seed.settings()
+        preferences.setdefault('collect_before_submit', False)
+        preferences.setdefault('manual_editor_width_locked', False)
+        seed.save_settings(preferences)
         service = FlowService(self.namespace, str(self.root / 'downloads'))
         service.start()
         self.addCleanup(lambda: service.execute({'action': 'stop'}))
@@ -192,7 +199,7 @@ class FlowTests(unittest.TestCase):
 
     def test_ui_keeps_drafts_until_store_ack_and_uses_task_prompt(self):
         from app_plugins.builtin.flow_assistant.ui import FlowDialog
-        plugin = SimpleNamespace(ui_api_version=2, command=MagicMock(), context=SimpleNamespace(parent_widget=SimpleNamespace()))
+        plugin = SimpleNamespace(ui_api_version=4, command=MagicMock(), context=SimpleNamespace(parent_widget=SimpleNamespace()))
         dialog = FlowDialog(plugin)
         try:
             dialog.set_targets([self.args['target']])
@@ -212,13 +219,14 @@ class FlowTests(unittest.TestCase):
         self.namespace.file('pairing.json').write_json({'token': 'x' * 40, 'port': 0})
         parent = QtWidgets.QWidget()
         context = SimpleNamespace(storage=self.namespace, parent_widget=parent, log=MagicMock(),
-            register_command=MagicMock(), register_settings_page=MagicMock(), load_config=MagicMock(return_value={
+            register_command=MagicMock(), register_settings_page=MagicMock(), register_main_widget=MagicMock(), load_config=MagicMock(return_value={
                 'flow_assistant_timing': {'credit_validity_seconds': 43200, 'queue_tick_seconds': 2},
                 'flow_assistant_browser_options': {'focus_before_action': False}}))
         plugin = FlowAssistantPlugin(); plugin.register(context)
         self.assertEqual(context.register_command.call_count, 2)
         self.assertEqual({call.args[0].page_id for call in context.register_settings_page.call_args_list},
-                         {'timing', 'browser'})
+                         {'chrome', 'timing', 'browser'})
+        plugin.browser_launcher.start = MagicMock()
         plugin.start()
         try:
             for _ in range(100):
@@ -411,7 +419,7 @@ class FlowTests(unittest.TestCase):
         self.assertEqual(len(service.store.rows()), 1)
         self.assertFalse(service.released)
 
-    def test_manual_preview_uses_full_image_and_ack_cannot_clear_batch_drafts(self):
+    def test_manual_preview_uses_full_image_and_only_matching_ack_clears_table(self):
         from qt_compat import QtGui
         from app_plugins.builtin.flow_assistant.ui import FlowDialog
         from app_plugins.builtin.flow_assistant.plugin import FlowAssistantPlugin
@@ -429,19 +437,19 @@ class FlowTests(unittest.TestCase):
             self.assertIn('360 × 640', manual.picker.info.text())
             self.assertEqual(manual.prompt.toPlainText(), 'original')
             manual.prompt.setPlainText('one exact manual prompt'); manual.enqueue()
-            request = commands[-1]
-            self.assertEqual(request['source'], 'manual')
-            self.assertEqual(request['items'][0]['images'], [str(self.image)])
-            self.assertEqual(request['items'][0]['prompt'], 'one exact manual prompt')
+            self.assertFalse(any(c['action']=='enqueue' for c in commands))
+            dialog.batch.enqueue();request=next(c for c in reversed(commands) if c['action']=='enqueue')
+            self.assertEqual(request['source'],'batch');self.assertEqual(len(request['items']),2)
+            self.assertEqual(request['items'][1]['images'],[str(self.image)])
+            self.assertEqual(request['items'][1]['prompt'],'one exact manual prompt')
+            self.assertFalse(manual.isEnabled());plugin._failed('unrelated browser warning')
             self.assertFalse(manual.isEnabled())
-            plugin._failed('unrelated browser warning')
+            plugin._submitted({'source':'batch','request_id':'old request','count':2,'ids':[]})
             self.assertFalse(manual.isEnabled())
-            plugin._submitted({'source': 'manual', 'request_id': 'old request', 'count': 1})
-            self.assertFalse(manual.isEnabled())
-            plugin._submitted({'source': 'manual', 'request_id': request['request_id'], 'count': 1})
-            self.assertTrue(manual.isEnabled())
-            self.assertEqual(dialog.compose.rowCount(), 1)
-            self.assertEqual(manual.prompt.toPlainText(), 'one exact manual prompt')
+            plugin._submitted({'source':'batch','request_id':request['request_id'],'count':2,'ids':['first','second'],'collected':False})
+            self.assertTrue(manual.isEnabled());self.assertEqual(dialog.compose.rowCount(),0)
+            self.assertEqual(manual.prompt.toPlainText(),'one exact manual prompt')
+            self.assertTrue(manual.prompt.property('flowSubmitted'))
             import os
             if os.environ.get('LZX_FLOW_MANUAL_SCREENSHOT'):
                 dialog.show(); self.app.processEvents(); dialog.grab().save(os.environ['LZX_FLOW_MANUAL_SCREENSHOT'])
@@ -455,7 +463,7 @@ class FlowTests(unittest.TestCase):
         second = self.target.parent / '8011'; second.mkdir()
         image.save(str(second / 'second.png'))
         other = {'target_dir': str(second), 'label': '8011', 'task': {'task_id': '8011', 'task_video_prompt': 'second prompt'}}
-        plugin = SimpleNamespace(ui_api_version=2, command=MagicMock(), context=SimpleNamespace(parent_widget=SimpleNamespace()))
+        plugin = SimpleNamespace(ui_api_version=4, command=MagicMock(), context=SimpleNamespace(parent_widget=SimpleNamespace()))
         dialog = FlowDialog(plugin)
         try:
             dialog.set_targets([self.args['target'], other])
@@ -475,7 +483,7 @@ class FlowTests(unittest.TestCase):
 
     def test_browser_lane_editor_is_not_reset_by_stale_state(self):
         from app_plugins.builtin.flow_assistant.ui import FlowDialog
-        plugin = SimpleNamespace(ui_api_version=2, command=MagicMock(), context=SimpleNamespace(parent_widget=SimpleNamespace()))
+        plugin = SimpleNamespace(ui_api_version=4, command=MagicMock(), context=SimpleNamespace(parent_widget=SimpleNamespace()))
         dialog = FlowDialog(plugin)
         try:
             state = {'jobs': [], 'clients': [{'id': 'browser', 'profile': 'Profile 8', 'credits': 40}],

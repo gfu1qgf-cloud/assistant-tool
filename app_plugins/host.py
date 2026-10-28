@@ -747,6 +747,9 @@ class PluginHost:
         if not isinstance(saved_order, list):
             saved_order = []
         known_ids = {full_id for full_id, _entry in default_entries}
+        if 'flow_assistant.quick_actions' in known_ids and 'chrome_launcher.quick_actions' not in known_ids:
+            saved_order = list(dict.fromkeys('flow_assistant.quick_actions' if str(value) == 'chrome_launcher.quick_actions'
+                else str(value) for value in saved_order))
         ordered_ids = [
             str(full_id) for full_id in saved_order
             if str(full_id) in known_ids

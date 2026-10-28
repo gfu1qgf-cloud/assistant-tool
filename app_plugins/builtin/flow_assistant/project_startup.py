@@ -11,6 +11,8 @@ from .setup_support import project_identity
 from .page_readiness import missing_window
 
 MISSING_PROJECT = '等待主程序打开本配置的 Flow 项目；扩展不会自行新建标签页。'
+OPEN_CONFIRM_SECONDS = 8
+OPEN_ATTEMPTS = 3
 
 
 def note_missing(service, client, error, code=''):
@@ -24,6 +26,8 @@ def note_missing(service, client, error, code=''):
 
 
 def request_open(service, client):
+    from .browser_reuse import stopped
+    if stopped(service,client):return False
     from .high_credit import allowed
     profile = client.get('profile')
     project = service.preferences.get('profile_projects', {}).get(profile)
@@ -40,14 +44,18 @@ def request_open(service, client):
     slots = dict(service.preferences.get('browser_slots', {}))
     entry = dict(slots.get(profile, {}))
     previous = entry.get('project_startup', {})
-    if previous.get('session') == service.project_startup_session and previous.get('count', 0) >= 1:
-        if previous.get('state') == 'failed':
+    same_session=previous.get('session') == service.project_startup_session
+    count=previous.get('count',0) if same_session else 0
+    if same_session and previous.get('state')=='opening':return False
+    if same_session and count:
+        if time.time()-previous.get('at',time.time()) < OPEN_CONFIRM_SECONDS:return False
+        if count>=OPEN_ATTEMPTS:
             client['connection_recovery'] = {**client.get('connection_recovery', {}), 'state':'stopped',
-                'message': previous.get('message') or '原项目恢复启动失败；保留原配置，可修正后恢复'}
-        return False
+                'message':f'原项目打开已核对{OPEN_ATTEMPTS}次，仍未收到原项目页面就绪；已跳过本账号，请检查页面登录或扩展状态。'}
+            return False
     command = {'action': 'project_open_result', 'request_id': uuid.uuid4().hex,
         'profile': profile, 'browser': client['id'], 'project': project}
-    entry['project_startup'] = {**command, 'count':1, 'state':'opening', 'at':time.time(),
+    entry['project_startup'] = {**command, 'count':count+1, 'state':'opening', 'at':time.time(),
         'session':service.project_startup_session}
     slots[profile] = entry
     service.commit_preferences({**service.preferences, 'browser_slots': slots})
@@ -87,10 +95,11 @@ def result(service, command):
     if not lease or any(lease.get(key) != command.get(key) for key in ('request_id', 'browser', 'project')):
         return
     cancelled = bool(command.get('cancelled'))
-    message = ('已请求打开原配置项目，等待页面及账号确认' if command.get('opened') else
+    message = ('已发出原项目打开请求，等待原项目网页实际响应；尚未确认页面就绪' if command.get('opened') else
         str(command.get('error') or '原项目恢复启动未完成')[:500])
     entry['project_startup'] = {**lease, 'state':'cancelled' if cancelled else
-        'waiting' if command.get('opened') else 'failed', 'count':0 if cancelled else 1, 'message':message}
+        'waiting' if command.get('opened') else 'failed', 'at':time.time(),
+        'count':max(0,lease.get('count',1)-1) if cancelled else lease.get('count',1), 'message':message}
     slots[profile] = entry
     service.commit_preferences({**service.preferences, 'browser_slots': slots})
     # This was a same-profile navigation attempt, never proof that Chrome exited.
@@ -113,6 +122,7 @@ def launch_allowed(snapshot, command):
     client = next((c for c in snapshot.get('clients', []) if c.get('id') == command.get('browser')
         and c.get('profile') == command.get('profile')), None)
     if (not client or not allowed(client, preferences) or not client.get('project_missing') or client.get('page_ready')
+            or (client.get('reuse_recovery') or {}).get('state')=='stopped'
             or project_identity(client.get('saved_project')) != project_identity(command.get('project'))
             or client.get('native_busy') or client.get('batch_running')
             or client.get('reset_wait_until', 0) > time.time() or account_hold(client, preferences)

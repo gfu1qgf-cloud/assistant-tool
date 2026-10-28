@@ -38,15 +38,25 @@ def estimated_cost(job, observed):
 
 def block_for(client, preferences):
     blocks = preferences.get('browser_blocks', {})
-    return hold_reason(client, preferences) or credit_reason(client, preferences) or client.get('setup_blocked') or next((blocks[key] for key in sorted(browser_keys(client)) if blocks.get(key)), '')
+    from .exhausted_browser import reason as exhausted_reason
+    protected = hold_reason(client, preferences) or credit_reason(client, preferences) or client.get('setup_blocked') or exhausted_reason(client, preferences)
+    if protected: return protected
+    from .problem_details import offline_retry
+    return next((blocks[key] for key in sorted(browser_keys(client)) if blocks.get(key) and
+                 not offline_retry(client, preferences, blocks[key])), '')
 
 
 def capable(client, job, preferences, cost=None):
+    from .bridge_recovery import holding
     from .high_credit import allowed
+    from .browser_options import snapshot
     credits = client.get('credits')
-    return (allowed(client, preferences) and not client.get('blocked') and not block_for(client, preferences)
+    return (not holding(client,preferences) and
+            (not snapshot(preferences)['ui_mutex'] or 'ui_mutex_v1' in client.get('capabilities', [])) and
+            allowed(client, preferences) and not client.get('blocked') and not block_for(client, preferences)
             and not client.get('batch_running')
             and not client.get('native_busy')
+            and (client.get('reuse_recovery') or {}).get('state') != 'stopped'
             and client.get('reset_wait_until', 0) <= time.time()
             and not (client.get('credit_check') or {}).get('hold_dispatch')
             and (client.get('connection_recovery') or {}).get('state') != 'checking'
@@ -76,11 +86,37 @@ def admitted_queue(rows, batches, observed, *, paused=False, released=()):
                      and estimated_cost(row['payload'], observed) > row['payload']['budget'])]
 
 
+def backup_launch_failure(job, clients, preferences):
+    online = {client.get('profile') for client in clients}
+    failures = preferences.get('browser_launch_failures', {})
+    failed = [profile for profile in configured_profiles(preferences) if profile not in online and
+        profile in failures and dispatch_rank({'profile': profile}, job, preferences) is not None]
+    if not failed:
+        return ''
+    profile = failed[0]
+    from .problem_details import explain
+    return f'{len(failed)} 个备用配置启动检查失败；{profile}：' + explain(failures[profile].get('message') or '浏览器未成功启动')
+
+
 def waiting_reason(row, clients, rows, preferences, observed, batches, *, paused=False, released=(), affinity=None):
+    if row['status'] == 'collected':
+        return '此记录仍是“只保存记录”状态，尚未放行生成；可在“选中项操作”中选择“只提交选中项”。'
     if row['status'] != 'queued':
         return row['error']
     if paused and row['id'] not in released:
         return '队列已暂停，等待开始／只提交选中项'
+    if (row['remote'].get('ui_permission_retry',{}).get('kind')=='waiting' and
+            row['remote'].get('prepare_retry',{}).get('next_at',0)>time.time()):
+        return row['error'] or '等待前台UI锁，稍后自动重新申请；不计业务失败次数'
+    from .credit_packs import wait_reason as pack_wait_reason
+    if row['remote'].get('credit_pack'):
+        from .browser_options import snapshot
+        pack = row['remote']['credit_pack']
+        client = next((c for c in clients if c.get('id') == pack.get('browser')), {})
+        lock = client.get('pack_ui') or {}
+        if snapshot(preferences)['ui_mutex'] and lock.get('id') == pack.get('id') and lock.get('state') == 'waiting':
+            return str(lock.get('message') or '整包保留，等待下一轮UI锁') + '；' + pack_wait_reason(row)
+        return pack_wait_reason(row)
     from .image_affinity import allows_image, retained_pool
     waiting = row['remote'].get('small_balance_wait', {})
     if waiting.get('until', 0) > time.time():
@@ -89,7 +125,10 @@ def waiting_reason(row, clients, rows, preferences, observed, batches, *, paused
     eligible = [client for client in clients if capable(client, row['payload'], preferences, cost)]
     if eligible and not any(allows_image(client, row['payload'], rows, preferences,
             affinity['images'] if affinity is not None else None) for client in eligible):
-        return '账号正在独占处理其他参考图，完成该图剩余任务后再接本图；同一图片允许多个账号并行'
+        failure = backup_launch_failure(row['payload'], clients, preferences)
+        if failure:
+            return '现有可用账号被其他参考图独占；' + failure
+        return '现有可用账号被其他参考图独占，继续寻找其他已打开账号或启动备用浏览器；原账号只保留原图任务'
     if cost is not None and row['payload'].get('budget') and cost > row['payload']['budget']:
         source = '固定档位费用' if fixed_cost(row['payload']) is not None else '最近确认费用'
         return f'单条预算 {row["payload"]["budget"]} 低于{source} {cost:g}，请修改排队项预算'
@@ -119,6 +158,8 @@ def waiting_reason(row, clients, rows, preferences, observed, batches, *, paused
             return f'{label}暂无匹配浏览器：当前配置为手动固定档；可切回“自动分配”后由程序接单'
         holds = [credit_reason({'profile': p}, preferences) for p in useful]
         if holds and all(holds): return '对应浏览器积分冷却中：' + holds[0]
+        failure = backup_launch_failure(row['payload'], clients, preferences)
+        if failure: return failure
         return f'{label}等待浏览器自动启动／空闲后自动分配时长，无需手动分档'
     if not any(capable(c, row['payload'], preferences, cost) for c in lane):
         funded = [c for c in lane if high_credit_allowed(c, preferences) and balance_ready(c, preferences=preferences)
@@ -140,8 +181,15 @@ def waiting_reason(row, clients, rows, preferences, observed, batches, *, paused
     if not any(c.get('account') for c in lane):
         return '需要登录／确认当前 Flow 账号，请打开对应浏览器'
     if not any(balance_ready(c, preferences=preferences) for c in lane):
+        stopped=[c for c in lane if (c.get('reuse_recovery') or {}).get('state')=='stopped']
+        if stopped:
+            return f'已跳过 {len(stopped)} 个准备失败账号，不占其他账号名额；'+str(stopped[0].get('profile') or '原账号')+'：'+stopped[0]['reuse_recovery'].get('reason','积分未能确认')
         return '等待确认当前账号／重新检测积分；上次余额保留，过期时间可在“时间与重试”设置'
     if not any(capable(c, row['payload'], preferences, cost) for c in lane):
+        from .launch_retries import wait_reason as launch_wait_reason
+        starting=launch_wait_reason(preferences,[p for p in configured_profiles(preferences)
+            if dispatch_rank({'profile':p},row['payload'],preferences) is not None])
+        if starting:return starting
         return '积分不足以承担下一条任务；等待补充积分或备用账号'
     held = [r for r in rows if r['status'] in ACTIVE - {'queued'} | {'uncertain', 'download_failed'}]
     accounts = {r['remote'].get('account') for r in held}

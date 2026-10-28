@@ -11,13 +11,13 @@ async function fixture(options = {}) {
   const hooks = {}, messages = [], closed = [], sockets = [], windows = new Set(options.noWindows ? [] : [1,2]); let searches = 0;
   const event = name => ({addListener:fn => hooks[name] = fn});
   const tab = {id:7, windowId:1, url:project, active:true};
-  const tabs = [tab, ...(options.extraTabs || [])];
+  const tabs = [tab, ...(options.extraTabs || [])]; let tabQueries=0;
   class Socket {static OPEN=1; constructor(){this.readyState=1;sockets.push(this);} send(value){messages.push(JSON.parse(value));} close(){this.readyState=3;}}
   const chrome = {runtime:{id:'pnjppjjfgiccpcfajkpooklgohgihdom', getManifest:()=>({version:'1.1.19'}),
       onMessage:event('message'), onStartup:event('startup'), onInstalled:event('installed')},
     storage:{onChanged:event('changed'), local:{get:async keys=>Object.fromEntries(keys.filter(k=>k in data).map(k=>[k,structuredClone(data[k])])),
       set:async value=>Object.assign(data, structuredClone(value)), remove:async key=>delete data[key]}},
-    tabs:{query:async()=>tabs, get:async()=>({...tab,url:options.changedProject ? project+'-changed':project}),
+    tabs:{query:async()=>options.tabsAt?.(++tabQueries, tabs) || tabs, get:async()=>({...tab,url:options.changedProject ? project+'-changed':project}),
       sendMessage:async id => options.health ? options.health(id) : {healthy:true, running:false, native_busy:false}},
     downloads:{onChanged:event('download'), search:async query=>query.state ?
       (options.progress?.(++searches) ? [{id:99,state:'in_progress'}] : []) : []},
@@ -102,6 +102,13 @@ async function refused(options, mutate) {
   await retired.api.receive(removalProof);
   assert.deepEqual(retired.closed,[1,2],'a host-confirmed removed task must not hold a window forever');
   assert.equal(retired.data.lzxBatches[removedBatch].state,'accepted','keep durable replay guards and task history');
+  const parked=await fixture({data:{lzxBatches:{[batch]:{state:'accepted'},[removedBatch]:{state:'accepted',packed:true}},
+    lzxDownloads:{1:binding(),2:binding('interrupted',{batch:removedBatch,download_path:`FlowBridge/${removedBatch}/result.mp4`})}}});
+  await parked.api.receive(removalProof);
+  assert.deepEqual(parked.closed,[1,2],'host-confirmed cloud-complete parked downloads can release their old pack');
+  const personalParked=await fixture({extraTabs:[{id:8,url:'https://mail.google.com/'}],
+    data:{lzxBatches:{[batch]:{state:'accepted'},[removedBatch]:{state:'accepted',packed:true}}}});
+  await personalParked.api.receive(removalProof);assert.equal(personalParked.closed.length,0,'parked receipts never authorize closing personal tabs');
   const unknown=await fixture({data:{lzxBatches:{[batch]:{state:'accepted'},[removedBatch]:{state:'accepted'},['c'.repeat(32)]:{state:'accepted'}}}});
   await unknown.api.receive(removalProof);assert.equal(unknown.closed.length,0,'an unrelated unknown paid batch stays protected');
   const downloading=await fixture({progress:()=>true});await downloading.api.receive(removalProof);
@@ -139,5 +146,41 @@ async function refused(options, mutate) {
   assert.equal(failedManual.messages.at(-1).success,false);
   await failedManual.api.receive(manualCommand());
   assert.notEqual(failedManual.messages.at(-1).code,'FLOW_CLOSE_BUSY','manual native failure releases its lock');
-  console.log('Flow low-credit close: profile binding, idle pages, all batch receipts, exact-result retry, download acknowledgement, in-flight operations and failure recovery passed.');
+  const autoLow=await fixture();const lowMessage=manualCommand();Object.assign(lowMessage.params,{reason:'auto_low_credit',balance:5,until:Date.now()/1000+60});
+  await autoLow.api.receive(lowMessage);assert.deepEqual(autoLow.closed,[1,2]);
+  const fault=await fixture({health:()=>({healthy:false,running:false,native_busy:false})});
+  const faultMessage=manualCommand();faultMessage.params.reason='auto_page_fault';
+  await fault.api.receive(faultMessage);assert.deepEqual(fault.closed,[1,2],'a known idle but unhealthy page can close for one restart');
+  const unknownIdle=await fixture({health:()=>undefined});await unknownIdle.api.receive(faultMessage);
+  assert.equal(unknownIdle.closed.length,0,'missing idle evidence cannot close an unknown page');
+  const busyFault=await fixture({health:()=>({healthy:false,running:true,native_busy:false})});await busyFault.api.receive(faultMessage);
+  assert.equal(busyFault.closed.length,0,'a page fault cannot close a running generation');
+  for (const message of [command(), manualCommand(), lowMessage, faultMessage, backupCommand()]) {
+    for (const other of [{id:8,url:'https://mail.google.com/'}, {id:8,url:project+'-other'},
+        {id:8,url:project,pendingUrl:'https://example.com/'}, {id:8,url:'chrome://settings/'},
+        {id:8}, {id:8,url:'chrome://newtab/'}]) {
+      const personal=await fixture({extraTabs:[other]});await personal.api.receive(message);
+      assert.equal(personal.closed.length,0,'manual, batch and automatic close must protect every non-project tab');
+      assert.equal(personal.messages.at(-1).code,'FLOW_CLOSE_BUSY');
+      assert.match(personal.messages.at(-1).error,/非本项目标签页/);
+      assert.equal(personal.messages.some(m=>m.data?.closing),false,'personal-tab refusal cannot report close intent');
+    }
+    let checked=false;
+    const late=await fixture({health:()=>{checked=true;return {healthy:true,running:false,native_busy:false};},
+      tabsAt:(count,tabs)=>checked ? [...tabs,{id:8,url:'https://example.com/'}]:tabs});
+    await late.api.receive(message);assert.equal(late.closed.length,0,'recheck personal tabs after asynchronous health/download checks');
+    assert.match(late.messages.at(-1).error,/非本项目标签页/);
+  }
+  const editor=await fixture({extraTabs:[{id:8,windowId:2,url:project+'/edit/video'}]});
+  await editor.api.receive(manualCommand());assert.deepEqual(editor.closed,[1,2],'a same-project video editor is still a managed tab');
+  let checkedProject=false;
+  const lateProject=await fixture({health:()=>{checkedProject=true;return {healthy:true,running:false,native_busy:false};},
+    tabsAt:(count,tabs)=>checkedProject ? [...tabs,{id:8,url:project+'/edit/video'}]:tabs});
+  await lateProject.api.receive(manualCommand());assert.equal(lateProject.closed.length,0,'new project tabs also need a fresh idle health check');
+  let personalOpen=true;
+  const formerlyBusy=await fixture({tabsAt:(count,tabs)=>personalOpen ? [...tabs,{id:8,url:'https://example.com/'}]:tabs});
+  await formerlyBusy.api.receive(manualCommand());assert.equal(formerlyBusy.closed.length,0);
+  personalOpen=false;
+  await formerlyBusy.api.receive(manualCommand());assert.deepEqual(formerlyBusy.closed,[1,2],'refusal releases the guard so closing personal tabs permits a later explicit close');
+  console.log('Flow low-credit close: manual/automatic reasons, idle unhealthy recovery, profile binding, exact receipts, downloads and active-operation protection passed.');
 })().catch(error=>{console.error(error);process.exitCode=1;});

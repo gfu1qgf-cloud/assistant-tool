@@ -12,8 +12,12 @@ def balance_ready(client, now=None, preferences=None):
     lifetime = timing_value(preferences, 'credit_validity_seconds')
     observed = client.get('credits_at', 0)
     if type(observed) not in (int, float) or not math.isfinite(observed) or observed <= 0: return False
+    required = (preferences or {}).get('credit_balances', {}).get(str(client.get('account') or '').strip().casefold(), {}).get('recheck_after', 0)
+    if type(required) in (int, float) and math.isfinite(required) and observed < required: return False
     from .credit_refresh import due
     if due(client, preferences or {}, now): return False
+    if valid and credits < 10 and now-observed >= max(24*3600, timing_value(preferences,'credit_cooldown_seconds')):
+        return False  # A missing daily label cannot certify the old low balance forever.
     return (bool(client.get('account')) and valid and not client.get('identity_unconfirmed') and
             (lifetime == 0 or observed > now - lifetime))
 

@@ -15,7 +15,7 @@ def browser_order(client, preferences):
 def queue_head(service, rows, batches):
     # rows() is durable SQLite insertion order. Explicit releases only admit
     # selected rows; priority, duration and retry delays never let later rows pass.
-    row = next((row for row in rows if row['status'] == 'queued' and
+    row = next((row for row in rows if row['status'] == 'queued' and not row['remote'].get('credit_pack') and
                 (not service.paused or row['id'] in service.released)), None)
     if not row: return []
     cost = estimated_cost(row['payload'], service.observed_costs)

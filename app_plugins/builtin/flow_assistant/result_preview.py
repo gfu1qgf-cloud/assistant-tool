@@ -12,7 +12,8 @@ class ResultPreview(QtWidgets.QDialog):
         payload = row.get('payload') if isinstance(row.get('payload'), dict) else {}
         remote = row.get('remote') if isinstance(row.get('remote'), dict) else {}
         media = remote.get('media') if isinstance(remote.get('media'), dict) else {}
-        self.path = payload.get('output')
+        from .suspicious_download import output_path
+        self.path = output_path(row)
         if not isinstance(self.path, (str, Path)) or not self.path or not Path(self.path).is_file():
             raise ValueError('成品不存在，请先完成下载归档。')
         self.path = str(self.path)

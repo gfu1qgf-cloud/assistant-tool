@@ -37,7 +37,7 @@ const {installDownloadHelpers} = require('./flow_test_support.cjs');
       return {success: true, downloadId: 42};
     },
     handleMessage() {throw Error('retry must not enter generation handler');},
-    syncPageVideoSettings() {throw Error('retry must not change generation settings');},
+    submitPackedTask(){throw Error('download/account fixture must never submit a paid task');}, syncPageVideoSettings() {throw Error('retry must not change generation settings');},
     location: {href: 'https://labs.google/fx/tools/flow/project/test'},
     window: {__lzxFlowTransport: {attach(_handler, _snapshot, helpers) {attached = helpers;}}}
   };

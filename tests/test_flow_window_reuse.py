@@ -84,7 +84,8 @@ class WindowReuseTests(unittest.TestCase):
                 plugin._launch_checked({'profile': 'Profile 23', 'status': 'enabled', 'version': EXTENSION_VERSION})
         self.assertEqual(popen.call_count, 1)
         self.assertNotIn('--new-window', popen.call_args.args[0])
-        self.assertEqual(popen.call_args.args[0][-1], setups.PROJECT)
+        from app_plugins.builtin.flow_assistant.setup_support import OPTIONS_URL
+        self.assertEqual(popen.call_args.args[0][-1], setups.PROJECT, 'a cold browser must open its saved Flow project directly')
         launcher.get_web_list.assert_not_called()
 
     def test_live_connection_arriving_during_probe_reuses_original_window(self):
@@ -101,6 +102,7 @@ class WindowReuseTests(unittest.TestCase):
         plugin.snapshot = {'preferences': {'profile_projects': {'Profile 23': setups.PROJECT}}}
         plugin._launch_checked({'profile': 'Profile 23', 'status': 'enabled', 'version': EXTENSION_VERSION})
         self.assertTrue(dialog.setup.launch_urls([setups.PROJECT]))
+        from app_plugins.builtin.flow_assistant.setup_support import OPTIONS_URL
         launcher.launch_profile.assert_called_once_with(launcher.profiles[0], urls=[setups.PROJECT], new_window=False)
 
     def test_separate_profiles_keep_independent_startup_and_do_not_force_windows(self):

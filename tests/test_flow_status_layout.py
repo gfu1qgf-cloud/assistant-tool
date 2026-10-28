@@ -28,9 +28,8 @@ class StatusLayoutTests(unittest.TestCase):
                   dialog.manual.route_note,
                   dialog.manual.estimate, dialog.manual.status, dialog.batch_estimate)
         pages = ((0, (dialog.queue, dialog.queue_tools.search, dialog.queue_menu_button)),
-                 (1, (dialog.manual.prompt, dialog.manual.submit, dialog.manual.picker)),
-                 (2, (dialog.compose, dialog.submit_button)),
-                 (4, (dialog.setup.profile, dialog.setup.project, dialog.setup.connect_button, dialog.concurrent)))
+                 (dialog.tabs.indexOf(dialog.batch), (dialog.manual.prompt, dialog.manual.submit, dialog.manual.picker,dialog.compose,dialog.submit_button)),
+                 (dialog.tabs.indexOf(dialog.settings_page), (dialog.setup.profile, dialog.setup.project, dialog.setup.connect_button, dialog.concurrent)))
         for page, controls in pages:
             with self.subTest(page=page):
                 dialog.tabs.setCurrentIndex(page)

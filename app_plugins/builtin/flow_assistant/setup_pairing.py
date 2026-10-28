@@ -90,6 +90,16 @@ def check_reload(service, client, message):
         service.send(client, {'type': 'setup_reload_denied', 'error': '自动更新入口已过期，请在主程序点击连接。'})
         return False
     profile, setup = match
+    if str(setup.get('request') or '').startswith('bridge-update:'):
+        from .bridge_recovery import idle
+        from .browser_options import snapshot
+        recovery=service.preferences.get('bridge_recoveries',{}).get(profile,{})
+        original=next((c for c in service.clients.values() if c.get('authorized') and c.get('profile')==profile),None)
+        if (not snapshot(service.preferences)['auto_bridge_recovery'] or recovery.get('request')!=setup.get('request') or
+                recovery.get('state') not in {'requesting','opening','awaiting'} or recovery.get('deadline',0)<=time.time() or
+                not original or not idle(service,original)):
+            service.send(client,{'type':'setup_reload_denied','error':'自动恢复已取消、过期或原账号不再空闲；保留浏览器。'})
+            return False
     ids = {c.get('id') for c in service.clients.values() if c.get('profile') == profile}
     blocked_states = TRANSIENT | {'archiving', 'uncertain'}
     if any(c.get('profile') == profile and c.get('batch_running') for c in service.clients.values()):

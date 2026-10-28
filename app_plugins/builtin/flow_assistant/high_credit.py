@@ -1,4 +1,4 @@
-"""Persistent >=100-credit classification; explicit, bounded backup consent."""
+"""Current-balance >=100-credit classification and explicit backup consent."""
 import math
 import time
 import uuid
@@ -27,10 +27,25 @@ def record(client, preferences):
     return preferences.get('high_credit_accounts', {}).get(account_key(client, preferences), {})
 
 
-def is_high(client, preferences):
+def known_points(client, preferences):
     points = client.get('credits')
-    return bool(record(client, preferences)) or (bool(client.get('account')) and
-        type(points) in (int, float) and math.isfinite(points) and points >= THRESHOLD)
+    if (client.get('account') and type(points) in (int, float) and
+            math.isfinite(points) and points >= 0):
+        return points
+    cached = preferences.get('credit_balances', {}).get(account_key(client, preferences), {})
+    points, observed = cached.get('balance'), cached.get('observed_at')
+    if (type(points) in (int, float) and math.isfinite(points) and points >= 0 and
+            type(observed) in (int, float) and math.isfinite(observed) and observed > 0):
+        return points
+    return None
+
+
+def is_high(client, preferences):
+    points = known_points(client, preferences)
+    if points is not None:
+        return points >= THRESHOLD
+    entry = record(client, preferences)
+    return bool(entry) and entry.get('classification') != 'ordinary'
 
 
 def allowed(client, preferences):
@@ -50,18 +65,38 @@ def reason(client, preferences):
     if entry.get('permission') == 'deny':
         return '千分账号：用户已禁止调度；可右键设置使用权限，已提交任务仍保留核对与下载'
     if entry.get('decision') == 'asking':
-        return '千分账号（曾检测到至少 100 分）：等待使用确认；窗口显示后才开始倒计时'
+        return '千分账号（余额至少 100 分）：等待使用确认；窗口显示后才开始倒计时'
     if entry.get('decision') == 'skipped':
-        return '千分账号（曾检测到至少 100 分）：本轮已跳过，任务仍保留在队列；可右键设置使用权限'
-    return '千分账号（曾检测到至少 100 分）：保留备用；小额账号用完后询问，未确认不接单'
+        return '千分账号（余额至少 100 分）：本轮已跳过，任务仍保留在队列；可右键设置使用权限'
+    return '千分账号（余额至少 100 分）：保留备用；小额账号用完后询问，未确认不接单'
+
+
+def ordinary_entry(entry):
+    if entry.get('classification') == 'ordinary':
+        return entry
+    # Retain explicit high-balance permissions for a future refill, but they
+    # must never gate ordinary credits or keep an old confirmation alive.
+    result = {key:value for key,value in entry.items() if key not in
+              {'asked_cycle','retry_after','session','cycle'}}
+    return {**result, 'classification':'ordinary', 'decision':'standby',
+            'decision_source':'auto_downgrade', 'downgraded_at':time.time()}
 
 
 def with_marker(preferences, client):
     account = str(client.get('account') or '').strip().casefold()
-    if not account or not is_high(client, preferences):
+    if not account:
         return preferences
     entries = dict(preferences.get('high_credit_accounts', {}))
+    points = known_points(client, preferences)
+    if points is not None and points < THRESHOLD:
+        if account not in entries or entries[account].get('classification') == 'ordinary':
+            return preferences
+        entries[account] = ordinary_entry(entries[account])
+        return {**preferences, 'high_credit_accounts':entries}
+    if not is_high(client, preferences):
+        return preferences
     entries[account] = entries.get(account) or {'detected_at': time.time(), 'decision': 'standby'}
+    entries[account] = {**entries[account], 'classification':'high'}
     links = {**preferences.get('high_credit_links', {}), **{key: account for key in identities(client)}}
     return {**preferences, 'high_credit_accounts': entries, 'high_credit_links': links}
 
@@ -164,6 +199,10 @@ def new_session_entries(preferences):
         entry = dict(original)
         if entry.get('decision_source') == 'user_approved' and 'permission' not in entry:
             entry['permission'] = 'allow'
+        points = known_points({'account':key}, preferences)
+        if points is not None and points < THRESHOLD:
+            entries[key] = ordinary_entry(entry)
+            continue
         # v1 recorded automatic dismissal as refusal. Re-offer those ambiguous
         # decisions once; explicit v2 refusals/timeouts keep their durable hold.
         if entry.get('decision') == 'asking' or (entry.get('decision') == 'skipped' and not entry.get('decision_source')):

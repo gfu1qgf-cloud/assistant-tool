@@ -29,7 +29,7 @@ def bound_download(job, downloads_root):
     return source
 
 
-def archive_download(job, downloads_root, verify=None):
+def archive_download(job, downloads_root, verify=None, *, destination=None):
     source = bound_download(job, downloads_root)
     # Chrome's conflictAction=uniquify may append " (1)" to this name.
     # Keep the exact attempt directory and bound media identity mandatory;
@@ -40,7 +40,7 @@ def archive_download(job, downloads_root, verify=None):
         from model.node_workflow.render import probe, resolve_tools
         verify = lambda path: probe(path, resolve_tools()[1])
     verify(source)
-    destination = Path(job['payload']['output'])
+    destination = Path(destination or job['payload']['output'])
     if destination.parent.resolve() != Path(job['payload']['directory']).resolve():
         raise ValueError('保存位置不属于提交时的任务目录。')
     if not destination.parent.is_dir():
@@ -80,6 +80,8 @@ def archive_download(job, downloads_root, verify=None):
 
 
 def cleanup_download(job, downloads_root):
+    if (job['remote'].get('suspicious_delivery') or {}).get('state') in {'copying','copied','moved','failed'}:
+        raise ValueError('【存疑】文件已单独保存在任务目录，不能按已核验成品清理。')
     if job['status'] != 'completed':
         raise ValueError('只清理已采用／核验通过的成品下载副本，待复核文件不清理。')
     source = bound_download(job, downloads_root)

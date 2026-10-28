@@ -16,14 +16,15 @@ const provenance = JSON.parse(read('browser_extensions/flow_bridge/SOURCE.json')
 const derivedId = crypto.createHash('sha256').update(Buffer.from(manifest.key, 'base64')).digest('hex').slice(0, 32)
   .replace(/[0-9a-f]/g, ch => String.fromCharCode(97 + parseInt(ch, 16)));
 assert.equal(derivedId, 'pnjppjjfgiccpcfajkpooklgohgihdom', 'upstream merge must not create a new extension identity');
-assert.equal(provenance.upstream_version, '1.1.5');
-assert.equal(provenance.commit, '847c928d60114183e42f838ba82577ba10e46d0b');
+assert.equal(provenance.upstream_version, '1.1.6');
+assert.equal(provenance.commit, 'a5a4a3607e55c85c9c0c2e8e4700f2140eefb36d');
 assert.equal(provenance.bridge_version, manifest.version);
 
 async function testDownloadLock() {
   const issued = [], bound = [], items = new Map(), stored = {};
   let next = 1, fail = false;
   const context = {URL, console: quiet, recentAutoDownloads: new Map(),
+    __lzxPreflightVideo:async url=>url, // This fixture isolates native deduplication after a successful probe.
     chrome: {runtime: {}, storage: {session: {async set(value) {Object.assign(stored, value);}}},
       downloads: {async search({id}) {return items.has(id) ? [items.get(id)] : [];},
         download(options, callback) {
@@ -116,6 +117,8 @@ async function testOneClickAndEmptyBinding() {
     snapshotCurrentDomMedia() {}, isFlowCurrentlyGenerating: () => false, updateLineStatus() {}};
   vm.createContext(context);
   const start = ui.indexOf('  async function submitTaskToPage(');
+  const clearStart = ui.indexOf('  async function clearFlowPromptBox(');
+  vm.runInContext(ui.slice(clearStart, ui.indexOf('\n  let isStopRequested',clearStart)),context);
   vm.runInContext(ui.slice(start, ui.indexOf('  function getProjectTiles()', start)), context);
   await context.submitTaskToPage({image,lineText: 'one prompt', rowIndex: 0, lineIndex: 0,
     download_path: 'FlowBridge/'+'a'.repeat(32)+'/result.mp4'});

@@ -1,6 +1,8 @@
 """Durable, bounded transfer recovery. This module never sends run_tasks."""
 import time
 import re
+import uuid
+from pathlib import Path
 from urllib.parse import urlsplit
 
 from .policy import block_for
@@ -13,14 +15,70 @@ from .reference_image import freeze_reference
 
 
 class TransferRecovery:
+    def upload_cycle(self,row,client):
+        """One clock/revision per browser, project and image, across retries."""
+        from .setup_support import project_identity
+        sha=row['payload']['image_identity']['sha256']
+        scope=[client.get('profile') or client['id'],client.get('account'),
+            project_identity(client.get('saved_project')),sha]
+        base=self.store.reference_revision(sha)
+        cycles=getattr(self,'upload_cycles',None)
+        if cycles is None:self.upload_cycles=cycles={}
+        key=tuple(scope);cycle=cycles.get(key)
+        saved=row['remote'].get('upload_cycle',{})
+        saved_scope=tuple(tuple(v) if isinstance(v,list) else v for v in saved.get('scope',[]))
+        if saved_scope==key and saved.get('base')==base and (not cycle or saved.get('at',0)>cycle.get('at',0)):
+            cycle=dict(saved)
+        if not cycle or cycle.get('base')!=base:
+            phase=row['remote'].get('upload_phase',{})
+            cycle={'scope':scope,'base':base,'revision':base,'at':phase.get('at') or time.time(),'confirmed':False}
+        cycles[key]=cycle
+        return cycle
+
+    def redrag_due_upload(self,row):
+        """After three minutes without image proof, use the existing reset API."""
+        if (row['status'] not in {'uploading','failed'} or not row['attempt'] or
+                not row['remote'].get('upload_reference') or retry_info(row,'upload').get('permanent') or
+                self.safety_paused or self.paused and row['id'] not in self.released):return False
+        from .store import submission_risk
+        if submission_risk(row,self.store.attempt_charged(row['attempt'])):return False
+        client=next((c for c in self.clients.values() if c.get('authorized') and c.get('id')==row['browser']),None)
+        if not client:return False
+        if block_for(client,self.preferences) or client.get('blocked'):return False
+        cycle=self.upload_cycle(row,client);now=time.time()
+        if not row['remote'].get('upload_cycle'):
+            self.store.update(row['id'],row['status'],remote={**row['remote'],'upload_cycle':dict(cycle)},error=row['error'])
+            return True
+        if cycle.get('confirmed') or now-cycle['at']<180:return False
+        from .image_upload_limit import remember_failure,abandon,image_key,LIMIT
+        if remember_failure(self,row,expired=True)>=LIMIT:return abandon(self,image_key(row))
+        if row['status']=='failed':
+            from .credit_packs import active_count
+            from .browser_slots import limit
+            if active_count(self.store.rows())>=limit(self):return False
+        requests=[(k,p) for k,p in self.pending.items() if p.get('job')==row['id'] and
+            p.get('attempt')==row['attempt'] and p.get('action')=='upload_images']
+        live=[(k,p) for k,p in requests if not p.get('retired')]
+        if live:
+            cycle['cancel_until']=now+5
+            for key,request in live:
+                request.update(retired=True,cancel_deadline=now+5)
+                self.send(client,{'type':'cancel_operation','action':'cancel_operation','target_request_id':key})
+            self.store.update(row['id'],row['status'],remote={**row['remote'],'upload_cycle':dict(cycle)},
+                error='原图超过3分钟未确认，正在退出旧核对，随后重新拖拽上传。')
+            return True
+        if requests or now<cycle.get('cancel_until',0):return True
+        return self.start_upload(row,retry=False)
+
     def _release_skipped_wait(self, row):
         """Retire only this attempt's local wait, never cancel cloud work."""
         client = next((c for c in self.clients.values() if c.get('authorized') and c['id'] == row['browser']), None)
         if (not client or 'skip_download_v1' not in client.get('capabilities', []) or
                 not client.get('batch_running') or client.get('native_busy') or
-                client.get('active_batch') != row['attempt']):
+                client.get('active_batch') != row['attempt'] and not (row['remote'].get('credit_pack') and
+                    'credit_pack_submit_v1' in client.get('capabilities',[]))):
             return False
-        previous = client.get('skip_download_wait') or {}
+        previous = client.get('skip_download_waits',{}).get(row['attempt']) or client.get('skip_download_wait') or {}
         if not isinstance(previous, dict) or previous.get('attempt') != row['attempt']: previous = {}
         if (previous.get('count', 0) >= timing_value(self.preferences, 'connection_repair_attempts') or
                 previous.get('next_at', 0) > time.time() or
@@ -29,6 +87,7 @@ class TransferRecovery:
         if self.request(client, 'skip_download', {'batch_id': row['attempt']}):
             client['skip_download_wait'] = {'attempt':row['attempt'], 'count':previous.get('count',0)+1,
                 'next_at':time.time()+timing_value(self.preferences,'transfer_wait_seconds')}
+            client.setdefault('skip_download_waits',{})[row['attempt']]=client['skip_download_wait']
             return True
         return False
 
@@ -55,6 +114,11 @@ class TransferRecovery:
         if not compatible_extension(client.get('extension_version')): return
         for row in self.store.rows():
             info = dict(retry_info(row, 'download'))
+            if (row['status']=='download_parked' and row['browser']==client['id'] and
+                    info.get('stop_code')=='video_page_bridge_update' and row['remote'].get('download_refresh',{}).get('video_page') and
+                    compatible_extension(client.get('extension_version'),minimum_patch=49)):
+                self.retry_download(row)
+                continue
             if (row['status'] != 'download_failed' or row['browser'] != client['id']
                     or info.get('asb_recovery') or '下载域名不受信任' not in row['error']): continue
             bound = False
@@ -87,8 +151,13 @@ class TransferRecovery:
                    for request in self.pending.values())
 
     def transfer_failed(self, row, stage, error, *, permanent=False, stop_code=''):
-        if row['status'] in {'completed', 'needs_review', 'cancelled', 'archiving', 'archive_failed', 'download_parked'}:
+        from .download_backlog import detached
+        independent=stage=='download' and detached(row)
+        if row['status'] in {'completed', 'needs_review', 'cancelled', 'archiving', 'archive_failed'} or row['status']=='download_parked' and not independent:
             return False
+        if stage=='upload':
+            from .image_upload_limit import remember_failure,abandon,image_key,LIMIT
+            if remember_failure(self,row,error)>=LIMIT:return abandon(self,image_key(row))
         action = 'upload_images' if stage == 'upload' else 'retry_download'
         for key, request in list(self.pending.items()):
             if request['job'] == row['id'] and request['attempt'] == row['attempt'] and request['action'] == action:
@@ -98,12 +167,22 @@ class TransferRecovery:
         stopped = permanent or info.get('stopped', False) or count >= limit
         # Duplicate snapshots/error notifications must not postpone a scheduled retry.
         next_at = 0 if stopped else info.get('next_at') or time.time() + delay(self.preferences, stage + '_retry_delays', count)
+        cycle=row['remote'].get('upload_cycle',{})
+        if (stage=='upload' and cycle and not cycle.get('confirmed') and not permanent and
+                any(text in str(error) for text in ('未重复拖放','核对原素材','素材编号'))):
+            # Exhausting name checks must not lose the three-minute deadline.
+            stopped=False
+            next_at=min(next_at or cycle['at']+180,cycle['at']+180)
+            if count>=limit:next_at=max(time.time()+1,cycle['at']+180)
         info.update(count=count, stopped=stopped, active=False, next_at=next_at,
-                    last_error=str(error)[:1000], waiting='', stop_code=stop_code)
+                    last_error=str(error)[:1000], waiting='', stop_code=stop_code, permanent=permanent)
         status = ('failed' if stopped else 'uploading') if stage == 'upload' else 'download_failed'
         changed = self._save_transfer(row, stage, info, status=status, error=str(error)[:1000])
         if stage == 'download' and stopped:
             changed |= self.park_failed_download(self.store.get(row['id']))
+        if independent:
+            from .download_backlog import detach
+            changed |= detach(self,self.store.get(row['id']))
         return changed
 
     def _wait_transfer(self, row, stage, reason):
@@ -135,6 +214,8 @@ class TransferRecovery:
         return client
 
     def start_upload(self, row, *, retry=False):
+        from .image_upload_limit import blocked,abandon,image_key
+        if blocked(self,row):return abandon(self,image_key(row))
         if self._transfer_pending(row, 'upload'): return False
         client = self._transfer_client(row, 'upload', fresh=retry)
         if not client: return False
@@ -151,41 +232,103 @@ class TransferRecovery:
         if not unchanged:
             return self.transfer_failed(row, 'upload', '参考图片已变化或丢失，已停止自动上传，请重新选择图片。', permanent=True)
         try:
-            reference = freeze_reference(row, self.downloads_root)
+            from .reference_image import supports_image_id, supports_stable_name, valid_filename
+            include_image_id=supports_image_id(client)
+            stable_image_name=supports_stable_name(client)
+            previous=row['remote'].get('upload_reference') or {}
+            if (previous.get('upload_id')==row['attempt'] and
+                    previous.get('sha256')==row['payload']['image_identity']['sha256'] and valid_filename(previous)):
+                # A newly loaded script must not rename an already successful
+                # upload midway through the same attempt's mounting retries.
+                include_image_id=include_image_id and previous['filename'].startswith('IMG_')
+                stable_image_name=stable_image_name and previous['filename']==('IMG_'+previous['sha256']+Path(previous['filename']).suffix)
+            reference = freeze_reference(row, self.downloads_root, include_image_id=include_image_id, stable_image_name=stable_image_name)
         except (OSError, ValueError) as error:
             return self.transfer_failed(row, 'upload', str(error), permanent=True)
-        self.store.update(row['id'], row['status'], remote={**row['remote'], 'upload_reference': reference}, error=row['error'])
+        cycle=self.upload_cycle(row,client);forced=not cycle.get('confirmed') and time.time()-cycle['at']>=180
+        if forced:
+            cycle.update(at=time.time(),revision=uuid.uuid4().hex,confirmed=False)
+            cycle.pop('cancel_until',None)
+            cycle.pop('upload_attempt',None)
+        self.store.update(row['id'], row['status'], remote={**row['remote'], 'upload_reference': reference,
+            'upload_cycle':dict(cycle)}, error=row['error'])
         row = self.store.get(row['id'])
         info = dict(retry_info(row, 'upload'))
+        if forced:info.update(count=0,stopped=False,permanent=False)
         if row['remote'].get('connection_wait_at'):
             self.store.update(row['id'], row['status'], remote={key: value for key, value in row['remote'].items()
                 if key != 'connection_wait_at'}, error=row['error'])
             row = self.store.get(row['id'])
-        info.update(count=info.get('count', 0) + int(retry), active=True, stopped=False,
-                    next_at=0, waiting='', waiting_since=0, last_error='')
+        info.update(count=info.get('count', 0) + int(retry), active=True, stopped=False, permanent=False,
+                    next_at=0, waiting='原图3分钟未确认，正在重新拖拽上传' if forced else '', waiting_since=0, last_error='')
         self._save_transfer(row, 'upload', info, status='uploading', error='')
+        current=self.store.get(row['id'])
+        self.store.update(row['id'],current['status'],remote={**current['remote'],
+            'upload_phase':{'phase':'requested','at':time.time()}},error=current['error'])
+        visual = None
+        from .browser_options import snapshot as browser_options
+        if browser_options(self.preferences)['visual_upload_fallback']:
+            try:
+                from .visual_reference import template
+                visual = template(reference)
+            except Exception:
+                pass  # Ordinary exact-name/ID validation stays available.
         self.request(client, 'upload_images', {'paths': [reference['path']], 'upload_id': row['attempt'],
             'reference': reference, 'expected_account': client.get('account'),
+            'visual_reference': visual,
             'recover_reference': bool(retry),
-            'reference_reset': row['payload'].get('reference_reset', '')}, row['id'])
+            'reference_reset': cycle['revision']}, row['id'])
         return True
 
     def retry_download(self, row, *, automatic=False):
         if self._transfer_pending(row, 'download') or row['id'] in self.archiving: return False
         if row['status'] not in {'download_failed', 'uncertain', 'download_parked', 'downloading'}: return False
         if not automatic:
+            if row['remote'].get('download_backlog'):
+                self.store.update(row['id'],row['status'],remote={**row['remote'],'download_backlog':{
+                    **row['remote']['download_backlog'],'auto':True,'cancel_sent':False,'since':time.time()}})
+                row=self.store.get(row['id'])
             self._save_transfer(row, 'download', {'count': 0, 'next_at': time.time(), 'stopped': False, 'active': False},
                                 status='download_failed', error='')
             row = self.store.get(row['id'])
         client = self._transfer_client(row, 'download')
         if not client: return False
         info = dict(retry_info(row, 'download'))
+        from .video_catalog import manual_binding
+        manual = manual_binding(row)
         bindings = ready_bindings(row['remote'])
         verified = [b for b in generated_bindings(row['remote']) if b['taskId'] == row['remote'].get('upstream_task')]
-        if bindings and not any(b in verified for b in bindings):
+        if not manual and bindings and not any(b in verified for b in bindings):
             return self.transfer_failed(row, 'download', '旧媒体绑定没有本次生成响应的归属证据，已停止自动下载；不会重新生成或猜测页面视频。', permanent=True)
         bindings = [b for b in bindings if b in verified]
-        if not bindings or not row['remote'].get('upstream_task'):
+        refresh = row['remote'].get('download_refresh') or {}
+        if refresh.get('media_id'):
+            bindings = [b for b in verified if refresh['media_id'] in b['mediaIds']]
+        if manual:
+            selected = row['remote']['manual_download_selection']
+            if selected.get('account') and selected['account'] != client.get('account'):
+                return self.transfer_failed(row, 'download', '手动选择时的原账号尚未确认或已变化，请切回原账号后重试下载。', permanent=True)
+            if not compatible_extension(client.get('extension_version'), minimum_patch=53):
+                return self.transfer_failed(row, 'download', '手动视频绑定需要桥接扩展1.1.53；更新后可重试下载。', permanent=True)
+            bindings = [manual]
+            verified = [manual]
+            refresh = {**refresh, 'media_id': manual['mediaIds'][0]}
+        if not bindings and compatible_extension(client.get('extension_version'), minimum_patch=40):
+            from .result_download import unique_result
+            unique = unique_result(row['remote'])
+            if unique:
+                binding, media = unique
+                bindings = [binding]
+                refresh = {**refresh, 'media_id':media}
+        if bindings and refresh.get('media_id'):
+            binding = next((b for b in bindings if refresh['media_id'] in b['mediaIds'] and
+                            refresh['media_id'] not in b.get('failedIds', [])), None)
+            if not binding:return False
+            target = {'attempt':row['attempt'], 'media_id':refresh['media_id'],
+                      'task_id':binding['taskId'], 'submission_id':binding['submissionId']}
+            self.store.update(row['id'],row['status'],remote={**row['remote'],'download_recovery_target':target},error=row['error'])
+            row = self.store.get(row['id'])
+        if not bindings or not (manual or row['remote'].get('upstream_task')):
             # No media-ID guessing or regenerated tasks: first ask the original
             # page for its saved snapshot. These probes are bounded too.
             if time.time() >= info.get('probe_at', 0) + timing_value(self.preferences, 'download_probe_seconds'):
@@ -202,12 +345,27 @@ class TransferRecovery:
                 return self._save_transfer(row, 'download', info)
             return False
         params = {'batch_id': row['attempt'], 'restore': {
-            'bindings': bindings, 'task_id': row['remote']['upstream_task'], 'download_path': self.download_name(row)}}
+            'bindings': bindings, 'task_id': manual['taskId'] if manual else row['remote']['upstream_task'], 'download_path': self.download_name(row),
+            'refresh_url': True, 'media_id': refresh.get('media_id'),
+            'project': refresh.get('project') or row['remote'].get('page') or
+                self.preferences.get('profile_projects', {}).get(row['remote'].get('profile'))}}
+        if manual:
+            params['restore']['manual_selection'] = row['remote']['manual_download_selection']
+        # An automatic continuation after Chrome reopened uses the retained
+        # exact media ID in the original project. It must not require an old
+        # /edit/ tab to remain open. Explicit pasted-page recovery stays scoped.
+        if refresh.get('video_page') and not (automatic and row['remote'].get('download_backlog')):
+            if not compatible_extension(client.get('extension_version'),minimum_patch=49):
+                return self.transfer_failed(row,'download',
+                    '已保存视频页面链接；等待原浏览器空闲更新到桥接扩展1.1.49后自动恢复下载，未重新生成。',
+                    permanent=True,stop_code='video_page_bridge_update')
+            params['restore']['video_page']=refresh['video_page']
         # Always prefer durable bindings, including the current batch. The page
         # may have lost its in-memory tasks even though generation succeeded.
         info.update(count=info.get('count', 0) + 1, next_at=0, active=True, stopped=False,
                     waiting='', last_error='', sent_at=time.time())
-        self._save_transfer(row, 'download', info, status='downloading', error='')
+        from .download_backlog import detached
+        self._save_transfer(row, 'download', info, status='download_parked' if detached(row) else 'downloading', error='')
         self.request(client, 'retry_download', params, row['id'])
         return True
 
@@ -226,8 +384,12 @@ class TransferRecovery:
         return self._save_transfer(row, 'download', info, error='')
 
     def watch_transfer_retries(self):
-        changed = False
+        from .download_backlog import watch
+        changed = watch(self)
+        from .image_upload_limit import watch as watch_image_limits
+        changed=watch_image_limits(self) or changed
         for row in self.store.rows():
+            if self.redrag_due_upload(row):changed=True;continue
             if row['status'] == 'download_parked' and row['remote'].get('download_skipped'):
                 changed |= self._release_skipped_wait(row)
                 continue

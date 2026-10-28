@@ -32,7 +32,7 @@ class FlowLaunchContractTests(unittest.TestCase):
         self.assertEqual(setup_project_entry(replies[-1]['pairing'], replies[-1]['project_claim_url']), replies[-1]['project_claim_url'])
         self.assertNotIn(service.pair['token'], replies[-1]['project_claim_url'])
 
-    def test_explicit_options_enters_through_project_not_chrome_command_line(self):
+    def test_offline_explicit_options_uses_ticketed_settings_without_new_flow_page(self):
         self.preferences(self.installed())
         dialog, launcher, commands = self.ui(); setup = dialog.setup
         setup.project.setText(fixtures.PROJECT); setup.begin('options')
@@ -46,8 +46,8 @@ class FlowLaunchContractTests(unittest.TestCase):
         while setup.probe and not deadline.hasExpired(): QtTest.QTest.qWait(10)
         urls = launcher.launch_profile.call_args.kwargs['urls']
         self.assertEqual(len(urls), 1)
-        self.assertTrue(urls[0].startswith(fixtures.PROJECT+'#lzx_setup='))
-        self.assertIn('lzx_action=options', urls[0])
+        self.assertEqual(urls[0],OPTIONS_URL+'#setup='+fixtures.TICKET+'&port=18189')
+        self.assertFalse(any(url.startswith('https://') for url in urls))
 
     def test_real_launcher_rejects_an_explicit_empty_target(self):
         launcher = type('Launcher', (), {

@@ -5,7 +5,7 @@ import unittest
 from unittest.mock import patch
 
 import test_flow_credit_cooldown as fixtures
-from app_plugins.builtin.flow_assistant.browser_slots import recover_legacy_probe_failures, request_start, launch_result, seen
+from app_plugins.builtin.flow_assistant.browser_slots import recover_legacy_probe_failures, request_start, launch_result, seen, admission_profiles
 from app_plugins.builtin.flow_assistant.timing import value
 
 
@@ -77,7 +77,7 @@ class LaunchRecheckTests(unittest.TestCase):
         self.browser(service,'Rich',points=1038)
         service._tick();self.assertIsNone(service.high_credit_pending)
 
-    def test_old_failure_recheck_keeps_twenty_seven_candidates_within_four_launch_slots(self):
+    def test_old_failure_recheck_uses_bounded_waves_and_exits_expired_handshakes(self):
         service=self.configured();profiles=['Unknown '+str(i) for i in range(27)]
         service.commit_preferences({**service.preferences,'concurrency':4,'profiles':profiles,
             'profile_projects':{p:fixtures.PROJECT for p in profiles},'extension_probe_revision':2,
@@ -88,11 +88,19 @@ class LaunchRecheckTests(unittest.TestCase):
         self.assertEqual(len(launches),1,'confirm each new browser before queueing the next')
         start=time.time()
         for step in range(1,12):
-            with patch('time.time',return_value=start+step*100):restarted._tick()
-        self.assertEqual(len(launches),4);self.assertEqual(len(set(launches)),4,'expired handshakes still cannot open all 27 profiles')
+            with patch('time.time',return_value=start+step*100):
+                restarted._tick()
+                self.assertLessEqual(len(admission_profiles(restarted)),4)
+        # Expired handshakes must free preparation lanes; retaining the first
+        # four forever was the deadlock. Keep deduplication and paced launches.
+        self.assertGreater(len(launches),4)
+        self.assertLess(len(launches),len(profiles))
+        self.assertEqual(len(launches),len(set(launches)))
+        self.assertEqual(len(restarted.preferences['browser_slots']),len(launches))
         self.assertFalse(any(p['action']=='run_tasks' for p in restarted.pending.values()))
+        self.assertTrue(all(row['status']=='queued' for row in restarted.store.rows()))
 
-    def test_probe_limit_survives_worker_restart(self):
+    def test_new_session_rechecks_previous_probe_budget_without_auto_submitting(self):
         service=self.configured();service._tick()
         service.preferences['browser_probe_retries']={'Unknown':{'count':2,'next_at':1}}
         launch_result(service,{'profile':'Unknown','opened':False,'kind':'extension_probe_v3',
@@ -100,7 +108,10 @@ class LaunchRecheckTests(unittest.TestCase):
         service.execute({'action':'stop'});restarted=self.service();restarted.paused=False
         launches=[];restarted.launch_requested.connect(launches.append)
         with patch('time.time',return_value=time.time()+99999):restarted._tick()
-        self.assertFalse(launches);self.assertEqual(restarted.preferences['browser_probe_retries']['Unknown']['count'],3)
+        self.assertEqual(launches,['Unknown'])
+        self.assertEqual(restarted.preferences.get('browser_probe_retries',{}).get('Unknown',{}).get('count',0),0)
+        self.assertFalse(any(p['action']=='run_tasks' for p in restarted.pending.values()))
+        self.assertTrue(all(row['status']=='queued' for row in restarted.store.rows()))
 
 
 if __name__=='__main__':unittest.main()

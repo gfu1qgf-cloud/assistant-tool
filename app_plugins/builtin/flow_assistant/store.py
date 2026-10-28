@@ -17,12 +17,12 @@ from .transfer_policy import retry_info, ready_bindings
 IMAGE_SUFFIXES = {'.png', '.jpg', '.jpeg', '.webp', '.bmp'}
 TRANSIENT = {'preparing', 'uploading', 'submitting', 'generating', 'downloading'}
 TERMINAL = {'completed', 'cancelled'}
-RECORD_DELETABLE = {'queued', 'completed', 'cancelled', 'failed', 'archive_failed', 'download_parked', 'needs_review'}
+RECORD_DELETABLE = {'collected', 'queued', 'completed', 'cancelled', 'failed', 'archive_failed', 'download_parked', 'needs_review'}
 RECORD_UNRESOLVED = {'uncertain', 'download_failed'}
 
 
 def submission_risk(row, charged=False):
-    return bool(charged or row['status'] not in {'queued', 'preparing', 'uploading', 'failed', 'cancelled'} or
+    return bool(charged or row['status'] not in {'collected', 'queued', 'preparing', 'uploading', 'failed', 'cancelled'} or
         any(row['remote'].get(key) for key in ('bindings', 'upstream_task', 'generation_response',
             'download', 'unverified_download', 'page_recovery', 'cloud_finished')))
 
@@ -114,7 +114,7 @@ class QueueStore:
         with self.connection() as db:
             db.execute('INSERT OR REPLACE INTO settings VALUES ("preferences", ?)', (json.dumps(value),))
 
-    def enqueue(self, jobs, *, batch_id=None, label='', limit_total=0, request_id=None):
+    def enqueue(self, jobs, *, batch_id=None, label='', limit_total=0, request_id=None, collected=False):
         if not jobs: raise ValueError('请选择至少一条生成任务。')
         batch_id = batch_id or uuid.uuid4().hex
         if type(limit_total) not in (int, float) or not 0 <= limit_total <= 10**8:
@@ -144,10 +144,40 @@ class QueueStore:
                     sequence += 1
                 job['output'] = output
                 used.add(output)
-                db.execute('INSERT INTO jobs(id,payload,status,updated) VALUES (?,?,"queued",?)',
-                           (job['id'], json.dumps(job, ensure_ascii=False), time.time()))
-                db.execute('INSERT INTO history VALUES (?,?,"queued","")', (job['id'], time.time()))
+                status = 'collected' if collected else 'queued'
+                db.execute('INSERT INTO jobs(id,payload,status,updated) VALUES (?,?,?,?)',
+                           (job['id'], json.dumps(job, ensure_ascii=False), status, time.time()))
+                db.execute('INSERT INTO history VALUES (?,?,?,"")', (job['id'], time.time(), status))
         return batch_id
+
+    def release_collected(self, ids=None):
+        selected = set(ids) if ids is not None else None
+        with self.connection() as db:
+            db.execute('BEGIN IMMEDIATE')
+            rows = db.execute('SELECT id FROM jobs WHERE status="collected" ORDER BY rowid').fetchall()
+            released = [row[0] for row in rows if selected is None or row[0] in selected]
+            for job_id in released:
+                db.execute('UPDATE jobs SET status="queued",updated=? WHERE id=? AND status="collected"', (time.time(),job_id))
+                db.execute('INSERT INTO history VALUES (?,?,"queued",?)', (job_id,time.time(),'用户统一提交已收集的任务记录，开始积分分包调度'))
+        return released
+
+    def discard_collected(self, ids):
+        """Cancel only the displayed, still-unreleased records in one transaction."""
+        selected = set(ids or [])
+        if not selected: return []
+        cancelled = []
+        with self.connection() as db:
+            db.execute('BEGIN IMMEDIATE')
+            rows = db.execute('SELECT id,remote FROM jobs WHERE status="collected" AND attempt="" AND browser="" '
+                              'AND NOT EXISTS (SELECT 1 FROM charges WHERE charges.job=jobs.id)').fetchall()
+            now = time.time()
+            note = '用户放弃待统一提交任务；保留任务记录、参考图片和提示词草稿。'
+            for job_id, remote in rows:
+                if job_id not in selected or submission_risk({'status':'collected','remote':json.loads(remote)}): continue
+                db.execute('UPDATE jobs SET status="cancelled",error=?,updated=? WHERE id=?', (note,now,job_id))
+                db.execute('INSERT INTO history VALUES (?,?,"cancelled",?)', (job_id,now,note))
+                cancelled.append(job_id)
+        return cancelled
 
     def batches(self):
         with self.connection() as db:
@@ -199,9 +229,9 @@ class QueueStore:
     def duplicates(self, jobs, exclude=()):
         identities = {signature(job) for job in jobs}
         return [row['id'] for row in self.rows() if row['id'] not in exclude
-                and row['status'] in TRANSIENT | {'queued'} and signature(row['payload']) in identities]
+                and row['status'] in TRANSIENT | {'collected','queued'} and signature(row['payload']) in identities]
 
-    def delete_records(self, ids, *, confirmed_finished=False, busy_ids=()):
+    def delete_records(self, ids, *, confirmed_finished=False, busy_ids=(), force=False, holds=None):
         """Delete queue/history only; keep media, charge totals and replay keys.
 
         Recheck in the transaction: a queued item may have started while the
@@ -214,17 +244,22 @@ class QueueStore:
         deleted, skipped = [], []
         with self.connection() as db:
             db.execute('BEGIN IMMEDIATE')
-            rows = db.execute('SELECT id,status,attempt,browser FROM jobs ORDER BY rowid').fetchall()
-            for job_id, status, attempt, browser in rows:
+            rows = db.execute('SELECT id,status,attempt,browser,remote FROM jobs ORDER BY rowid').fetchall()
+            for job_id, status, attempt, browser, remote_json in rows:
                 if job_id not in wanted: continue
-                if job_id in busy or status not in RECORD_DELETABLE | RECORD_UNRESOLVED:
+                if not force and (job_id in busy or status not in RECORD_DELETABLE | RECORD_UNRESOLVED):
                     skipped.append({'id': job_id, 'status': status, 'reason': '正在执行或保存，已保留'})
                     continue
-                if status in RECORD_UNRESOLVED and not confirmed_finished:
+                if not force and status in RECORD_UNRESOLVED and not confirmed_finished:
                     skipped.append({'id': job_id, 'status': status, 'reason': '尚未确认云端结束，已保留'})
                     continue
                 if attempt and browser:
                     db.execute('INSERT OR IGNORE INTO deleted_attempts VALUES (?,?)', (attempt, browser))
+                    until=(holds or {}).get(job_id,0)
+                    if until>time.time():
+                        remote=json.loads(remote_json)
+                        db.execute('INSERT OR REPLACE INTO reset_holds VALUES (?,?,?,?,?)', (attempt,browser,
+                            remote.get('profile',''),str(remote.get('account') or '').strip().casefold(),until))
                 deleted.append(job_id)
             db.executemany('DELETE FROM history WHERE job=?', [(job_id,) for job_id in deleted])
             db.executemany('DELETE FROM jobs WHERE id=?', [(job_id,) for job_id in deleted])
@@ -259,9 +294,11 @@ class QueueStore:
             db.execute('DELETE FROM reset_holds WHERE attempt=? AND browser=?', (attempt, browser))
 
     def reset_tasks(self, ids, *, versions, confirmed_submitted=False, busy_ids=(), holds=None, automatic=False):
+        from .scheduler_recovery import retryable_upload
         if not isinstance(ids, (list, tuple, set)) or any(not isinstance(value, str) for value in ids):
             raise ValueError('请选择有效的任务。')
         result = {'reset': [], 'skipped': []}
+        reset_revision = uuid.uuid4().hex
         with self.connection() as db:
             db.execute('BEGIN IMMEDIATE')
             raw = db.execute('SELECT id,payload,status,attempt,browser,remote,error,updated FROM jobs ORDER BY rowid').fetchall()
@@ -286,7 +323,7 @@ class QueueStore:
                     reason = '执行状态已变化，请按当前状态重新选择重置'
                 elif risk and (automatic or not confirmed_submitted):
                     reason = '可能已提交生成，需要确认重复扣费风险后重置'
-                elif automatic and row['status'] not in {'preparing', 'uploading'}:
+                elif automatic and row['status'] not in {'preparing', 'uploading'} and not retryable_upload(row):
                     reason = '仅自动重置尚未提交的准备或上传任务'
                 if reason:
                     result['skipped'].append({'id': row['id'], 'reason': reason})
@@ -305,7 +342,7 @@ class QueueStore:
                 payload = copy.deepcopy(row['payload'])
                 if not automatic:
                     payload.pop('generation_recovery', None)
-                    payload['reference_reset'] = uuid.uuid4().hex
+                    payload['reference_reset'] = reset_revision
                 if risk or Path(payload['output']).exists():
                     sequence = 1
                     while True:
@@ -320,9 +357,10 @@ class QueueStore:
                         'at': now, 'previous_browser': row['browser']}
                     if row['remote'].get('generation_retry'):
                         remote['generation_retry'] = row['remote']['generation_retry']
-                db.execute('UPDATE jobs SET payload=?,status="queued",attempt="",browser="",remote=?,error=?,updated=? WHERE id=?',
-                    (json.dumps(payload, ensure_ascii=False), json.dumps(remote, ensure_ascii=False), message, now, row['id']))
-                db.execute('INSERT INTO history VALUES (?,?,"queued",?)', (row['id'], now, message))
+                status = 'collected' if row['status'] == 'collected' else 'queued'
+                db.execute('UPDATE jobs SET payload=?,status=?,attempt="",browser="",remote=?,error=?,updated=? WHERE id=?',
+                    (json.dumps(payload, ensure_ascii=False), status, json.dumps(remote, ensure_ascii=False), message, now, row['id']))
+                db.execute('INSERT INTO history VALUES (?,?,?,?)', (row['id'], now, status, message))
                 result['reset'].append(row['id'])
                 affinities.pop(row['payload'].get('image_identity', {}).get('sha256'), None)
                 accounts.pop(account_key(row['remote'].get('account')), None)
@@ -331,6 +369,21 @@ class QueueStore:
                 preferences['account_images'] = accounts
                 db.execute('INSERT OR REPLACE INTO settings VALUES ("preferences",?)', (json.dumps(preferences, ensure_ascii=False),))
         return result
+
+    def reference_revision(self, image_sha):
+        """All clips of one image use its latest explicit reset, including old queues."""
+        latest = (0, '')
+        with self.connection() as db:
+            manual = dict(db.execute('SELECT job,MAX(at) FROM history WHERE status="reset_previous" '
+                'AND message LIKE ? GROUP BY job', ('%用户完全重置%',)))
+            for job, raw in db.execute('SELECT id,payload FROM jobs'):
+                payload = json.loads(raw)
+                if payload.get('image_identity', {}).get('sha256') != image_sha: continue
+                revision = payload.get('reference_reset') or ''
+                if revision:
+                    candidate = (manual.get(job, 0), revision)
+                    if candidate > latest: latest = candidate
+        return latest[1]
 
     def set_payload(self, job_id, payload):
         self.set_payloads([(job_id, payload)])
@@ -378,6 +431,7 @@ class QueueStore:
             db.execute('INSERT INTO history VALUES (?,?,?,?)', (job_id, time.time(), status, error))
 
     def recover(self):
+        from .video_catalog import manual_binding
         with self.connection() as db:
             charged_attempts = {row[0] for row in db.execute('SELECT attempt FROM charges')}
         for row in self.rows():
@@ -392,7 +446,7 @@ class QueueStore:
                 info = {**upload, 'active': False, 'next_at': time.time(), 'waiting': '等待继续队列后自动恢复上传'}
                 self.update(row['id'], 'uploading', remote={**row['remote'], 'transfer_retries': {
                     **row['remote'].get('transfer_retries', {}), 'upload': info}}, error='程序重启，保留原图片上传进度。')
-            elif row['status'] == 'downloading' and ready_bindings(row['remote']):
+            elif row['status'] == 'downloading' and (ready_bindings(row['remote']) or manual_binding(row)):
                 info = {**retry_info(row, 'download'), 'active': False,
                     'next_at': time.time() + timing_value(self.settings(), 'transfer_wait_seconds')}
                 self.update(row['id'], 'download_failed', remote={**row['remote'], 'transfer_retries': {
@@ -428,6 +482,26 @@ class QueueStore:
                 message + f' 撤销未提交预留：{unused:g}；原执行批次：' + row['attempt']))
         return True
 
+    def release_unsubmitted_failure(self, job_id, attempt, message=None):
+        """Keep the failed record/history; release only a proven unused reserve."""
+        from .failure_release import confirmed_unsubmitted
+        with self.connection() as db:
+            db.execute('BEGIN IMMEDIATE')
+            raw = db.execute('SELECT id,payload,status,attempt,browser,remote,error,updated FROM jobs WHERE id=?', (job_id,)).fetchone()
+            if not raw: return False
+            row = self._row(raw)
+            if row['attempt'] != attempt or not confirmed_unsubmitted(row, message): return False
+            original = str(row['error'] if message is None else message).strip()
+            now = time.time()
+            db.execute('UPDATE charges SET cost=0,source="rejected_before_submission" WHERE attempt=? AND job=?',
+                       (attempt, job_id))
+            remote = {**row['remote'], 'confirmed_not_submitted': {'at':now, 'error':original}}
+            detail = original + '；已确认失败并释放账号及并行名额；本次未提交的本地积分预留已撤销，实际余额重新读取后再接单。'
+            db.execute('UPDATE jobs SET status="failed",remote=?,error=?,updated=? WHERE id=?',
+                (json.dumps(remote,ensure_ascii=False),detail,now,job_id))
+            db.execute('INSERT INTO history VALUES (?,?,"failed",?)', (job_id,now,detail))
+        return True
+
     def retry(self, ids, *, regenerate=False):
         for row in self.rows():
             if row['id'] not in ids or row['status'] in TERMINAL | TRANSIENT | {'archiving'}:
@@ -456,7 +530,8 @@ def choose_client(clients, rows, limit, job=None, preferences=None, cost=None, *
     from .high_credit import allowed
     preferences = preferences or {}
     active = [row for row in rows if row['status'] in TRANSIENT]
-    if len(active) >= limit:
+    from .credit_packs import active_count
+    if active_count(rows) >= limit:
         return None
     held = active + [r for r in rows if r['status'] in {'uncertain', 'download_failed'}]
     account = lambda value: str(value or '').strip().casefold()

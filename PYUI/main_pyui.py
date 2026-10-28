@@ -20,7 +20,6 @@ from app_plugins.builtin import (
     AIModelClientPlugin,
     BatchTextVideoPlugin,
     VideoStitchPlugin,
-    ChromeLauncherPlugin,
     FlowAssistantPlugin,
     CodexAccountSwitcherPlugin,
     AntigravityAccountSwitcherPlugin,
@@ -429,8 +428,10 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
                 self.appendLog("Facebook 分镜插件加载失败，已跳过。", level=logging.ERROR)
                 logging.exception("Facebook 分镜插件加载失败")
         self.task_delivery_plugin = self.plugin_host.install(TaskDeliveryPlugin())
-        self.chrome_plugin = self.plugin_host.install(ChromeLauncherPlugin())
         self.flow_assistant_plugin = self.plugin_host.install(FlowAssistantPlugin())
+        # One host plugin owns Chrome profiles/hotkey and Flow; keep the old
+        # controller alias for launch, connection setup and existing callers.
+        self.chrome_plugin = self.flow_assistant_plugin.browser_launcher
         self.codex_account_switcher_plugin = self.plugin_host.install(
             CodexAccountSwitcherPlugin()
         )
@@ -921,7 +922,7 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
             self.plugin_main_frame,
             self.plugin_main_layout,
             compatibility_ids=(
-                "task_audio_subtitle.quick_actions", "chrome_launcher.quick_actions",
+                "task_audio_subtitle.quick_actions", "flow_assistant.quick_actions",
                 "music_ducker.quick_actions", "task_delivery.quick_actions",
             ),
         )

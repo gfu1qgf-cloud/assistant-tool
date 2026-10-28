@@ -64,7 +64,13 @@ def native_activate(marker, *, identity=None):
 
 
 def receive(service, client, message):
-    request_id = message.get('request_id'); pending = service.pending.get(request_id)
+    from .ui_mutex import foreground_pending
+    request_id = message.get('request_id')
+    def current():
+        if snapshot(service.preferences)['ui_mutex']:
+            return foreground_pending(service, client, request_id)
+        return service.pending.get(request_id) or foreground_pending(service, client, request_id)
+    pending = current()
     token = message.get('token')
     if (not pending or pending['client'] != client['id'] or pending['action'] not in UI_ACTIONS or
             not isinstance(token, str) or not re.fullmatch('[a-f0-9]{32}', token) or
@@ -79,12 +85,13 @@ def receive(service, client, message):
     pending['foreground_started'] = True
 
     def attempt(index=0):
-        if (service.pending.get(request_id) is not pending or pending.get('foreground_cancelled') or pending.get('retired') or
+        if (current() is not pending or pending.get('foreground_cancelled') or pending.get('retired') or
                 service.clients.get(client.get('socket')) is not client):
             return
         if message.get('unavailable') is True:
             state = 'error'
-        elif pending['action'] != 'focus_window' and not snapshot(service.preferences)['focus_before_action']:
+        elif not snapshot(service.preferences)['focus_before_action'] and not (
+                pending['action']=='focus_window' and pending.get('operation','focus_window')=='focus_window'):
             state = 'disabled'
         else:
             try:
@@ -106,7 +113,14 @@ def receive(service, client, message):
 
 
 def description(client, preferences):
-    if not snapshot(preferences)['focus_before_action']: return '前台激活：已关闭'
+    from .ui_mutex import description as mutex_description
+    mutex = mutex_description(client)
+    if (client.get('ui_mutex') or {}).get('state') == 'waiting': return mutex
+    if snapshot(preferences)['ui_mutex'] and 'ui_mutex_v1' not in client.get('capabilities', []):
+        from .setup_support import required_bridge_update
+        return required_bridge_update(client, preferences)
+    if not snapshot(preferences)['focus_before_action']:
+        return (mutex+'；' if mutex else '')+'自动前台激活：已关闭（手动激活仍可用）'
     if 'native_foreground_v1' not in client.get('capabilities', []):
         return '前台激活：当前扩展未加载 Windows 激活支持（扩展 ' + str(client.get('extension_version') or '未知版本') + '）'
     info = client.get('foreground', {})
@@ -114,4 +128,4 @@ def description(client, preferences):
             'not_found': '未找到本次操作对应窗口', 'ambiguous': '窗口标识不唯一，未切换',
             'unsupported': '当前系统不支持 Windows 激活', 'error': 'Windows 激活调用失败',
             'timeout': 'Windows 激活回复超时，未确认成功', 'disabled': '已关闭'}.get(info.get('state'), '等待首次网页操作确认')
-    return ('上次前台激活：' if info else '前台激活：') + text
+    return (mutex + '；' if mutex else '') + ('上次前台激活：' if info else '前台激活：') + text

@@ -15,7 +15,7 @@ function options(saved = {}, ticket = '', live = true, version = '') {
   let reloads = 0;
   const chrome = {tabs: {async query() {return [];}}, runtime: {getManifest() {return {version};}, reload() {reloads++;}, async sendMessage(message) {commands.push(message); return {connected: live, profile: data.lzxConfig.profile,
     project: data.lzxConfig.project, setupId: data.lzxConfig.setup_id || ''};}}, storage: {local: {
-    async get() {return structuredClone(data);}, async set(value) {writes.push(structuredClone(value)); Object.assign(data, structuredClone(value));}
+    async get() {return structuredClone(data);}, async set(value) {writes.push(structuredClone(value)); Object.assign(data, structuredClone(value));}, async remove(key){delete data[key];}
   }}};
   const sockets = [], replacements = [];
   class Socket {
@@ -94,6 +94,14 @@ async function background(config, ownedUrl) {
   assert.equal(update.data.lzxReloadSetup.version,
     JSON.parse(fs.readFileSync(path.join(__dirname, '../browser_extensions/flow_bridge/manifest.json'), 'utf8')).version);
   assert.equal(update.data.lzxConfig.token, bundle.token, 'updating preserves existing config');
+  assert.equal(update.replacements.length,0,'pairing update must retain the options ticket across worker reload');
+  const currentVersion=JSON.parse(fs.readFileSync(path.join(__dirname,'../browser_extensions/flow_bridge/manifest.json'),'utf8')).version;
+  const finishPair=options({},bundle.setup_id,true,currentVersion);
+  finishPair.data.lzxReloadSetup=structuredClone(update.data.lzxReloadSetup);
+  await flush();finishPair.sockets[0].onopen();
+  assert.equal(finishPair.sockets[0].sent[0].type,'setup_claim');
+  await finishPair.sockets[0].onmessage({data:JSON.stringify({type:'setup_bundle',pairing:bundle})});
+  assert.equal(finishPair.data.lzxReloadSetup,undefined,'completed options pairing retires its old page-navigation handoff');
   const busyUpdate = options({...bundle}, bundle.setup_id, false, '1.1.4'); await flush();
   busyUpdate.sockets[0].onopen();
   busyUpdate.sockets[0].onmessage({data: JSON.stringify({type: 'setup_reload_denied', error: 'busy'})}); await flush();

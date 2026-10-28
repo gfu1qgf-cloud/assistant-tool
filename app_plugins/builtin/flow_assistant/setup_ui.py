@@ -5,7 +5,8 @@ import uuid
 from qt_compat import QtCore, QtWidgets
 from app_paths import APP_ROOT
 from .setup_support import (inspect_extension, project_url, project_identity,
-                            project_block, setup_project_entry, EXTENSION_VERSION, OPTIONS_URL, EXTENSIONS_URL, compatible_extension)
+                            project_block, setup_project_entry, EXTENSION_VERSION, OPTIONS_URL, EXTENSIONS_URL, compatible_extension,
+                            required_bridge_update)
 from .connection_status import browser_status
 from .account_policy import account_hold
 from .timing import value as timing_value, delay
@@ -99,7 +100,8 @@ class ConnectionSetup(QtWidgets.QGroupBox):
         return max(1, round(delay(self.dialog.state.get('preferences', {}), 'setup_retry_delays', self.auto_retries - 1) * 1000))
 
     def launcher(self):
-        return getattr(getattr(self.dialog.plugin.context.parent_widget, 'chrome_plugin', None), 'dialog', None)
+        from .browser_manager import launcher_for
+        return getattr(launcher_for(self.dialog.plugin), 'dialog', None)
 
     def apply_state(self, state):
         launcher = self.launcher()
@@ -114,7 +116,8 @@ class ConnectionSetup(QtWidgets.QGroupBox):
                     self.profile.addItem(f'{item.get("name") or item["directory"]} · {item["directory"]}', item['directory'])
                 index = self.profile.findData(previous)
                 if index >= 0: self.profile.setCurrentIndex(index)
-            self.changed_profile()
+            if self.profile.currentData() != previous:
+                self.changed_profile()
         current = self.profile.currentData()
         if current and current not in self.drafts and current not in self.dirty_profiles:
             project = state.get('preferences', {}).get('profile_projects', {}).get(current)
@@ -137,6 +140,7 @@ class ConnectionSetup(QtWidgets.QGroupBox):
                 and not project_block(client, state.get('preferences', {}))
                 and client.get('page_ready') is True
                 and compatible_extension(client.get('extension_version'))
+                and not required_bridge_update(client, state.get('preferences', {}))
                 and self.phase == 'auto_pair'):
             self.connection_timer.stop()
             self.phase = ''

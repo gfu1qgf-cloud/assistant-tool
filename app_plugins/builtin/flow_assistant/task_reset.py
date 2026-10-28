@@ -21,14 +21,15 @@ class TaskReset:
         rows = [row for row in self.store.rows() if row['id'] in ids]
         now = time.time()
         holds = {}
+        unpaid = {row['id'] for row in rows if not submission_risk(row, self.store.attempt_charged(row['attempt']))}
         for row in rows:
             requests = [p for p in self.pending.values() if p['job'] == row['id'] and p['attempt'] == row['attempt']]
-            # A retired page operation may still complete after its socket is
-            # gone. Give it its normal timeout; other accounts can proceed now.
+            # Unpaid work gets a short cancellation grace. Paid or uncertain
+            # submissions keep their normal protection against duplicate work.
             if row['status'] in {'preparing', 'uploading'} or requests:
                 action = 'prepare' if row['status'] == 'preparing' else 'upload_images'
-                holds[row['id']] = max([now + request_timeout(self.preferences, action)] +
-                    [p['at'] + request_timeout(self.preferences, p['action']) for p in requests])
+                holds[row['id']] = (now+5 if row['id'] in unpaid else max([now + request_timeout(self.preferences, action)] +
+                    [p['at'] + request_timeout(self.preferences, p['action']) for p in requests]))
         result = self.store.reset_tasks(ids, versions=command.get('versions', {}),
             confirmed_submitted=command.get('confirmed_submitted') is True,
             busy_ids=self.archiving, holds=holds, automatic=automatic)
@@ -38,9 +39,17 @@ class TaskReset:
             for key in ('image_affinities', 'account_images'):
                 if key in self.preferences or key in saved:
                     self.preferences = {**self.preferences, key: saved.get(key, {})}
-        for request in self.pending.values():
+        for request_id, request in list(self.pending.items()):
             if request['job'] in reset:
                 request['retired'] = True
+                if request['job'] in unpaid and request['action'] in {'prepare','upload_images'}:
+                    request['cancel_deadline'] = now+5
+                    from .ui_mutex import state as mutex_state
+                    owner=mutex_state(self)['owner']
+                    if owner and owner['client']==request['client'] and owner['operation']==request['action']:
+                        owner['cancel_deadline']=now+5
+                    client = next((c for c in self.clients.values() if c.get('id')==request['client']),None)
+                    if client:self.send(client,{'type':'cancel_operation','action':'cancel_operation','target_request_id':request_id})
         for row in rows:
             if row['id'] not in reset: continue
             for client in self.clients.values():
@@ -57,6 +66,8 @@ class TaskReset:
                         client['batch_running'] = True
                         self.request(client, 'snapshot')
         self.refresh_reset_holds()
+        from .ui_mutex import watch as watch_ui_mutex
+        watch_ui_mutex(self)
         if not automatic:
             self.tasks_reset.emit({'success': True, 'request_id': command.get('request_id'),
                 'held': self.safety_paused, **result})

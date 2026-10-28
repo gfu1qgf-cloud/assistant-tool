@@ -1,6 +1,7 @@
 """Record deletion never removes media, refunds budget or revives paid work."""
 import copy
 import json
+import time
 import unittest
 from unittest.mock import patch
 
@@ -147,6 +148,84 @@ class DeletionTests(unittest.TestCase):
             next(button for button in box.buttons() if button.text() == '删除记录').click(); return 0
         with patch.object(QtWidgets.QMessageBox, 'exec', confirm): dialog.delete_records([row['id']])
         self.assertTrue(commands[-1]['confirmed_finished'])
+
+    def test_force_removes_every_local_state_and_keeps_media_budget_and_late_receipts(self):
+        store=QueueStore(self.namespace)
+        states=['failed','uncertain','download_failed','preparing','uploading','submitting','generating','downloading','archiving']
+        batch=store.enqueue(self.jobs(count=len(states),budget=0));rows=store.rows()
+        for index,(row,status) in enumerate(zip(rows,states)):
+            attempt=f'{index+1:032x}'
+            store.update(row['id'],status,attempt=attempt,browser='original')
+            self.assertTrue(store.reserve(row['id'],attempt,1,'fixture'))
+        output=self.target/'keep.mp4';output.write_bytes(b'keep original')
+        image=self.image.read_bytes()
+        result=store.delete_records([r['id'] for r in rows],busy_ids=[r['id'] for r in rows],force=True)
+        self.assertEqual(len(result['deleted']),len(states));self.assertFalse(result['skipped'])
+        self.assertFalse(store.rows());self.assertEqual(store.batches()[batch]['reserved'],len(states))
+        self.assertTrue(all(store.was_deleted(f'{i+1:032x}','original') for i in range(len(states))))
+        self.assertEqual(output.read_bytes(),b'keep original');self.assertEqual(self.image.read_bytes(),image)
+
+    def test_force_error_with_stale_pending_is_deleted_without_retaining_an_expired_hold(self):
+        service=self.service();client=self.client(service)
+        service.store.enqueue(self.jobs());row=service.store.rows()[0]
+        service.store.update(row['id'],'failed',attempt='a'*32,browser=client['id'])
+        service.pending['stale']={'job':row['id'],'action':'upload_images','attempt':'a'*32,
+            'client':client['id'],'at':time.time()-100000}
+        service.released.add(row['id'])
+        service.execute({'action':'delete_records','ids':[row['id']],'force':True})
+        self.assertIsNone(service.store.get(row['id']));self.assertNotIn(row['id'],service.released)
+        self.assertTrue(service.pending['stale']['retired']);self.assertFalse(service.store.reset_holds())
+        service._response(client,{'request_id':'stale','success':True})
+        self.assertNotIn('stale',service.pending);self.assertFalse(service.store.rows())
+
+    def test_force_active_upload_retires_callbacks_and_releases_short_hold_on_reply(self):
+        service=self.service();client=self.client(service)
+        service.store.enqueue(self.jobs());row=service.store.rows()[0]
+        service.store.update(row['id'],'uploading',attempt='b'*32,browser=client['id'],
+            remote={'profile':client.get('profile',''),'account':client.get('account','')})
+        service.pending['upload']={'job':row['id'],'action':'upload_images','attempt':'b'*32,
+            'client':client['id'],'at':time.time()}
+        service.execute({'action':'delete_records','ids':[row['id']],'force':True})
+        self.assertIsNone(service.store.get(row['id']));self.assertTrue(service.store.reset_holds())
+        self.assertGreater(client['reset_wait_until'],time.time())
+        service._response(client,{'request_id':'upload','success':True})
+        self.assertFalse(service.store.reset_holds());self.assertEqual(client['reset_wait_until'],0)
+        self.assertFalse(service.store.rows())
+
+    def test_force_late_download_and_archive_do_not_recreate_deleted_running_record(self):
+        service=self.service();client=self.client(service)
+        service.store.enqueue(self.jobs());row=service.store.rows()[0]
+        service.store.update(row['id'],'generating',attempt='c'*32,browser=client['id'])
+        service.execute({'action':'delete_records','ids':[row['id']],'force':True})
+        client['socket'].sendTextMessage.reset_mock()
+        with patch.object(service,'archive') as archive:
+            service._download(client,{'batch_id':'c'*32,'event_id':'late-forced','data':{'state':'complete'}})
+        archive.assert_not_called();self.assertFalse(service.store.rows())
+        self.assertEqual(json.loads(client['socket'].sendTextMessage.call_args.args[0]),{'type':'ack','event_id':'late-forced'})
+        service._archived({'id':row['id'],'attempt':'c'*32,'output':'not-adopted.mp4'})
+        self.assertFalse(service.store.rows())
+
+    def test_force_ui_is_explicit_and_does_not_claim_cloud_finished(self):
+        dialog,_,commands=self.ui();store=QueueStore(self.namespace);store.enqueue(self.jobs())
+        row=store.rows()[0];store.update(row['id'],'download_failed')
+        dialog.update_state({'jobs':store.rows(),'clients':[],'paused':True,'preferences':{},'spaces':[]})
+        self.assertIn('强制删除选中记录…',[a.text() for a in dialog.queue_menu_button.menu().actions()])
+        def confirm(box):
+            self.assertEqual(box.defaultButton().text(),'取消');self.assertIsNone(box.checkBox())
+            self.assertIn('仍可能继续',box.text())
+            next(button for button in box.buttons() if button.text()=='强制删除记录').click();return 0
+        with patch.object(QtWidgets.QMessageBox,'exec',confirm):dialog.delete_records([row['id']],force=True)
+        self.assertTrue(commands[-1]['force']);self.assertFalse(commands[-1]['confirmed_finished'])
+
+    def test_force_database_failure_leaves_pending_callbacks_and_rows_intact(self):
+        service=self.service();service.store.enqueue(self.jobs());row=service.store.rows()[0]
+        service.pending['stale']={'job':row['id'],'action':'prepare','attempt':'a'*32,'client':'old','at':time.time()}
+        results=[];service.records_deleted.connect(results.append)
+        before=copy.deepcopy(service.pending)
+        with patch.object(service.store,'delete_records',side_effect=OSError('unavailable')):
+            service.execute({'action':'delete_records','ids':[row['id']],'force':True,'request_id':'force-failed'})
+        self.assertFalse(results[-1]['success']);self.assertEqual(service.pending,before)
+        self.assertIsNotNone(service.store.get(row['id']))
 
 
 if __name__ == '__main__': unittest.main()

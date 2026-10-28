@@ -29,16 +29,17 @@ class BrowserSlotsTests(unittest.TestCase):
             profile_projects={p:fixtures.PROJECT for p in profiles})
         return service, profiles
 
-    def test_expired_unconnected_launches_keep_four_slots_across_submissions_and_start(self):
+    def test_expired_unconnected_launches_release_other_lanes_but_keep_profile_deduplication(self):
         service, profiles = self.configured(); launches=[];service.launch_requested.connect(launches.append)
         service.store.enqueue(self.jobs(duration=8, count=10, budget=0));service.paused=False
         start=time.time()
-        for step in range(20):
-            service.execute({'action':'start'})
-            with patch('time.time', return_value=start+step*1000): service._tick()
-        self.assertEqual(len(launches),4)
-        self.assertEqual(len(set(launches)),4)
-        self.assertEqual(len(service.preferences['browser_slots']),4)
+        with patch('time.time',return_value=start):service.fill_dispatch_slots()
+        self.assertEqual(launches,profiles[:4])
+        with patch('time.time',return_value=start+91):
+            service.execute({'action':'start'});service.fill_dispatch_slots()
+        self.assertEqual(launches,profiles[:8])
+        self.assertEqual(len(set(launches)),8,'expired windows are never reopened under the same profile')
+        self.assertEqual(len(service.preferences['browser_slots']),8,'physical-window records survive expiry')
         self.assertTrue(all(row['status']=='queued' for row in service.store.rows()))
 
     def test_idle_manual_windows_do_not_count_as_pending_launches(self):

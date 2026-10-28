@@ -3,6 +3,7 @@ from concurrent.futures import ThreadPoolExecutor
 import hmac
 import json
 import math
+import re
 from pathlib import Path
 import secrets
 import sqlite3
@@ -15,6 +16,7 @@ from PyQt6 import sip
 from PyQt6.QtWebSockets import QWebSocketServer
 
 from .archive import archive_download
+from .credit_packs import active_count
 from .store import QueueStore, TRANSIENT, choose_client, fingerprint, make_jobs, submission_risk
 from .routing import cost_key, lane_for, lane_key, dispatch_rank, automatic_lane, normalize_lane
 from .credit_policy import debit_balance, credit_order
@@ -45,6 +47,14 @@ DEFAULT_PORT = 18189
 PROTOCOL = 1
 
 
+def compose_receipts(rows):
+    result={}
+    for row in rows:
+        source=(row.get('payload') or row).get('compose_row_id')
+        if source:result.setdefault(source,[]).append(row['id'])
+    return result
+
+
 def socket_alive(socket):
     return socket is not None and (not isinstance(socket, QtCore.QObject) or not sip.isdeleted(socket))
 
@@ -61,7 +71,9 @@ def temporary_database_lock(error):
 
 class FlowService(QtCore.QObject, FlowOperations):
     changed = QtCore.pyqtSignal(object)
+    ui_lock_changed = QtCore.pyqtSignal(object)
     failed = QtCore.pyqtSignal(str)
+    scheduler_attention = QtCore.pyqtSignal(object)
     launch_requested = QtCore.pyqtSignal(str)
     project_open_requested = QtCore.pyqtSignal(object)
     high_credit_confirmation_requested = QtCore.pyqtSignal(object)
@@ -73,8 +85,11 @@ class FlowService(QtCore.QObject, FlowOperations):
     records_deleted = QtCore.pyqtSignal(object)
     tasks_reset = QtCore.pyqtSignal(object)
     preferences_saved = QtCore.pyqtSignal(object)
+    video_catalog_result = QtCore.pyqtSignal(object)
+    tab_reused = QtCore.pyqtSignal(object)
     stopped = QtCore.pyqtSignal()
     archive_result = QtCore.pyqtSignal(object)
+    native_ui_result = QtCore.pyqtSignal(object)
 
     def __init__(self, namespace, downloads_root, *, program_timing=None, program_browser_options=None):
         super().__init__()
@@ -107,6 +122,8 @@ class FlowService(QtCore.QObject, FlowOperations):
             self.preferences = self.store.settings()
             from .browser_slots import recover_legacy_probe_failures
             self.preferences = recover_legacy_probe_failures(self.preferences)
+            from .launch_retries import recover_legacy as recover_ui_launch_failures
+            self.preferences = recover_ui_launch_failures(self.preferences)
             # Consent from a previous application process never authorizes a new run.
             from .high_credit import new_session_entries
             entries = new_session_entries(self.preferences)
@@ -116,10 +133,14 @@ class FlowService(QtCore.QObject, FlowOperations):
                 self.commit_preferences({**self.preferences, **timing_changes(self.preferences, self.program_timing)})
             if self.program_browser_options is not None:
                 self.commit_preferences({**self.preferences, 'browser_options': self.program_browser_options})
+            from .startup_state import reset_preferences
+            self.commit_preferences(reset_preferences(self.preferences))
             self.store.recover()
             self.drafts = self.store.drafts()
             self.observed_costs = {tuple(item['key']): item['cost'] for item in self.preferences.get('observed_costs', [])}
             self.recover_fixed_price_blocks()
+            from .ui_permission_recovery import recover_legacy
+            recover_legacy(self)
             self.downloads_root = self.preferences.get('downloads_root') or self.downloads_root
             pair_file = self.namespace.file('pairing.json')
             pair = pair_file.read_json() if pair_file.exists() else {'token': secrets.token_urlsafe(32), 'port': DEFAULT_PORT}
@@ -132,6 +153,8 @@ class FlowService(QtCore.QObject, FlowOperations):
                 raise RuntimeError(f'Flow 本地端口 {pair["port"]} 无法监听：{self.server.errorString()}')
             self.server.newConnection.connect(self._accept)
             self.pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix='flow-archive')
+            from .suspicious_download import recover as recover_suspicious
+            recover_suspicious(self)
             self.dispatch_timer = QtCore.QTimer(self)
             self.dispatch_timer.setSingleShot(True)
             self.dispatch_timer.timeout.connect(self.fill_dispatch_slots)
@@ -139,6 +162,11 @@ class FlowService(QtCore.QObject, FlowOperations):
             self.timer = QtCore.QTimer(self)
             self.timer.timeout.connect(self.fill_dispatch_slots)
             self.timer.start(max(1, round(timing_value(self.preferences, 'queue_tick_seconds') * 1000)))
+            # A lightweight heartbeat refreshes only the lock inspector, not
+            # the potentially large task table or the browser pages.
+            self.ui_lock_timer=QtCore.QTimer(self)
+            self.ui_lock_timer.timeout.connect(self.publish_ui_lock)
+            self.ui_lock_timer.start(1000)
             self.publish()
         except Exception as error:
             self.failed.emit(str(error))
@@ -147,6 +175,10 @@ class FlowService(QtCore.QObject, FlowOperations):
         timer = getattr(self, 'dispatch_timer', None)
         if not self.closing and timer is not None and not timer.isActive():
             timer.start(0)
+
+    def publish_ui_lock(self):
+        from .mutex_monitor import snapshot
+        if not self.closing:self.ui_lock_changed.emit(snapshot(self))
 
     def fill_dispatch_slots(self):
         if self.closing or getattr(self, '_filling_dispatch', False): return
@@ -189,6 +221,15 @@ class FlowService(QtCore.QObject, FlowOperations):
             self._disconnected(socket)
 
     def request(self, client, action, params=None, job=None, *, manual_credit=False, manual_close=False):
+        from .browser_reuse import stopped, reset_recovery
+        if manual_credit: reset_recovery(self,client)
+        elif not job and action in {'get_points','repair_project'} and stopped(self,client): return False
+        if (browser_options_snapshot(self.preferences)['ui_mutex'] and
+                action in {'get_points','prepare','upload_images','run_tasks','focus_window','repair_project','open_project'} and
+                'ui_mutex_v1' not in client.get('capabilities', [])):
+            from .setup_support import required_bridge_update
+            client['runtime_note'] = required_bridge_update(client, self.preferences)
+            return False
         if action == 'close_exhausted':
             return False  # Automatic closure was disabled; never send a native close.
         if action == 'close_browser' and not manual_close:
@@ -200,7 +241,6 @@ class FlowService(QtCore.QObject, FlowOperations):
             # recovery plans may only query snapshots; never send this command.
             return
         if action == 'get_points':
-            if manual_credit: client.pop('reuse_recovery',None)
             previous = next((p for p in self.pending.values() if p['action'] == action and p['client'] == client['id']), None)
             if previous:
                 # A click authorizes a NEW observation, not an automatic probe
@@ -217,9 +257,14 @@ class FlowService(QtCore.QObject, FlowOperations):
                 self.launching.pop(client.get('profile'), None)
                 self.launched.discard(client.get('profile'))
                 return False
+            from .passive_credits import defer_active_probe
+            if not manual_credit and defer_active_probe(self,client):return False
         request_id = uuid.uuid4().hex
         row = self.store.get(job) if job else None
+        if row and action in {'prepare','upload_images','run_tasks'}:
+            client['credit_observation_only']=False
         self.pending[request_id] = {'action': action, 'job': job, 'client': client['id'], 'at': time.time(),
+                                    'created_at': time.time(),
                                     'attempt': row['attempt'] if row else ''}
         if action == 'get_points':
             self.pending[request_id]['credit_debits'] = dict(self.credit_debits)
@@ -230,11 +275,13 @@ class FlowService(QtCore.QObject, FlowOperations):
                 client['credit_check']['hold_dispatch'] = True
                 client.pop('credit_close', None)
         params = dict(params or {})
+        if action=='skip_download' and params.get('park_native_downloads') is True:
+            self.pending[request_id]['backlog_attempt']=params.get('batch_id')
         if action in {'prepare', 'upload_images', 'run_tasks'}:
             params['wait_for_ready'] = True
         from .foreground import UI_ACTIONS
         foreground = {}
-        if (action in UI_ACTIONS and not (action == 'retry_download' and params.get('restore')) and
+        if (action in UI_ACTIONS and
                 (action == 'focus_window' or browser_options_snapshot(self.preferences)['focus_before_action']) and
                 'native_foreground_v1' in client.get('capabilities', [])):
             foreground['foreground_token'] = uuid.uuid4().hex
@@ -279,6 +326,8 @@ class FlowService(QtCore.QObject, FlowOperations):
             return
         client['retired'] = True
         client['authorized'] = False
+        from .ui_mutex import disconnected as release_ui_mutex
+        release_ui_mutex(self, client)
         if self.closing:
             if socket_alive(socket): socket.deleteLater()
             return
@@ -298,6 +347,12 @@ class FlowService(QtCore.QObject, FlowOperations):
                 self.store.update(row['id'], status, error='浏览器断开；已提交的任务会先核对，不自动重复生成。')
         for request_id, request in list(self.pending.items()):
             if request['client'] == client.get('id'):
+                if request.get('tab_reuse_request'):
+                    from .tab_reuse import response
+                    response(self, request, {'success':False,'error':'原浏览器连接已断开，未额外打开Flow分页。'})
+                if request['action'] == 'list_project_videos':
+                    from .video_catalog import emit_error
+                    emit_error(self, request.get('catalog') or {}, '原浏览器已断开，重新连接后点击刷新。')
                 if request['action'] == 'close_browser' and client.get('runtime_close', {}).get('state') != 'closed':
                     from .runtime_close import timeout as close_timeout
                     close_timeout(client, self)
@@ -347,7 +402,7 @@ class FlowService(QtCore.QObject, FlowOperations):
                               project=message.get('project') or '', saved_project=message.get('project') or '',
                               extension_version=str(message.get('extension_version') or '')[:30],
                               setup_id=str(message.get('setup_id') or '')[:32],
-                              capabilities=[c for c in message.get('capabilities', []) if isinstance(c, str)][:20],
+                              capabilities=[c for c in message.get('capabilities', []) if isinstance(c, str)][:32],
                               page_ready=False, page_at=0, page_error='',
                               account='', credits=None, credits_at=0, blocked='')
                 # Register the replacement first: close() may synchronously
@@ -371,6 +426,12 @@ class FlowService(QtCore.QObject, FlowOperations):
                     self.store.save_settings(preferences)
                     self.preferences = preferences
                 client['setup_blocked'] = project_block(client, self.preferences)
+                if (setup_request.get('mode') == 'reload_only' and client['extension_version'] == EXTENSION_VERSION
+                        and not client['setup_blocked']):
+                    from .setup_support import required_bridge_update
+                    if not required_bridge_update(client, self.preferences):
+                        from .browser_reuse import reset_recovery
+                        reset_recovery(self, client)
                 from .browser_slots import seen as browser_seen
                 browser_seen(self, client)
                 # A WebSocket hello is not a ready browser. Keep its startup
@@ -379,6 +440,8 @@ class FlowService(QtCore.QObject, FlowOperations):
                 # idle cooled-down profile. The hold still forbids all spending
                 # and automatic balance probes; this never proves a new login.
                 cached = restore_balance(client, self.preferences)
+                from .passive_credits import flow_interest
+                client['credit_observation_only']=not (setup_request or flow_interest(self,client))
                 if credit_record(client, self.preferences): cached = False
                 if not self.send(client, {'type': 'welcome', 'protocol': PROTOCOL, 'timing': timing_snapshot(self.preferences),
                         'browser_options': browser_options_snapshot(self.preferences)}):
@@ -387,6 +450,8 @@ class FlowService(QtCore.QObject, FlowOperations):
                     self.request(client, 'get_points')
                 self.request(client, 'snapshot')
                 self.recover_extension_downloads(client)
+                from .download_backlog import reconnect as resume_backlog
+                resume_backlog(self,client)
                 self.publish()
                 return
             if message.get('type') == 'ping':
@@ -409,7 +474,14 @@ class FlowService(QtCore.QObject, FlowOperations):
                 browser_closed(self, client.get('profile'))
                 self.publish()
                 return
-            if message.get('type') in {'foreground_request', 'foreground_cancel'}:
+            if message.get('type') in {'snapshot','page_status','reference_progress'} and isinstance(message.get('ui_renew'),dict):
+                from .ui_lease import renew as renew_ui_lease
+                try:renew_ui_lease(self,client,message['ui_renew'])
+                except (ValueError,TypeError,RuntimeError):pass  # Optional metadata never blocks the ordinary report.
+            if message.get('type') in {'ui_mutex_request', 'ui_mutex_release', 'ui_mutex_cancel'}:
+                from .ui_mutex import receive as receive_ui_mutex
+                receive_ui_mutex(self, client, message)
+            elif message.get('type') in {'foreground_request', 'foreground_cancel'}:
                 from .foreground import receive
                 receive(self, client, message)
             elif message.get('type') == 'download':
@@ -420,11 +492,23 @@ class FlowService(QtCore.QObject, FlowOperations):
             elif message.get('type') == 'binding_missing':
                 from .page_recovery import schedule
                 schedule(self, client, message)
+            elif message.get('type') == 'project_missing':
+                if project_identity(message.get('project')) == project_identity(client.get('saved_project')):
+                    from .project_startup import note_missing, MISSING_PROJECT
+                    note_missing(self, client, MISSING_PROJECT)
             elif message.get('type') == 'snapshot':
                 self._snapshot(client, message.get('data') or {})
+            elif message.get('type') == 'credit_observation':
+                from .passive_credits import receive as receive_passive_credits
+                if receive_passive_credits(self,client,message):self.publish()
+                return  # A read-only observation never wakes task dispatch.
             elif message.get('type') == 'page_status':
                 client['page_instance'] = str(message.get('page_instance') or '')[:100]
                 client['project'] = message.get('url') or ''
+                client['reference_sha256_names'] = message.get('reference_sha256_names') is True and (
+                    project_identity(client['project']) == project_identity(client.get('saved_project')))
+                client['reference_stable_sha256_names'] = message.get('reference_stable_sha256_names') is True and client['reference_sha256_names']
+                client['credit_pack_submit'] = message.get('credit_pack_submit') is True
                 client['note'] = message.get('note') or ''
                 client['page_loaded'] = bool(project_identity(client['project']))
                 client['page_ready'] = client['page_loaded'] and message.get('controls_ready', True) is True
@@ -440,6 +524,26 @@ class FlowService(QtCore.QObject, FlowOperations):
                 confirm_saved_connection(self, client)
                 recover_window_block(self, client)
                 retry_initial_credits(self, client)
+            elif message.get('type') == 'reference_progress':
+                request=self.pending.get(message.get('request_id'),{})
+                row=self.store.get(request['job']) if request.get('job') else None
+                if (not request.get('retired') and request.get('client')==client['id'] and request.get('action')=='upload_images'
+                        and row and row['status']=='uploading' and row['attempt']==request.get('attempt')==message.get('upload_id')
+                        and project_identity(message.get('url'))==project_identity(client.get('saved_project'))
+                        and message.get('phase') in {'checking','uploading','verifying_upload','mounting'}):
+                    now=time.time();remote={**row['remote'],'upload_phase':{'phase':message['phase'],'at':now}}
+                    cycle=self.upload_cycle(row,client)
+                    if message['phase']=='uploading':
+                        if cycle.get('upload_attempt',{}).get('request')!=message['request_id']:
+                            cycle.update(at=now,confirmed=False,upload_attempt={'request':message['request_id'],'state':'pending'})
+                    elif message['phase']=='verifying_upload':cycle['confirmed']=False
+                    elif message['phase']=='mounting':
+                        from .image_upload_limit import confirmed
+                        confirmed(self,row,cycle);cycle['confirmed']=True
+                    remote['upload_cycle']=dict(cycle)
+                    self.store.update(row['id'],row['status'],remote=remote,error=row['error'])
+                    self.publish()
+                return
             elif message.get('type') == 'generation_failed':
                 confirmed_failure(self, client, message)
                 if message.get('event_id'):
@@ -473,6 +577,16 @@ class FlowService(QtCore.QObject, FlowOperations):
         request = self.pending.get(request_id)
         if not request or request['client'] != client['id']:
             return
+        if request.get('tab_reuse_request'):
+            self.pending.pop(request_id, None)
+            from .tab_reuse import response
+            response(self, request, message)
+            return
+        if request['action'] == 'list_project_videos':
+            self.pending.pop(request_id, None)
+            from .video_catalog import response as catalog_response
+            catalog_response(self, client, request, message)
+            return
         if request['action'] == 'close_browser':
             from .runtime_close import response as close_response
             if close_response(self, client, message): self.pending.pop(request_id, None)
@@ -484,12 +598,16 @@ class FlowService(QtCore.QObject, FlowOperations):
             return
         self.pending.pop(request_id)
         if request.get('retired'):
-            if request['action'] in {'prepare', 'upload_images'}:
+            if request['action'] in {'prepare', 'upload_images', 'run_tasks', 'retry_download'}:
                 self.store.finish_reset_hold(request['attempt'], request['client'])
                 self.refresh_reset_holds()
             return
         action, job_id = request['action'], request['job']
         data = message.get('data') or {}
+        if action=='skip_download' and request.get('backlog_attempt'):
+            from .download_backlog import cancelled
+            cancelled(self,client,request['backlog_attempt'],message)
+            return
         if action == 'close_exhausted':
             state = dict(client.get('credit_close') or {})
             busy = message.get('code') == 'FLOW_CLOSE_BUSY'
@@ -504,15 +622,8 @@ class FlowService(QtCore.QObject, FlowOperations):
                 browser_closed(self, client.get('profile'))
             return
         if action == 'repair_project':
-            client['runtime_note'] = ('F5／页面恢复已完成，等待重新连接和积分确认。' if message.get('success') else
-                'F5／页面恢复未执行：'+str(message.get('error') or '扩展未确认成功'))
-            current = dict(client.get('connection_recovery') or {})
-            current.update(state='waiting' if message.get('success') else 'failed',
-                message='页面已恢复，正在重新确认连接和积分' if message.get('success') else
-                    str(message.get('error') or '页面修复未完成')[:500])
-            client['connection_recovery'] = current
-            if message.get('code') == 'FLOW_PAGE_REPAIR_BUSY':
-                client['batch_running'] = True
+            from .connection_recovery import repair_response
+            repair_response(self,client,request,message)
             if message.get('success'):
                 client.update(credits_ready_failures=0, credits_waiting_ready=True,
                     credits_waiting_account=False, credits_retry_at=time.time() + timing_value(self.preferences, 'credit_after_repair_seconds'))
@@ -533,6 +644,8 @@ class FlowService(QtCore.QObject, FlowOperations):
                 self.request(client, 'get_points', manual_credit=True)
                 client['credit_check']['hold_dispatch'] = True
                 return
+            from .credit_probe import recover_wait as recover_credit_ui_wait
+            if recover_credit_ui_wait(self, client, request, message): return
             client['credits_retry_manual'] = bool(request.get('manual_credit'))
             keep_balance = (bool(client.get('account')) and client.get('credits_local') is True
                             and type(client.get('credits')) in (int, float) and math.isfinite(client['credits']))
@@ -601,6 +714,8 @@ class FlowService(QtCore.QObject, FlowOperations):
                 client['credits_retry_manual'] = False
             client['note'] = message.get('error') or ('' if client['account'] else '尚未确认当前 Flow 登录账号')
             if message.get('success', True) and client['credits_local']:
+                from .browser_reuse import reset_recovery
+                reset_recovery(self,client)
                 if client.get('page_ready'): self.launching.pop(client.get('profile'), None)
                 client['credit_check'] = {'state': 'success', 'at': time.time(),
                     'message': '已读取当前账号和积分；后续按实际提交费用本地扣算'}
@@ -612,7 +727,8 @@ class FlowService(QtCore.QObject, FlowOperations):
         if not job_id:
             return
         row = self.store.get(job_id)
-        if not row or row['attempt'] != request['attempt'] or row['browser'] != client['id'] or row['status'] not in TRANSIENT | {'download_failed', 'uncertain'}:
+        if not row or row['attempt'] != request['attempt'] or row['browser'] != client['id'] or (row['status'] not in TRANSIENT | {'download_failed', 'uncertain'} and
+                not (action=='retry_download' and row['status']=='download_parked' and row['remote'].get('download_backlog'))):
             return
         if action == 'prepare' and row['status'] != 'preparing':
             return
@@ -628,6 +744,9 @@ class FlowService(QtCore.QObject, FlowOperations):
                 or row['remote'].get('page_recovery') or row['remote'].get('watch_attention')):
             return
         if not message.get('success'):
+            from .ui_permission_recovery import recover as recover_ui_permission
+            if recover_ui_permission(self,client,row,action,message):
+                return
             if action in {'prepare', 'run_tasks'}:
                 client.pop('prepare_snapshot', None)
             isolated = mark_account(self, client, message.get('error', ''), message.get('code', ''))
@@ -710,6 +829,9 @@ class FlowService(QtCore.QObject, FlowOperations):
             if not verified_receipt(reference, data.get('reference')) or reference['upload_id'] != row['attempt']:
                 self.transfer_failed(row, 'upload', '扩展未返回本次参考图的准确首帧凭据；未提交生成。请在浏览器空闲时加载当前桥接扩展后完全重置此任务。', permanent=True)
                 return
+            from .image_upload_limit import confirmed
+            cycle=self.upload_cycle(row,client);confirmed(self,row,cycle);cycle['confirmed']=True
+            row['remote']['upload_cycle']=dict(cycle)
             self.store.update(job_id, row['status'], remote={**row['remote'], 'reference_receipt': data['reference']}, error=row['error'])
             row = self.store.get(job_id)
             info = {**retry_info(row, 'upload'), 'active': False, 'next_at': 0, 'waiting': '', 'done': True}
@@ -729,11 +851,18 @@ class FlowService(QtCore.QObject, FlowOperations):
                 self.store.update(job_id, 'queued', attempt='', browser='', remote={},
                     error='图片上传完成，但原账号积分不足；等待备用账号，未提交生成。')
                 return
+            if row['remote'].get('credit_pack'):
+                from .credit_packs import supported
+                if not supported(client):
+                    self.store.update(job_id,'queued',attempt='',browser='',remote={},
+                        error='分包页面能力变化，未提交生成；已退回队列，旧扩展继续使用逐条调度。')
+                    return
             if not self.store.reserve(job_id, row['attempt'], row['remote']['cost'], row['remote']['cost_source']):
                 self.store.update(job_id, 'queued', attempt='', browser='', remote={},
                     error='已达到整批积分上限，停止新增提交；可调整该批上限后继续。')
                 return
-            self.store.update(job_id, 'uploading', remote={**row['remote'], 'activity_at': time.time()})
+            self.store.update(job_id, 'uploading', remote={**row['remote'], 'activity_at': time.time(),
+                **({'pack_sent_at':time.time()} if row['remote'].get('credit_pack') else {})})
             self.store.update(job_id, 'submitting')  # Commit before sending any generation request.
             from .high_credit import note_normal_spend
             note_normal_spend(self, client)
@@ -748,9 +877,14 @@ class FlowService(QtCore.QObject, FlowOperations):
                 'model': 'omni_1_1_flash', 'videoModel': 'omni_1_1_flash', 'mode': 'VIDEO_FRAMES',
                 'resolution': 'VIDEO_RESOLUTION_' + job['resolution'].upper(),
                 'aspectRatio': 'ASPECT_RATIO_' + job['aspect'].replace(':', '_'), 'duration': job['duration'], 'count': 1}]}
+            if row['remote'].get('credit_pack'):
+                params.update(packed=True, clear_existing=False)
             self.request(client, 'run_tasks', params, job_id)
         elif action in {'run_tasks', 'retry_download'}:
             remote = row['remote']
+            if action == 'run_tasks':
+                from .credit_packs import submitted
+                remote = submitted(self, row, data)
             deferred = []
             if action == 'retry_download':
                 deferred = remote.get('deferred_download_interrupts', [])
@@ -759,18 +893,33 @@ class FlowService(QtCore.QObject, FlowOperations):
                 if data.get('downloadId') is not None: info['download_id'] = data['downloadId']
                 remote = {**remote, 'activity_at': time.time(), 'transfer_retries': {
                     **remote.get('transfer_retries', {}), 'download': info}}
-            self.store.update(job_id, 'generating' if action == 'run_tasks' else 'downloading', remote=remote)
+            from .download_backlog import detached
+            self.store.update(job_id, 'generating' if action == 'run_tasks' else 'download_parked' if detached(row) else 'downloading', remote=remote)
             # The Chrome download can fail before its start acknowledgement.
             # Resolve queued failures only after that acknowledgement identifies
             # the current download, so an older failure cannot cancel this request.
             for event in deferred:
                 self._download(client, event)
+            if action == 'retry_download' and remote.get('unverified_download'):
+                self._download(client, {'batch_id':row['attempt'],'data':remote['unverified_download'],
+                    'event_id':remote.get('unverified_download_event')})
 
     @staticmethod
     def download_name(row):
         return f'FlowBridge/{row["attempt"]}/result.mp4'
 
     def _snapshot(self, client, data):
+        if not data.get('batch_id'):
+            import re
+            groups = {}
+            for task in data.get('tasks') or []:
+                match = re.fullmatch(r'FlowBridge/([a-f0-9]{32})/result\.mp4', str(task.get('download_path') or ''))
+                if match:
+                    groups.setdefault(match[1], []).append(task)
+            if groups:
+                for batch, tasks in groups.items():
+                    self._snapshot(client, {**data, 'batch_id': batch, 'tasks': tasks})
+                return
         # Snapshots are events, including on older compatible extensions; they
         # do not send a separate request_id response. This page has answered.
         for key, request in list(self.pending.items()):
@@ -778,6 +927,10 @@ class FlowService(QtCore.QObject, FlowOperations):
                 self.pending.pop(key, None)
         if project_identity(data.get('url')):
             client['page_instance'] = str(data.get('page_instance') or '')[:100]
+            client['reference_sha256_names'] = data.get('reference_sha256_names') is True and (
+                project_identity(data['url']) == project_identity(client.get('saved_project')))
+            client['reference_stable_sha256_names'] = data.get('reference_stable_sha256_names') is True and client['reference_sha256_names']
+            client['credit_pack_submit'] = data.get('credit_pack_submit') is True
             if (type(data.get('running')) is bool and
                     project_identity(data['url']) == project_identity(client.get('saved_project'))):
                 client['batch_running'] = data['running']
@@ -805,6 +958,8 @@ class FlowService(QtCore.QObject, FlowOperations):
             return
         if row['remote'].get('generation_retry', {}).get('failed_attempt') == row['attempt']:
             return
+        from .video_catalog import manual_binding
+        if manual_binding(row): return
         tasks = data.get('tasks') or []
         if not tasks:
             return
@@ -814,6 +969,7 @@ class FlowService(QtCore.QObject, FlowOperations):
         bindings = task.get('mediaBindings') or []
         previous = generated_bindings(row['remote'])
         incoming = generated_bindings({'bindings': bindings})
+        if row['remote'].get('confirmed_not_submitted') and not incoming: return
         identity = lambda b: (b['taskId'], b['submissionId'])
         previous_ids = {identity(b): set(b['mediaIds']) for b in previous}
         if (row['remote'].get('upstream_task') and task['taskId'] != row['remote']['upstream_task'] or
@@ -877,11 +1033,24 @@ class FlowService(QtCore.QObject, FlowOperations):
         if data.get('download_path') != self.download_name(row) or not data.get('mediaId') or not data.get('submissionId'):
             raise ValueError('下载归属标识不完整')
         if not owns_download(row, data):
+            from .result_download import completed_receipt
+            confirmed = completed_receipt(row,data)
+            if confirmed:
+                self.store.update(row['id'],row['status'],remote=confirmed,error=row['error'])
+                row = self.store.get(row['id'])
+        if not owns_download(row, data):
+            from .video_catalog import manual_binding
+            if manual_binding(row):
+                self.send(client, {'type':'ack', 'event_id':message.get('event_id')})
+                return
             self.store.update(row['id'], 'download_parked' if row['status'] == 'download_parked' else 'uncertain',
                 remote={**row['remote'], 'unverified_download': data,
                 'unverified_download_event': message.get('event_id')},
                 error='收到浏览器下载，但缺少本次生成响应的归属证据；未归档为任务成品，正在核对原任务，不会重新生成。')
             self.send(client, {'type': 'ack', 'event_id': message.get('event_id')})
+            from .suspicious_download import preserve
+            if preserve(self, self.store.get(row['id'])):
+                return
             self.request(client, 'snapshot')
             return
         events = row['remote'].get('download_events', [])
@@ -899,7 +1068,7 @@ class FlowService(QtCore.QObject, FlowOperations):
         if data.get('state') == 'interrupted' and current_download is not None and data.get('downloadId') not in (None, current_download):
             self.send(client, {'type': 'ack', 'event_id': message.get('event_id')})
             return
-        if row['status'] == 'download_parked' and data.get('state') != 'complete':
+        if row['status'] == 'download_parked' and not row['remote'].get('download_backlog') and data.get('state') != 'complete':
             self.send(client, {'type': 'ack', 'event_id': message.get('event_id')})
             return
         if row['status'] not in {'completed', 'archiving'}:
@@ -916,12 +1085,19 @@ class FlowService(QtCore.QObject, FlowOperations):
         row = next((r for r in self.store.rows() if r['attempt'] == message.get('batch_id') and r['browser'] == client['id']), None)
         if not row or row['status'] in {'completed', 'cancelled', 'archiving', 'archive_failed', 'download_parked', 'needs_review'}:
             return
+        if row['remote'].get('confirmed_not_submitted'): return
+        from .video_catalog import manual_binding
+        if manual_binding(row): return
         if row['remote'].get('generation_retry', {}).get('failed_attempt') == row['attempt']:
             return
         if row['status'] == 'downloading' and retry_info(row, 'download').get('active'):
             return
         if message.get('status') == 'failed' or (message.get('type') == 'hosted_batch_finished' and any(r.get('status') == 'failed' for r in message.get('results', []))):
             text = str(message.get('message') or next((r.get('message') for r in message.get('results', []) if r.get('message')), '生成未完成'))
+            from .failure_release import release as release_failure
+            if release_failure(self, row, text):
+                self.request(client, 'snapshot')
+                return
             mark_account(self, client, text, message.get('code', ''))
             if (account_hold(client, self.preferences).get('kind') not in {'disabled', 'manual'} and
                     any(word in text.casefold() for word in ('captcha', 'unusual', '验证码', '异常活动', 'risk', '风控'))):
@@ -938,9 +1114,13 @@ class FlowService(QtCore.QObject, FlowOperations):
         if job_id in self.archiving:
             return
         row = self.store.get(job_id)
-        if not row or not row['remote'].get('download'):
+        if not row: return
+        from .suspicious_download import preserve
+        if not row['remote'].get('download'):
+            preserve(self, row, retry=True)
             return
         if not owns_download(row, row['remote']['download']):
+            if preserve(self, row, retry=True): return
             self.store.update(job_id, 'uncertain', error='下载与本次生成响应的媒体归属不一致，已阻止归档；未覆盖成品。')
             return
         self.archiving.add(job_id)
@@ -964,6 +1144,8 @@ class FlowService(QtCore.QObject, FlowOperations):
 
     @QtCore.pyqtSlot(object)
     def _archived(self, result):
+        from .suspicious_download import handle_result
+        if handle_result(self, result): return
         self.archiving.discard(result['id'])
         row = self.store.get(result['id'])
         if not row:
@@ -986,21 +1168,52 @@ class FlowService(QtCore.QObject, FlowOperations):
         if not self.closing:
             self.publish()
 
+    def release_table_jobs(self,ids):
+        """Finish an explicitly submitted table inside the service, before its receipt."""
+        self.store.release_collected(ids)
+        if not self.safety_paused:
+            self.released.update(r['id'] for r in self.store.rows() if r['id'] in ids and r['status']=='queued')
+            self.launched.clear()
+
     @QtCore.pyqtSlot(object)
     def execute(self, command):
         try:
             action = command['action']
+            if action in {'ui_native_request','ui_native_release','ui_launch_wait'}:
+                from .ui_mutex import host_receive
+                host_receive(self,command)
+                return
+            if action == 'reuse_project_tab':
+                from .tab_reuse import request
+                request(self, command)
+                return
             if action == 'enqueue':
+                table_ids=command.get('table_release_ids',[])
+                if (not isinstance(table_ids,list) or any(not isinstance(value,str) or not value for value in table_ids)
+                    or table_ids and (command.get('collect_only') is not False or not command.get('start_after_save'))):
+                    raise ValueError('表格放行记录无效，未提交任务。')
                 previous = self.store.submission(command.get('request_id')) if command.get('request_id') else None
                 if previous:
                     rows = [r for r in self.store.rows() if r['payload'].get('batch_id') == previous]
+                    if command.get('collect_only') is False and command.get('start_after_save'):
+                        self.release_table_jobs([r['id'] for r in rows]+table_ids)
+                        rows = [r for r in self.store.rows() if r['payload'].get('batch_id') == previous]
                     self.submitted.emit({'count': len(rows), 'source': command.get('source', 'batch'),
                         'request_id': command.get('request_id'), 'ids': [r['id'] for r in rows], 'batch_id': previous,
-                        'held': self.safety_paused or self.paused and not any(r['id'] in self.released for r in rows)})
+                        'row_receipts':compose_receipts(rows),
+                        'collected': any(r['status']=='collected' for r in rows),
+                        'held': any(r['status']=='collected' for r in rows) or self.safety_paused or self.paused and not any(r['id'] in self.released for r in rows)})
                     return
                 jobs = []
-                for item in command['items']:
-                    jobs.extend(make_jobs(**item))
+                compose_rows=command.get('compose_rows')
+                if compose_rows is not None and (not isinstance(compose_rows,list) or len(compose_rows)!=len(command['items']) or
+                    any(not isinstance(value,str) or not re.fullmatch('[a-f0-9]{32}',value) for value in compose_rows)):
+                    raise ValueError('表格条目编号无效，未添加任务。')
+                for index,item in enumerate(command['items']):
+                    expanded=make_jobs(**item)
+                    if compose_rows is not None:
+                        for job in expanded:job['compose_row_id']=compose_rows[index]
+                    jobs.extend(expanded)
                 source = command.get('source', 'batch')
                 for job in jobs:
                     job['submission_mode'] = source
@@ -1010,18 +1223,36 @@ class FlowService(QtCore.QObject, FlowOperations):
                         'error': '相同图片、提示词和参数已有任务等待或生成中。', 'duplicate_ids': duplicates})
                     self.failed.emit('Flow 未重复提交：已有相同任务等待或生成中；可查看原任务或明确生成变体。')
                     return
+                collected = command.get('collect_only',self.preferences.get('collect_before_submit', True))
+                if type(collected) is not bool:raise ValueError('任务收集选项必须为开启或关闭。')
                 batch_id = self.store.enqueue(jobs, limit_total=command.get('batch_limit', 0),
-                    label=command.get('batch_label', ''), request_id=command.get('request_id'))
-                start_after_save = source == 'manual' or command.get('start_after_save', False)
+                    label=command.get('batch_label', ''), request_id=command.get('request_id'), collected=collected)
+                start_after_save = not collected and (source == 'manual' or command.get('start_after_save', False))
                 if start_after_save and not self.safety_paused:
                     self.released.update(job['id'] for job in jobs)
                     self.launched.clear()
+                if start_after_save and table_ids:self.release_table_jobs(table_ids)
                 self.submitted.emit({'count': len(jobs), 'source': source,
                                      'request_id': command.get('request_id'),
                                      'ids': [job['id'] for job in jobs],
+                                     'row_receipts':compose_receipts(jobs),
                                      'batch_id': batch_id,
-                                     'held': self.safety_paused or self.paused and not start_after_save})
+                                     'collected': collected,
+                                     'held': collected or self.safety_paused or self.paused and not start_after_save})
+            elif action == 'submission_lookup':
+                batch=self.store.submission(command.get('request_id'))
+                if not batch:
+                    self.submission_failed.emit({'source':command.get('source','batch'),'request_id':command.get('request_id'),
+                        'code':'FLOW_SUBMISSION_NOT_FOUND','error':'上次任务记录尚未保存；填写清单已保留，可重新点击统一提交。'})
+                else:
+                    rows=[r for r in self.store.rows() if r['payload'].get('batch_id')==batch]
+                    self.submitted.emit({'source':command.get('source','batch'),'request_id':command.get('request_id'),
+                        'count':len(rows),'ids':[r['id'] for r in rows],'batch_id':batch,'row_receipts':compose_receipts(rows),
+                        'collected':any(r['status']=='collected' for r in rows)})
+            elif action == 'discard_collected':
+                self.released.difference_update(self.store.discard_collected(command.get('ids', [])))
             elif action == 'start':
+                self.store.release_collected()
                 self.paused = False
                 self.safety_paused = False
                 self.launched.clear()
@@ -1029,6 +1260,9 @@ class FlowService(QtCore.QObject, FlowOperations):
             elif action == 'pause':
                 self.paused = True
                 self.released.clear()
+            elif action == 'bridge_update_launch_result':
+                from .bridge_recovery import launch_result
+                launch_result(self,command)
             elif action == 'browser_launch_result':
                 from .browser_slots import launch_result
                 launch_result(self, command)
@@ -1054,10 +1288,20 @@ class FlowService(QtCore.QObject, FlowOperations):
                 from .high_credit import set_permission
                 set_permission(self, command)
             elif action == 'submit_selected':
-                self.released.update(row['id'] for row in self.store.rows()
-                                     if row['id'] in command['ids'] and row['status'] == 'queued')
-                self.safety_paused = False
-                self.launched.clear()
+                if command.get('request_id'):
+                    self.release_table_jobs(command['ids'])
+                    rows=[r for r in self.store.rows() if r['id'] in command['ids']]
+                    if set(command['ids'])!={r['id'] for r in rows}:raise ValueError('部分表格任务记录已不存在，原表格已保留，请检查全局队列。')
+                    self.submitted.emit({'source':command.get('source','batch'),'request_id':command['request_id'],
+                        'count':len(rows),'ids':[r['id'] for r in rows],'row_receipts':compose_receipts(rows),
+                        'collected':any(r['status']=='collected' for r in rows),
+                        'held':self.safety_paused})
+                else:
+                    self.store.release_collected(command['ids'])
+                    self.released.update(row['id'] for row in self.store.rows()
+                                         if row['id'] in command['ids'] and row['status'] == 'queued')
+                    self.safety_paused = False
+                    self.launched.clear()
             elif action == 'lane':
                 scope, key = command['scope'], str(command['key']).strip()
                 if scope not in {'profile', 'browser'} or not key:
@@ -1102,7 +1346,10 @@ class FlowService(QtCore.QObject, FlowOperations):
                 existing = next((c for c in self.clients.values() if c.get('authorized') and
                     c.get('profile') == profile and not c.get('setup_pending') and
                     project_identity(c.get('saved_project')) == project_identity(project)), None)
-                if existing and not compatible_extension(existing.get('extension_version')):
+                from .setup_support import required_bridge_update
+                capability_update = bool(existing and required_bridge_update(existing, self.preferences))
+                if existing and (not compatible_extension(existing.get('extension_version')) or capability_update or
+                        command.get('automatic_update') and existing.get('extension_version') != EXTENSION_VERSION):
                     if existing.get('batch_running') or any((r['status'] in TRANSIENT | {'archiving', 'uncertain'} or
                             r['status'] == 'download_failed' and not r['remote'].get('cloud_finished')) and
                            (r['browser'] == existing['id'] or r['remote'].get('profile') == profile) for r in self.store.rows()):
@@ -1111,6 +1358,8 @@ class FlowService(QtCore.QObject, FlowOperations):
                     self.setup_requests[profile] = {'id': ticket, 'request': command.get('request_id'), 'project': project,
                         'expires': time.time()+timing_value(self.preferences, 'setup_ticket_seconds'), 'mode': 'reload_only'}
                     entry = f'{OPTIONS_URL}#setup={ticket}&port={self.pair["port"]}'
+                    # The options page is read from disk and knows the latest
+                    # installed version even when the old worker is still alive.
                     project_entry = f'{project}#lzx_setup={ticket}&lzx_port={self.pair["port"]}&lzx_action=options'
                     self.setup_ready.emit({'request_id': command.get('request_id'), 'success': True,
                         'profile': profile, 'project': project, 'claim_url': entry, 'project_claim_url': project_entry,
@@ -1177,6 +1426,21 @@ class FlowService(QtCore.QObject, FlowOperations):
                                 'profile': profile, 'project': project, 'extension_id': EXTENSION_ID, 'setup_id': setup_id}})
             elif action == 'preferences':
                 changes = dict(command['value'])
+                concurrent=changes.get('concurrency',self.preferences.get('concurrency',2))
+                if type(concurrent) is not int or not 1<=concurrent<=8:
+                    raise ValueError('并行账号数应为1～8。')
+                if 'browser_window_limit' in changes:
+                    cap=changes['browser_window_limit']
+                    if type(cap) is not int or not concurrent<=cap<=64:
+                        raise ValueError('Flow 浏览器上限应为并行账号数～64。')
+                elif 'concurrency' in changes and 'browser_window_limit' in self.preferences:
+                    changes['browser_window_limit']=max(concurrent,self.preferences['browser_window_limit'])
+                if 'collect_before_submit' in changes and type(changes['collect_before_submit']) is not bool:
+                    raise ValueError('只添加记录选项必须为开启或关闭。')
+                if 'manual_editor_width_locked' in changes and type(changes['manual_editor_width_locked']) is not bool:
+                    raise ValueError('编辑框宽度锁定选项必须为开启或关闭。')
+                if 'manual_editor_width' in changes and (type(changes['manual_editor_width']) is not int or not 100 <= changes['manual_editor_width'] <= 8000):
+                    raise ValueError('编辑框宽度应为100～8000。')
                 if 'timing' in changes:
                     changes.update(timing_changes(self.preferences, changes['timing']))
                 elif 'stall_seconds' in changes and 'timing' in self.preferences:
@@ -1195,8 +1459,13 @@ class FlowService(QtCore.QObject, FlowOperations):
                     if current.get('authorized'):
                         self.send(current, {'type': 'timing_settings', 'timing': timing_snapshot(self.preferences),
                             'browser_options': browser_options_snapshot(self.preferences)})
+                from .ui_mutex import watch as watch_ui_mutex
+                watch_ui_mutex(self)
             elif action == 'reset_account_state':
                 reset_accounts(self, command.get('keys', []))
+            elif action == 'reset_browser_errors':
+                from .startup_state import reset_runtime
+                reset_runtime(self)
             elif action == 'mark_account_unavailable':
                 keys = set(command.get('keys', []))
                 if not keys: raise ValueError('请先选择需要停用的账号。')
@@ -1231,7 +1500,7 @@ class FlowService(QtCore.QObject, FlowOperations):
                     self.request(client, 'snapshot')
             elif action == 'cancel':
                 for row in self.store.rows():
-                    if row['id'] in command['ids'] and row['status'] in {'queued', 'failed'}:
+                    if row['id'] in command['ids'] and row['status'] in {'collected', 'queued', 'failed'}:
                         self.store.update(row['id'], 'cancelled')
             elif action == 'retry_now':
                 from .retry_now import request_now
@@ -1240,7 +1509,13 @@ class FlowService(QtCore.QObject, FlowOperations):
                 if action == 'retry' and command.get('only_failed'):
                     from .policy import FAILURES
                     command['ids'] = [r['id'] for r in self.store.rows() if r['status'] in FAILURES]
-                self.store.retry(command['ids'], regenerate=action == 'regenerate')
+                local_saved = set()
+                if action != 'regenerate':
+                    from .suspicious_download import preserve
+                    for row in self.store.rows():
+                        if row['id'] in command['ids'] and row['remote'].get('unverified_download') and preserve(self, row, retry=True):
+                            local_saved.add(row['id'])
+                self.store.retry([i for i in command['ids'] if i not in local_saved], regenerate=action == 'regenerate')
                 if command.get('only_failed') and not self.safety_paused:
                     self.paused = True
                     self.released = {r['id'] for r in self.store.rows() if r['id'] in command['ids'] and r['status'] == 'queued'}
@@ -1255,9 +1530,13 @@ class FlowService(QtCore.QObject, FlowOperations):
                 pass
             elif action == 'stop':
                 self.closing, self.paused = True, True
+                from .ui_mutex import watch as stop_ui_mutex
+                stop_ui_mutex(self)
                 self.released.clear()
                 timer = getattr(self, 'timer', None)
                 if timer: timer.stop()
+                ui_lock_timer=getattr(self,'ui_lock_timer',None)
+                if ui_lock_timer:ui_lock_timer.stop()
                 dispatch_timer = getattr(self, 'dispatch_timer', None)
                 if dispatch_timer: dispatch_timer.stop()
                 for socket in list(self.clients):
@@ -1270,7 +1549,12 @@ class FlowService(QtCore.QObject, FlowOperations):
                 self.stopped.emit()
                 return
             self.publish()
-            if action in {'start','enqueue','submit_selected','set_high_credit_permission','browser_launch_result','project_open_result','retry_download_selected','high_credit_decision'}:
+            if action == 'delete_records':
+                # Publish the removed queue before a lease can grant a delayed
+                # GUI launch; its final guard must see the current jobs.
+                from .ui_mutex import watch as watch_ui_mutex
+                watch_ui_mutex(self)
+            if action in {'start','enqueue','submit_selected','set_high_credit_permission','browser_launch_result','project_open_result','retry_download_selected','high_credit_decision','delete_records','reset_browser_errors'}:
                 self.wake_dispatch()
         except Exception as error:
             if command.get('action') == 'preferences' and command.get('request_id'):
@@ -1281,9 +1565,13 @@ class FlowService(QtCore.QObject, FlowOperations):
                 self.tasks_reset.emit({'success': False, 'request_id': command.get('request_id'), 'error': str(error)})
             if command.get('action') == 'setup_profile':
                 self.setup_ready.emit({'request_id': command.get('request_id'), 'success': False, 'error': str(error)})
-            if command.get('action') == 'enqueue':
+            if command.get('action') in {'enqueue','submit_selected','submission_lookup'}:
                 self.submission_failed.emit({'source': command.get('source', 'batch'),
                     'request_id': command.get('request_id'), 'error': str(error)})
+            if command.get('action') in {'list_project_videos','bind_download_video'}:
+                from .video_catalog import emit_error
+                emit_error(self, command, error)
+                return
             self.failed.emit(str(error))
 
     def set_lane(self, scope, key, duration, *, automatic=False):
@@ -1304,6 +1592,8 @@ class FlowService(QtCore.QObject, FlowOperations):
     def _tick(self):
         tick_ok = True
         try:
+            from .ui_mutex import watch as watch_ui_mutex
+            watch_ui_mutex(self)
             from model.OfflineMode import is_offline
             if is_offline():
                 return
@@ -1325,6 +1615,10 @@ class FlowService(QtCore.QObject, FlowOperations):
                 if confirm_saved_connection(self, client):
                     self.publish()
             for request_id, request in list(self.pending.items()):
+                if request.get('retired') and request.get('cancel_deadline',float('inf'))<=time.time():
+                    self.pending.pop(request_id,None)
+                    self.store.finish_reset_hold(request['attempt'],request['client'])
+                    continue
                 # The page may first wait 45 seconds for controls, then open,
                 # rerender and verify settings. Do not time out its preflight
                 # at 60 seconds while the read-only preparation is still alive.
@@ -1332,12 +1626,23 @@ class FlowService(QtCore.QObject, FlowOperations):
                 if time.time() - request['at'] < request_timeout(self.preferences, request['action'], owner):
                     continue
                 self.pending.pop(request_id, None)
+                if request.get('backlog_attempt') and owner:
+                    from .download_backlog import cancelled
+                    cancelled(self,owner,request['backlog_attempt'],{'success':False,'error':'暂存原下载响应超时，稍后重新核对'})
+                if request.get('tab_reuse_request'):
+                    from .tab_reuse import response
+                    response(self, request, {'success':False,'error':'原标签页恢复超时；未额外打开Flow分页。'})
+                    continue
+                if request['action'] == 'list_project_videos':
+                    from .video_catalog import response as catalog_response
+                    catalog_response(self, owner, request, {'success':False, 'error':'读取视频列表超时，请确认原项目页面已显示后刷新。'})
+                    continue
                 if request.get('retired'):
                     continue
                 if request['action'] == 'repair_project':
                     if owner:
-                        owner['connection_recovery'] = {**owner.get('connection_recovery', {}), 'state': 'failed',
-                            'message': '当前项目自动修复响应超时，将按设置继续恢复；未提交的任务可自动重新调度'}
+                        from .connection_recovery import repair_response
+                        repair_response(self,owner,request,{'success':False,'error':'原项目页面修复请求响应超时；未收到扩展执行结果'})
                 if not request['job'] and request['action'] in {'get_points', 'snapshot'}:
                     for client in self.clients.values():
                         if client.get('id') == request['client']:
@@ -1369,7 +1674,7 @@ class FlowService(QtCore.QObject, FlowOperations):
                     # Its timeout owns only the attempt/browser it was sent to,
                     # just like a late response; never fail a newer submission.
                     if (row and row['attempt'] == request['attempt']
-                            and row['browser'] == request['client'] and row['status'] in TRANSIENT):
+                            and row['browser'] == request['client'] and (row['status'] in TRANSIENT or request['action']=='retry_download' and row['remote'].get('download_backlog'))):
                         client = next((c for c in self.clients.values() if c.get('authorized') and c.get('id') == request['client']), None)
                         if request['action'] in {'upload_images', 'retry_download'}:
                             self.transfer_failed(row, 'upload' if request['action'] == 'upload_images' else 'download', '浏览器传输响应超时，将自动重试')
@@ -1387,8 +1692,14 @@ class FlowService(QtCore.QObject, FlowOperations):
                             self.request(client, 'snapshot')
                         self.publish()
             self.refresh_reset_holds()
+            from .startup_state import watch as watch_browser_rechecks
+            if watch_browser_rechecks(self):self.publish()
+            from .failure_release import watch as release_failures
+            if release_failures(self): self.publish()
             from .credit_refresh import watch as watch_credit_refresh
             if watch_credit_refresh(self): self.publish()
+            from .download_backlog import watch as watch_download_backlog
+            if watch_download_backlog(self): self.publish()
             if self.watch_stalled():
                 self.publish()
             if watch_preparation(self):
@@ -1405,6 +1716,10 @@ class FlowService(QtCore.QObject, FlowOperations):
                 self.publish()
             if self.watch_transfer_retries():
                 self.publish()
+            from .browser_lifecycle import watch as watch_browser_lifecycle
+            if watch_browser_lifecycle(self): self.publish()
+            from .bridge_recovery import watch as watch_bridge_recovery
+            if watch_bridge_recovery(self): self.publish()
             from .page_recovery import watch
             if watch(self): self.publish()
             if time.time() - getattr(self, '_last_publish', 0) >= timing_value(self.preferences, 'status_publish_seconds'):
@@ -1413,6 +1728,10 @@ class FlowService(QtCore.QObject, FlowOperations):
             batches = self.store.batches()
             retire_exhausted(self)
             admitted = admitted_queue(rows, batches, self.observed_costs, paused=self.paused, released=self.released)
+            from .credit_packs import dispatch as dispatch_pack
+            if dispatch_pack(self, rows, batches, admitted):
+                return True
+            rows = self.store.rows()
             from .balance_dispatch import refresh_probe_cycle
             refresh_probe_cycle(self, rows)
             from .ordered_dispatch import queue_head, snapshot_clients, take, browser_order
@@ -1431,11 +1750,11 @@ class FlowService(QtCore.QObject, FlowOperations):
                 return
             clients = [client for client in self.clients.values() if client['authorized']]
             limit = max(1, min(8, int(self.preferences.get('concurrency', 2))))
-            if sum(row['status'] in TRANSIENT for row in rows) >= limit:
+            if active_count(rows) >= limit:
                 return
             if refresh_expired(self, queued_rows):
                 self.publish()
-            if refresh_needed(self, queued_rows, capacity=min(limit-sum(r['status'] in TRANSIENT for r in rows),len(admitted))): self.publish()
+            if refresh_needed(self, queued_rows, capacity=min(limit-active_count(rows),len(admitted))): self.publish()
             client = queued = None
             # Strict FIFO: only the earliest admitted row may acquire a browser.
             affinity = affinity_context(clients, rows, self.preferences, {row['id'] for row in admitted})
@@ -1452,44 +1771,20 @@ class FlowService(QtCore.QObject, FlowOperations):
             if selected and not prefer_smaller(self, candidate, selected, affinity=affinity):
                 queued, client = candidate, selected
             if client:
-                self.browser_reuse_wait = {}
-                client.pop('reuse_recovery',None)
-                if not self.media_disks_ready(queued):
-                    return
-                try:
-                    unchanged = fingerprint(queued['payload']['image']) == queued['payload']['image_identity']
-                except OSError:
-                    unchanged = False
-                if not unchanged:
-                    self.store.update(queued['id'], 'failed', error='参考图片在提交后变化或丢失，请重新添加任务。')
-                    self.publish()
-                    return
-                attempt = uuid.uuid4().hex
-                from .browser_slots import seen as browser_seen
-                browser_seen(self, client)
-                remember_owner(self, queued, client)
-                take(self, client)
-                self.assign_lane(client, queued['payload'])
-                remote = {'account': client['account'], 'profile': client.get('profile', ''), 'activity_at': time.time()}
-                if queued['remote'].get('prepare_retry'):
-                    remote['prepare_retry'] = queued['remote']['prepare_retry']
-                if queued['remote'].get('generation_retry'):
-                    remote['generation_retry'] = {**queued['remote']['generation_retry'], 'state': 'running'}
-                if queued['remote'].get('upload_recovery'):
-                    remote['upload_recovery'] = queued['remote']['upload_recovery']
-                self.store.update(queued['id'], 'preparing', attempt=attempt, browser=client['id'], remote=remote)
-                job = queued['payload']
-                if not reuse_prepare(self, client, self.store.get(queued['id'])):
-                    self.request(client, 'prepare', {'videoModel': 'omni_1_1_flash', 'duration': job['duration'],
-                    'aspectRatio': 'ASPECT_RATIO_' + job['aspect'].replace(':', '_'),
-                    'resolution': 'VIDEO_RESOLUTION_' + job['resolution'].upper(), 'footageType': 'VIDEO_FRAMES', 'count': 1}, queued['id'])
-                self.publish()
-                return True
+                from .credit_packs import begin
+                return begin(self, queued, client)
             else:  # Actual Chrome opens share the GUI's single-shot spacing timer.
                 from .browser_reuse import defer_launch
                 if defer_launch(self,queued_rows[0]['payload']): return
                 profiles = configured_profiles(self.preferences)
                 online = {c.get('profile') for c in clients}
+                # A connected account reserved for another image cannot turn
+                # its old startup lease into capacity for this FIFO head.
+                self.launching = {profile: at for profile, at in self.launching.items()
+                    if time.time() - at < timing_value(self.preferences, 'browser_startup_seconds') and
+                    (profile not in online or any(c.get('profile') == profile and
+                        allows_image(c, queued_rows[0]['payload'], rows, self.preferences, affinity['images'])
+                        for c in clients))}
                 held_profiles = {r['remote'].get('profile') for r in rows if r['status'] in TRANSIENT | {'uncertain', 'download_failed'}}
                 held_profiles.update(hold['profile'] for hold in self.store.reset_holds() if hold['profile'])
                 available = [p for p in profiles if p not in self.launched and p not in online and p not in held_profiles
@@ -1513,23 +1808,28 @@ class FlowService(QtCore.QObject, FlowOperations):
                 useful_accounts = {c['account'] for c in clients if c.get('account') not in busy and any(
                     allows_image(c, row['payload'], rows, self.preferences, affinity['images']) and
                     capable(c, row['payload'], self.preferences, estimated_cost(row['payload'], self.observed_costs)) for row in queued_rows)}
-                self.launching = {profile: at for profile, at in self.launching.items() if time.time() - at < timing_value(self.preferences, 'browser_startup_seconds')}
                 # Cold connected pages and extension hello packets do not
                 # justify opening the entire backup group while four pages
                 # are still initializing or undergoing bounded recovery.
                 from .credit_cache import pending_browser_checks
+                from .browser_reuse import stopped as preparation_stopped
                 starting = {c.get('profile') for c in clients if c.get('profile') and
+                    not preparation_stopped(self,c) and
                     c.get('profile') not in held_profiles and c.get('account') not in useful_accounts and
                     not block_for(c, self.preferences) and not c.get('blocked') and
+                    high_credit_allowed(c, self.preferences) and any(
+                        dispatch_rank(c, row['payload'], self.preferences) is not None and
+                        can_fund(c, row['payload'], self.preferences, self.observed_costs) and
+                        allows_image(c, row['payload'], rows, self.preferences, affinity['images'])
+                        for row in queued_rows) and
                     (not c.get('page_ready') or not c.get('credits_local')) and
-                    (time.time() - c.get('connected', 0) < timing_value(self.preferences, 'browser_startup_seconds') or
-                     (c.get('connection_recovery') or {}).get('state') == 'checking' or
-                     0 < (c.get('connection_recovery') or {}).get('count', 0) < timing_value(self.preferences, 'connection_repair_attempts'))}
+                    time.time() - c.get('connected', 0) < timing_value(self.preferences, 'browser_startup_seconds')}
                 starting.update(profile for profile in pending_browser_checks(self, queued_rows, affinity)
                     if profile not in held_profiles)
-                starting.update(p for p in self.launching if p not in held_profiles and
+                from .browser_slots import live_starting_profiles
+                starting.update(p for p in live_starting_profiles(self) if p not in held_profiles and
                     not any(c.get('profile') == p and c.get('account') in useful_accounts for c in clients))
-                occupied = sum(r['status'] in TRANSIENT for r in rows) + len(useful_accounts) + len(starting)
+                occupied = active_count(rows) + len(useful_accounts) + len(starting)
                 if candidate and occupied < limit:
                     target_job = queued_rows[ranked[0][1]]['payload']
                     if start_browser(self, candidate, target_job):
@@ -1549,8 +1849,22 @@ class FlowService(QtCore.QObject, FlowOperations):
         finally:
             if tick_ok:
                 self._database_lock_reported = False
+                from .scheduler_recovery import watch as watch_scheduler_recovery
+                try:
+                    if watch_scheduler_recovery(self):self.publish()
+                    self._scheduler_recovery_error=''
+                except Exception as error:
+                    text='调度自动恢复暂未完成：'+str(error)
+                    if getattr(self,'_scheduler_recovery_error','')!=text:
+                        self._scheduler_recovery_error=text
+                        self.failed.emit(text)
+                        if not temporary_database_lock(error):
+                            self.scheduler_recovery={'attention':True,'message':'自动恢复遇到异常，请查看阻塞原因。',
+                                'details':text+'；原队列保留，其他可用账号继续。请查看浏览器与时长分档的具体原因。'}
+                            self.scheduler_attention.emit(dict(self.scheduler_recovery))
 
     def publish(self):
+        from .mutex_monitor import snapshot as mutex_snapshot
         self._last_publish = time.time()
         rows = self.store.rows()
         with self.store.connection() as db:
@@ -1569,20 +1883,39 @@ class FlowService(QtCore.QObject, FlowOperations):
         fifo = queue_head(self,rows,batches)
         first = fifo[0]['id'] if fifo else None
         for row in rows:
+            if row['remote'].get('image_upload_abandoned'):
+                row['status_label']='图片已放弃 · 同图任务已跳过'
             row['reset_risk'] = submission_risk(row, row['attempt'] in charged)
             row['wait_reason'] = waiting_reason(row, clients, rows, self.preferences, self.observed_costs, batches,
                 paused=self.paused, released=self.released, affinity=affinity)
             detail = retry_detail(row, self.preferences)
             if detail: row['wait_reason'] = detail
+            if row['status']=='uploading':
+                client=next((c for c in clients if c.get('id')==row['browser']),{})
+                mutex=client.get('ui_mutex') or {}
+                phase=(row['remote'].get('upload_phase') or {}).get('phase')
+                if mutex.get('state')=='waiting' and mutex.get('operation')=='upload_images':
+                    row['status_label']='等待UI操作权限'
+                    if not detail:row['wait_reason']='等待其他浏览器完成当前页面操作；尚未开始本次传图'
+                elif not detail:
+                    row['status_label'],row['wait_reason']={
+                        'checking':('检查已有参考图','正在当前项目查找相同图片；找到后直接复用，不重复上传'),
+                        'uploading':('上传图片／等待网站确认','正在上传或等待网站返回图片素材编号；此阶段包含网页处理'),
+                        'verifying_upload':('核对上次上传结果','上次拖放结果尚未确认；本次只查找原图片，未再次拖放，也不会再次连接上传调试器'),
+                        'mounting':('挂载参考图首帧','图片素材已确认，正在挂载并核对首帧，无需重新上传')
+                    }.get(phase,('等待网页准备参考图','上传请求已发出，等待扩展报告具体阶段'))
             reuse_wait = getattr(self,'browser_reuse_wait',{})
             if (row['status'] == 'queued' and row['id'] == reuse_wait.get('job') and not self.safety_paused and
                     (not self.paused or row['id'] in self.released)):
                 row['wait_reason'] = reuse_wait['message']
-            if row['status'] == 'queued' and first and row['id'] != first and (not self.paused or row['id'] in self.released):
+            if row['status'] == 'queued' and not row['remote'].get('credit_pack') and first and row['id'] != first and (not self.paused or row['id'] in self.released):
                 row['wait_reason'] = '按提交顺序等待前序任务派发；'+row['wait_reason']
         from .runtime_close import batch_summary
         self.changed.emit({'jobs': rows, 'clients': clients, 'paused': self.paused,
+                           'ui_lock_monitor':mutex_snapshot(self),
                            'runtime_close_batch': batch_summary(self),
+                           'browser_error_reset': getattr(self,'browser_error_reset',{}),
+                           'scheduler_recovery': getattr(self,'scheduler_recovery',{}),
                            'browser_capacity': browser_capacity(self),
                            'high_credit_pending': dict(self.high_credit_pending) if self.high_credit_pending else None,
                            'pairing': self.pair, 'preferences': self.preferences, 'downloads_root': self.downloads_root,

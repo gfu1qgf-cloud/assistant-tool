@@ -42,9 +42,9 @@ async function fixture({active=false, state='minimized', pendingUrl, focused=fal
   for(const action of ['get_points','prepare','upload_images','run_tasks']){
     const f=await fixture();
     await f.api.receive({action,request_id:action,params:action==='run_tasks'?{batch_id:'a'.repeat(32),tasks:[{}]}:{}});
-    assert.equal(f.forwarded[0]?.active,true,action+' must activate its exact saved project tab before using upstream UI');
-    assert.equal(f.forwarded[0]?.state,'normal',action+' cannot leave the working project minimized');
-    assert.deepEqual(f.windows,[{id:42,state:'normal',focused:false}]);
+    assert.equal(f.forwarded[0]?.active,false,action+' must honor automatic-focus OFF');
+    assert.equal(f.forwarded[0]?.state,'minimized',action+' must leave a minimized window untouched when focus is OFF');
+    assert.deepEqual(f.windows,[]);assert.deepEqual(f.updates,[]);
     assert(f.updates.every(x=>!x.url),'no navigation or reload');
   }
   const visible=await fixture({active:true,state:'maximized'});

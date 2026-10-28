@@ -12,7 +12,7 @@ function page(managed) {
   const context={window,location:{hostname:'flow.google.com',href:'https://flow.google.com/project/fixture'},console:quiet,WebSocket:Socket,
     document:{title:'Google Flow',querySelector(){dom++;return null;},querySelectorAll(){dom++;return[];}},
     localStorage:{getItem(key){storage.push(key);return'2';},setItem(key){storage.push(key);}},
-    state:{isRunning:false,tasks:[]},batchPromise:null,bridgeUiReady:false,syncPageVideoSettings(){},
+    state:{isRunning:false,tasks:[]},batchPromise:null,bridgeUiReady:false,submitPackedTask(){throw Error('download/account fixture must never submit a paid task');}, syncPageVideoSettings(){},
     uploadPathsToFlow(){throw Error('account bridge cannot upload');},getLoadedPageImages:()=>[],simulateClick(){throw Error('account bridge cannot click');},
     cleanupPageOverlays(){throw Error('account bridge cannot change page overlays');},
     sendToExtension(action){native.push(action);return new Promise(()=>{});},

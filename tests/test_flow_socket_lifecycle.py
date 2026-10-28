@@ -30,6 +30,9 @@ class SocketLifecycleTests(unittest.TestCase):
 
     def test_deleted_old_wrapper_does_not_interrupt_replacement_handshake(self):
         service = self.service(); stale, old = self.stale(service)
+        # This handshake belongs to a Flow-requested start. A manually opened
+        # browser now stays observation-only and intentionally has no UI probe.
+        service.launching['Profile 19']=time.time()
         fresh = MagicMock(); service.clients[fresh] = {'socket': fresh, 'authorized': False, 'connected': time.time()}
         errors = []; service.failed.connect(errors.append)
         service._message(fresh, json.dumps({'type': 'hello', 'protocol': PROTOCOL,

@@ -1,23 +1,50 @@
 """A launch timeout is not evidence that a Chrome window has gone away."""
 import time
+import math
 import hmac
+import re
 
 from .connection_status import configured_profiles
 from .store import TRANSIENT
 from .timing import value as timing_value
 
 
+def obsolete_version_failure(entry):
+    """Only re-admit a verified bridge rejected by an older program's ceiling."""
+    from .setup_support import compatible_extension
+    probe = entry.get('probe') or {}
+    version = str(probe.get('version') or '')
+    if entry.get('kind') != 'extension_probe_v3' or not compatible_extension(version):
+        return False
+    verified = probe.get('status') == 'enabled' or (probe.get('status') == 'unknown' and
+        probe.get('reason') == '已核对本配置安装路径及扩展身份；启动后等待扩展在线确认。')
+    match = re.search(r'检测到扩展 ' + re.escape(version) +
+        r'，当前程序支持 1\.1\.8～1\.1\.(0|[1-9][0-9]*)；请使程序与桥接扩展版本匹配',
+        str(entry.get('message') or ''))
+    return bool(verified and match and int(match[1]) < int(version.rsplit('.', 1)[1]))
+
+
 def recover_legacy_probe_failures(preferences):
-    """Recheck old false negatives once, without losing real launch failures."""
-    if preferences.get('extension_probe_revision', 0) >= 3:
+    """Recheck old false negatives and newly supported bridges, retaining real faults."""
+    if preferences.get('extension_probe_revision', 0) < 4:
+        prefix = '扩展未启用或版本无法确认，请在连接向导修正后恢复；自动调度未打开此配置：'
+        failures = {profile: entry for profile, entry in preferences.get('browser_launch_failures', {}).items()
+                    if entry.get('kind') != 'extension_probe_v2' and
+                    (entry.get('kind') or not str(entry.get('message') or '').startswith(prefix)) and
+                    not (entry.get('kind') == 'extension_probe_v3' and not entry.get('probe') and
+                         str(entry.get('message') or '').endswith('已核对本配置安装路径及扩展身份；启动后等待扩展在线确认。'))}
+        preferences = {**preferences, 'extension_probe_revision': 4, 'browser_launch_failures': failures}
+    failures = preferences.get('browser_launch_failures', {})
+    recovered = {profile for profile, entry in failures.items() if obsolete_version_failure(entry)}
+    if not recovered:
         return preferences
-    prefix = '扩展未启用或版本无法确认，请在连接向导修正后恢复；自动调度未打开此配置：'
-    failures = {profile: entry for profile, entry in preferences.get('browser_launch_failures', {}).items()
-                if entry.get('kind') != 'extension_probe_v2' and
-                (entry.get('kind') or not str(entry.get('message') or '').startswith(prefix))}
     # This only re-admits a preflight check. The GUI must still verify the
-    # exact installed extension before it can open a browser.
-    return {**preferences, 'extension_probe_revision': 3, 'browser_launch_failures': failures}
+    # exact installed extension before it can open a browser. A new rejection
+    # records the current ceiling, so another restart cannot clear it again.
+    return {**preferences, 'browser_launch_failures':
+        {profile: entry for profile, entry in failures.items() if profile not in recovered},
+        'browser_probe_retries': {profile: entry for profile, entry in
+            preferences.get('browser_probe_retries', {}).items() if profile not in recovered}}
 
 
 def watch_probe_retries(service):
@@ -58,32 +85,65 @@ def limit(service):
 
 
 def admission_profiles(service):
-    """Count work and pending launches, never idle physical Chrome windows."""
-    online = {c.get('profile'): c for c in service.clients.values() if c.get('authorized')}
-    slots = {profile for profile, entry in service.preferences.get('browser_slots', {}).items()
-             if entry.get('state') == 'opening' and profile not in online}
-    slots.update(profile for profile in service.launching if profile not in online or
-                 not (online[profile].get('page_ready') and online[profile].get('credits_local')))
+    """Count executing work and starts, not accounts holding unresolved results.
+
+    Uncertain/download-failed rows continue to lock their own browser/account
+    in choose_client and the dispatch launch filter. They cannot reserve all
+    startup lanes and strand unrelated queued work.
+    """
+    slots = live_starting_profiles(service)
     slots.update(row['remote']['profile'] for row in service.store.rows()
-                 if row['status'] in TRANSIENT | {'uncertain', 'download_failed'} and row['remote'].get('profile'))
+                 if row['status'] in TRANSIENT and row['remote'].get('profile'))
+    return slots
+
+
+def live_starting_profiles(service):
+    """An old physical-window record is deduplication, not a perpetual lane."""
+    from .browser_reuse import stopped
+    now=time.time();maximum=timing_value(service.preferences,'browser_startup_seconds')
+    online={c.get('profile'):c for c in service.clients.values() if c.get('authorized')}
+    records=service.preferences.get('browser_slots',{})
+    def recent(at):
+        return type(at) in (int,float) and math.isfinite(at) and at>0 and now-at<maximum
+    slots={profile for profile,entry in records.items() if entry.get('state')=='opening' and profile not in online
+        and recent(entry.get('opened_at',entry.get('at',0)))}
+    for profile,at in service.launching.items():
+        client=online.get(profile)
+        if not recent(at) or client and stopped(service,client):continue
+        if not client or not (client.get('page_ready') and client.get('credits_local')):slots.add(profile)
     return slots
 
 
 def can_start(service, profile, occupied=None):
     # The legacy occupied argument described physical windows; it is no longer a gate.
+    from .launch_retries import cooling
+    from .browser_budget import available
+    if not available(service, profile): return False
+    if cooling(service.preferences,profile):return False
     if profile in service.preferences.get('browser_launch_failures', {}):
         return False
     if profile in getattr(service, 'launch_attempts', set()):
         return False
+    if service.preferences.get('browser_slots',{}).get(profile,{}).get('state')=='opening':
+        return False  # Expiry permits OTHER profiles; it never proves this window closed.
     occupied = admission_profiles(service)
     return profile in occupied or len(occupied) < limit(service)
 
 
 def summary(service):
     profiles = sorted(admission_profiles(service))
+    unresolved = sum(row['status'] in {'uncertain','download_failed'} for row in service.store.rows())
+    message = (f'任务／启动名额 {len(profiles)}/{limit(service)}：等待当前任务或启动完成；'
+               '空闲窗口不阻塞换号，自动关闭须先确认原任务与下载已结束') if len(profiles) >= limit(service) else ''
+    if unresolved:
+        message += ('；' if message else '') + f'待核对／待下载 {unresolved} 条：保留原任务及原账号绑定，不占用其他账号启动名额'
+    from .browser_budget import message as budget_message, profiles as physical_profiles, maximum
+    physical = physical_profiles(service)
+    detail = budget_message(service)
+    if detail: message = detail + ('；' + message if message else '')
     return {'profiles': profiles, 'used': len(profiles), 'limit': limit(service),
-            'message': (f'任务／启动名额 {len(profiles)}/{limit(service)}：等待当前任务或启动完成；'
-                        '自动关闭已停用，空闲窗口不阻塞换号') if len(profiles) >= limit(service) else ''}
+            'physical_used': len(physical), 'physical_limit': maximum(service),
+            'unresolved': unresolved, 'message': message}
 
 
 def request_start(service, profile, job=None):
@@ -91,7 +151,9 @@ def request_start(service, profile, job=None):
     if job is not None:
         from .high_credit import allowed
         from .image_affinity import cached_profile
-        if not allowed(online or cached_profile(profile, service.preferences), service.preferences):
+        from .policy import block_for
+        candidate = online or cached_profile(profile, service.preferences)
+        if block_for(candidate, service.preferences) or not allowed(candidate, service.preferences):
             return False
     if online:
         # Reopening Chrome is not a page repair. Reuse the original tab.
@@ -135,6 +197,8 @@ def disconnected(service, client):
     if not profile or (profile not in configured_profiles(service.preferences)
                        and profile not in service.preferences.get('browser_slots', {})):
         return
+    from .exhausted_browser import remember as remember_exhaustion
+    remember_exhaustion(service, client)
     if (client.get('credit_close') or {}).get('state') == 'closed':
         # Only a final native-close receipt proves the vacancy. An interrupted
         # close or a socket drop may leave other windows in this profile open.
@@ -166,6 +230,9 @@ def confirm_absence(service, message):
             any(c.get('authorized') and c.get('profile') == profile and
                 (c.get('credit_close') or {}).get('state') != 'closed' for c in service.clients.values())):
         return False
+    if service.preferences.get('browser_lifecycle', {}).get(profile, {}).get('state') in {'closing','close_failed'}:
+        from .browser_lifecycle import finish
+        finish(service, {'profile': profile}, True)
     closed(service, profile)
     return True
 
@@ -175,6 +242,10 @@ def launch_result(service, command):
     entry = service.preferences.get('browser_slots', {}).get(profile)
     if not entry or entry.get('state') != 'opening': return
     if command.get('opened') is True:
+        if not entry.get('opened_at'):
+            slots=dict(service.preferences.get('browser_slots',{}))
+            slots[profile]={**entry,'opened_at':time.time()}
+            service.commit_preferences({**service.preferences,'browser_slots':slots})
         return  # Opening is not yet an authenticated connection.
     if command.get('opened') is not False: return
     # The launcher reports this only when no process was started, so releasing
@@ -186,6 +257,8 @@ def launch_result(service, command):
         service.launching.pop(profile, None)
         service.launched.discard(profile)
         return
+    from .launch_retries import deferred_result
+    if deferred_result(service,command,slots):return
     retryable = command.get('kind') == 'extension_probe_v3' and command.get('retryable') is True
     retries = dict(service.preferences.get('browser_probe_retries', {}))
     if retryable:
@@ -194,7 +267,8 @@ def launch_result(service, command):
             'next_at': time.time() + timing_value(service.preferences, 'browser_probe_retry_seconds')}
     failures = {**service.preferences.get('browser_launch_failures', {}), profile: {
         'at': time.time(), 'message': str(command.get('error') or '浏览器未成功启动')[:500],
-        'kind': command.get('kind', 'launch'), 'retryable': retryable}}
+        'kind': command.get('kind', 'launch'), 'retryable': retryable,
+        **({'probe': command['probe']} if command.get('probe') else {})}}
     service.commit_preferences({**service.preferences, 'browser_slots': slots, 'browser_launch_failures': failures,
                                 'browser_probe_retries': retries})
     service.launching.pop(profile, None)

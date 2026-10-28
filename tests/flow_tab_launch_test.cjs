@@ -38,8 +38,8 @@ async function fixture(rows, saved = {}, health = {accepted:true}) {
     setInterval() {return 1;}, clearInterval() {}};
   vm.createContext(context);
   vm.runInContext(fs.readFileSync(path.join(root, 'flow_adapter/background.js'), 'utf8')
-    .replace("import './background.js';", '') + '\nglobalThis.api = {ensureTab, receive, resumeReloadSetup};', context);
-  await flush(); sockets[0]?.onopen?.();
+    .replace("import './background.js';", '') + '\nglobalThis.api = {ensureTab, receive, resumeReloadSetup};globalThis.api.chrome=chrome;globalThis.authReady=()=>{authenticated=true;};', context);
+  await flush(); sockets[0]?.onopen?.(); context.authReady();
   return {api: context.api, tabs, data, created, updates, focused, messages, sockets, hooks, reloads};
 }
 
@@ -59,7 +59,7 @@ async function fixture(rows, saved = {}, health = {accepted:true}) {
     url: 'chrome://newtab/', pendingUrl: project+'#lzx_setup='+ticket+'&lzx_port=18189'}]);
   assert.equal(await starting.api.ensureTab(), 7, 'a pending same-project navigation is already our tab');
   assert.equal(starting.created.length, 0, 'startup must not duplicate a project while Chrome is navigating');
-  await starting.api.receive({action: 'open_project', request_id: 'open', params: {}});
+  await starting.api.receive({action: 'open_project', request_id: 'open', params: {},browser_options:{focus_before_action:true}});
   assert.deepEqual(starting.focused, [{id: 42, focused: true}]);
 
   const cold = await fixture([]);
@@ -83,7 +83,48 @@ async function fixture(rows, saved = {}, health = {accepted:true}) {
   const restored = await fixture([{id: 9, windowId: 42, active: true, url: 'chrome://newtab/', pendingUrl: project}],
     {lzxReloadSetup: {version, project, mode: 'reload_only', tabId: 99}});
   assert.equal(restored.created.length, 0, 'reload recovery reuses the pending project instead of creating another tab');
-  assert.equal(restored.updates[0].id, 9);
+  assert.equal(restored.updates.length,0,'reload-only recovery must not replace the current page URL');
+  assert.deepEqual(restored.reloads,[9]);
+
+  const detailUrl=project+'/edit/video-original';
+  const preserveDetail=await fixture([{id:7,windowId:42,url:detailUrl,active:true}],
+    {lzxReloadSetup:{version,project,mode:'reload_only',tabId:7}});
+  assert.equal(preserveDetail.tabs.get(7).url,detailUrl);
+  assert.equal(preserveDetail.updates.length,0);assert.deepEqual(preserveDetail.reloads,[7]);
+  const reuse=await fixture([{id:7,windowId:42,url:detailUrl,active:true}],{},
+    {healthy:true,running:false,native_busy:false});
+  await reuse.api.receive({action:'reuse_project_tab',request_id:'reuse',params:{expires_at:Date.now()/1000+15,url:project,idle:true}});
+  assert.equal(reuse.created.length,0);assert.equal(reuse.updates.length,0);
+  assert.equal(reuse.tabs.get(7).url,detailUrl,'ordinary recovery must adopt rather than leave the video page');
+  const inPlace=await fixture([{id:7,windowId:42,url:project,active:true}],{},
+    {healthy:true,running:false,native_busy:false});
+  await inPlace.api.receive({action:'reuse_project_tab',request_id:'setup',params:{expires_at:Date.now()/1000+15,url:project+'#lzx_setup='+ticket+'&lzx_port=18189',idle:true}});
+  assert.equal(inPlace.created.length,0);assert.equal(inPlace.updates[0].id,7);
+  const home=await fixture([{id:7,windowId:42,url:'https://flow.google.com/',active:true}]);
+  await home.api.receive({action:'reuse_project_tab',request_id:'home',params:{expires_at:Date.now()/1000+15,url:project,idle:true}});
+  assert.equal(home.created.length,0);assert.equal(home.updates[0].id,7);
+  const expired=await fixture([{id:7,windowId:42,url:project,active:true}]);
+  await expired.api.receive({action:'reuse_project_tab',request_id:'expired',params:{url:project+'#lzx_setup='+ticket,idle:true,expires_at:Date.now()/1000-1}});
+  assert.equal(expired.updates.length,0);assert.equal(expired.created.length,0);
+  assert.equal(expired.messages.find(m=>m.request_id==='expired').success,false);
+  const coldWelcome=await fixture([{id:7,windowId:42,url:`chrome-extension://${extension}/options.html`,active:true}]);
+  coldWelcome.api.chrome.scripting={async executeScript(){return [];}};
+  await coldWelcome.api.receive({type:'welcome',browser_options:{focus_before_action:false}});
+  assert(coldWelcome.messages.some(m=>m.type==='project_missing' && m.project===project),'a cold options bootstrap must request same-tab recovery immediately');
+  await coldWelcome.api.receive({action:'reuse_project_tab',request_id:'cold-reuse',params:{expires_at:Date.now()/1000+15,url:project,idle:true}});
+  assert.equal(coldWelcome.created.length,0);assert.equal(coldWelcome.tabs.get(7).url,project);
+  const personal=await fixture([{id:7,windowId:42,url:'https://personal.test/',active:true}]);
+  await personal.api.receive({action:'reuse_project_tab',request_id:'private',params:{expires_at:Date.now()/1000+15,url:project,idle:true}});
+  assert.equal(personal.created.length,0);assert.equal(personal.updates.length,0);
+  assert.equal(personal.messages.find(m=>m.request_id==='private').success,false);
+  const noDuplicate=await fixture([{id:7,windowId:42,url:project,active:true}],{},
+    {healthy:true,running:false,native_busy:false});
+  await Promise.all([1,2,3].map(i=>noDuplicate.api.receive({action:'reuse_project_tab',request_id:'repeat'+i,params:{expires_at:Date.now()/1000+15,url:project,idle:true}})));
+  assert.equal(noDuplicate.created.length,0);assert.equal(noDuplicate.tabs.size,1);
+  const protectedWork=await fixture([{id:7,windowId:42,url:project,active:true}],{},
+    {healthy:true,running:true,native_busy:true});
+  await protectedWork.api.receive({action:'reuse_project_tab',request_id:'paid',params:{expires_at:Date.now()/1000+15,url:project+'#lzx_setup='+ticket,idle:true}});
+  assert.equal(protectedWork.updates.length,0);assert.equal(protectedWork.created.length,0);
 
   const options = await fixture([{id: 7, windowId: 42, url: project, active: true}]);
   let reply;
@@ -97,7 +138,8 @@ async function fixture(rows, saved = {}, health = {accepted:true}) {
     profile: 'Profile 23', project, mode: 'pair'})}); await flush();
   assert.equal(reply.success, true);
   assert.equal(options.created[0].url, `chrome-extension://${extension}/options.html#setup=${ticket}&port=18189`);
-  assert.equal(options.created[0].active, true);
+  assert.equal(options.created[0].active, false, 'automatic update page honors foreground OFF');
+  assert.equal(options.focused.length,0,'automatic update cannot pull its Chrome window to the desktop foreground');
   assert.equal(options.created[0].windowId, 42);
   assert.equal(options.data.lzxConfig.token, 'x'.repeat(40), 'showing settings cannot rewrite credentials');
   const fresh = await fixture([{id: 7, windowId: 42, url: project, active: true}]);

@@ -12,8 +12,23 @@
     window.postMessage({sender:'lzx-flow-extension',message:{action:'configure_timing',values:timingValues}},location.origin);
   }
   Promise.resolve(chrome.storage?.local?.get?.(['lzxTiming'])).then(saved=>applyTiming(saved?.lzxTiming)).catch(()=>{});
-  window.addEventListener('message', event => {
+  const pageEventListener = event => {
+    try {
+      if (!chrome.runtime?.sendMessage || chrome.runtime.getManifest && !chrome.runtime.getManifest()) throw Error('invalidated');
+    } catch {
+      window.__lzxFlowContent = false;
+      window.removeEventListener('message',pageEventListener);
+      return;
+    }
     if (event.source === window && event.origin === location.origin && event.data?.sender === 'lzx-flow-page') {
+      if (event.data.data?.type==='ui_mutex_command') {
+        const data=event.data.data;
+        chrome.runtime.sendMessage({action:'lzxUiMutex',token:data.token,operation:data.operation,batch_id:data.batch_id,
+          release:data.release===true,stopped:data.stopped===true,passive_wait:data.passive_wait===true})
+          .then(result=>window.postMessage({sender:'lzx-flow-extension',message:{action:'ui_mutex_result',token:data.token,...result}},location.origin))
+          .catch(()=>window.postMessage({sender:'lzx-flow-extension',message:{action:'ui_mutex_result',token:data.token,ok:false,state:'disconnected'}},location.origin));
+        return;
+      }
       if (['page_status', 'snapshot'].includes(event.data.data?.type)) {
         ready = true; lastPageAt = Date.now();
         if (typeof event.data.data?.data?.running === 'boolean') running = event.data.data.data.running;
@@ -24,8 +39,17 @@
       }
       chrome.runtime.sendMessage({action: 'lzxPageEvent', data: event.data.data}).catch(() => {});
     }
-  });
+  };
+  window.addEventListener('message',pageEventListener);
   chrome.runtime.onMessage.addListener((message, sender, reply) => {
+    if(message.action==='lzxBrowserOptions') {
+      window.postMessage({sender:'lzx-flow-extension',message:{action:'configure_browser_options',values:message.values}},location.origin);
+      reply({configured:true});return;
+    }
+    if(message.action==='lzxUiRevoked') {
+      window.postMessage({sender:'lzx-flow-extension',message:{action:'ui_mutex_revoked',token:message.token,state:message.state,stopping:message.stopping===true}},location.origin);
+      reply({received:true});return;
+    }
     if (message.action === 'lzxTiming') {applyTiming(message.values); reply({configured:true}); return;}
     if (message.action === 'lzxPageHealth') {
       window.postMessage({sender: 'lzx-flow-extension', message: {action: 'snapshot'}}, location.origin);

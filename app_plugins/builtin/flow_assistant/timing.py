@@ -6,6 +6,11 @@ CONFIG_KEY = 'flow_assistant_timing'
 
 Spec = namedtuple('Spec', 'key group label default minimum maximum unit help')
 SPECS = [Spec(*row) for row in (
+    ('ui_permission_retry_attempts','超时与重试','UI窗口／权限异常重试上限',3,1,10,'次','仅对真实窗口激活异常或操作中权限失效计数；申请阶段的锁占用、拒绝或等待到期会延迟重试，不受此上限限制。已点击生成或结果不确定时不重放。'),
+    ('ui_permission_retry_delays','超时与重试','UI申请等待与异常重试间隔',(1,3,5),.1,60,'秒序列','未取得锁时按此间隔重新申请，至少等待1秒，不计业务失败、保留原分包；最后一个间隔重复使用。暂停、停止和取消仍可退出，实际页面操作仍受原超时限制。'),
+    ('pack_ui_slice_seconds', '积分分包', '每轮UI锁的提交时间', 120, 10, 900, '秒', '首次进入生成提交操作后开始累计；参数准备、传图和等待别人持锁不计入。达到时间后完成当前网页操作，再让出锁，整包保持原账号和图片，排队取得下一轮锁继续。'),
+    ('pack_submit_interval_seconds', '积分分包', '包内连续提交最短间隔', 1, 0, 30, '秒', '拿到上一条真实提交回执后才计时，默认最短1秒；不等待视频生成和下载。'),
+    ('pack_submit_jitter_seconds', '积分分包', '包内提交间隔随机增量', 2, 0, 30, '秒', '随机增加0～此秒数，默认与最短间隔合计1～3秒。开启UI互斥时这段等待保留同一浏览器前台，每轮提交锁默认120秒；到期只交接锁，保持整包继续。'),
     ('credit_validity_seconds', '积分与关闭', '已检测余额有效期', 21600, 0, 2592000, '小时', '0 表示不过期；重连保留最近余额，付费前仍核对实际账号。过期仅触发重新检测，不把余额清零。'),
     ('high_credit_confirmation_seconds', '积分与关闭', '千分账号使用确认时限', 5, 1, 60, '秒', '从确认窗实际显示时起计时，后台等待不占用选择时间。小额账号用完或不可用后才询问；未明确选择“是”不消耗千分账号，排队任务继续保留。'),
     ('credit_cooldown_seconds', '积分与关闭', '低于 10 积分的冷却时间', 21600, 60, 2592000, '小时', '冷却期间不自动打开、检测或分配新任务；手动成功检测到至少 10 积分可提前解除。修改后按原冷却起点重算截止时间。'),
@@ -14,7 +19,7 @@ SPECS = [Spec(*row) for row in (
     ('credit_close_timeout_seconds', '积分与关闭', '关闭浏览器响应超时', 60, 5, 3600, '秒', '等待扩展完成关闭前核对的时间；超时保留原任务。'),
     ('credit_close_attempts', '积分与关闭', '关闭浏览器失败重试上限', 3, 1, 20, '次', '扩展明确忙碌不会消耗此次数；普通关闭失败达到上限后保持窗口。'),
     ('page_stale_seconds', '连接与启动', '页面未响应判定时间', 180, 10, 86400, '秒', '页面心跳超过此时间才标为失联。与积分有效期独立，页面失联不会删除余额。'),
-    ('browser_startup_seconds', '连接与启动', '浏览器启动占位时间', 90, 10, 3600, '秒', '页面及首次积分尚未就绪时占用并行启动名额，避免连续打开整组浏览器。'),
+    ('browser_startup_seconds', '连接与启动', '浏览器启动占位时间', 90, 10, 3600, '秒', '同时作为空闲账号准备及启动等待UI锁的总时限；超时跳过该账号并释放准备占位，继续其他账号。锁等待、页面心跳和重试不重置此时限；已提交的生成与下载不受此准备时限影响。'),
     ('browser_probe_retry_seconds', '连接与启动', '扩展安装状态未确认复查间隔', 60, 5, 3600, '秒', '只重查未启动浏览器的临时安装检测失败；通过检查后才正常启动。不反复打开窗口。'),
     ('browser_probe_attempts', '连接与启动', '扩展安装状态自动检查上限', 3, 1, 20, '次', '临时检测失败的总尝试次数，跨重启保留；明确停用、未安装或真正的启动失败仍需修正。'),
     ('browser_launch_interval_seconds', '连接与启动', '连续启动浏览器最短间隔', 3, 1, 3600, '秒', '成功启动一个后才开始计时；仅连续启动下一个时等待，第一项及空闲后的新请求立即执行。'),
@@ -23,6 +28,8 @@ SPECS = [Spec(*row) for row in (
     ('connection_repair_delays', '连接与启动', '连接修复各次等待', (30, 60, 120), 1, 86400, '秒序列', '逗号分隔，依次使用；次数超过列表长度时使用最后一项。'),
     ('connection_repair_attempts', '连接与启动', '连接自动修复上限', 3, 1, 20, '次', '达到上限后显示具体原因，保留项目和任务。'),
     ('handshake_timeout_seconds', '连接与启动', '扩展首次握手超时', 5, 1, 300, '秒', '仅用于尚未认证的本机连接，不影响已认证任务。'),
+    ('browser_ui_retry_seconds', '连接与启动', '启动前UI等待超时后重试间隔', 5, 1, 300, '秒', '浏览器尚未启动，仅因UI排队超时退出时，释放名额并稍后重新排队，不将账号判为故障。'),
+    ('bridge_update_wait_seconds', '连接与启动', '扩展重载后版本确认等待', 30, 5, 120, '秒', '自动重载入口实际打开后才计时。最多两次重载，再尝试一次安全重开；UI排队超时不消耗重载次数。'),
     ('queue_tick_seconds', '连接与启动', '调度检查间隔', 1, .25, 10, '秒', '队列及超时检查频率；不会因此周期性打开积分菜单。'),
     ('status_publish_seconds', '连接与启动', '界面状态刷新间隔', 15, 1, 3600, '秒', '无其他状态变化时向面板更新状态的间隔。'),
     ('disk_check_seconds', '连接与启动', '下载磁盘状态缓存', 15, 1, 3600, '秒', '磁盘空间状态重新读取间隔。'),
@@ -62,7 +69,9 @@ SPECS = [Spec(*row) for row in (
     ('bridge_forward_wait_seconds', '扩展与页面', '等待页面消息通道', 45, 1, 3600, '秒', '项目脚本尚未就绪时允许等待多久；不另开标签页。'),
     ('bridge_forward_retry_seconds', '扩展与页面', '页面消息通道重查间隔', 1, .1, 60, '秒', '等待通道期间每次检查之间的时间。'),
     ('page_controls_wait_seconds', '扩展与页面', '等待页面控件就绪', 45, 1, 3600, '秒', '开始参数准备、上传或提交前等待真实页面控件。'),
-    ('page_reference_reuse_wait_seconds', '扩展与页面', '已上传参考图重新挂载等待', 5, 1, 300, '秒', '复用素材无法在此时间内准确挂载时，停止等待并补传；主程序上传超时自动覆盖整个操作上限。'),
+    ('page_upload_idle_seconds', '扩展与页面', '图片上传无进展等待', 60, 5, 600, '秒', '图片尚未确认且没有上传活动或进度变化时，持续等待此时间才重试；不会在等待中重复拖入。'),
+    ('page_upload_max_seconds', '扩展与页面', '图片上传最长等待', 180, 10, 1800, '秒', '网页仍显示上传活动或进度变化时继续等，达到此总上限后停止本次等待。主程序响应超时自动覆盖完整操作。'),
+    ('page_reference_reuse_wait_seconds', '扩展与页面', '已上传参考图重新挂载等待', 5, 1, 300, '秒', '复用素材超时保留已确认的素材编号，后续仅重试挂载，不重复上传；完全重置可明确重新上传。主程序超时覆盖整个操作上限。'),
     ('page_initial_settle_seconds', '扩展与页面', '页面脚本启动稳定等待', 2, .1, 60, '秒', '脚本刚加载后等待状态恢复和页面挂载。'),
     ('page_dom_stable_seconds', '扩展与页面', '页面控件稳定等待', 1.5, .1, 60, '秒', '页面变动结束后等待控件稳定。'),
     ('page_settings_wait_seconds', '扩展与页面', '参数选中状态核对等待', 5, 1, 300, '秒', '等待实际选中模型、比例、分辨率和数量稳定，不能代替参数核对。'),
@@ -141,6 +150,7 @@ def delay(preferences, key, index):
 
 def request_timeout(preferences, action, client=None):
     from .setup_support import compatible_extension
+    if action in {'list_project_videos','reuse_project_tab'}: return 20
     key = {'prepare': 'prepare_timeout_seconds', 'upload_images': 'upload_timeout_seconds',
            'retry_download': 'download_timeout_seconds', 'close_exhausted': 'credit_close_timeout_seconds',
            'close_browser': 'credit_close_timeout_seconds'}.get(action, 'request_timeout_seconds')
@@ -148,7 +158,8 @@ def request_timeout(preferences, action, client=None):
     if action == 'upload_images':
         controls = value(preferences, 'page_controls_wait_seconds')
         reuse = controls if (client or {}).get('extension_version') == '1.1.25' else value(preferences, 'page_reference_reuse_wait_seconds')
-        floor = value(preferences, 'bridge_forward_wait_seconds') + 3 * controls + reuse + 20 * value(preferences, 'page_control_poll_seconds') + 5
+        upload = max(value(preferences, 'page_upload_idle_seconds'), value(preferences, 'page_upload_max_seconds'))
+        floor = value(preferences, 'bridge_forward_wait_seconds') + 2 * controls + upload + reuse + 20 * value(preferences, 'page_control_poll_seconds') + 45
         seconds = max(seconds, floor)
     if (client and client.get('extension_version') and not compatible_extension(client['extension_version'], minimum_patch=21)
             and 'timing_settings_v1' not in client.get('capabilities', [])):
@@ -166,6 +177,8 @@ def validate(preferences):
         raise ValueError('页面未响应判定时间应大于网页状态心跳间隔与检查间隔之和')
     if values['page_health_valid_seconds'] <= values['page_health_wait_seconds']:
         raise ValueError('网页健康快照有效期应大于健康检查响应等待')
+    if values['page_upload_max_seconds'] < values['page_upload_idle_seconds']:
+        raise ValueError('图片上传最长等待不能小于无进展等待')
     prepare = sum(values[key] for key in ('bridge_forward_wait_seconds', 'page_controls_wait_seconds',
                    'page_settings_wait_seconds', 'page_duration_wait_seconds')) + 5
     if values['prepare_timeout_seconds'] < prepare:

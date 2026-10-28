@@ -47,7 +47,7 @@ assert(start >= 0 && end > start);
 let attached, stops = 0;
 const state = {isRunning:true, tasks:[{taskId:'task',download_path:'FlowBridge/'+'a'.repeat(32)+'/result.mp4',mediaBindings:[{mediaIds:['original']}]}]};
 const context = {state, batchPromise:{}, window:{__lzxFlowTransport:{attach:(_handler,_snapshot,api)=>attached=api}},
-  handleMessage(){}, location:{href:'https://flow.google.com/project/test'}, syncPageVideoSettings(){},
+  handleMessage(){}, location:{href:'https://flow.google.com/project/test'}, submitPackedTask(){throw Error('download/account fixture must never submit a paid task');}, syncPageVideoSettings(){},
   reconcileResultReceipts(){}, uploadPathsToFlow(){}, getLoadedPageImages(){}, simulateClick(){}, cleanupPageOverlays(){},
   stopBatch(){stops++; state.isRunning=false;}};
 vm.createContext(context); vm.runInContext(`(function(){${built.slice(start,end)}})()`,context);

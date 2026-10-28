@@ -51,16 +51,23 @@ def restore_balance(client, preferences, now=None):
 
 
 def refresh_needed(service, queued_rows, *, capacity=None):
+    from .browser_reuse import stopped
     from .credit_cooldown import credit_hold
     from .account_policy import account_hold
     from .connection_recovery import occupied
     from .routing import dispatch_rank
     from .ordered_dispatch import browser_order
     from .high_credit import allowed, is_high
-    from .policy import block_for, estimated_cost
+    from .policy import block_for, estimated_cost, admitted_queue
+    from .image_affinity import allows_image, affinity_context
     from .store import TRANSIENT, choose_client
     rows = service.store.rows()
     clients = [c for c in service.clients.values() if c.get('authorized')]
+    admitted = admitted_queue(rows,service.store.batches(),service.observed_costs,
+        paused=service.paused,released=service.released)
+    affinity = affinity_context(clients,rows,service.preferences,{row['id'] for row in admitted})
+    useful = lambda client: any(dispatch_rank(client,row['payload'],service.preferences) is not None and
+        allows_image(client,row['payload'],rows,service.preferences,affinity['images']) for row in queued_rows)
     limit = max(1,min(8,int(service.preferences.get('concurrency',2))))
     if queued_rows:
         job = queued_rows[0]['payload']
@@ -70,12 +77,15 @@ def refresh_needed(service, queued_rows, *, capacity=None):
         capacity = max(0,int(service.preferences.get('concurrency',2))-sum(r['status'] in TRANSIENT for r in rows))
     token = lambda c: ('account',str(c['account']).strip().casefold()) if c.get('account') else ('profile',c.get('profile') or c['id'])
     held = {r['browser'] for r in rows if r['status'] in TRANSIENT}
-    reading = {token(c) for c in service.clients.values() if c.get('id') not in held and any(
+    reading = {token(c) for c in clients if c.get('id') not in held and not stopped(service,c) and useful(c) and any(
         p['client']==c.get('id') and p['action'] in {'get_points','repair_project'} for p in service.pending.values())}
     changed = False
     for client in sorted(service.clients.values(),key=lambda c:browser_order(c,service.preferences)):
         if len(reading) >= capacity: break
+        from .setup_support import required_bridge_update
+        if required_bridge_update(client, service.preferences): continue
         if (not client.get('authorized') or not client.get('page_ready')
+                or stopped(service,client)
                 or balance_ready(client, preferences=service.preferences)
                 or credit_hold(client, service.preferences) or account_hold(client, service.preferences)
                 or occupied(service, client) or client.get('native_busy') or client.get('setup_blocked')
@@ -84,7 +94,7 @@ def refresh_needed(service, queued_rows, *, capacity=None):
                 or client.get('credits_waiting_ready')
                 or client.get('credit_last_request_observed_at') == client.get('credits_at', 0)):
             continue
-        if not any(dispatch_rank(client, row['payload'], service.preferences) is not None for row in queued_rows): continue
+        if not useful(client): continue
         if service.request(client, 'get_points'):
             changed = True
             reading.add(token(client))
@@ -100,13 +110,14 @@ def pending_browser_checks(service, queued_rows, affinity):
     from .policy import block_for
     from .routing import dispatch_rank
     from .timing import request_timeout
+    from .browser_reuse import stopped
     now = time.time(); rows = service.store.rows()
     result = set()
     for client in service.clients.values():
         reading = any(request['client'] == client.get('id') and request['action'] in {'get_points','repair_project'} and
                       now-request['at'] < request_timeout(service.preferences,request['action'],client)
                       for request in service.pending.values())
-        if (not reading or not client.get('authorized') or not client.get('profile')
+        if (not reading or stopped(service,client) or not client.get('authorized') or not client.get('profile')
                 or client.get('blocked') or block_for(client, service.preferences)
                 or account_hold(client, service.preferences) or credit_hold(client, service.preferences)
                 or not allowed(client, service.preferences) or client.get('setup_blocked')

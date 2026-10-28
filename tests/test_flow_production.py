@@ -356,7 +356,7 @@ class ProductionTests(unittest.TestCase):
         from app_plugins.builtin.flow_assistant.ui import FlowDialog
         image = QtGui.QImage(120, 200, QtGui.QImage.Format.Format_RGB32); image.fill(0xff40aabb)
         image.save(str(self.image)); second = self.target / 'second.png'; image.save(str(second))
-        plugin = SimpleNamespace(ui_api_version=2, command=MagicMock(), context=SimpleNamespace(parent_widget=SimpleNamespace()))
+        plugin = SimpleNamespace(ui_api_version=4, command=MagicMock(), context=SimpleNamespace(parent_widget=SimpleNamespace()))
         dialog = FlowDialog(plugin); dialog.set_targets([self.args['target']]); self.addCleanup(dialog.close)
         return dialog, plugin
 
@@ -370,23 +370,21 @@ class ProductionTests(unittest.TestCase):
         panel.apply_state({'drafts': {key: {'prompt': 'old stale prompt', 'options': {'duration': 8}}}})
         self.assertEqual(panel.prompt.toPlainText(), 'first prompt')
 
-    def test_submit_next_changes_image_only_after_matching_success_ack(self):
-        dialog, plugin = self.ui(); panel = dialog.manual; original = panel.picker.image_path
-        panel.prompt.setPlainText('submit'); panel.enqueue(advance=True); request = panel.request_id
-        panel.acknowledged({'request_id': 'old', 'count': 1}); self.assertEqual(panel.picker.image_path, original)
-        panel.failed({'request_id': request, 'error': 'save failed'}); self.assertEqual(panel.picker.image_path, original)
-        panel.enqueue(advance=True); request = panel.request_id
-        panel.acknowledged({'request_id': request, 'count': 1})
-        self.assertNotEqual(panel.picker.image_path, original)
+    def test_append_next_is_local_and_advances_without_a_generation_command(self):
+        dialog,plugin=self.ui();panel=dialog.manual;original=panel.picker.image_path
+        panel.prompt.setPlainText('submit');panel.enqueue(advance=True)
+        self.assertNotEqual(panel.picker.image_path,original)
+        self.assertEqual(dialog.batch.rows[0]['prompt'],'submit')
+        self.assertFalse(any(call.args[0]['action']=='enqueue' for call in plugin.command.emit.call_args_list))
 
     def test_duplicate_ui_keeps_draft_until_explicit_variant_confirmation(self):
-        dialog, plugin = self.ui(); panel = dialog.manual
-        panel.prompt.setPlainText('variant'); panel.enqueue(); request = panel.request_id
-        with patch.object(dialog, 'confirm_duplicate', return_value=True):
-            panel.failed({'request_id': request, 'error': 'duplicate', 'duplicate_ids': ['original']})
-        command = plugin.command.emit.call_args.args[0]
-        self.assertTrue(command['allow_duplicates']); self.assertEqual(command['request_id'], request)
-        self.assertEqual(panel.prompt.toPlainText(), 'variant')
+        dialog,plugin=self.ui();panel=dialog.manual
+        panel.prompt.setPlainText('variant');panel.enqueue();dialog.batch.enqueue();request=dialog.batch.request_id
+        with patch.object(dialog,'confirm_duplicate',return_value=True):
+            dialog.batch.failed({'request_id':request,'error':'duplicate','duplicate_ids':['original']})
+        command=plugin.command.emit.call_args.args[0]
+        self.assertTrue(command['allow_duplicates']);self.assertEqual(command['request_id'],request)
+        self.assertEqual(panel.prompt.toPlainText(),'variant')
 
     def test_fresh_panel_loads_draft_options_and_queue_group_headers_are_not_jobs(self):
         dialog, plugin = self.ui(); panel = dialog.manual

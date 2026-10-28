@@ -11,6 +11,10 @@ from app_plugins.builtin.flow_assistant.transfer_policy import retry_info, retry
 
 
 class FlowBackgroundLaunchTests(unittest.TestCase):
+    def test_own_reconnect_bootstrap_retains_flags_without_a_flow_project_url(self):
+        from app_plugins.builtin.flow_assistant.setup_support import OPTIONS_URL
+        self.assertEqual(background_flags([OPTIONS_URL]),list(FLOW_BACKGROUND_FLAGS))
+        self.assertEqual(background_flags(['chrome-extension://another/options.html']),[])
     def test_real_launcher_carries_flags_on_flow_queue_and_preset_paths(self):
         launcher = type('Launcher', (), {'chrome_path': 'chrome.exe',
             'get_web_list': lambda _: ['https://labs.google/fx/tools/flow/project/original']})()
@@ -53,6 +57,7 @@ class FlowLateResultTests(unittest.TestCase):
 
     def test_pending_snapshot_does_not_consume_more_probes(self):
         service, row, client, _ = self.waiting()
+        client['extension_version']='1.1.39'  # Older clients retain bounded snapshot-only recovery.
         service.retry_download(row, automatic=True)
         current = service.store.get(row['id'])
         self.assertIn('视频结果核对 1/10', retry_detail(current, service.preferences))
@@ -64,6 +69,7 @@ class FlowLateResultTests(unittest.TestCase):
 
     def test_late_verified_result_is_retained_without_reoccupying_skipped_download(self):
         service, row, client, original = self.waiting()
+        client['extension_version']='1.1.39'
         service.preferences['timing'] = {'download_probe_attempts': 1}
         service.retry_download(row, automatic=True)
         current = service.store.get(row['id'])

@@ -96,7 +96,7 @@ class ImageAffinityTests(unittest.TestCase):
         self.assertEqual(service.store.get(rows[1]['id'])['browser'],owner['id'])
         self.assertEqual(service.store.get(other_row['id'])['status'],'queued')
 
-    def test_image_owner_waits_for_its_last_result_while_ready_open_spare_uses_free_lane(self):
+    def test_idle_image_owner_can_switch_while_other_accounts_keep_original_results(self):
         service=self.service(); clients=[self.browser(service,'Profile '+str(i),points=50+i*10) for i in range(4)]
         rows=self.queue(service,count=4)
         for _ in range(4):service._tick()
@@ -104,10 +104,12 @@ class ImageAffinityTests(unittest.TestCase):
         spare=self.browser(service,'Fresh',points=15)
         other=self.target/'other.png';other.write_bytes(b'other reference')
         service.store.enqueue(self.jobs(images=[other],duration=8,budget=0)); target=service.store.rows()[-1]
-        service._tick();self.assertEqual(service.store.get(target['id'])['browser'],spare['id'])
-        self.assertEqual(service.preferences['account_images'][clients[0]['account']]['image'],image_key(rows[0]['payload']))
+        service._tick();self.assertEqual(service.store.get(target['id'])['browser'],clients[0]['id'])
+        self.assertEqual(service.preferences['account_images'][clients[0]['account']]['image'],image_key(target['payload']))
+        for index,row in enumerate(rows[1:],1):
+            self.assertEqual(service.store.get(row['id'])['browser'],clients[index]['id'])
         for row in rows[1:]:service.store.update(row['id'],'completed')
-        self.assertEqual(service.store.get(target['id'])['browser'],spare['id'])
+        self.assertEqual(service.store.get(target['id'])['browser'],clients[0]['id'])
 
     def test_four_selected_accounts_continue_instead_of_rotating_into_ten_new_ones(self):
         service=self.service(); clients=[self.browser(service,'Profile '+str(i),points=50+i*10) for i in range(4)]

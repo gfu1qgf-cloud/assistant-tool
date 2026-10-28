@@ -20,14 +20,14 @@ class GenerationOptions(QtWidgets.QWidget):
         for seconds in DURATIONS:
             self.duration.addItem(f'{seconds} 秒', seconds)
         if manual:
-            self.duration.setCurrentIndex(self.duration.findData(8))
+            self.duration.setCurrentIndex(self.duration.findData(10))
         self.aspect = QtWidgets.QComboBox(self); self.aspect.addItems(['9:16', '16:9'])
         self.resolution = QtWidgets.QComboBox(self); self.resolution.addItems(['720p', '360p'])
         self.count = QtWidgets.QSpinBox(self); self.count.setRange(1, 20)
         self.budget = QtWidgets.QSpinBox(self); self.budget.setRange(0, 10000)
         self.budget.setSpecialValueText('自动计算积分')
         self.budget.setToolTip(RULE_NOTE + '。非零为单条预算；低于固定费用时不提交。4 秒／模型默认没有固定价格，保留页面读取和手动预算。')
-        form.addRow(QtWidgets.QLabel(RULE_NOTE, self))
+        rule=QtWidgets.QLabel('积分按所选时长计算',self);rule.setToolTip(RULE_NOTE);form.addRow(rule)
         for label, widget in [('视频时长', self.duration), ('画面比例', self.aspect),
                               ('分辨率', self.resolution), ('生成数量', self.count), ('单条积分预算', self.budget)]:
             form.addRow(label, widget)
@@ -37,7 +37,7 @@ class GenerationOptions(QtWidgets.QWidget):
                 'resolution': self.resolution.currentText(), 'count': self.count.value(), 'budget': self.budget.value()}
 
     def set_values(self, values):
-        index = self.duration.findData(values.get('duration', 8))
+        index = self.duration.findData(values.get('duration', 10))
         if index >= 0:
             self.duration.setCurrentIndex(index)
         self.aspect.setCurrentText(values.get('aspect', '9:16'))
@@ -52,21 +52,31 @@ class FullImagePreview(QtWidgets.QWidget):
         super().__init__(parent)
         self.image = QtGui.QImage()
         self.message = '选择任务图片后，在此确认完整画面'
+        self.portrait=False
         self.setMinimumSize(240, 180)
         self.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Expanding)
 
     def paintEvent(self, _event):
         painter = QtGui.QPainter(self)
         painter.fillRect(self.rect(), QtGui.QColor('#202731'))
+        bounds=self.canvas_rect()
+        if self.portrait:
+            painter.fillRect(bounds,QtGui.QColor('#0e1116'))
+            painter.setPen(QtGui.QColor('#73879a'));painter.drawRect(bounds.adjusted(0,0,-1,-1))
         if self.image.isNull():
             painter.setPen(QtGui.QColor('#d4dbe5'))
-            painter.drawText(self.rect().adjusted(12, 12, -12, -12),
+            painter.drawText(bounds.adjusted(12, 12, -12, -12),
                              QtCore.Qt.AlignmentFlag.AlignCenter | QtCore.Qt.TextFlag.TextWordWrap, self.message)
             return
-        size = self.image.size().scaled(self.size() - QtCore.QSize(12, 12), QtCore.Qt.AspectRatioMode.KeepAspectRatio)
-        rect = QtCore.QRect(QtCore.QPoint((self.width() - size.width()) // 2, (self.height() - size.height()) // 2), size)
+        size = self.image.size().scaled(bounds.size() - QtCore.QSize(12, 12), QtCore.Qt.AspectRatioMode.KeepAspectRatio)
+        rect = QtCore.QRect(QtCore.QPoint(bounds.x()+(bounds.width()-size.width())//2,bounds.y()+(bounds.height()-size.height())//2), size)
         painter.setRenderHint(QtGui.QPainter.RenderHint.SmoothPixmapTransform)
         painter.drawImage(rect, self.image)
+
+    def canvas_rect(self):
+        if not self.portrait:return self.rect()
+        height=min(self.height()-8,int((self.width()-8)*16/9));width=int(height*9/16)
+        return QtCore.QRect((self.width()-width)//2,(self.height()-height)//2,width,height)
 
 
 class TaskImagePicker(QtWidgets.QWidget):
@@ -76,16 +86,19 @@ class TaskImagePicker(QtWidgets.QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         layout = QtWidgets.QVBoxLayout(self); layout.setContentsMargins(0, 0, 0, 0)
+        self.workflow_panel=parent
         self.task_selector = TaskSelector(self)
         self.target = self.task_selector.combo
         self.task_selector.refresh_requested.connect(self._refresh_tasks)
         layout.addWidget(self.task_selector)
         row = QtWidgets.QHBoxLayout()
-        row.addWidget(QtWidgets.QLabel('该任务的图片（先选任务编号，再选图片）')); row.addStretch()
+        caption=QtWidgets.QLabel('参考图片',self);caption.setToolTip('先选任务编号，再选择该任务的参考图片。')
+        row.addWidget(caption); row.addStretch()
         refresh = QtWidgets.QPushButton('刷新图片', self)
         refresh.clicked.connect(self.load_images); row.addWidget(refresh)
         layout.addLayout(row)
         splitter = QtWidgets.QSplitter(self)
+        self.image_splitter=splitter
         self.images = QtWidgets.QListWidget(self)
         self.images.setIconSize(QtCore.QSize(74, 68))
         self.images.setMinimumWidth(180)
@@ -102,8 +115,19 @@ class TaskImagePicker(QtWidgets.QWidget):
         self.task_selector.changed.connect(self.load_images)
         self.images.currentItemChanged.connect(self.show_image)
 
+    def use_portrait_layout(self):
+        layout=self.layout();layout.removeWidget(self.image_splitter)
+        self.images.setParent(self);self.preview.setParent(self);self.image_splitter.hide()
+        self.images.setViewMode(QtWidgets.QListView.ViewMode.IconMode)
+        self.images.setFlow(QtWidgets.QListView.Flow.LeftToRight);self.images.setWrapping(False)
+        self.images.setMinimumWidth(0);self.images.setMaximumHeight(100);self.images.setMinimumHeight(80)
+        self.preview.portrait=True;self.preview.setMinimumSize(240,320)
+        self.preview.setToolTip('9:16竖屏预览框；图片按比例完整显示，不裁切。')
+        self.setMaximumHeight(16777215)
+        layout.insertWidget(1,self.preview,1);layout.insertWidget(2,self.images)
+
     def _refresh_tasks(self):
-        panel = self.parentWidget()
+        panel = self.workflow_panel
         if panel and hasattr(panel, 'dialog'): panel.dialog.refresh_task_catalog()
 
     def set_targets(self, targets, *, preferred_directory=None):
@@ -150,7 +174,8 @@ class TaskImagePicker(QtWidgets.QWidget):
                 self.preview.image = reader.read()
                 if self.preview.image.isNull():
                     raise ValueError('图片无法解码，未提交。')
-                self.info.setText(f'图片：{Path(self.image_path).name}  ·  {size.width()} × {size.height()} px\n{self.image_path}')
+                self.info.setText(f'{Path(self.image_path).name}  ·  {size.width()} × {size.height()} px')
+                self.info.setToolTip(self.image_path)
             except (OSError, ValueError) as error:
                 self.preview.message = str(error); self.info.setText(str(error))
         else:

@@ -52,7 +52,10 @@ def prepare(root=None):
         assert temporary.resolve().parent==parent
         staged=temporary/'package';builder(root).build(root,destination=staged)
         manifest=json.loads(data_file(staged/'manifest.json').read_text('utf-8'))
-        if manifest.get('version')!=EXTENSION_VERSION or {k:v for k,v in before.items() if k!='version'}!={k:v for k,v in manifest.items() if k!='version'}:
+        # Description names the audited upstream version; it is display text,
+        # not an extension privilege. All other manifest fields stay exact.
+        stable=lambda data:{k:v for k,v in data.items() if k not in {'version','description'}}
+        if manifest.get('version')!=EXTENSION_VERSION or stable(before)!=stable(manifest):
             raise ValueError('新扩展版本或权限核对失败，保留原扩展文件。')
         files={path.relative_to(staged):data_file(path).read_bytes() for path in staged.rglob('*') if path.is_file()}
         assert sum(map(len,files.values()))<128*1024*1024

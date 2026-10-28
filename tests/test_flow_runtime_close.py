@@ -79,8 +79,8 @@ class RuntimeCloseTests(unittest.TestCase):
         service = self.service(); client = self.ready(service)
         self.assertFalse(service.request(client, 'close_browser', {'idle': True}))
         self.assertFalse(service.request(client, 'close_exhausted', {'idle': True}))
-        client['capabilities'] = []; self.close(service, client)
-        self.assertIn('1.1.34', client['runtime_note']); self.assertFalse(service.pending)
+        client['capabilities'] = ['manual_browser_close_v1', 'automatic_browser_close_v1']; self.close(service, client)
+        self.assertIn('1.1.39', client['runtime_note']); self.assertFalse(service.pending)
         client.update(capabilities=[CAPABILITY], authorized=False); self.close(service, client)
         self.assertFalse(service.pending)
 
@@ -185,7 +185,9 @@ class RuntimeCloseMenuTests(unittest.TestCase):
         dialog.browsers.selectRow(self.row(dialog, 'Profile 2'))
         menu = QtWidgets.QMenu(); runtime = dialog.runtime_menu(menu)
         close = runtime.actions()[-1]
-        self.assertFalse(close.isEnabled()); self.assertIn('1.1.34', close.text())
+        self.assertFalse(close.isEnabled()); self.assertIn('1.1.39', close.text())
+        for client in dialog.state['clients']: client['capabilities'] = ['manual_browser_close_v1']
+        menu = QtWidgets.QMenu(); self.assertFalse(dialog.runtime_menu(menu).actions()[-1].isEnabled())
         for client in dialog.state['clients']: client['capabilities'] = [CAPABILITY]
         menu = QtWidgets.QMenu(); runtime = dialog.runtime_menu(menu); close = runtime.actions()[-1]
         self.assertTrue(close.isEnabled()); close.trigger()

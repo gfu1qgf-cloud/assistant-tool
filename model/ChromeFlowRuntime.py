@@ -15,6 +15,9 @@ def background_flags(targets):
     for target in targets:
         try:
             url = urlsplit(str(target))
+            if (url.scheme == 'chrome-extension' and url.hostname == 'pnjppjjfgiccpcfajkpooklgohgihdom'
+                    and not url.username and not url.password and url.path == '/options.html'):
+                return list(FLOW_BACKGROUND_FLAGS)
             if url.scheme != 'https' or url.username or url.password or url.port not in (None, 443):
                 continue
             if url.hostname == 'flow.google.com' or (

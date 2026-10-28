@@ -1,7 +1,7 @@
 const byId = id => document.getElementById(id);
 const extensionId = 'pnjppjjfgiccpcfajkpooklgohgihdom';
 let editing = false, setupGeneration = 0, setupSocket = null;
-const expectedVersion = '1.1.36';
+const expectedVersion = '1.1.59';
 let timingValues = {};
 const timingMs = (key,fallback) => Math.max(1, (Number.isFinite(timingValues[key]) && timingValues[key] > 0 ? timingValues[key] : fallback)*1000);
 async function loadTiming() {
@@ -132,6 +132,8 @@ async function automaticSetup() {
       byId('profile').value = profileName(pair.profile); byId('project').value = projectLink(pair.project);
       receiving = true; clearTimeout(timer); socket.close();
       if (await savePair(pair)) {
+        const {lzxReloadSetup: handoff}=await chrome.storage.local.get(['lzxReloadSetup']);
+        if(handoff?.ticket===ticket && handoff.mode!=='reload_only')await chrome.storage.local.remove('lzxReloadSetup');
         if (typeof history !== 'undefined') history.replaceState(null, '', location.pathname);
         await waitForConnection();
       }
@@ -183,7 +185,7 @@ async function ensureExtensionCurrent() {
     if (allowed) {
       await chrome.storage.local.set({lzxReloadSetup: {...entry, mode: allowed.mode || 'pair', project: allowed.project, profile: allowed.profile, version: expectedVersion}});
       byId('status').textContent = '已确认此配置没有正在生成／传输的任务，正在更新扩展并自动重连。';
-      if (typeof history !== 'undefined') history.replaceState(null, '', location.pathname);
+      if (typeof history !== 'undefined' && (allowed.mode || 'pair')==='reload_only') history.replaceState(null, '', location.pathname);
       chrome.runtime.reload(); return false;
     }
   }

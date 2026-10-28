@@ -14,8 +14,9 @@ from .timing import value as timing_value
 from .pricing import RULE_NOTE
 from .browser_table import Column as BC, HEADERS as BROWSER_HEADERS, BrowserItem, row_color
 from .status_ui import status_area
+from .suspicious_download import output_path
 
-STATUS = {'queued': '等待执行', 'preparing': '首次核对／更新快照', 'uploading': '准备参考图',
+STATUS = {'collected': '待统一提交', 'queued': '等待执行', 'preparing': '首次核对／更新快照', 'uploading': '上传／挂载参考图',
           'submitting': '提交生成', 'generating': '生成中', 'downloading': '下载中',
           'archiving': '保存到任务目录', 'completed': '已完成', 'failed': '失败',
           'download_failed': '下载自动恢复／需处理', 'archive_failed': '归档待重试',
@@ -31,31 +32,105 @@ def open_path(path):
 
 class FlowDialog(QtWidgets.QDialog):
     def __init__(self, plugin, parent=None):
-        if (getattr(plugin, 'ui_api_version', 1) != 2
+        if (getattr(plugin, 'ui_api_version', 1) != 4
                 or not all(hasattr(plugin, name) for name in ('context', 'command'))):
             raise RuntimeError('Flow 源码已更新，本次运行仍是旧服务。请在当前任务结束后正常重启辅助工具，再使用新面板；现有队列不会重新提交。')
         super().__init__(parent)
         self.plugin, self.targets, self.state = plugin, [], {}
         self.delete_request = ''
         self.reset_request = ''
-        self.setWindowTitle('Flow 视频助手 · Omni 生成队列')
-        self.resize(1160, 760)
-        layout = QtWidgets.QVBoxLayout(self)
-        self.note = QtWidgets.QLabel('选择任务编号和图片 → 写提示词 → 提交并生成。浏览器按需启动，成品自动下载到任务目录；连接和等待原因见下方。')
+        self.setWindowTitle('Chrome 与 Flow 助手 · 浏览器与视频生成')
+        self.resize(1450, 900)
+        shell = QtWidgets.QHBoxLayout(self)
+        shell.setSpacing(12)
+        self._sidebar(shell)
+        self.sections = QtWidgets.QStackedWidget(self)
+        shell.addWidget(self.sections, 1)
+        self.flow_page = QtWidgets.QWidget(self.sections)
+        layout = QtWidgets.QVBoxLayout(self.flow_page)
+        layout.setContentsMargins(0, 0, 0, 0)
+        self.note = QtWidgets.QLabel('准备就绪')
+        self.note.setToolTip('选择任务和图片，填写或识别提示词，加入清单后统一提交；生成结果自动归档到任务目录。')
         self.connection_summary = QtWidgets.QLabel('浏览器：尚未连接', self)
-        self.tabs = QtWidgets.QTabWidget(self)
+        self.tabs = QtWidgets.QTabWidget(self.flow_page)
+        self.tabs.setDocumentMode(True)
         layout.addWidget(self.tabs, 1)
         self._queue_page()
+        self.unified_submission = True
         self.manual = ManualSubmitPanel(self)
-        self.tabs.addTab(self.manual, '手动逐条提交')
         self._submit_page()
         self._browser_page()
         self._settings_page()
+        self._chrome_page()
+        self.sections.addWidget(self.flow_page)
+        self.sidebar.currentRowChanged.connect(self.sections.setCurrentIndex)
+        self.sidebar.setCurrentRow(1)
         status_row = QtWidgets.QHBoxLayout()
         status_row.addWidget(status_area(self.connection_summary, 3), 1)
-        self.connection_button = self.button('浏览器连接／时长设置', lambda: self.tabs.setCurrentWidget(self.browser_page), status_row)
+        self.connection_button = self.button('浏览器连接／时长设置', lambda: self.show_flow_page(self.browser_page), status_row)
+        self.stall_details_button=self.button('查看阻塞原因…',self.show_stall_details,status_row)
+        self.stall_details_button.hide()
         layout.addLayout(status_row)
+        from .mutex_monitor_ui import MutexMonitor
+        self.ui_lock_monitor=MutexMonitor(self.flow_page)
+        layout.addWidget(self.ui_lock_monitor)
         layout.addWidget(status_area(self.note, 1))
+
+    def _sidebar(self, layout):
+        rail = QtWidgets.QFrame(self)
+        rail.setObjectName('workspaceSidebar')
+        rail.setFixedWidth(156)
+        contents = QtWidgets.QVBoxLayout(rail)
+        contents.setContentsMargins(8, 18, 8, 8)
+        title = QtWidgets.QLabel('工作区', rail)
+        title.setContentsMargins(12, 0, 0, 10)
+        title.setStyleSheet('font-weight: 600; color: palette(text);')
+        contents.addWidget(title)
+        self.sidebar = QtWidgets.QListWidget(rail)
+        self.sidebar.setObjectName('workspaceNavigation')
+        self.sidebar.setAccessibleName('Chrome 与 FLOW 插件切换')
+        self.sidebar.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.sidebar.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        for text in ('Chrome', 'FLOW 插件'):
+            item = QtWidgets.QListWidgetItem(text)
+            item.setSizeHint(QtCore.QSize(132, 46))
+            self.sidebar.addItem(item)
+        contents.addWidget(self.sidebar, 1)
+        rail.setStyleSheet('''
+            QFrame#workspaceSidebar {background: palette(alternate-base); border: none; border-radius: 10px;}
+            QListWidget#workspaceNavigation {background: transparent; border: none; outline: none; font-size: 14px;}
+            QListWidget#workspaceNavigation::item {padding-left: 12px; margin: 3px 0; border-radius: 6px;}
+            QListWidget#workspaceNavigation::item:selected {background: palette(highlight); color: palette(highlighted-text);}
+            QListWidget#workspaceNavigation::item:hover:!selected {background: palette(midlight);}
+        ''')
+        layout.addWidget(rail)
+
+    def _chrome_page(self):
+        launcher = getattr(self.plugin, 'browser_launcher', None)
+        page = getattr(launcher, 'dialog', None)
+        self.chrome_page = page if isinstance(page, QtWidgets.QWidget) else None
+        self.chrome_section = QtWidgets.QWidget(self.sections)
+        layout = QtWidgets.QVBoxLayout(self.chrome_section)
+        layout.setContentsMargins(0, 0, 0, 0)
+        if self.chrome_page is None:
+            placeholder = QtWidgets.QLabel('Chrome 管理尚未初始化，请正常重启辅助工具后重试。', self.chrome_section)
+            placeholder.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+            layout.addWidget(placeholder)
+        else:
+            self.chrome_page.setParent(self.chrome_section)
+            self.chrome_page.setWindowFlags(QtCore.Qt.WindowType.Widget)
+            layout.addWidget(self.chrome_page)
+        self.sections.addWidget(self.chrome_section)
+
+    def show_chrome(self):
+        self.sidebar.setCurrentRow(0)
+        self.sections.setCurrentWidget(self.chrome_section)
+
+    def show_flow_page(self, page=None):
+        self.sidebar.setCurrentRow(1)
+        self.sections.setCurrentWidget(self.flow_page)
+        if isinstance(page, int): self.tabs.setCurrentIndex(page)
+        elif page is not None: self.tabs.setCurrentWidget(self.batch if page is self.manual else page)
 
     def button(self, text, callback, layout):
         button = QtWidgets.QPushButton(text, self)
@@ -78,7 +153,7 @@ class FlowDialog(QtWidgets.QDialog):
         page = QtWidgets.QWidget(self)
         layout = QtWidgets.QVBoxLayout(page)
         controls = QtWidgets.QHBoxLayout()
-        self.button('开始／继续等待项', self.start_queue, controls)
+        self.start_button = self.button('开始／继续等待项', self.start_queue, controls)
         self.button('暂停后续任务', lambda: self.send('pause'), controls)
         self.retry_now_button = self.button('立即重试', self.retry_selected_now, controls)
         self.retry_now_button.setToolTip('跳过选中任务的自动重试倒计时；保留重试次数、账号限制和原视频绑定。普通失败项沿用手动重试。')
@@ -92,6 +167,7 @@ class FlowDialog(QtWidgets.QDialog):
         menu.addAction('只提交选中项', lambda: self.send('submit_selected', ids=self.selected_ids()))
         menu.addAction('取消等待项', lambda: self.send('cancel', ids=self.selected_ids()))
         menu.addAction('完全重置并重新调度…', self.reset_selected_tasks)
+        menu.addAction('强制删除选中记录…', lambda: self.delete_records(force=True))
         menu.addAction('打开任务目录', self.open_directory)
         menu.addAction('播放成品', self.open_output)
         self.queue_menu_button.setMenu(menu); controls.addWidget(self.queue_menu_button)
@@ -117,62 +193,15 @@ class FlowDialog(QtWidgets.QDialog):
         self.tabs.addTab(page, '全局生成队列')
 
     def _submit_page(self):
-        page = QtWidgets.QWidget(self)
-        self.submit_page = page
-        layout = QtWidgets.QVBoxLayout(page)
-        self.task_selector = TaskSelector(page)
-        self.target = self.task_selector.combo
-        self.task_selector.changed.connect(self.load_images)
-        self.task_selector.refresh_requested.connect(self.refresh_task_catalog)
-        layout.addWidget(self.task_selector)
-        controls = QtWidgets.QHBoxLayout()
-        self.button('选中图片加入清单', self.add_selected_images, controls)
-        self.button('全部任务图片加入清单', self.add_all_images, controls)
-        layout.addLayout(controls)
-        self.images = QtWidgets.QListWidget(page)
-        self.images.setViewMode(QtWidgets.QListView.ViewMode.IconMode)
-        self.images.setIconSize(QtCore.QSize(100, 85))
-        self.images.setMaximumHeight(150)
-        self.images.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.ExtendedSelection)
-        layout.addWidget(self.images)
-        self.compose = self.table(['任务', '参考图片', '提示词（双击可修改）'], page)
-        self.compose.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.DoubleClicked)
-        self.compose.setColumnWidth(0, 160)
-        self.compose.setColumnWidth(1, 200)
-        layout.addWidget(self.compose, 1)
-        options = QtWidgets.QHBoxLayout()
-        self.duration = QtWidgets.QComboBox(page)
-        self.duration.addItem('模型默认', None)
-        for seconds in (4, 6, 8, 10): self.duration.addItem(f'{seconds} 秒', seconds)
-        self.aspect = QtWidgets.QComboBox(page); self.aspect.addItems(['9:16', '16:9'])
-        self.resolution = QtWidgets.QComboBox(page); self.resolution.addItems(['720p', '360p'])
-        self.count = QtWidgets.QSpinBox(page); self.count.setRange(1, 20)
-        self.budget = QtWidgets.QSpinBox(page); self.budget.setRange(0, 10000); self.budget.setSpecialValueText('自动计算积分')
-        self.budget.setToolTip(RULE_NOTE + '。非0为单条预算；低于固定费用时停止提交。其他时长保留页面读取或手动预算。')
-        for title, widget in [('模型：Omni 1.1 Flash', None), ('时长', self.duration), ('比例', self.aspect),
-                              ('分辨率', self.resolution), ('每图数量', self.count), ('单条积分预算', self.budget)]:
-            options.addWidget(QtWidgets.QLabel(title))
-            if widget: options.addWidget(widget)
-        layout.addLayout(options)
-        limits = QtWidgets.QHBoxLayout()
-        self.batch_label = QtWidgets.QLineEdit(page); self.batch_label.setPlaceholderText('提交批次名称（可选）')
-        self.batch_limit = QtWidgets.QSpinBox(page); self.batch_limit.setRange(0, 10**8); self.batch_limit.setSpecialValueText('不限整批')
-        limits.addWidget(self.batch_label, 1); limits.addWidget(QtWidgets.QLabel('整批积分上限')); limits.addWidget(self.batch_limit)
-        layout.addLayout(limits)
-        self.batch_estimate = QtWidgets.QLabel(page)
-        self.compose.itemChanged.connect(self.update_estimate)
-        for widget in (self.duration, self.aspect, self.resolution): widget.currentIndexChanged.connect(self.update_estimate)
-        for widget in (self.count, self.budget): widget.valueChanged.connect(self.update_estimate)
-        actions = QtWidgets.QHBoxLayout()
-        self.button('删除清单选中项', self.remove_compose, actions)
-        self.button('批量应用提示词…', self.apply_prompt, actions)
-        actions.addStretch()
-        self.save_only = QtWidgets.QCheckBox('仅保存，暂不生成', page); actions.addWidget(self.save_only)
-        self.submit_button = self.button('提交并生成', self.enqueue, actions)
-        self.save_only.toggled.connect(lambda checked: self.submit_button.setText('仅保存到队列' if checked else '提交并生成'))
-        layout.addLayout(actions)
-        layout.addWidget(status_area(self.batch_estimate, 1))
-        self.tabs.addTab(page, '批量添加任务')
+        from .batch_workspace import BatchWorkspace
+        self.batch=BatchWorkspace(self);self.submit_page=self.batch
+        self.compose=self.batch.compose;self.task_selector=self.manual.picker.task_selector
+        self.target=self.manual.picker.target;self.images=self.manual.picker.images
+        self.duration=self.manual.options.duration;self.aspect=self.manual.options.aspect
+        self.resolution=self.manual.options.resolution;self.count=self.manual.options.count;self.budget=self.manual.options.budget
+        self.batch_label=self.batch.batch_label;self.batch_limit=self.manual.batch_limit
+        self.batch_estimate=self.batch.estimate;self.save_only=self.batch.save_only;self.submit_button=self.manual.collect_submit
+        self.tabs.addTab(self.batch,'添加与统一提交')
 
     def _browser_page(self):
         page = QtWidgets.QWidget(self)
@@ -183,10 +212,17 @@ class FlowDialog(QtWidgets.QDialog):
         self.button('打开选中浏览器', self.open_selected_browser, row)
         self.button('修正后恢复选中浏览器', self.resume_selected_browsers, row)
         self.button('连接／安装扩展…', self.open_setup, row)
+        row.addStretch()
+        layout.addLayout(row)
+        row = QtWidgets.QHBoxLayout()
         self.close_low_credit_button = self.button('关闭所有积分不足浏览器',
             lambda: self.send('close_low_credit_browsers'), row)
         self.close_low_credit_button.setEnabled(False)
         self.close_low_credit_button.setToolTip('手动批量关闭已连接且确认低于10分的配置；生成、下载、待核对或余额未知／过期的会跳过。需要扩展1.1.34。')
+        self.reset_browser_errors_button = self.button('强制重置所有异常',lambda:self.send('reset_browser_errors'),row)
+        supported=getattr(self.plugin,'force_browser_reset_api',0)>=1
+        self.reset_browser_errors_button.setEnabled(supported)
+        self.reset_browser_errors_button.setToolTip('清除浏览器异常与恢复次数并重新检测；保留用户标记和未到期的积分刷新限制。正常任务继续，忙碌账号在空闲后重新检测。' if supported else '正常重启主程序后可使用强制重置。')
         row.addStretch()
         layout.addLayout(row)
         hint = QtWidgets.QLabel('默认自动安排时长：按队首任务将空闲的自动配置切到所需时长；固定分档仅接相匹配的任务。\n'
@@ -234,19 +270,22 @@ class FlowDialog(QtWidgets.QDialog):
         self.setup = ConnectionSetup(self); layout.addWidget(self.setup)
         form = QtWidgets.QFormLayout()
         self.group = QtWidgets.QComboBox(page)
-        self.group.addItem('只使用已连接浏览器', [])
-        launcher = getattr(getattr(self.plugin.context.parent_widget, 'chrome_plugin', None), 'dialog', None)
-        if launcher:
-            for group in launcher.profile_groups:
-                self.group.addItem(group['name'], launcher.get_group_profile_directories(group['id']))
+        from .browser_manager import launcher_for
+        launcher = getattr(launcher_for(self.plugin), 'dialog', None)
+        from .scheduling_groups import SchedulingGroups
+        self.scheduling_groups = SchedulingGroups(self, launcher)
         self.group.currentIndexChanged.connect(lambda: self.update_browsers())
         self.concurrent = QtWidgets.QSpinBox(page); self.concurrent.setRange(1, 8); self.concurrent.setValue(2)
+        self.window_limit = QtWidgets.QSpinBox(page); self.window_limit.setRange(2, 64); self.window_limit.setValue(4)
+        self.window_limit.setToolTip('Flow 自动调度最多保留的浏览器配置数，包含正在启动、执行和等待的窗口。不能小于并行账号数；降低后只会安全回收空闲窗口。')
+        self.concurrent.valueChanged.connect(self.window_limit.setMinimum)
         self.download_root = QtWidgets.QLineEdit(page)
         root_row = QtWidgets.QWidget(page); root_layout = QtWidgets.QHBoxLayout(root_row); root_layout.setContentsMargins(0, 0, 0, 0)
         root_layout.addWidget(self.download_root, 1)
         self.button('选择…', self.pick_download_root, root_layout)
         form.addRow('允许自动启动的浏览器配置组', self.group)
         form.addRow('最多并行账号', self.concurrent)
+        form.addRow('最多打开的 Flow 浏览器', self.window_limit)
         form.addRow('浏览器默认下载目录', root_row)
         self.upload_retries = QtWidgets.QSpinBox(page); self.upload_retries.setRange(0, 10); self.upload_retries.setValue(5)
         self.download_retries = QtWidgets.QSpinBox(page); self.download_retries.setRange(0, 10); self.download_retries.setValue(5)
@@ -274,7 +313,19 @@ class FlowDialog(QtWidgets.QDialog):
             selected = self.browser_selections()
             profile = selected[0].get('profile') if selected else None
         if profile: self.setup.select_profile(profile)
-        self.tabs.setCurrentWidget(self.settings_page)
+        self.show_flow_page(self.settings_page)
+
+    def show_stall_details(self):
+        text=self.state.get('scheduler_recovery',{}).get('details')
+        if not text:return
+        box=QtWidgets.QMessageBox(self)
+        box.setWindowTitle('Flow 调度阻塞原因')
+        box.setText('自动恢复未能恢复派发。具体配置及处理办法：')
+        box.setDetailedText(text)
+        box.setTextInteractionFlags(QtCore.Qt.TextInteractionFlag.TextSelectableByMouse)
+        box.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose)
+        box.open()
+        self._stall_details=box
 
     def refresh_task_catalog(self):
         self.plugin.refresh_tasks()
@@ -283,88 +334,38 @@ class FlowDialog(QtWidgets.QDialog):
         self.targets = list(targets)
         self.task_selector.set_targets(targets, preferred_directory=preferred_directory)
         self.manual.picker.set_targets(targets, preferred_directory=preferred_directory)
-        if activate: self.tabs.setCurrentWidget(self.manual)
+        if activate: self.show_flow_page(self.manual)
 
     def load_images(self):
-        self.images.clear()
-        target = self.target.currentData()
-        if not target: return
-        try:
-            for path in sorted(Path(target['target_dir']).iterdir()):
-                if path.is_file() and path.suffix.lower() in IMAGE_SUFFIXES:
-                    reader = QtGui.QImageReader(str(path))
-                    size = reader.size()
-                    if size.isValid(): reader.setScaledSize(size.scaled(100, 85, QtCore.Qt.AspectRatioMode.KeepAspectRatio))
-                    image = reader.read()
-                    item = QtWidgets.QListWidgetItem(QtGui.QIcon(QtGui.QPixmap.fromImage(image)), path.name)
-                    item.setData(QtCore.Qt.ItemDataRole.UserRole, str(path)); item.setToolTip(str(path))
-                    self.images.addItem(item)
-        except OSError as error: self.note.setText(str(error))
+        self.manual.picker.load_images()
 
-    def add_image(self, target, path):
-        row = self.compose.rowCount(); self.compose.insertRow(row)
-        for column, text in enumerate((target['label'], Path(path).name, target['task'].get('task_video_prompt', ''))):
-            item = QtWidgets.QTableWidgetItem(text)
-            if column < 2: item.setFlags(item.flags() & ~QtCore.Qt.ItemFlag.ItemIsEditable)
-            self.compose.setItem(row, column, item)
-        self.compose.item(row, 0).setData(QtCore.Qt.ItemDataRole.UserRole, {'target': target, 'image': str(path)})
+    def add_image(self,target,path):
+        if self.compose.rowCount()!=len(self.batch.rows):self.batch.rows=self.batch.rows[:self.compose.rowCount()]
+        return self.batch.add_image(target,path)
 
     def add_selected_images(self):
-        target = self.target.currentData()
+        target=self.target.currentData()
         if target:
-            for item in self.images.selectedItems(): self.add_image(target, item.data(QtCore.Qt.ItemDataRole.UserRole))
+            for item in self.images.selectedItems():self.add_image(target,item.data(QtCore.Qt.ItemDataRole.UserRole))
 
-    def add_all_images(self):
-        for target in self.targets:
-            for path in sorted(Path(target['target_dir']).iterdir()):
-                if path.is_file() and path.suffix.lower() in IMAGE_SUFFIXES: self.add_image(target, path)
-
-    def remove_compose(self):
-        for row in sorted({item.row() for item in self.compose.selectedItems()}, reverse=True): self.compose.removeRow(row)
+    def add_all_images(self):self.batch.add_all_images()
+    def remove_compose(self):self.batch.remove_selected()
 
     def apply_prompt(self):
-        text, ok = QtWidgets.QInputDialog.getMultiLineText(self, '应用提示词', '应用到选中行（未选则全部）：')
+        text,ok=QtWidgets.QInputDialog.getMultiLineText(self,'应用提示词','应用到选中行（未选则全部）：')
         if ok:
-            rows = {item.row() for item in self.compose.selectedItems()} or range(self.compose.rowCount())
-            for row in rows: self.compose.item(row, 2).setText(text)
+            for row in self.batch.selected_indices() or range(self.compose.rowCount()):self.compose.item(row,2).setText(text)
 
-    def enqueue(self):
-        items = []
-        for row in range(self.compose.rowCount()):
-            value = self.compose.item(row, 0).data(QtCore.Qt.ItemDataRole.UserRole)
-            prompt = self.compose.item(row, 2).text()
-            if not prompt.strip():
-                self.note.setText(f'第 {row + 1} 项缺少提示词，请先填写。'); return
-            items.append({'target': value['target'], 'images': [value['image']], 'prompt': prompt,
-                'duration': self.duration.currentData(), 'aspect': self.aspect.currentText(),
-                'resolution': self.resolution.currentText(), 'count': self.count.value(), 'budget': self.budget.value()})
-        if items:
-            self.submit_button.setEnabled(False)
-            self.submit_page.setEnabled(False)
-            self.save_preferences()
-            self.batch_request = {'items': items, 'request_id': uuid.uuid4().hex,
-                'start_after_save': not self.save_only.isChecked(),
-                'batch_limit': self.batch_limit.value(), 'batch_label': self.batch_label.text().strip()}
-            self.note.setText(f'正在固定图片与参数并保存 {len(items) * self.count.value()} 条任务，请等待保存回执。')
-            self.send('enqueue', **self.batch_request)
-
-    def update_estimate(self, *_):
-        items = []
-        for row in range(self.compose.rowCount()):
-            if self.compose.item(row, 0) is not None:
-                items.append({'images': ['image'], 'duration': self.duration.currentData(),
-                    'aspect': self.aspect.currentText(), 'resolution': self.resolution.currentText(), 'count': self.count.value()})
-        self.batch_estimate.setText(estimate_text(items, self.state))
+    def enqueue(self):self.batch.enqueue()
+    def update_estimate(self,*_):self.batch.update_controls()
 
     def start_queue(self):
         self.save_preferences()
         self.send('start')
 
     def save_preferences(self):
-        values = {'concurrency': self.concurrent.value(), 'profiles': self.group.currentData() or [],
-            'downloads_root': self.download_root.text().strip(), 'defaults': {
-                'duration': self.duration.currentData(), 'aspect': self.aspect.currentText(),
-                'resolution': self.resolution.currentText(), 'count': self.count.value(), 'budget': self.budget.value()},
+        values = {'concurrency': self.concurrent.value(), 'browser_window_limit':self.window_limit.value(), **self.scheduling_groups.values(),
+            'downloads_root': self.download_root.text().strip(), 'defaults': dict(self.batch.defaults),
             'manual_defaults': self.manual.options.values(), 'allow_general': self.allow_general.isChecked(),
             'auto_lane': self.auto_lane.isChecked(),
             'upload_retry_limit': self.upload_retries.value(), 'download_retry_limit': self.download_retries.value(),
@@ -406,7 +407,8 @@ class FlowDialog(QtWidgets.QDialog):
     def update_browser_rows(self):
         clients = self.state.get('clients', [])
         preferences = self.state.get('preferences', {})
-        launcher = getattr(getattr(self.plugin.context.parent_widget, 'chrome_plugin', None), 'dialog', None)
+        from .browser_manager import launcher_for
+        launcher = getattr(launcher_for(self.plugin), 'dialog', None)
         names = {profile['directory']: profile.get('name') or profile['directory']
                  for profile in getattr(launcher, 'profiles', [])}
         entries = {}
@@ -463,9 +465,9 @@ class FlowDialog(QtWidgets.QDialog):
             credit_text = ((f'{client["credits"]:g}' + ('（估算）' if client.get('credits_estimated') else ''))
                            if client.get('credits') is not None else '未知（待检测；参考 50 分）')
             from .high_credit import is_high
-            if is_high(client, preferences): credit_text += '\n千分账号（曾 ≥100 分）'
+            if is_high(client, preferences): credit_text += '\n千分账号（≥100 分）'
             from .high_credit import record as high_record
-            permission = high_record(client,preferences).get('permission')
+            permission = high_record(client,preferences).get('permission') if is_high(client,preferences) else None
             hold = credit_hold(client, preferences)
             if hold and (not online or client.get('credits') is None):
                 credit_text = f'{hold["balance"]:g}（冷却记录）'
@@ -577,11 +579,12 @@ class FlowDialog(QtWidgets.QDialog):
                 action.setEnabled(supported)
                 if not supported: action.setToolTip('当前扩展尚未加载此操作支持；相关浏览器正常重启加载 1.1.33 后可用。')
             if operation == 'close':
-                supported = bool(selected) and all('manual_browser_close_v1' in online.get(item.get('browser'),{}).get('capabilities',[]) for item in selected)
+                from .runtime_close import CAPABILITY as CLOSE_CAPABILITY
+                supported = bool(selected) and all(CLOSE_CAPABILITY in online.get(item.get('browser'),{}).get('capabilities',[]) for item in selected)
                 action.setEnabled(supported)
-                action.setToolTip('仅关闭所选 Chrome 配置的所有窗口；先核对无操作、生成、下载或待确认结果。关闭后暂停此配置自动调度，可通过“修正后恢复”恢复。' if supported else
-                    '关闭需要桥接扩展 1.1.34；当前运行的扩展尚未加载此功能。')
-                if not supported: action.setText('关闭此配置浏览器（需扩展 1.1.34）')
+                action.setToolTip('仅关闭所选 Chrome 配置的窗口；有非本项目标签页时保留整个浏览器。先核对无操作、生成、下载或待确认结果。关闭后暂停自动调度，可通过“修正后恢复”恢复。' if supported else
+                    '保护其他标签页需要桥接扩展 1.1.39；当前运行的扩展尚未加载此功能。')
+                if not supported: action.setText('关闭此配置浏览器（需扩展 1.1.39）')
         runtime.setToolTipsVisible(True)
         runtime.setToolTip('只对当前已连接的所选浏览器执行；未连接时禁用。F5 和关闭会再次核对无生成、下载或待确认结果。')
         return runtime
@@ -639,7 +642,7 @@ class FlowDialog(QtWidgets.QDialog):
 
     def select_jobs(self, ids):
         self.queue_tools.search.clear(); self.queue_tools.status.setCurrentIndex(0)
-        self.tabs.setCurrentIndex(0)
+        self.show_flow_page(0)
         for row in range(self.queue.rowCount()):
             item = self.queue.item(row, 0)
             if item and item.data(QtCore.Qt.ItemDataRole.UserRole) in ids:
@@ -664,7 +667,7 @@ class FlowDialog(QtWidgets.QDialog):
 
     def open_output(self):
         job = self.selected_job()
-        if job and Path(job['payload']['output']).is_file(): self.manual.recent.open_row(job)
+        if job and Path(output_path(job)).is_file(): self.manual.recent.open_row(job)
 
     def retry_selected_downloads(self):
         ids = self.selected_ids()
@@ -720,22 +723,26 @@ class FlowDialog(QtWidgets.QDialog):
         if result['skipped']: message += ' 未重置：' + '；'.join(sorted({row['reason'] for row in result['skipped']}))
         self.note.setText(message)
 
-    def delete_records(self, ids=None):
+    def delete_records(self, ids=None, *, force=False):
+        if force and getattr(self.plugin,'force_delete_api',0)!=1:
+            self.note.setText('强制删除需要正常重启主程序后启用；本次运行仍是旧服务，记录保持不变。');return
         if self.delete_request: return
         ids = self.selected_ids() if ids is None else ids
         rows = [row for row in self.state.get('jobs', []) if row['id'] in set(ids)]
         if not rows:
             self.note.setText('请先选择要删除的任务记录；支持多选。'); return
-        box = QtWidgets.QMessageBox(self); box.setWindowTitle('删除 Flow 任务记录')
+        box = QtWidgets.QMessageBox(self); box.setWindowTitle('强制删除 Flow 任务记录' if force else '删除 Flow 任务记录')
         box.setTextFormat(QtCore.Qt.TextFormat.PlainText)
-        box.setText(f'删除选中的 {len(rows)} 条任务记录？\n只删除队列和最近提交中的记录，不删除任务图片、成品或浏览器下载文件，也不会退回已用积分。\n正在生成、下载或保存的任务会保留，不会打断。此操作不可撤销。')
+        box.setText((f'强制删除选中的 {len(rows)} 条任务记录？\n无论错误、等待或执行状态，均从本地队列移除，停止软件对这些记录的后续调度和自动重试。\n'
+            '已提交的网页生成、浏览器下载或正在保存的文件仍可能继续；记录不会恢复。图片、成品和下载文件保留，已用积分不退回。此操作不可撤销。') if force else
+            f'删除选中的 {len(rows)} 条任务记录？\n只删除队列和最近提交中的记录，不删除任务图片、成品或浏览器下载文件，也不会退回已用积分。\n正在生成、下载或保存的任务会保留，不会打断。此操作不可撤销。')
         unresolved = sum(row['status'] in RECORD_UNRESOLVED for row in rows)
         confirm = None
-        if unresolved:
+        if unresolved and not force:
             confirm = QtWidgets.QCheckBox(f'已在原网页确认 {unresolved} 条待核对／下载任务的云端生成已结束，并放弃其恢复记录', box)
             box.setCheckBox(confirm)
             box.setInformativeText('不勾选则保留这些待核对记录；删除后不能再从软件重试其下载。')
-        remove = box.addButton('删除记录', QtWidgets.QMessageBox.ButtonRole.DestructiveRole)
+        remove = box.addButton('强制删除记录' if force else '删除记录', QtWidgets.QMessageBox.ButtonRole.DestructiveRole)
         cancel = box.addButton('取消', QtWidgets.QMessageBox.ButtonRole.RejectRole)
         box.setDefaultButton(cancel); box.setEscapeButton(cancel); box.exec()
         if box.clickedButton() is not remove: return
@@ -743,7 +750,7 @@ class FlowDialog(QtWidgets.QDialog):
         self.delete_button.setEnabled(False)
         self.note.setText('正在删除记录；图片、成品和下载文件均保留。')
         self.send('delete_records', request_id=self.delete_request, ids=[row['id'] for row in rows],
-                  confirmed_finished=bool(confirm and confirm.isChecked()))
+                  confirmed_finished=bool(confirm and confirm.isChecked()), **({'force':True} if force else {}))
 
     def records_deleted(self, result):
         if result.get('request_id') != self.delete_request: return
@@ -751,7 +758,8 @@ class FlowDialog(QtWidgets.QDialog):
         if not result.get('success'):
             self.note.setText('删除记录失败：' + result['error']); return
         self.note.setText(f'已删除 {len(result["deleted"])} 条记录；图片、成品和下载文件未删除。' +
-            (f' 另有 {len(result["skipped"])} 条正在执行或尚未确认云端结束，已保留。' if result['skipped'] else ''))
+            (f' 另有 {len(result["skipped"])} 条保留：'+'；'.join(sorted({r['reason'] for r in result['skipped']}))+
+                '。需要移除本地记录时，可使用“强制删除选中记录”。' if result['skipped'] else ''))
 
     def queue_menu(self, point):
         menu = QtWidgets.QMenu(self)
@@ -762,9 +770,13 @@ class FlowDialog(QtWidgets.QDialog):
         menu.addAction('完全重置并重新调度…', self.reset_selected_tasks)
         menu.addAction('打开任务目录', self.open_directory)
         menu.addAction('播放成品', self.open_output)
+        menu.addAction('复制图片固定编号（SHA-256）', self.queue_tools.copy_image_id)
         menu.addAction('删除选中记录…', lambda: self.delete_records())
+        menu.addAction('强制删除选中记录…', lambda: self.delete_records(force=True))
         menu.addAction('暂存下载并释放账号…', self.queue_tools.release)
-        menu.addAction('原链接过期：更新原媒体地址…', self.queue_tools.repair_download_url)
+        choose_video = menu.addAction('选择 Flow 视频恢复下载…', self.queue_tools.choose_download_video)
+        choose_video.setEnabled(bool(self.selected_job()))
+        menu.addAction('粘贴视频页面链接，恢复原视频下载…', self.queue_tools.repair_download_url)
         menu.addAction('打开对应浏览器', self.queue_tools.open_browser)
         menu.addAction('修改未提交项…', self.queue_tools.edit)
         menu.addAction('再做一版（恢复图片和参数）', lambda: self.manual.restore_job(self.selected_job()) if self.selected_job() else None)
@@ -781,23 +793,29 @@ class FlowDialog(QtWidgets.QDialog):
 
     def update_state(self, state):
         self.state = state
+        self.ui_lock_monitor.apply(state.get('ui_lock_monitor',{}))
+        collected = sum(r['status']=='collected' for r in state.get('jobs', []))
+        self.start_button.setText('统一提交／继续等待项' if collected else '开始／继续等待项')
+        collecting = state.get('preferences', {}).get('collect_before_submit', True)
+        self.batch.update_controls()
         report = state.get('runtime_close_batch', {})
         stamp = (report.get('id'), report.get('message'), report.get('detail'))
         if report.get('id') and stamp != getattr(self, '_runtime_close_report', None):
             self._runtime_close_report = stamp
             self.note.setText(report['message'])
             self.note.setToolTip(report.get('detail') or report['message'])
+        reset_report=state.get('browser_error_reset',{})
+        if reset_report.get('id') and reset_report['id']!=getattr(self,'_browser_error_reset_id',None):
+            self._browser_error_reset_id=reset_report['id']
+            self.note.setText(reset_report['message'])
+            self.note.setToolTip('正在进行的上传、生成、下载和待核对结果保留；忙碌浏览器在空闲后重新检测。')
         if not self.preferences_loaded:
             preferences = state.get('preferences', {})
             self.concurrent.setValue(int(preferences.get('concurrency', 2)))
+            self.window_limit.setValue(preferences.get('browser_window_limit',min(8,2*self.concurrent.value())))
             self.download_root.setText(state.get('downloads_root', ''))
             defaults = preferences.get('defaults', {})
-            duration_index = self.duration.findData(defaults.get('duration'))
-            if duration_index >= 0: self.duration.setCurrentIndex(duration_index)
-            self.aspect.setCurrentText(defaults.get('aspect', '9:16'))
-            self.resolution.setCurrentText(defaults.get('resolution', '720p'))
-            self.count.setValue(int(defaults.get('count', 1)))
-            self.budget.setValue(int(defaults.get('budget', 0)))
+            self.batch.defaults.update({key:defaults[key] for key in ('aspect','resolution','count','budget') if key in defaults})
             if not self.manual.dirty_keys:
                 self.manual.loading = True
                 self.manual.options.set_values(preferences.get('manual_defaults', {}))
@@ -810,9 +828,8 @@ class FlowDialog(QtWidgets.QDialog):
                 self.allow_general.setChecked(preferences.get('allow_general', True))
             with QtCore.QSignalBlocker(self.auto_lane):
                 self.auto_lane.setChecked(preferences.get('auto_lane', True))
-            for index in range(self.group.count()):
-                if self.group.itemData(index) == preferences.get('profiles', []): self.group.setCurrentIndex(index)
             self.preferences_loaded = True
+            self.scheduling_groups.load(preferences)
         jobs = state['jobs']
         scroll = self.queue.verticalScrollBar().value()
         self.queue_tools.render(jobs, STATUS)
@@ -825,23 +842,30 @@ class FlowDialog(QtWidgets.QDialog):
         queued = [row for row in jobs if row['status'] == 'queued']
         reason = (queued[0].get('wait_reason') or queued[0].get('error') or '等待调度') if queued else ''
         active = sum(row['status'] in {'preparing', 'uploading', 'submitting', 'generating', 'downloading'} for row in jobs)
-        self.progress.setText(f'{activity} · 排队 {len(queued)} · 执行 {active} · 完成 {done}/{len(jobs)} · 已连接 {len(state["clients"])} 个浏览器')
+        self.progress.setText(f'{activity} · 待统一提交 {collected} · 排队 {len(queued)} · 执行 {active} · 完成 {done}/{len(jobs)} · 已连接 {len(state["clients"])} 个浏览器')
         limit = int(state.get('preferences', {}).get('concurrency', 2))
-        attention = sum(item['state'] in {'需处理', '未就绪', '账号已隔离', '自动等待中'} for item in statuses)
-        summary = (f'账号并行 {active}/{limit} · 排队 {len(queued)} · 浏览器：已连接 {len(statuses)} · 可接单 {ready} · 执行中 {busy} · 等待／需处理 {attention}' +
-            (f'\n排队原因：{reason}' if reason else '\n提交并保存成功后自动调度；不必再点开始。'))
+        attention = sum(item['state'] in {'需处理', '未就绪', '账号已隔离', '自动等待中', '自动恢复中', '恢复失败／已跳过', '积分不足当前任务', '原结果待核对', '原结果待下载'} for item in statuses)
+        from .credit_packs import active_count
+        summary = (f'账号并行 {active_count(jobs)}/{limit} · 排队 {len(queued)} · 浏览器：已连接 {len(statuses)} · 可接单 {ready} · 执行中 {busy} · 等待／需处理 {attention}' +
+            (f'\n排队原因：{reason}' if reason else f'\n已收集 {collected} 条记录，点击“统一提交”后按同图积分分包执行。' if collected else '\n提交并保存成功后自动调度；不必再点开始。'))
         capacity = state.get('browser_capacity', {})
-        if capacity.get('message') and queued:
+        if capacity.get('message') and queued and not state.get('scheduler_recovery',{}).get('message'):
             summary += '\n' + capacity['message']
+        recovery=state.get('scheduler_recovery',{})
+        if recovery.get('message'):summary+='\n'+recovery['message']
+        self.stall_details_button.setVisible(bool(recovery.get('attention')))
         self.connection_summary.setText(summary)
         self.update_browsers()
         self.setup.apply_state(state)
         self.manual.apply_state(state)
+        self.batch.apply_state(state)
         self.update_estimate()
 
     def closeEvent(self, event):
+        if self.ui_lock_monitor.details:self.ui_lock_monitor.details.close()
         self.setup.cancel_auto_retry()
         self.setup.waiting_profile = ''; self.setup.capture_timer.stop()
         if hasattr(self.manual.recent, 'preview_dialog'): self.manual.recent.preview_dialog.close()
+        self.batch.flush()
         self.manual.flush_draft()
         super().closeEvent(event)

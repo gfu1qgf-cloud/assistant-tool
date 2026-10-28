@@ -13,6 +13,7 @@ from model.node_workflow.subtitle_nodes import shift
 from app_plugins.builtin.flow_assistant.archive import archive_download
 from app_plugins.builtin.flow_assistant.service import FlowService
 from app_plugins.builtin.flow_assistant.store import QueueStore, make_jobs
+from app_plugins.builtin.flow_assistant.timing import request_timeout
 
 
 class FlowBoundaryTests(unittest.TestCase):
@@ -52,7 +53,7 @@ class FlowBoundaryTests(unittest.TestCase):
                     service.store.update(job_id, 'preparing', attempt='a' * 32, browser='browser')
                     service.request(client, action, job=job_id)
                     request_id = next(iter(service.pending))
-                    service.pending[request_id]['at'] = time.time() - 200
+                    service.pending[request_id]['at'] = time.time() - request_timeout(service.preferences, action, client) - 1
                     service.store.update(job_id, 'generating', **{changed: 'b' * 32})
                     before = copy.deepcopy(service.store.get(job_id))
                     service._tick()
@@ -85,7 +86,7 @@ class FlowBoundaryTests(unittest.TestCase):
                                      attempt='a' * 32, browser=client['id'])
                 service.request(client, action, job=job_id)
                 for request in service.pending.values():
-                    request['at'] = time.time() - 200
+                    request['at'] = time.time() - request_timeout(service.preferences, request['action'], client) - 1
                 sent_before = client['socket'].sendTextMessage.call_count
                 service._tick()
                 self.assertEqual(service.store.get(job_id)['status'], status)

@@ -30,6 +30,12 @@ def occupied(service, client):
 
 
 def repair_idle(service, client):
+    from .browser_reuse import stopped
+    if stopped(service,client):return False
+    if client.get('credit_observation_only'):
+        from .passive_credits import flow_interest
+        if not flow_interest(service,client):return False
+        client['credit_observation_only']=False
     profile = client.get('profile')
     saved = project_identity(client.get('saved_project'))
     startup = service.preferences.get('browser_slots', {}).get(profile, {}).get('project_startup', {})
@@ -45,17 +51,47 @@ def repair_idle(service, client):
     attempts = service.connection_recoveries.get(profile, {})
     limit = timing_value(service.preferences, 'connection_repair_attempts')
     if attempts.get('count', 0) >= limit:
+        last=attempts.get('last_error') or client.get('ready_note') or client.get('page_error') or '已请求恢复原项目，但未收到控件就绪状态'
         client['connection_recovery'] = {**attempts, 'state': 'stopped',
-            'message': f'连接自动修复已达{limit}次，请检查此浏览器的登录、扩展状态或项目访问权限'}
+            'message': f'已发送 {limit:g} 次原页面恢复请求，仍未就绪；最后原因：{last}'}
         return False
     if attempts.get('next_at', 0) > time.time():
         return False
     count = attempts.get('count', 0) + 1
-    state = {'count': count, 'next_at': time.time() + delay(service.preferences, 'connection_repair_delays', count-1), 'state': 'checking',
+    if not service.request(client, 'repair_project', {'idle': True, 'url': client['saved_project'], 'force_reload':count >= 2}):
+        client['connection_recovery']={**attempts,'state':'not_sent','message':'页面恢复请求未能发出：'+str(
+            client.get('runtime_note') or client.get('page_error') or '浏览器连接未接受指令')}
+        return False
+    state = {**attempts, 'count': count, 'next_at': time.time() + delay(service.preferences, 'connection_repair_delays', count-1), 'state': 'checking',
         'message': f'页面消息通道未就绪，正在自动修复 {count}/{limit}；只恢复当前空闲项目'}
     service.connection_recoveries[profile] = state
     client['connection_recovery'] = state
-    return service.request(client, 'repair_project', {'idle': True, 'url': client['saved_project'], 'force_reload':count >= 2})
+    for pending in service.pending.values():
+        if pending['client']==client['id'] and pending['action']=='repair_project':
+            pending['connection_repair_previous']=count-1
+    return True
+
+
+def repair_response(service, client, request, message):
+    managed='connection_repair_previous' in request
+    current=dict(client.get('connection_recovery') or {})
+    busy=message.get('code')=='FLOW_PAGE_REPAIR_BUSY'
+    if message.get('success'):
+        reloaded=(message.get('data') or {}).get('reloaded') is True
+        text=('已执行原项目 F5，等待页面及积分就绪' if reloaded else
+            '原项目消息通道已回应；等待网页控件及积分就绪，尚未执行 F5')
+        current.update(state='waiting',message=text,last_error=client.get('ready_note') or text)
+    else:
+        text=str(message.get('error') or '扩展未返回页面恢复执行结果')[:500]
+        current.update(state='waiting' if busy else 'failed',message=text,last_error=text)
+        if busy:
+            if managed:current['count']=request['connection_repair_previous']
+            if 'f5_previous_count' in request:
+                client['f5_recovery']={**client.get('f5_recovery',{}),'count':request['f5_previous_count']}
+            current['next_at']=time.time()+timing_value(service.preferences,'connection_repair_wait_seconds')
+    client['connection_recovery']=current
+    client['runtime_note']=current['message']
+    if managed:service.connection_recoveries[client.get('profile')]=current
 
 
 def watch_connections(service):

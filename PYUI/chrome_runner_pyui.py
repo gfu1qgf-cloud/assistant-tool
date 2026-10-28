@@ -7,13 +7,14 @@ import subprocess
 import time
 import uuid
 
-from qt_compat import QtWidgets, QtGui
+from qt_compat import QtWidgets, QtGui, QtCore
 from qt_compat import Qt
 from qt_compat import QListWidgetItem, QMessageBox, QInputDialog
 
 from QTUI.chrome_runner_ui import Ui_ChromeRunnerDialog
 
 class ChromeRunnerDialog(QtWidgets.QDialog,Ui_ChromeRunnerDialog):
+    catalog_changed = QtCore.pyqtSignal()
     iterator_config_key = 'chrome_profile_iterator'
     websites_config_key = 'chrome_preset_websites'
     profile_groups_config_key = 'chrome_profile_groups'
@@ -191,6 +192,7 @@ class ChromeRunnerDialog(QtWidgets.QDialog,Ui_ChromeRunnerDialog):
                 self.populate_profile_group_combo()
                 self.restore_iterator_position()
                 self.update_iterator_status(f'已加载 {len(self.profiles)} 个 profiles')
+                self.catalog_changed.emit()
 
             except Exception as e:
                 self.status_label.setText(f'错误: {str(e)}')
@@ -223,6 +225,7 @@ class ChromeRunnerDialog(QtWidgets.QDialog,Ui_ChromeRunnerDialog):
         self.populate_profile_group_combo()
         self.restore_iterator_position()
         self.update_iterator_status(f'已扫描 {len(self.profiles)} 个 profiles')
+        self.catalog_changed.emit()
 
     def read_config(self):
         if not os.path.exists(self.config_path):
@@ -397,6 +400,7 @@ class ChromeRunnerDialog(QtWidgets.QDialog,Ui_ChromeRunnerDialog):
         config = self.read_config()
         config[self.profile_groups_config_key] = self.profile_groups_config()
         if self.write_config(config):
+            self.catalog_changed.emit()
             return True
         if show_error:
             QMessageBox.critical(self, '错误', 'Chrome 配置分组写入配置文件失败！')
@@ -1197,7 +1201,7 @@ class ChromeRunnerDialog(QtWidgets.QDialog,Ui_ChromeRunnerDialog):
 
         self.update_iterator_status(f'已批量启动 {launched_count} 个 profiles')
 
-    def launch_profile(self, profile, *, urls=None, new_window=True):
+    def launch_profile(self, profile, *, urls=None, new_window=True, activate=True):
         if not self.chrome_path:
             return False, 'Chrome 可执行文件未找到'
         try:
@@ -1209,11 +1213,17 @@ class ChromeRunnerDialog(QtWidgets.QDialog,Ui_ChromeRunnerDialog):
                 self.chrome_path,
                 f"--profile-directory={profile['directory']}",
                 *(['--new-window'] if new_window else []),
-                '--start-maximized',
+                '--start-maximized' if activate else '--start-minimized',
                 *background_flags(targets),
                 *targets,
             ]
-            subprocess.Popen(cmd)
+            startup = {}
+            if not activate and hasattr(subprocess, 'STARTUPINFO'):
+                info = subprocess.STARTUPINFO()
+                info.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                info.wShowWindow = 7  # SW_SHOWMINNOACTIVE; only Flow opts into this path.
+                startup['startupinfo'] = info
+            subprocess.Popen(cmd, **startup)
             return True, None
         except Exception as error:
             return False, str(error)
@@ -1253,10 +1263,31 @@ class ChromeRunnerDialog(QtWidgets.QDialog,Ui_ChromeRunnerDialog):
             return None
 
         self.next_profile_index %= len(iterator_profiles)
-        current_index = self.next_profile_index
+        original_index = self.next_profile_index
+        predicate = getattr(self, 'profile_skip_reason', None)
+        skipped = []
+        try:
+            factory = getattr(self, 'profile_skip_factory', None)
+            if callable(factory): predicate = factory()
+            for offset in range(len(iterator_profiles)):
+                current_index = (original_index + offset) % len(iterator_profiles)
+                candidate = iterator_profiles[current_index]
+                reason = predicate(candidate) if callable(predicate) else ''
+                if not reason: break
+                skipped.append((candidate, reason))
+            else:
+                self.update_iterator_status(f'本轮{len(skipped)}个账号均因Flow账号不可用或积分不足跳过，未启动浏览器；具体原因见提示')
+                self.status_label.setToolTip('\n'.join(f'{p["name"]}（{p["directory"]}）：{reason}' for p,reason in skipped))
+                return None
+        except Exception as error:
+            self.update_iterator_status('Flow账号状态／积分记录读取失败，未启动、未推进迭代位置：' + str(error))
+            return None
         profile = iterator_profiles[current_index]
         success, error = self.launch_profile(profile)
         if not success:
+            if current_index != original_index:
+                self.next_profile_index = current_index
+                self.save_iterator_state()
             QMessageBox.critical(self, '错误', f'启动失败: {error}')
             self.update_iterator_status('启动失败，迭代位置未推进')
             return None
@@ -1265,6 +1296,9 @@ class ChromeRunnerDialog(QtWidgets.QDialog,Ui_ChromeRunnerDialog):
         wrapped = self.next_profile_index == 0
         self.save_iterator_state()
         message = f"已启动：{profile['name']}"
+        if skipped:
+            message += f'；已跳过{len(skipped)}个Flow不可用／积分不足账号'
+        self.status_label.setToolTip('\n'.join(f'{p["name"]}（{p["directory"]}）：{reason}' for p,reason in skipped))
         if wrapped:
             message += '；已到列表末尾，将从头继续'
         self.update_iterator_status(message)

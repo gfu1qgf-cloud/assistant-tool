@@ -14,7 +14,7 @@ function sendMessageToBackground(payload, maxRetries = 5, initialDelay = 500) {
       // 检查当前 context 是否已被销毁（例如扩展重装/重启后旧标签页的脚本）
       if (typeof chrome === "undefined" || !chrome.runtime || !chrome.runtime.sendMessage) {
         console.error(`[FlowIsolated] 插件上下文已失效（Orphaned Content Script）。请手动刷新页面。`);
-        resolve({ error: "插件上下文已失效，请刷新页面重新连接。" });
+        resolve({ error: "插件上下文已失效，请刷新页面重新连接。", dispatched:attempt===1?false:undefined });
         return;
       }
 
@@ -29,7 +29,7 @@ function sendMessageToBackground(payload, maxRetries = 5, initialDelay = 500) {
 
             // 如果是上下文失效相关的错误，重试无意义，直接返回提示刷新
             if (errorMsg.includes("context invalidated") || errorMsg.includes("Extension context invalidated")) {
-              resolve({ error: "插件上下文失效，请刷新页面重新连接: " + errorMsg });
+              resolve({ error: "插件上下文失效，请刷新页面重新连接: " + errorMsg, dispatched:attempt===1?false:undefined });
               return;
             }
 
@@ -58,7 +58,7 @@ function sendMessageToBackground(payload, maxRetries = 5, initialDelay = 500) {
         const errorMsg = e.message || "";
         
         if (errorMsg.includes("context invalidated") || errorMsg.includes("Extension context invalidated")) {
-          resolve({ error: "插件上下文失效，请刷新页面重新连接: " + errorMsg });
+          resolve({ error: "插件上下文失效，请刷新页面重新连接: " + errorMsg, dispatched:attempt===1?false:undefined });
           return;
         }
 
@@ -79,16 +79,27 @@ function sendMessageToBackground(payload, maxRetries = 5, initialDelay = 500) {
 const handledCallbackIds = new Set();
 
 // 1. 监听来自 MAIN 网页环境的 window.postMessage 消息
-window.addEventListener("message", (event) => {
+const nativeBridgeListener = (event) => {
   // 安全校验：只处理当前 window 发送、且指定 sender 为 "flow-main" 的消息
   if (event.source !== window || !event.data || event.data.sender !== "flow-main") {
     return;
   }
 
+  // Reloaded content scripts can remain on the page with a dead runtime.
+  // Retire before ACK or dispatch; a new bridge may already be serving it.
+  try {
+    if (!chrome.runtime?.sendMessage || chrome.runtime.getManifest && !chrome.runtime.getManifest()) throw Error("invalidated");
+  } catch {
+    window.__lzxFlowNativeBridge = false;
+    window.removeEventListener("message",nativeBridgeListener);
+    window.postMessage({sender:"flow-isolated",callbackId:event.data.callbackId,
+      response:{error:"插件上下文失效，旧消息桥已退出；等待当前桥接恢复。",dispatched:false}},"*");
+    return;
+  }
   const { callbackId, payload } = event.data;
   if (callbackId) {
     // 立即通知主世界：桥接脚本已收到，取消 800ms / 2500ms 重发定时器
-    window.postMessage({ sender: "flow-isolated-ack", callbackId }, "*");
+    window.postMessage({ sender: "flow-isolated-ack", callbackId, live:true }, "*");
     if (handledCallbackIds.has(callbackId)) {
       console.warn(`[FlowIsolated] 忽略重复重发的请求: action=${payload?.action}, callbackId=${callbackId}`);
       return;
@@ -108,7 +119,8 @@ window.addEventListener("message", (event) => {
       response: safeResponse
     }, "*");
   });
-});
+};
+window.addEventListener("message",nativeBridgeListener);
 
 // 监听来自后台 Service Worker 的广播通知 (如下载完成事件)
 chrome.runtime.onMessage.addListener((message) => {

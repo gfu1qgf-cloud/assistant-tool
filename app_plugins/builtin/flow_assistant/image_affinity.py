@@ -64,9 +64,18 @@ def allows_image(client, job, rows, preferences, pending=None):
     remaining = pending.get(entry['image'], []) if pending is not None else [
         row for row in rows if row['status'] in PENDING and image_key(row.get('payload', {})) == entry['image']]
     if not remaining: return True
+    # Image ownership protects this account's in-flight work, not every task
+    # using that image on other accounts or unassigned future FIFO rows.
+    account=account_key(client.get('account') or entry.get('account'))
+    owned=[row for row in remaining if (client.get('id') and row.get('browser')==client['id'] or
+        client.get('profile') and row.get('remote',{}).get('profile')==client['profile'] or
+        account and account_key(row.get('remote',{}).get('account'))==account)]
+    protected=[row for row in owned if row['status']!='queued' or client.get('id') and
+        row.get('remote',{}).get('credit_pack',{}).get('browser')==client['id']]
+    if not protected:return True
     # Wait for the image's last concurrent result; release only when this
     # account cannot perform any remaining queued variant's cost/parameters.
-    queued = [row for row in remaining if row['status'] == 'queued']
+    queued = [row for row in owned if row['status'] == 'queued']
     if queued and balance_ready(client, preferences=preferences) and not any(
             dispatch_rank(client, row['payload'], preferences) is not None and (
                 estimated_cost(row['payload'], {}) is None or

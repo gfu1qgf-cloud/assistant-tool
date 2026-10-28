@@ -96,6 +96,18 @@ class TimingSettingsTests(unittest.TestCase):
         self.assertEqual(request_timeout({'timing': {'prepare_timeout_seconds': 30}}, 'prepare',
             {'extension_version': '1.1.19'}), 110, 'an older extension keeps its compatible minimum wait')
 
+    def test_upload_progress_budget_is_covered_without_resetting_request_deadline(self):
+        defaults = snapshot({})
+        self.assertEqual(defaults['page_upload_idle_seconds'], 60)
+        self.assertEqual(defaults['page_upload_max_seconds'], 180)
+        with self.assertRaisesRegex(ValueError, '最长等待'):
+            validate({'timing': {'page_upload_idle_seconds': 90, 'page_upload_max_seconds': 60}})
+        for total in (180, 600):
+            preferences = {'timing': {'page_upload_max_seconds': total}}
+            budget = request_timeout(preferences, 'upload_images', {'extension_version': EXTENSION_VERSION})
+            self.assertGreaterEqual(budget, total + 2 * defaults['page_controls_wait_seconds'] +
+                                    defaults['bridge_forward_wait_seconds'] + defaults['page_reference_reuse_wait_seconds'])
+
     def test_fresh_balance_survives_reconnection_without_opening_account_menu(self):
         service = self.service(); original = self.browser(service); self.observe(service, original, 52)
         client = self.hello(service, original)
@@ -261,7 +273,7 @@ class TimingSettingsTests(unittest.TestCase):
         self.assertEqual(panel.property('settings_plugin_id'), 'flow_assistant')
         index = dialog.settingTabWidget.indexOf(panel)
         item = dialog.settings_navigation.items[index]
-        self.assertEqual(item.parent().text(0), 'Flow 视频助手')
+        self.assertEqual(item.parent().text(0), 'Chrome 与 Flow 助手')
         self.assertEqual(item.parent().parent().text(0), '插件设置')
         self.assertIn('Flow 视频助手', item.text(0))
         self.assertFalse(hasattr(panel, 'save_button'), 'use the host settings transaction')

@@ -82,7 +82,8 @@ class TaskSelector(QtWidgets.QWidget):
             self.remembered_directory = target['target_dir']
             task = target.get('task', {})
             heading = ' · '.join(str(task.get(key) or '').strip() for key in ('task_date', 'task_id', 'task_name') if task.get(key))
-            self.details.setText(heading + '\n任务目录：' + target['target_dir'])
+            self.details.setText(heading)
+            self.details.setToolTip(heading+'\n任务目录：'+target['target_dir'])
         elif not self.targets:
             self.details.setText('主界面尚未加载任务。请先加载任务表，再点“刷新任务”；不用手动填写目录。')
         elif self.combo.count():

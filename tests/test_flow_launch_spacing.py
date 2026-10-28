@@ -1,5 +1,6 @@
 """One timer after a successful launch, with no delay before idle launches."""
 import copy
+import time
 import unittest
 from unittest.mock import patch
 
@@ -66,7 +67,11 @@ class LaunchSpacingTests(unittest.TestCase):
         with patch('app_plugins.builtin.flow_assistant.plugin.random.uniform',return_value=.01):
             plugin.launch_browser('Profile 23',[setups.PROJECT]);plugin.launch_browser('Profile 24',[setups.PROJECT])
             self.assertEqual(launcher.launch_profile.call_count,1)
-            QtTest.QTest.qWait(35)
+            # Windows can delay a 10ms Qt timer while Chrome/CI is busy.
+            # Wait for the real event with a bound; never call the handler.
+            deadline=time.monotonic()+.5
+            while launcher.launch_profile.call_count<2 and time.monotonic()<deadline:
+                QtTest.QTest.qWait(10)
             self.assertEqual(launcher.launch_profile.call_count,2)
 
     def test_failed_start_does_not_impose_another_gap_before_first_real_browser(self):
@@ -107,8 +112,10 @@ class LaunchSpacingTests(unittest.TestCase):
         self.assertEqual(launcher.launch_profile.call_count,1)
         self.assertFalse(any(c.get('request_id')=='restore' for c in commands))
         self.expire(plugin)
-        self.assertEqual(launcher.launch_profile.call_count,2)
-        self.assertTrue(commands[-1]['opened'])
+        self.assertEqual(launcher.launch_profile.call_count,1,'connected profile recovery must not add another native Flow URL')
+        self.assertEqual(commands[-1]['action'],'reuse_project_tab')
+        self.assertEqual(commands[-1]['profile'],'Profile 24')
+        self.assertEqual(commands[-1]['url'],setups.PROJECT)
 
 
 if __name__=='__main__':unittest.main()

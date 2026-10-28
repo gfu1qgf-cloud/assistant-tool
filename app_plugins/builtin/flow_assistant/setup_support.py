@@ -8,7 +8,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit, urlunsplit
 from model.AppDataStorage import data_file
 
 EXTENSION_ID = 'pnjppjjfgiccpcfajkpooklgohgihdom'
-EXTENSION_VERSION = '1.1.36'
+EXTENSION_VERSION = '1.1.59'
 # Reviewed bridge releases with the same protocol and no automatic page reload.
 # A patch update is available, but is not a reason to disable a working client.
 def compatible_extension(version, *, minimum_patch=8):
@@ -17,6 +17,15 @@ def compatible_extension(version, *, minimum_patch=8):
     return bool(match and current and minimum_patch <= int(match[1]) <= int(current[1]))
 OPTIONS_URL = f'chrome-extension://{EXTENSION_ID}/options.html'
 EXTENSIONS_URL = 'chrome://extensions/'
+
+
+def required_bridge_update(client, preferences):
+    """Protocol compatibility alone does not imply support for enabled features."""
+    from .browser_options import snapshot
+    if snapshot(preferences)['ui_mutex'] and 'ui_mutex_v1' not in client.get('capabilities', []):
+        return (f'当前桥接扩展缺少 UI 互斥能力，需重新加载已安装扩展 {EXTENSION_VERSION}；'
+                '请在“连接与设置”选择此配置，点击“① 打开浏览器并连接”完成更新并刷新原项目。')
+    return ''
 
 
 def setup_project_entry(pairing, entry='', *, action=''):
@@ -61,9 +70,25 @@ def project_url(value, *, required=False):
 
 def project_identity(value):
     try:
+        parsed = urlsplit(str(value or ''))
+        if re.fullmatch(r'.*/project/[A-Za-z0-9_-]+/edit/[A-Za-z0-9_-]+/?', parsed.path):
+            value = urlunsplit((parsed.scheme, parsed.netloc, parsed.path.rsplit('/edit/', 1)[0], '', ''))
         url = urlsplit(project_url(value, required=True))
         return url.hostname, url.path
     except ValueError:
+        return None
+
+
+def video_page(value):
+    """A user-copyable Flow edit URL identifies one project and one media ID."""
+    try:
+        parsed = urlsplit(str(value or '').strip())
+        match = re.fullmatch(r'(.*/project/[A-Za-z0-9_-]+)/edit/([A-Za-z0-9_-]+)/?', parsed.path)
+        if not match:
+            return None
+        project = project_url(urlunsplit((parsed.scheme, parsed.netloc, match[1], '', '')), required=True)
+        return {'project': project, 'media_id': match[2]}
+    except (ValueError, TypeError):
         return None
 
 

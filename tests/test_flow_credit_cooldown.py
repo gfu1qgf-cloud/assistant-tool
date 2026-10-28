@@ -67,6 +67,8 @@ class CreditCooldownTests(unittest.TestCase):
 
     def test_restart_skips_low_offline_profile_and_opens_backup(self):
         service = self.service(); low = self.browser(service)
+        service.preferences['credit_refreshes']={low['account']:{'daily_time':'23:59',
+            'next_at':time.time()+3600,'timezone':'Europe/Rome'}}
         self.low(service, low)
         service.commit_preferences({**service.preferences, 'profiles': [low['profile'], 'Backup'],
             'profile_projects': {low['profile']: PROJECT, 'Backup': PROJECT}, 'concurrency': 1})

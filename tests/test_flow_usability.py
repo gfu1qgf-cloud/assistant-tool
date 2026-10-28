@@ -185,14 +185,15 @@ class UsabilityTests(unittest.TestCase):
         self.assertTrue(setup.connect_button.isEnabled()); self.assertIn('没有重新配对', setup.status.text())
 
     def test_batch_ui_default_is_submit_and_generate_but_save_only_is_explicit(self):
-        dialog, _, commands = self.ui()
         target = {**self.args['target'], 'label': '8010'}
         for save_only in (False, True):
+            dialog, _, commands = self.ui()
             dialog.submit_page.setEnabled(True); dialog.submit_button.setEnabled(True); dialog.compose.setRowCount(0)
             dialog.add_image(target, self.image); dialog.save_only.setChecked(save_only)
             dialog.enqueue()
             command = next(item for item in reversed(commands) if item['action'] == 'enqueue')
             self.assertEqual(command['start_after_save'], not save_only)
+            self.assertEqual(command['collect_only'],save_only,'one final submit must queue in the backend unless save-only was explicitly selected')
 
     def test_queue_header_and_browser_badges_are_visible(self):
         dialog, _, _ = self.ui()

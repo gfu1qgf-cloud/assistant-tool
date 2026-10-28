@@ -9,6 +9,7 @@ const built = read('browser_extensions/flow_bridge/injects/ui.js');
 const upstream = read('third_party/FlowCue/extension/injects/ui.js');
 const slice = text => text.slice(text.indexOf('    const EXACT_EMAIL_RE'), text.indexOf('    function countMediaTiles()'));
 const unhooked = slice(built)
+  .replace('          try { await window.__lzxFlowTransport?.closeAccountPanel?.(); }\n          finally { probing = null; }', '          probing = null;')
   .replace('      if (pts !== null) { readEmailCheap();\n        window.__lzxFlowTransport?.creditRefresh?.(document.querySelector("flow-account-panel, .flow-account-panel-overlay, .cdk-overlay-pane"), cachedEmail || readEmailCheap());\n        return pts; }', '      if (pts !== null) { readEmailCheap(); return pts; }')
   .replace('      window.__lzxFlowTransport?.creditRefresh?.(panel, cachedEmail || readEmailCheap());\n','')
   .replace('            if (window.__lzxFlowTransport?.isCreditRefreshText?.(t)) continue;\n','')
@@ -61,6 +62,11 @@ async function probe({email = 'actual@example.test', displayName = '', menuOpen 
   assert.equal(english.reply.data.credit_refresh.daily_time,'21:24');
   const midnight=await probe({labels:['Points reset every day at 12:05 AM']});
   assert.equal(midnight.reply.data.credit_refresh.daily_time,'00:05');
+  for(const [text,clock] of [['點數會在每天下午4:36 重設','16:36'],['点数会在每天上午12:05重置','00:05'],
+    ['點數每日晚上9:24重設','21:24'],['积分每天21:24 刷新','21:24']]) {
+    const actual=await probe({labels:[text]});assert.equal(actual.reply.data.credit_refresh.daily_time,clock);
+    assert.equal(actual.reply.data.remaining_points,50,'the daily time never replaces actual balance');
+  }
   for(const options of [{labels:['点数每天25:99刷新']},{labels:[]},{hidden:true}]) {
     const absent=await probe(options);assert.equal(absent.reply.data.credit_refresh,null);
   }
@@ -70,6 +76,7 @@ async function probe({email = 'actual@example.test', displayName = '', menuOpen 
   assert.equal(timeOnly.reply.success,false,'21:24 is never a points balance');
   const named = await probe({displayName:'EnglishDisplayName', menuOpen:true});
   assert.equal(named.reply.data.email,'actual@example.test','bridge must not prepend the display name to upstream email');
+  assert.equal(named.opened,false,'even the already-visible credit early return must close its account panel');
   const aria=await probe({aria:true,pointsVisible:true});
   assert.equal(aria.reply.data.email,'actual@example.test','reuse upstream aria-label identity even when no custom panel exists');
   assert.equal(aria.clicks,0,'visible credits and upstream identity do not need menu toggling');

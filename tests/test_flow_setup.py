@@ -31,6 +31,14 @@ class SetupTests(unittest.TestCase):
     service = fixtures.FlowTests.service
     jobs = fixtures.FlowTests.jobs
 
+    def test_window_ceiling_control_follows_concurrency_and_is_saved(self):
+        dialog,launcher,commands=self.ui()
+        dialog.concurrent.setValue(4)
+        self.assertEqual(dialog.window_limit.minimum(),4)
+        dialog.window_limit.setValue(12);dialog.save_preferences()
+        self.assertEqual(commands[-1]['value']['browser_window_limit'],12)
+        self.assertEqual(commands[-1]['value']['concurrency'],4)
+
     def preferences(self, value, name='Preferences', profile='Profile 23'):
         path = self.root / 'Chrome' / profile / name
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -163,7 +171,7 @@ class SetupTests(unittest.TestCase):
         with patch('app_plugins.builtin.flow_assistant.ui.open_path') as open_path:
             self.prepare(dialog.setup, commands)
         open_path.assert_not_called()
-        self.assertEqual(launcher.launch_profile.call_args.kwargs['urls'], [PROJECT_ENTRY])
+        self.assertEqual(launcher.launch_profile.call_args.kwargs['urls'], [OPTIONS_URL+'#setup='+TICKET+'&port=18189'])
         self.assertNotIn('Ctrl+V', dialog.setup.status.text())
 
     def test_online_extension_is_definitive_without_reading_profile_files(self):
@@ -172,7 +180,7 @@ class SetupTests(unittest.TestCase):
         with patch('app_plugins.builtin.flow_assistant.setup_ui.inspect_extension') as inspect:
             self.prepare(dialog.setup, commands)
         inspect.assert_not_called()
-        self.assertEqual(launcher.launch_profile.call_args.kwargs['urls'], [PROJECT_ENTRY])
+        self.assertEqual(launcher.launch_profile.call_args.kwargs['urls'], [OPTIONS_URL+'#setup='+TICKET+'&port=18189'])
 
     def test_disabled_extension_requests_enable_not_duplicate_install(self):
         self.preferences(self.installed(state=0))
@@ -200,14 +208,14 @@ class SetupTests(unittest.TestCase):
         dialog, launcher, commands = self.ui()
         with patch('app_plugins.builtin.flow_assistant.ui.open_path'):
             self.prepare(dialog.setup, commands)
-        self.assertEqual(launcher.launch_profile.call_args.kwargs['urls'], [PROJECT_ENTRY+'&lzx_action=options'])
+        self.assertEqual(launcher.launch_profile.call_args.kwargs['urls'], [OPTIONS_URL+'#setup='+TICKET+'&port=18189'])
         self.assertIn('自动完成连接', dialog.setup.status.text())
         dialog.setup.begin('pair'); request = commands[-1]
         dialog.setup.prepared({'request_id': request['request_id'], 'success': True, 'pairing': dict(dialog.setup.bundle),
             'project_claim_url': PROJECT_ENTRY, 'claim_url': OPTIONS_URL + '#setup=' + TICKET + '&port=18189'})
         deadline = time.monotonic() + 3
         while dialog.setup.probe and time.monotonic() < deadline: QtTest.QTest.qWait(10)
-        self.assertEqual(launcher.launch_profile.call_args.kwargs['urls'], [PROJECT_ENTRY+'&lzx_action=options'])
+        self.assertEqual(launcher.launch_profile.call_args.kwargs['urls'], [OPTIONS_URL+'#setup='+TICKET+'&port=18189'])
 
     def test_each_profile_keeps_its_own_unsaved_address_draft(self):
         dialog, _, _ = self.ui(); setup = dialog.setup
@@ -345,8 +353,11 @@ class SetupTests(unittest.TestCase):
         dialog, launcher, commands = self.ui(); plugin = dialog.plugin
         plugin.snapshot = dialog.state = {'preferences': {'profile_projects': {'Profile 23': PROJECT}}}
         plugin._launch('Profile 23')
-        deadline = time.monotonic() + 3
+        # This observes an asynchronous disk probe, not the production timeout.
+        # A loaded Windows host can queue the global Qt pool for over 3s.
+        deadline = time.monotonic() + 10
         while plugin.launch_probes and time.monotonic() < deadline: QtTest.QTest.qWait(10)
+        self.assertIsNotNone(launcher.launch_profile.call_args, f'probe did not finish: {commands!r}')
         self.assertEqual(launcher.launch_profile.call_args.args[0]['directory'], 'Profile 23')
         self.assertEqual(launcher.launch_profile.call_args.kwargs, {'urls': [PROJECT], 'new_window': False})
         self.assertFalse(any(item['action'] == 'setup_profile' for item in commands))
@@ -356,6 +367,7 @@ class SetupTests(unittest.TestCase):
         plugin.snapshot = {'preferences': {'profile_projects': {'Profile 23': SECOND}}}
         plugin._launch_checked({'profile': 'Profile 23', 'status': 'enabled', 'version': EXTENSION_VERSION})
         self.assertEqual(launcher.launch_profile.call_args.kwargs['urls'], [SECOND])
+        self.assertIn(('Profile 23', (SECOND,)), plugin.browser_launches)
         self.assertEqual(commands[-1], {'action':'browser_launch_result','profile':'Profile 23','opened':True,'error':None})
         commands.clear()
         launcher.launch_profile.reset_mock()
@@ -382,3 +394,4 @@ class SetupTests(unittest.TestCase):
 
 
 if __name__ == '__main__': unittest.main()
+

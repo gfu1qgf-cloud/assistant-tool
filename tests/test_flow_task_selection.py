@@ -64,7 +64,8 @@ class TaskSelectionTests(unittest.TestCase):
         self.assertEqual(Path(picker.image_path).parent, Path(targets[1]['target_dir']))
         self.assertEqual(dialog.manual.prompt.toPlainText(), 'prompt 60001')
         self.assertFalse(any(command['action'] == 'enqueue' for command in commands))
-        self.assertIs(dialog.tabs.currentWidget(), dialog.manual)
+        self.assertIs(dialog.tabs.currentWidget(), dialog.batch)
+        self.assertTrue(dialog.batch.isAncestorOf(dialog.manual))
 
     def test_search_matches_task_number_or_name_not_arbitrary_path(self):
         plugin, commands = self.plugin([self.host_target(8010, '冰雪'), self.host_target(8011, '春天')])

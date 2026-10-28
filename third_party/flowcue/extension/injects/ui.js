@@ -2725,6 +2725,186 @@
     }
   }
 
+  // 查找 Google Flow 提示词框右上角的“清除提示” (✕) 按钮
+  function findFlowClearPromptButton() {
+    const isVisible = (el) => {
+      if (!el || !el.isConnected || el.closest("#flow-batch-root")) return false;
+      const rect = el.getBoundingClientRect();
+      return rect.width > 0 && rect.height > 0 && getComputedStyle(el).visibility !== "hidden" && getComputedStyle(el).display !== "none";
+    };
+
+    const editor = document.querySelector("flow-rich-text-editor div.ProseMirror") ||
+                   document.querySelector("div.ProseMirror[contenteditable='true']");
+    const promptRoot = editor?.closest("flow-prompt-box, .prompt-box-container, .prompt-box, form") ||
+                       document.querySelector("flow-prompt-box, .prompt-box-container, .prompt-box") ||
+                       document.querySelector("flow-ingredient-bar, .prompt-ingredient-bar")?.parentElement;
+    if (!promptRoot) return null;
+
+    const getTooltipAndLabelText = (btn) => {
+      const parts = [
+        btn.getAttribute("aria-label") || "",
+        btn.getAttribute("title") || "",
+        btn.getAttribute("data-tooltip") || "",
+        btn.getAttribute("mattooltip") || "",
+        btn.getAttribute("ng-reflect-message") || ""
+      ];
+      const describedBy = btn.getAttribute("aria-describedby");
+      if (describedBy) {
+        for (const id of describedBy.split(/\s+/)) {
+          const tipEl = id ? document.getElementById(id) : null;
+          if (tipEl) parts.push(tipEl.textContent || "");
+        }
+      }
+      return parts.join(" ").trim();
+    };
+
+    // 1. 优先匹配带有“清除提示 / Clear prompt”语义或 .clear-button 类名的按钮（全面兼容简中、繁中、英文）
+    const allButtons = Array.from(promptRoot.querySelectorAll("button")).filter(isVisible);
+    for (const btn of allButtons) {
+      const metaText = getTooltipAndLabelText(btn);
+      if (/(清除提示|清除提示词|清除提示詞|清除指令|清空提示|清空指令|清空输入|清空輸入|清除输入|清除輸入|清除内容|清除內容|重设提示|重設提示|重置提示|clear\s*prompt|clear\s*input|reset\s*prompt|^clear$)/i.test(metaText)) {
+        return btn;
+      }
+      if (btn.classList.contains("clear-button") || btn.classList.contains("clear-prompt-button") || btn.classList.contains("prompt-clear-button")) {
+        return btn;
+      }
+    }
+
+    // 2. 在 flow-ingredient-bar 或提示词框顶部栏中查找右上角包含 close / clear 图标的按钮（排除首尾帧槽位内部按钮与生成按钮）
+    const ingredientBar = promptRoot.querySelector("flow-ingredient-bar, .prompt-ingredient-bar") || promptRoot;
+    const closeCandidates = Array.from(ingredientBar.querySelectorAll("button")).filter(btn => {
+      if (!isVisible(btn)) return false;
+      if (btn.classList.contains("empty-chip") || btn.classList.contains("generate-icon-button")) return false;
+      if (btn.closest(".frame-trigger") || btn.closest("flow-generate-icon-button")) return false;
+      const iconEls = Array.from(btn.querySelectorAll("mat-icon, .google-symbols, i, span"));
+      const hasCloseIcon = iconEls.some(ic => /^(close|clear|cancel)$/i.test((ic.textContent || "").trim()));
+      const rawTxt = (btn.textContent || "").trim();
+      return hasCloseIcon || /^(close|clear|✕|×)$/i.test(rawTxt);
+    });
+
+    if (closeCandidates.length > 0) {
+      // 取最靠右上角的关闭按钮
+      closeCandidates.sort((a, b) => b.getBoundingClientRect().right - a.getBoundingClientRect().right);
+      return closeCandidates[0];
+    }
+
+    return null;
+  }
+
+  // 在任务切换或新任务填入前，点击“清除提示”按钮彻底清空上一个任务残留的图片与描述词
+  async function clearFlowPromptBox(reason = "切换下一任务前清理") {
+    try {
+      await cleanupPageOverlays();
+
+      const simulateRealClick = (el) => {
+        if (!el) return;
+        const rect = el.getBoundingClientRect();
+        const cx = rect.width > 0 ? Math.round(rect.left + rect.width / 2) : 0;
+        const cy = rect.height > 0 ? Math.round(rect.top + rect.height / 2) : 0;
+        try {
+          if (typeof PointerEvent !== "undefined") {
+            el.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true, composed: true, view: window, clientX: cx, clientY: cy, pointerId: 1, isPrimary: true, button: 0, buttons: 1 }));
+            el.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, cancelable: true, composed: true, view: window, clientX: cx, clientY: cy, pointerId: 1, isPrimary: true, button: 0, buttons: 0 }));
+          }
+          el.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, composed: true, view: window, clientX: cx, clientY: cy, button: 0, buttons: 1 }));
+          el.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true, composed: true, view: window, clientX: cx, clientY: cy, button: 0, buttons: 0 }));
+        } catch (_) {}
+        try { el.click(); } catch (_) {}
+      };
+
+      // 1. 优先点击 Google Flow 原生的“清除提示” (✕) 按钮（可一次性清除图片和描述词）
+      const clearBtn = findFlowClearPromptButton();
+      if (clearBtn && !clearBtn.disabled) {
+        console.log(`[FlowUI] 🧹 正在点击“清除提示”按钮 (${reason})...`);
+        simulateRealClick(clearBtn);
+        await delay(450);
+
+        // 若页面弹出确认框（部分版本清空可能无需确认，如有确认按钮则自动点击）
+        const confirmBtn = Array.from(document.querySelectorAll(".cdk-overlay-container button, [role='dialog'] button")).find(b => {
+          const t = ((b.textContent || "") + " " + (b.getAttribute("aria-label") || "")).trim();
+          return /(清除|清空|确认|確認|确定|確定|clear|confirm|delete)/i.test(t) && !/(取消|cancel)/i.test(t);
+        });
+        if (confirmBtn) {
+          simulateRealClick(confirmBtn);
+          await delay(300);
+        }
+      }
+
+      // 2. 检查是否仍有残留的首帧图片/素材芯片，若有则再次点击清除或移除按钮
+      const ingredientBar = document.querySelector("flow-ingredient-bar.prompt-ingredient-bar, .prompt-ingredient-bar, flow-ingredient-bar");
+      if (ingredientBar) {
+        const hasResidualImage = !!ingredientBar.querySelector("img, flow-tile, flow-media-tile, flow-ingredient-chip, .ingredient-chip, mat-chip");
+        if (hasResidualImage) {
+          const retryClearBtn = findFlowClearPromptButton();
+          if (retryClearBtn && !retryClearBtn.disabled) {
+            console.log("[FlowUI] 🧹 检测到仍有残留图片，二次点击“清除提示”按钮...");
+            simulateRealClick(retryClearBtn);
+            await delay(400);
+          }
+          // 兜底：若芯片上带有独立的移除/删除小按钮，逐一点击移除
+          const chipRemoveBtns = Array.from(ingredientBar.querySelectorAll(
+            "button[aria-label*='移除'], button[aria-label*='删除'], button[aria-label*='刪除'], button[aria-label*='Remove' i], .chip-remove, .remove-button"
+          ));
+          for (const rmBtn of chipRemoveBtns) {
+            simulateRealClick(rmBtn);
+            await delay(200);
+          }
+        }
+      }
+
+      // 3. 检查 ProseMirror 描述词输入框是否已彻底清空；若仍有残留旧文案，强制执行清空事务
+      const editor = document.querySelector("flow-rich-text-editor div.ProseMirror") ||
+                     document.querySelector("div.ProseMirror[contenteditable='true']");
+      if (editor && (editor.textContent || "").trim().length > 0) {
+        console.log("[FlowUI] 🧹 检测到输入框仍有残留描述词，正在强制清空 ProseMirror 文本...");
+        try { editor.focus(); } catch (_) {}
+
+        if (editor.pmViewDesc && editor.pmViewDesc.view) {
+          try {
+            const view = editor.pmViewDesc.view;
+            const tr = view.state.tr.delete(0, view.state.doc.content.size);
+            view.dispatch(tr);
+          } catch (_) {}
+        }
+
+        if ((editor.textContent || "").trim().length > 0) {
+          try {
+            const sel = window.getSelection();
+            const range = document.createRange();
+            range.selectNodeContents(editor);
+            sel.removeAllRanges();
+            sel.addRange(range);
+            document.execCommand("delete", false, null);
+          } catch (_) {}
+        }
+
+        if ((editor.textContent || "").trim().length > 0) {
+          editor.innerHTML = "<p><br></p>";
+        }
+
+        editor.dispatchEvent(new InputEvent("input", { bubbles: true, cancelable: true, inputType: "deleteContentBackward", data: null }));
+        editor.dispatchEvent(new Event("input", { bubbles: true }));
+        editor.dispatchEvent(new Event("change", { bubbles: true }));
+      }
+
+      // 4. 同步重置 promptBoxStore 状态（若存在）
+      try {
+        const actions = window.promptBoxStore?.getState?.()?.actions;
+        if (actions) {
+          actions.clear?.();
+          actions.reset?.();
+          actions.setText?.("");
+          actions.setPrompt?.("");
+        }
+      } catch (_) {}
+
+      await delay(250);
+      console.log(`[FlowUI] ✅ 提示词框与图片槽位清理完成 (${reason})`);
+    } catch (e) {
+      console.warn("[FlowUI] 清理提示词框时发生异常 (继续执行):", e);
+    }
+  }
+
   let isStopRequested = false;
 
   let batchPromise = null;
@@ -3940,6 +4120,9 @@
           return;
         }
 
+        // 当前任务已完成，立即点击“清除提示”按钮清空上一个任务的图片和描述词，防止残留到下一任务
+        await clearFlowPromptBox(`任务 #${rIdx + 1} 已完成，清除上一任务图片与描述词`);
+
         // 任务下载完成后的批量间隔延时 (严格按照规则设置或当前设定执行停顿，基于绝对时间戳保证失焦/后台准确走完)
         const baseInterval = (task.interval !== undefined && task.interval !== null && !isNaN(Number(task.interval)))
           ? Number(task.interval)
@@ -3963,8 +4146,8 @@
           console.log(`[Batch] 当前任务已完成，间隔设置为 0 秒，立即进入下一项`);
         }
 
-        // 倒计时结束，在流转进入下一项前清理可能残留的遮罩与弹窗
-        await cleanupPageOverlays();
+        // 倒计时结束，在流转进入下一项前再次清理可能残留的遮罩与提示词内容
+        await clearFlowPromptBox("进入下一任务前二次确认清空");
       }
     }
 
@@ -4500,17 +4683,20 @@
       const isEndSlot = (el) => /(结束|結束|\bend\b)/i.test(((el?.textContent || "") + " " + (el?.getAttribute?.("aria-label") || "")).trim());
       const startTrigger = allTriggers.find(t => !isEndSlot(t)) || null;
       if (startTrigger) {
-        // 如果首帧已有内容且匹配当前图片，无需重复添加
-        const triggerImg = startTrigger.querySelector("img");
+        // 如果首帧槽位或 ingredientBar 中已挂载了图片（存在缩略图或不再是空的 empty-chip 按钮），直接返回，严禁误点已挂载图片导致卸载/删除！
+        const emptyChipBtn = startTrigger.querySelector("button.empty-chip");
+        const triggerImg = startTrigger.querySelector("img, flow-tile, flow-media-tile, [role='img'], [style*='background-image']") ||
+                           ingredientBar.querySelector("img, flow-tile, flow-media-tile, flow-ingredient-chip, .ingredient-chip, mat-chip");
+        const hasNonEmptyBtn = !!startTrigger.querySelector("button:not(.empty-chip)");
         const triggerTitle = extractTileDisplayName(startTrigger, triggerImg);
         const triggerText = startTrigger.textContent || "";
-        if (imgName && (isImageNameMatch(imgName, triggerTitle) || isImageNameMatch(imgName, triggerText))) {
-          console.log("[FlowUI] 首帧槽位中已存在匹配图片，无需重复注入:", imgName);
+        if (triggerImg || (!emptyChipBtn && hasNonEmptyBtn) || (imgName && (isImageNameMatch(imgName, triggerTitle) || isImageNameMatch(imgName, triggerText)))) {
+          console.log("[FlowUI] 首帧槽位中已挂载图片，无需重复点击首帧按钮:", imgName);
           return;
         }
 
-        // 点击“开始”按钮（button.empty-chip 或 button）打开媒体选择面板（严禁误点“结束”帧按钮）
-        const startBtn = startTrigger.querySelector("button.empty-chip") || startTrigger.querySelector("button");
+        // 仅在首帧槽位为空时点击“开始”槽位按钮打开媒体选择面板（严禁在已有图片时点击内部按钮，严禁误点“结束”帧按钮）
+        const startBtn = emptyChipBtn || startTrigger.querySelector("button");
         if (startBtn && !isEndSlot(startBtn)) {
           console.log("[FlowUI] 点击首帧触发器按钮 [开始] 弹出媒体选择面板...");
           simulateClick(startBtn);
@@ -4726,20 +4912,20 @@
       );
       if (hasChipOrImg) return true;
 
-      // 帧模式下检查首帧槽位 (.frame-trigger，严格排除“结束/End”帧槽位)
+      // 帧模式下检查首帧槽位 (.frame-trigger，严格排除“结束/End”帧槽位，兼容简中/繁中/英文)
       if (isFrameMode) {
         const allTriggers = Array.from(ingredientBar.querySelectorAll(".frame-trigger"));
-        const isEndSlot = (el) => /(结束|結束|\bend\b)/i.test(((el?.textContent || "") + " " + (el?.getAttribute?.("aria-label") || "")).trim());
+        const isEndSlot = (el) => /(结束|結束|结尾|結尾|尾帧|尾幀|\bend\b|\blast\b)/i.test(((el?.textContent || "") + " " + (el?.getAttribute?.("aria-label") || "")).trim());
         const startTrigger = allTriggers.find(t => !isEndSlot(t)) || null;
         if (startTrigger) {
           const emptyBtn = startTrigger.querySelector("button.empty-chip");
-          const hasImg = !!startTrigger.querySelector("img, flow-tile, flow-media-tile, [role='img']");
+          const hasImg = !!startTrigger.querySelector("img, flow-tile, flow-media-tile, [role='img'], [style*='background-image']");
           const hasNonEmptyButton = !!startTrigger.querySelector("button:not(.empty-chip)");
           const triggerTitle = extractTileDisplayName(startTrigger, startTrigger.querySelector("img"));
           const triggerText = startTrigger.textContent || "";
           const matchesName = image.displayName && (isImageNameMatch(image.displayName, triggerTitle) || isImageNameMatch(image.displayName, triggerText));
 
-          if (hasImg || hasNonEmptyButton || (!emptyBtn && triggerText.trim() !== "" && !triggerText.includes("开始") && !triggerText.includes("開始") && !/start/i.test(triggerText)) || matchesName) {
+          if (hasImg || hasNonEmptyButton || (!emptyBtn && triggerText.trim() !== "" && !/(开始|開始|起始|开头|開頭|start|first)/i.test(triggerText)) || matchesName) {
             return true;
           }
           if (emptyBtn) {
@@ -4829,8 +5015,11 @@
   // 注入提示词至 ProseMirror 并触发 Angular 提交
   async function submitTaskToPage(params) {
     const { image, lineText, presetBefore, presetAfter, footageType, count, duration, rowIndex, lineIndex, resolution, aspectRatio, videoModel } = params;
-    
-    // 0. 同步视频尺寸比例、分辨率、视频类型(帧/素材)、输出数量与生成模型
+
+    // 关键步骤 0：在准备填入新任务之前，先点击右上角“清除提示” (✕) 按钮，彻底清空上一任务遗留的图片和描述词！
+    await clearFlowPromptBox(`任务 #${rowIndex + 1}-${lineIndex + 1} 提交前清空旧内容`);
+
+    // 1. 同步视频尺寸比例、分辨率、视频类型(帧/素材)、输出数量与生成模型
     const targetRes = resolution || state.settings.resolution || "VIDEO_RESOLUTION_720P";
     const targetAspect = aspectRatio || state.settings.aspectRatio || "ASPECT_RATIO_9_16";
     const targetModel = (videoModel && videoModel !== "VIDEO_REFERENCES" ? videoModel : null) || state.settings.videoModel || "omni_1_1_flash";
@@ -4886,10 +5075,18 @@ ${presetAfter || ""}`.trim();
     params.finalPrompt = finalPrompt;
     console.log(`[FlowUI] 正在填入提示词 (第 ${rowIndex + 1} 个任务, 子行 ${lineIndex + 1}): "${finalPrompt.substring(0, 60)}..."`);
 
-    // 5. 注入文本到 ProseMirror 编辑器 (支持多行段落，绝不让 ProseMirror 报错)
+    // 5. 注入文本到 ProseMirror 编辑器 (支持多行段落，先确保残留文本被清空，再注入新文本)
     try {
       editor.focus();
     } catch (e) {}
+
+    // 若编辑器内仍有任何残留文本，先用 ProseMirror 事务清空
+    if ((editor.textContent || "").trim().length > 0 && editor.pmViewDesc && editor.pmViewDesc.view) {
+      try {
+        const view = editor.pmViewDesc.view;
+        view.dispatch(view.state.tr.delete(0, view.state.doc.content.size));
+      } catch (_) {}
+    }
 
     let textInjected = false;
 
@@ -4927,10 +5124,11 @@ ${presetAfter || ""}`.trim();
       }
     }
 
-    // 策略 C: 结构化段落替换（比较去空白后的文本，避免多行段落因不含 \n 而误覆盖 ProseMirror 原生节点）
+    // 策略 C: 结构化段落替换（严格比对去空白后的文本，防止旧提示词未被替换或拼接残留）
     const normEditorText = (editor.textContent || "").replace(/\s+/g, "");
     const normFinalPrompt = finalPrompt.replace(/\s+/g, "");
     if (!textInjected || normEditorText !== normFinalPrompt) {
+      console.log("[FlowUI] 检测到编辑器文本与目标提示词不一致，执行强制段落覆盖替换...");
       if (typeof editor.replaceChildren === "function") {
         const paragraphs = finalPrompt.split("\n").map(l => {
           const p = document.createElement("p");
@@ -4951,7 +5149,7 @@ ${presetAfter || ""}`.trim();
       }
     }
 
-    // 派发全面的事件确保 Angular 表单状态更新为 valid
+    // 派发全面的事件确保 Angular 表单状态更新为最新提示词
     editor.dispatchEvent(new InputEvent("input", { bubbles: true, cancelable: true, inputType: "insertFromPaste", data: finalPrompt }));
     editor.dispatchEvent(new Event("input", { bubbles: true }));
     editor.dispatchEvent(new Event("change", { bubbles: true }));

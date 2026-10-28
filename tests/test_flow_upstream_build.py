@@ -18,8 +18,8 @@ class FlowUpstreamBuildTests(unittest.TestCase):
         spec.loader.exec_module(cls.builder)
 
     def test_pinned_upstream_and_all_critical_original_hashes(self):
-        self.assertEqual(self.builder.UPSTREAM_VERSION, '1.1.5')
-        self.assertEqual(self.builder.PIN, '847c928d60114183e42f838ba82577ba10e46d0b')
+        self.assertEqual(self.builder.UPSTREAM_VERSION, '1.1.6')
+        self.assertEqual(self.builder.PIN, 'a5a4a3607e55c85c9c0c2e8e4700f2140eefb36d')
         for name, expected in self.builder.HASHES.items():
             self.assertEqual(hashlib.sha256((self.root / 'third_party/flowcue/extension' / name).read_bytes()).hexdigest(), expected)
 
@@ -37,7 +37,7 @@ class FlowUpstreamBuildTests(unittest.TestCase):
             self.assertEqual(first, second)
             self.assertEqual(before, {p.relative_to(root): hashlib.sha256(p.read_bytes()).hexdigest()
                 for p in (root / 'third_party').rglob('*') if p.is_file()})
-            self.assertEqual(json.loads((output/'SOURCE.json').read_text('utf-8'))['upstream_version'], '1.1.5')
+            self.assertEqual(json.loads((output/'SOURCE.json').read_text('utf-8'))['upstream_version'], '1.1.6')
 
     def test_changed_original_is_rejected_before_assembly(self):
         with tempfile.TemporaryDirectory() as temporary:

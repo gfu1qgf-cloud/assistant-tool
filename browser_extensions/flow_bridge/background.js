@@ -1,3 +1,153 @@
+// Small bounded media probe before creating an automatic Chrome download item.
+// Never infer video readiness from a filename or a Google hostname alone.
+(() => {
+  const failure = message => Object.assign(Error(message), {code:'FLOW_DOWNLOAD_NOT_VIDEO'});
+  const pending=new Map(), known=new Map(), blocked=new Map(), rejected=new Map();
+  const managed=task=>/^FlowBridge\/[a-f0-9]{32}\/result\.mp4$/.test(task?.download_path || '') &&
+    task.taskId && task.submissionId && task.mediaId;
+  const taskKey=task=>JSON.stringify([task.download_path,task.taskId,task.submissionId,task.mediaId]);
+  const href=value=>{try{return new URL(value).href;}catch{return '';}};
+  const rejectionKey=task=>'lzxRejectedVideo:'+taskKey(task);
+  async function rejectAddress(task,url) {
+    if(!managed(task) || !href(url))return;
+    const key=rejectionKey(task);
+    let previous=rejected.get(key) || [];
+    try {previous=(await bounded(chrome.storage.session?.get?.([key])))?.[key] || previous;}catch{}
+    const addresses=[...new Set([...(Array.isArray(previous)?previous:[]),href(url)])].slice(-16);
+    rejected.set(key,addresses);
+    while(rejected.size>128)rejected.delete(rejected.keys().next().value);
+    try {await bounded(chrome.storage.session?.set?.({[key]:addresses}));}catch{}
+  }
+  async function usableAddress(task,url) {
+    const key=rejectionKey(task);let addresses=rejected.get(key) || [];
+    try {addresses=(await bounded(chrome.storage.session?.get?.([key])))?.[key] || addresses;}catch{}
+    if(Array.isArray(addresses) && addresses.includes(href(url)))
+      throw Object.assign(Error('同一视频地址已返回网页或访问错误，未重复创建下载；等待原视频的新直链。'),{code:'FLOW_DOWNLOAD_REJECTED_URL'});
+  }
+  function videoAddress(value,task) {
+    let final;
+    try {final=new URL(value);}catch {throw failure('未取得可验证的视频最终地址，未创建下载项。');}
+    const id=task.mediaId;
+    // The address lookup RPC can require page authentication. A small successful
+    // probe does not authorize passing that RPC URL to Chrome's download context.
+    const safe=final.protocol==='https:' && !final.username && !final.password && (!final.port || final.port==='443') &&
+      (final.hostname==='flow-content.google' && final.pathname===`/video/${id}` ||
+       final.hostname==='flow.google.com' && final.pathname.match(/^\/asb\/([A-Za-z0-9_-]+)(?:=[A-Za-z0-9_,.-]+)?$/)?.[1]===id ||
+       final.hostname.endsWith('.usercontent.google.com') || final.hostname.endsWith('.googleusercontent.com') ||
+       final.hostname==='docs.google.com' && !/\/api\/|\/accounts?\b|\/signin\b/i.test(final.pathname));
+    if(!safe)throw Object.assign(Error('取址接口尚未解析出真实视频直链，未创建下载项；等待原视频预览后重新取址。'),{code:'FLOW_DOWNLOAD_URL_UNRESOLVED'});
+    if(final.hostname==='flow-content.google' && (!final.searchParams.get('Signature') || !Number.isFinite(Number(final.searchParams.get('Expires'))) || Number(final.searchParams.get('Expires'))*1000<=Date.now()+5000))
+      throw failure('视频地址签名即将过期，未创建下载项；按原视频编号重新取址。');
+    return final.href;
+  }
+  async function bounded(work) {
+    let timer;
+    try {return await Promise.race([work,new Promise(resolve=>{timer=setTimeout(()=>resolve(undefined),1000);})]);}
+    finally {clearTimeout(timer);}
+  }
+  function remember(url,task) {
+    if(!managed(task))return;
+    pending.set(href(url),{task,at:Date.now()});
+    for(const [key,entry] of pending)if(Date.now()-entry.at>300000)pending.delete(key);
+    while(pending.size>128)pending.delete(pending.keys().next().value);
+    while(known.size>256)known.delete(known.keys().next().value);
+  }
+  const invalid=item=>{
+    const type=String(item.mime || '').split(';')[0].trim().toLowerCase();
+    return type && !/^(?:video\/(?:mp4|quicktime)|application\/(?:octet-stream|mp4))$/.test(type) ||
+      /\.(?:html?|json|txt)$/i.test(String(item.filename || '')) ||
+      ['SERVER_UNAUTHORIZED','SERVER_FORBIDDEN','SERVER_BAD_CONTENT'].includes(item.error);
+  };
+  async function inspect(item,task=null) {
+    if(!item || !Number.isInteger(item.id))return;
+    let record=known.get(item.id);
+    if(!record && managed(task))record={task};
+    if(!record && item.byExtensionId===chrome.runtime.id)record=pending.get(href(item.url)) || pending.get(href(item.finalUrl));
+    if(!record)return;
+    known.set(item.id,record);
+    record.url=href(item.url) || record.url;
+    if(!invalid(item))return record.error;
+    if(record.checking)return await record.checking;
+    record.checking=(async()=>{
+      let state=item.state;
+      if(!['complete','interrupted'].includes(state)) {
+        try {await bounded(chrome.downloads.cancel(item.id));}catch{}
+        try {state=(await bounded(chrome.downloads.search({id:item.id})))?.[0]?.state;}catch{}
+      }
+      const settled=['complete','interrupted'].includes(state);
+      await rejectAddress(record.task,record.url);
+      const error=Object.assign(Error(settled?'Chrome实际返回网页／错误内容，已停止该下载；仅恢复原视频。':
+        'Chrome实际返回非视频，尚未确认取消；停止新增下载，等待原下载状态。'),
+        {code:settled?'FLOW_DOWNLOAD_ACTUAL_NOT_VIDEO':'FLOW_DOWNLOAD_OUTCOME_UNCONFIRMED'});
+      record.error=error;
+      if(!settled) {
+        const key=taskKey(record.task);blocked.set(key,item.id);
+        try {await chrome.storage.session?.set?.({['lzxUnconfirmedVideo:'+key]:item.id});}catch{}
+      }
+      return error;
+    })();
+    return await record.checking;
+  }
+  globalThis.__lzxReserveDownload=remember;
+  globalThis.__lzxInspectDownloadItem=inspect;
+  globalThis.__lzxGuardDownload=async(id,task)=>{
+    if(!managed(task))return;
+    known.set(id,known.get(id) || {task});
+    const item=(await bounded(chrome.downloads.search({id})))?.[0];
+    const error=await inspect(item,task);if(error)throw error;
+  };
+  chrome.downloads?.onCreated?.addListener(item=>{inspect(item).catch(()=>{});});
+  chrome.downloads?.onChanged?.addListener(delta=>{
+    if(!known.has(delta.id) && !delta.mime && !delta.state && !delta.filename)return;
+    (async()=>{
+      let task=known.get(delta.id)?.task;
+      if(!task)try {const key=`download_${delta.id}`;task=(await chrome.storage.session?.get?.([key]))?.[key];}catch{}
+      const items=await bounded(chrome.downloads.search({id:delta.id}));await inspect(items?.[0],task);
+    })().catch(()=>{});
+  });
+  globalThis.__lzxPreflightVideo = async (url, task) => {
+    if (!/^FlowBridge\/[a-f0-9]{32}\/result\.mp4$/.test(task?.download_path || '')) return;
+    const key=taskKey(task), storageKey='lzxUnconfirmedVideo:'+key;
+    try {const saved=await chrome.storage.session?.get?.([storageKey]);if(Number.isInteger(saved?.[storageKey]))blocked.set(key,saved[storageKey]);}catch{}
+    if(blocked.has(key)) {
+      const id=blocked.get(key),item=(await bounded(chrome.downloads.search({id})))?.[0];
+      if(!item || !['complete','interrupted'].includes(item.state))throw Object.assign(Error('原非视频下载尚未确认结束，未创建新的下载项。'),{code:'FLOW_DOWNLOAD_OUTCOME_UNCONFIRMED'});
+      blocked.delete(key);try {await chrome.storage.session?.remove?.(storageKey);}catch{}
+    }
+    const controller = new AbortController();
+    let timer, reader, resolved;
+    const probe = async () => {
+      const response = await fetch(url,{method:'GET',credentials:'include',cache:'no-store',redirect:'follow',
+        headers:{Range:'bytes=0-511'},signal:controller.signal});
+      if (![200,206].includes(response.status)) throw failure('原视频尚未就绪或链接访问失败（HTTP '+response.status+'）；未创建下载项。');
+      resolved=videoAddress(response.url,task);
+      await usableAddress(task,resolved);
+      const type=(response.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
+      const disposition=response.headers.get('content-disposition') || '';
+      if (type && !/^(?:video\/(?:mp4|quicktime)|application\/(?:octet-stream|mp4))$/.test(type) ||
+          /filename\*?\s*=.*\.(?:html?|json|txt)(?:["';\s]|$)/i.test(disposition))
+        throw failure('原链接返回非视频内容（'+(type || '错误文件类型')+'），可能是错误页或登录页；未创建下载项。');
+      reader=response.body?.getReader?.();
+      if (!reader) throw failure('原视频响应无法读取，暂未创建下载项。');
+      const header=new Uint8Array(32);let length=0;
+      for(let reads=0;reads<8 && length<16;reads++) {
+        const part=await reader.read();
+        if(part.value?.length) {const count=Math.min(part.value.length,header.length-length);header.set(part.value.subarray(0,count),length);length+=count;}
+        if(part.done)break;
+      }
+      if(length<12 || String.fromCharCode(...header.subarray(4,8))!=='ftyp')
+        throw failure('原链接没有返回有效的 MP4 文件头，已拦截网页／错误内容；未创建下载项。');
+    };
+    try {
+      await Promise.race([probe(),new Promise((_,reject)=>{timer=setTimeout(()=>reject(failure('原视频内容预检超时，未创建下载项；稍后仅重试原视频下载。')),8000);})]);
+      return resolved;
+    } finally {
+      clearTimeout(timer);controller.abort();
+      try {reader?.cancel?.()?.catch?.(()=>{});} catch {}
+    }
+  };
+})();
+
 // background.js - 后台 Service Worker，负责处理下载任务、路径重定向与配置持久化
 
 // 1. 监听来自 content-isolated.js 的消息
@@ -97,9 +247,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.action === "nativeFileDrag") {
     const tabId = sender.tab?.id;
     if (tabId == null) { sendResponse({ ok: false, error: "无法识别当前标签页" }); return; }
-    dispatchNativeFileDrag(tabId, message.paths, message.x, message.y)
+    dispatchNativeFileDrag(tabId, message.paths, message.x, message.y, message.ui_lease)
       .then(r => sendResponse(r))
-      .catch(err => sendResponse({ ok: false, error: String(err?.message || err) }));
+      .catch(err => sendResponse({ ok: false, error: String(err?.message || err), dispatched:err.uploadDispatched }));
     return true;
   }
 
@@ -107,7 +257,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.action === "nativeClick") {
     const tabId = sender.tab?.id;
     if (tabId == null) { sendResponse({ ok: false, error: "无法识别当前标签页" }); return; }
-    dispatchNativeClick(tabId, message.x, message.y)
+    dispatchNativeClick(tabId, message.x, message.y, message.ui_lease)
       .then(r => sendResponse(r))
       .catch(err => sendResponse({ ok: false, error: String(err?.message || err) }));
     return true;
@@ -117,7 +267,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.action === "nativeHover") {
     const tabId = sender.tab?.id;
     if (tabId == null) { sendResponse({ ok: false, error: "无法识别当前标签页" }); return; }
-    dispatchNativeHover(tabId, message.x, message.y)
+    dispatchNativeHover(tabId, message.x, message.y, message.ui_lease)
       .then(r => sendResponse(r))
       .catch(err => sendResponse({ ok: false, error: String(err?.message || err) }));
     return true;
@@ -217,7 +367,7 @@ function serialByTab(tabId, fn) {
   return p;
 }
 
-async function dispatchNativeFileDrag(tabId, paths, x, y) {
+async function dispatchNativeFileDrag(tabId, paths, x, y, uiToken) {
   const clean = [...new Set((paths || []).map(String).map(s => s.trim()).filter(Boolean))];
   if (!clean.length) throw new Error("没有可上传的本地文件路径");
 
@@ -232,7 +382,9 @@ async function dispatchNativeFileDrag(tabId, paths, x, y) {
 
   const dedupKey = `${tabId}::${validFiles.map(f => f.toLowerCase()).sort().join("|")}`;
 
+  const uiGuard=globalThis.__lzxUiNativeGuard?.(tabId,uiToken);
   return serialByTab(tabId, async () => {
+    uiGuard?.check();
     const lastDragAt = recentTabDrags.get(dedupKey) || 0;
     if (Date.now() - lastDragAt < DRAG_DEDUP_WINDOW_MS) {
       console.warn(`[Background] 🛡️ 拦截到 ${DRAG_DEDUP_WINDOW_MS / 1000}s 内重复的原生拖放请求，已忽略 (tabId=${tabId}, files=${validFiles.length})`);
@@ -240,9 +392,10 @@ async function dispatchNativeFileDrag(tabId, paths, x, y) {
     }
 
     const target = { tabId };
-    let attachedHere = false;
+    let attachedHere = false, dropAttempted = false;
     try {
       try {
+        uiGuard?.check();
         await chrome.debugger.attach(target, "1.3");
         attachedHere = true;
       } catch (e) {
@@ -262,6 +415,8 @@ async function dispatchNativeFileDrag(tabId, paths, x, y) {
       const px = Number.isFinite(Number(x)) ? Number(x) : 640;
       const py = Number.isFinite(Number(y)) ? Number(y) : 420;
       for (const type of ["dragEnter", "dragOver", "drop"]) {
+        uiGuard?.check();
+        if(type==="drop")dropAttempted=true;
         await chrome.debugger.sendCommand(target, "Input.dispatchDragEvent", { type, x: px, y: py, data: dragData });
         if (type !== "drop") await new Promise(r => setTimeout(r, 120));
       }
@@ -273,25 +428,28 @@ async function dispatchNativeFileDrag(tabId, paths, x, y) {
       }, DRAG_DEDUP_WINDOW_MS + 1000);
       console.log(`[Background] ✅ 原生拖放已发送 ${clean.length} 个文件 @(${px},${py})`);
       return { ok: true, count: clean.length, method: "chrome_debugger_native_drag" };
-    } finally {
+    } catch (failure) {failure.uploadDispatched=dropAttempted;throw failure;} finally {
       if (attachedHere) {
         try { await chrome.debugger.sendCommand(target, "Emulation.setFocusEmulationEnabled", { enabled: false }); } catch (_) {}
         try { await chrome.debugger.detach(target); } catch (_) {}
       }
     }
-  });
+  }).finally(()=>uiGuard?.done());
 }
 
-async function dispatchNativeClick(tabId, x, y) {
+async function dispatchNativeClick(tabId, x, y, uiToken) {
   const px = Number.isFinite(Number(x)) ? Math.round(Number(x)) : 0;
   const py = Number.isFinite(Number(y)) ? Math.round(Number(y)) : 0;
   if (px <= 0 || py <= 0) return { ok: false, error: "无效的点击坐标" };
 
+  const uiGuard=globalThis.__lzxUiNativeGuard?.(tabId,uiToken);
   return serialByTab(tabId, async () => {
+    uiGuard?.check();
     const target = { tabId };
     let attachedHere = false;
     try {
       try {
+        uiGuard?.check();
         await chrome.debugger.attach(target, "1.3");
         attachedHere = true;
       } catch (e) {
@@ -301,14 +459,17 @@ async function dispatchNativeClick(tabId, x, y) {
         await chrome.debugger.sendCommand(target, "Emulation.setFocusEmulationEnabled", { enabled: true });
         attachedHere = true; // Successful command proves this extension owns the session.
       } catch (_) {}
+      uiGuard?.check();
       await chrome.debugger.sendCommand(target, "Input.dispatchMouseEvent", {
         type: "mouseMoved", x: px, y: py, button: "none", buttons: 0
       });
       await new Promise(r => setTimeout(r, 35));
+      uiGuard?.check();
       await chrome.debugger.sendCommand(target, "Input.dispatchMouseEvent", {
         type: "mousePressed", x: px, y: py, button: "left", buttons: 1, clickCount: 1
       });
       await new Promise(r => setTimeout(r, 45));
+      uiGuard?.check();
       await chrome.debugger.sendCommand(target, "Input.dispatchMouseEvent", {
         type: "mouseReleased", x: px, y: py, button: "left", buttons: 0, clickCount: 1
       });
@@ -320,19 +481,22 @@ async function dispatchNativeClick(tabId, x, y) {
         try { await chrome.debugger.detach(target); } catch (_) {}
       }
     }
-  });
+  }).finally(()=>uiGuard?.done());
 }
 
-async function dispatchNativeHover(tabId, x, y) {
+async function dispatchNativeHover(tabId, x, y, uiToken) {
   const px = Number.isFinite(Number(x)) ? Math.round(Number(x)) : 0;
   const py = Number.isFinite(Number(y)) ? Math.round(Number(y)) : 0;
   if (px <= 0 || py <= 0) return { ok: false, error: "无效的悬停坐标" };
 
+  const uiGuard=globalThis.__lzxUiNativeGuard?.(tabId,uiToken);
   return serialByTab(tabId, async () => {
+    uiGuard?.check();
     const target = { tabId };
     let attachedHere = false;
     try {
       try {
+        uiGuard?.check();
         await chrome.debugger.attach(target, "1.3");
         attachedHere = true;
       } catch (e) {
@@ -342,14 +506,17 @@ async function dispatchNativeHover(tabId, x, y) {
         await chrome.debugger.sendCommand(target, "Emulation.setFocusEmulationEnabled", { enabled: true });
         attachedHere = true; // Successful command proves this extension owns the session.
       } catch (_) {}
+      uiGuard?.check();
       await chrome.debugger.sendCommand(target, "Input.dispatchMouseEvent", {
         type: "mouseMoved", x: Math.max(1, px - 12), y: Math.max(1, py - 12), button: "none", buttons: 0
       });
       await new Promise(r => setTimeout(r, 40));
+      uiGuard?.check();
       await chrome.debugger.sendCommand(target, "Input.dispatchMouseEvent", {
         type: "mouseMoved", x: px, y: py, button: "none", buttons: 0
       });
       await new Promise(r => setTimeout(r, 40));
+      uiGuard?.check();
       await chrome.debugger.sendCommand(target, "Input.dispatchMouseEvent", {
         type: "mouseMoved", x: px + 3, y: py + 2, button: "none", buttons: 0
       });
@@ -361,7 +528,7 @@ async function dispatchNativeHover(tabId, x, y) {
         try { await chrome.debugger.detach(target); } catch (_) {}
       }
     }
-  });
+  }).finally(()=>uiGuard?.done());
 }
 
 // 记录近期已发起的自动下载（按 submissionId/mediaId/filename 去重），彻底杜绝同一视频触发两次 chrome.downloads.download
@@ -453,11 +620,24 @@ async function handleDownload(url, filename, task) {
     }
 
     const executeDownload = async () => {
+      try {
+        if(/^FlowBridge\//.test(task?.download_path || "") && typeof globalThis.__lzxPreflightVideo!=="function")throw Object.assign(Error("视频内容预检未载入，未启动下载；等待扩展自动恢复。"),{code:"FLOW_DOWNLOAD_GUARD_UNAVAILABLE"});
+        const checked=await globalThis.__lzxPreflightVideo?.(url,task);
+        if(/^FlowBridge\//.test(task?.download_path || "") && !checked)throw Object.assign(Error("未取得经过内容验证的视频直链，未启动下载。"),{code:"FLOW_DOWNLOAD_GUARD_UNAVAILABLE"});
+        if(checked)url=checked;
+        if(/^FlowBridge\//.test(task?.download_path || "") && new URL(url).hostname==="labs.google")throw Object.assign(Error("取址接口不能直接作为视频文件下载，未创建下载项。"),{code:"FLOW_DOWNLOAD_URL_UNRESOLVED"});
+      }
+      catch(failure) {
+        if(dedupKey)recentAutoDownloads.delete(dedupKey);
+        if(mediaFileKey)recentAutoDownloads.delete(mediaFileKey);
+        return {error:String(failure.message || failure),code:failure.code || "FLOW_DOWNLOAD_PROBE_FAILED"};
+      }
       // 在 Chrome 触发文件命名事件之前保存这个 URL 的独立文件名。
       await chrome.storage.session.set({ [`filename_${url}`]: sanitizedFilename });
       console.log(`[Background] 🚀 开始调用 Chrome API 下载视频: URL=${url}, Filename=${sanitizedFilename}`);
       
       const tryChromeDownload = (targetFilename) => new Promise((resolve) => {
+        globalThis.__lzxReserveDownload?.(url,task);
         chrome.downloads.download({
           url: url,
           filename: targetFilename,
@@ -470,6 +650,7 @@ async function handleDownload(url, filename, task) {
               resolve({ error: chrome.runtime.lastError.message });
             } else {
               console.log(`[Background] ✅ chrome.downloads.download 已启动，分配 ID=${downloadId}, Filename=${targetFilename}`);
+              await globalThis.__lzxGuardDownload?.(downloadId,task);
               await chrome.storage.session.set({ [`download_${downloadId}`]: { ...task, filename: targetFilename, sanitizedFilename, url } });
               await globalThis.__lzxDownloadBound?.(downloadId, { ...task, filename: targetFilename, url });
               resolve({ success: true, downloadId: downloadId, filename: targetFilename });
@@ -481,7 +662,7 @@ async function handleDownload(url, filename, task) {
             }
           } catch (err) {
             console.error("[Background] 下载跟踪失败", err);
-            resolve({ error: err.message });
+            resolve({ error: err.message, code:err.code || "", downloadId });
           }
         });
       });
@@ -519,7 +700,8 @@ chrome.downloads.onDeterminingFilename.addListener((item, suggest) => {
   if (item.byExtensionId !== chrome.runtime.id) { suggest(); return; }
   const keys = [`download_${item.id}`, `filename_${item.url}`];
   if (item.finalUrl) keys.push(`filename_${item.finalUrl}`);
-  chrome.storage.session.get(keys).then(saved => {
+  chrome.storage.session.get(keys).then(async saved => {
+    if(await globalThis.__lzxInspectDownloadItem?.(item,saved[`download_${item.id}`])){suggest();return;}
     const filename = saved[`download_${item.id}`]?.filename || saved[`filename_${item.url}`] || (item.finalUrl ? saved[`filename_${item.finalUrl}`] : null);
     console.log(`[Background] 📝 onDeterminingFilename: ID=${item.id}, URL=${item.url}, 匹配目标文件名=${filename}`);
     if (filename) suggest({ filename, conflictAction: "uniquify" });
@@ -554,5 +736,26 @@ chrome.downloads.onChanged.addListener(delta => {
   }
 });
 
+// Share the native-operation lane; never capture another tab or keep debugger attached.
+globalThis.__lzxCaptureUpload = tabId => serialByTab(tabId,async () => {
+  const target={tabId}; let owned=false;
+  const command=(name,params={})=>{
+    let timer;
+    return Promise.race([chrome.debugger.sendCommand(target,name,params),
+      new Promise((_,reject)=>{timer=setTimeout(()=>reject(Error("截图响应超时")),8000);})]).finally(()=>clearTimeout(timer));
+  };
+  try {
+    try {await chrome.debugger.attach(target,"1.3");owned=true;}
+    catch(error) {if(!/already attached/i.test(String(error.message || error)))throw error;}
+    const metrics=await command("Page.getLayoutMetrics");
+    owned=true; // A successful command proves this extension owns the session.
+    const viewport=metrics.cssVisualViewport;
+    if(!viewport || viewport.clientWidth<64 || viewport.clientHeight<64 || viewport.clientWidth>10000 || viewport.clientHeight>10000)throw Error("项目截图视口无效");
+    const result=await command("Page.captureScreenshot",{format:"png",fromSurface:true,captureBeyondViewport:false,
+      clip:{x:viewport.pageX,y:viewport.pageY,width:viewport.clientWidth,height:viewport.clientHeight,scale:1}});
+    if(!result.data || result.data.length>16000000)throw Error("项目截图过大或为空");
+    return {data:result.data,width:viewport.clientWidth,height:viewport.clientHeight};
+  } finally {if(owned)try {await chrome.debugger.detach(target);}catch{}}
+});
 // Host-authenticated recovery reuses the exact upstream bound downloader.
 globalThis.__lzxRetryBoundDownload = handleDownload;

@@ -138,7 +138,9 @@ class HighCreditTests(unittest.TestCase):
         self.assertEqual(len(restarted.store.rows()), 4)
         self.assertEqual([row['id'] for row in restarted.store.rows()], queued_ids)
         self.assertTrue(all(row['status'] == 'queued' for row in restarted.store.rows()))
-        self.assertIn('Broken', restarted.preferences['browser_launch_failures'])
+        # Launch failures are old observations, not permanent user blocks.
+        # Startup rechecks them; explicit account permissions remain intact.
+        self.assertNotIn('Broken', restarted.preferences['browser_launch_failures'])
         restarted.preferences['browser_launch_failures']['Small'] = {'message': prefix + 'Small', 'kind': 'extension_probe_v2'}
         self.assertIn('Small', recover_legacy_probe_failures(restarted.preferences)['browser_launch_failures'])
 
@@ -206,25 +208,25 @@ class HighCreditTests(unittest.TestCase):
         self.assertFalse(allowed(rich, service.preferences))
         self.assertEqual(service.preferences['high_credit_accounts'][old['account']]['decision'], 'standby')
 
-    def test_marker_and_explicit_yes_survive_debits_alias_and_restart(self):
+    def test_below_100_downgrades_after_debit_alias_and_restart(self):
         service = self.service(); rich = self.browser(service, points=100); self.queue(service); service._tick()
         self.answer(service, True); debit_balance(rich, service.clients.values(), 12)
         self.observe(service, rich, 88, manual=True)
-        self.assertTrue(is_high(rich, service.preferences)); self.assertTrue(allowed(rich, service.preferences))
+        self.assertFalse(is_high(rich, service.preferences)); self.assertTrue(allowed(rich, service.preferences))
         other = {**rich, 'id': 'alias', 'profile': 'Alias', 'credits': 88}
         self.assertTrue(allowed(other, service.preferences))
         service.execute({'action': 'stop'}); restarted = self.service()
-        self.assertTrue(is_high(other, restarted.preferences)); self.assertTrue(allowed(other, restarted.preferences))
+        self.assertFalse(is_high(other, restarted.preferences)); self.assertTrue(allowed(other, restarted.preferences))
         self.browser(restarted, points=88); restarted.paused = False; restarted._tick()
         self.assertIsNone(restarted.high_credit_pending)
 
-    def test_skip_survives_restart_and_manual_credit_refresh(self):
+    def test_below_100_no_longer_obeys_old_high_balance_skip_after_restart(self):
         service = self.service(); rich = self.browser(service, points=1038); self.queue(service); service._tick()
         self.answer(service, False); self.observe(service, rich, 38, manual=True)
         service.execute({'action': 'stop'}); restarted = self.service()
         replacement = self.browser(restarted, points=38); restarted.paused = False; restarted._tick()
-        self.assertTrue(is_high(replacement, restarted.preferences)); self.assertIsNone(restarted.high_credit_pending)
-        self.assertFalse(allowed(replacement, restarted.preferences))
+        self.assertFalse(is_high(replacement, restarted.preferences)); self.assertIsNone(restarted.high_credit_pending)
+        self.assertTrue(allowed(replacement, restarted.preferences))
 
     def test_small_account_spend_then_exhaustion_allows_one_new_question(self):
         service = self.service(); rich = self.browser(service, points=1038); self.queue(service); service._tick()

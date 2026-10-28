@@ -4,10 +4,14 @@
   let handler, getSnapshot, helpers, lastSnapshot = '', lastIdentity = '', confirmedIdentity = '', lastSnapshotAt = 0, preparedProof = null;
   let timingValues = {}, statusTimer;
   let nativeOperation = false;
+  let uiMutexEnabled = false, activeUiLease = null, passiveUiDepth = 0;
+  const uiReplies = new Map();
   let creditRefreshObservation = null;
   function creditRefreshClock(text) {
     const clean = String(text || '').replace(/\s+/g, ' ').trim();
-    const match = clean.match(/^(?:点数|點數|积分|積分)\s*(?:每天|每日)\s*(?:于|於|在)?\s*(\d{1,2})[:：](\d{2})\s*(?:刷新|重置|更新)$/i) ||
+    const chinese=clean.match(/^(?:点数|點數|积分|積分)\s*(?:将|將|会|會)?\s*(?:于|於|在)?\s*(?:每天|每日)\s*(?:于|於|在)?\s*(上午|下午|中午|午夜|晚上)?\s*(\d{1,2})[:：](\d{2})\s*(?:刷新|重置|更新|重设|重設)$/i);
+    const match = chinese ? [chinese[0],chinese[2],chinese[3],chinese[1] ?
+      /上午|午夜/.test(chinese[1])?'AM':'PM' : ''] :
       clean.match(/^(?:AI\s*)?(?:credits?|points?)\s+(?:refresh|reset|renew)(?:es|s)?\s+(?:daily|every day)\s+(?:at\s+)?(\d{1,2}):(\d{2})\s*(AM|PM)?$/i);
     if (!match) return null;
     let hour = Number(match[1]), minute = Number(match[2]);
@@ -46,7 +50,10 @@
       offset_minutes:now.getTimezoneOffset(), text:clock.text};
   }
   const pageInstance = globalThis.crypto?.randomUUID?.() || String(Date.now()) + ':' + Math.random();
-  const timingMs = (key,fallback) => Math.max(1, (Number.isFinite(timingValues[key]) && timingValues[key] > 0 ? timingValues[key] : fallback)*1000);
+  const timingMs = (key,fallback) => {
+    const seconds=Number.isFinite(timingValues[key]) && timingValues[key]>0 ? timingValues[key] : fallback;
+    return Math.max(1,(activeUiLease && key==='page_control_poll_seconds' ? Math.min(seconds,.1) : seconds)*1000);
+  };
   function applyTiming(raw) {
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return;
     const next = Object.fromEntries(Object.entries(raw).filter(([key,item]) => /^page_/.test(key) &&
@@ -57,6 +64,98 @@
     statusTimer = setInterval(() => {accountIssue(); checkFailedCards(); snapshot();}, timingMs('page_poll_seconds',2));
   }
   const emit = data => window.postMessage({sender: 'lzx-flow-page', data}, location.origin);
+  const cancelledRequests=new Set();let activeRequest='';
+  function checkRequest(request=activeRequest) {
+    if(cancelledRequests.has(request))throw Object.assign(Error('本次操作已被重置，停止旧图片操作。'),{code:'FLOW_OPERATION_CANCELLED'});
+  }
+  function assertUi() {
+    checkRequest();
+    if(uiMutexEnabled && (!activeUiLease || !activeUiLease.valid || Date.now()>=activeUiLease.expires_at*1000))throw Object.assign(Error('前台 UI 操作权限已结束，停止本段页面交互；未重复提交。'),{code:'FLOW_UI_MUTEX_EXPIRED'});
+  }
+  function releaseUiScope(scope, passive=false) {
+    const lease=scope.lease;
+    if(!lease)return;
+    scope.lease=null;
+    if(activeUiLease===lease)activeUiLease=null;
+    emit({type:'ui_mutex_command',token:lease.token,release:true,stopped:true,...(passive?{passive_wait:true}:{})});
+  }
+  function renewUiAfterSuccess(step) {
+    // Additive only: never await this channel, throw, retry the operation or
+    // replace the existing deadline on a rejection/timeout/unsupported host.
+    const lease=activeUiLease;
+    if(!uiMutexEnabled || !lease?.valid || !lease.renewal || Date.now()>=lease.expires_at*1000 ||
+        lease.steps.has(step))return;
+    lease.steps.add(step);
+    try {snapshot(false,{token:lease.token,seq:++lease.seq,step,url:location.href});}catch{}
+  }
+  async function acquireUiScope(scope) {
+    checkRequest(scope.request);
+    if(location.href!==scope.url)throw Object.assign(Error('等待UI锁期间原页面已变化，停止旧操作。'),{code:'FLOW_OPERATION_CANCELLED'});
+    if(!uiMutexEnabled)return;
+    const token=crypto.randomUUID().replaceAll('-','');
+    const permit=new Promise(resolve=>uiReplies.set(token,resolve));
+    emit({type:'ui_mutex_command',token,operation:scope.operation,batch_id:scope.batchId});
+    const result=await permit;
+    if(result.state==='disabled')uiMutexEnabled=false;
+    if(!uiMutexEnabled) {
+      if(result.state==='granted')emit({type:'ui_mutex_command',token,release:true});
+      return;
+    }
+    if(!result.ok)throw Object.assign(Error('前台 UI 操作互斥申请未完成：'+String(result.error || result.state)),{code:'FLOW_UI_MUTEX_UNAVAILABLE'});
+    scope.lease=activeUiLease={token,valid:true,expires_at:result.expires_at,scope,
+      renewal:result.renewal===true,steps:new Set(),seq:0};
+    checkRequest(scope.request);
+    if(location.href!==scope.url)throw Object.assign(Error('原页面已变化，未恢复旧UI操作。'),{code:'FLOW_OPERATION_CANCELLED'});
+  }
+  async function uiOperation(operation,work,batchId='') {
+    if(!uiMutexEnabled)return await work();
+    if(activeUiLease) {assertUi();return await work();}
+    const scope={operation,batchId,request:activeRequest,url:location.href,lease:null,passiveExit:passiveUiDepth>0};
+    try {await acquireUiScope(scope);assertUi();return await work();}
+    finally {releaseUiScope(scope,scope.passiveExit);}
+  }
+  async function uiWait(work) {
+    const scope=activeUiLease?.scope;
+    if(!scope)return await work();
+    const request=activeRequest,url=location.href;
+    scope.request=request;
+    releaseUiScope(scope,true);
+    passiveUiDepth++;
+    let result;
+    try {checkRequest(request);result=await work();checkRequest(request);}
+    finally {passiveUiDepth--;}
+    if(location.href!==url)throw Object.assign(Error('后台等待期间原页面已变化，停止旧操作。'),{code:'FLOW_OPERATION_CANCELLED'});
+    await acquireUiScope(scope);
+    return result;
+  }
+  async function waitPrompt(editor,text) {
+    const until=Date.now()+300,expected=String(text).replace(/\s+/g,'');
+    do {
+      assertUi();
+      if(String(editor?.textContent || '').replace(/\s+/g,'')===expected && document.querySelector('button.generate-icon-button:not([disabled])')) {
+        renewUiAfterSuccess('prompt-written');return;
+      }
+      await new Promise(resolve=>setTimeout(resolve,50));
+    }while(Date.now()<until);
+  }
+  async function afterSubmit(params) {
+    const until=Date.now()+1800;
+    do {
+      assertUi();
+      const task=getSnapshot?.()?.tasks?.[params.rowIndex];
+      const binding=task?.mediaBindings?.[params.lineIndex];
+      if(binding?.submissionId===params.submissionId && binding.mediaIds?.length) {
+        if(binding.schema===2 && binding.source==='generation_response' && binding.taskId===task.taskId)
+          renewUiAfterSuccess('submission-confirmed');
+        return;
+      }
+      if(document.querySelector('flow-generate-icon-button mat-spinner, flow-generate-icon-button .mat-mdc-progress-spinner'))break;
+      await new Promise(resolve=>setTimeout(resolve,100));
+    }while(Date.now()<until);
+    // The click has finished; the following packed wait only observes its
+    // media receipt. Retain pack identity, not exclusive foreground priority.
+    if(activeUiLease?.scope?.operation==='submit')activeUiLease.scope.passiveExit=true;
+  }
   let attachedAt = 0, stableSince = 0, stablePrompt, stableSettings, stableUrl = '', lastReadiness = '';
   let lastAccountIssue = '';
   const ignoredAlertContent = '#flow-batch-overlay, #flow-import-dialog, #flow-alarm-dialog, #flow-batch-fab, input, textarea, [contenteditable="true"], .ProseMirror, [data-prompt], [hidden], [aria-hidden="true"], script, style, template, pre, code';
@@ -102,6 +201,66 @@
   const live = node => node && node.isConnected !== false && !node.disabled &&
     node.getAttribute?.('aria-disabled') !== 'true' && node.getAttribute?.('aria-hidden') !== 'true' &&
     (typeof node.getClientRects !== 'function' || node.getClientRects().length > 0);
+  function accountPanels() {
+    const panels = [...(document.querySelectorAll?.('flow-account-panel, .flow-account-panel-overlay') || [])];
+    const first = document.querySelector?.('flow-account-panel, .flow-account-panel-overlay');
+    if (first && !panels.includes(first)) panels.push(first);
+    return panels.filter(node => siteAlertVisible(node) && !node.hidden);
+  }
+  async function closeAccountPanel() {
+    if (!accountPanels().length) return;
+    const deadline = Date.now() + 3000;
+    let attempts = 0;
+    while (accountPanels().length && Date.now() <= deadline) {
+      if (attempts++ < 3) {
+        for (const panel of accountPanels()) {
+          if (!live(panel) || !accountPanels().length) continue;
+          const closer = panel.querySelector?.('button.close-button, button[aria-label="Close"], button[aria-label="关闭"], button[aria-label="關閉"]') ||
+            [...(panel.querySelectorAll?.('button, [role="button"]') || [])].find(node =>
+              /^(close|关闭|關閉|close關閉|close关闭|×|✕)$/i.test(String(node.getAttribute?.('aria-label') || node.textContent || '').replace(/\s+/g,''))) ||
+            document.querySelector?.('flow-account-panel button.close-button');
+          if (closer && live(closer)) {assertUi();closer.click();}
+          else if (typeof KeyboardEvent === 'function') {
+            assertUi();
+            panel.dispatchEvent?.(new KeyboardEvent('keydown', {key:'Escape',code:'Escape',bubbles:true}));
+            document.dispatchEvent?.(new KeyboardEvent('keydown', {key:'Escape',code:'Escape',bubbles:true}));
+          }
+        }
+      }
+      if (!accountPanels().length) return;
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    if (accountPanels().length) throw Object.assign(new Error('账号／积分面板仍遮挡上传区域，关闭未生效；未执行图片拖拽或提交生成。'),
+      {code:'FLOW_ACCOUNT_PANEL_BLOCKED'});
+  }
+  function uploadActivity(paths) {
+    const names = paths.map(path => String(path).split(/[\\/]/).at(-1).toLowerCase());
+    const signals = [];
+    let active = false, error = '';
+    // Observe upload-specific UI only. A video-generation spinner or our own
+    // status display cannot prolong an image upload.
+    for (const node of document.querySelectorAll('flow-upload-progress, flow-upload-status, [class*="upload-progress"], [class*="uploading"], [role="progressbar"], progress, [role="status"], [role="alert"]')) {
+      if (!siteAlertVisible(node) || node.closest?.('flow-video-tile, flow-account-panel')) continue;
+      const owner = node.closest?.('flow-upload-progress, flow-upload-status, [class*="upload"], flow-image-tile, flow-media-tile, [data-filename]') || node;
+      const text = String((owner.textContent || '') + ' ' + (node.getAttribute?.('aria-label') || '')).slice(0,2000);
+      const ownText = String((node.textContent || '') + ' ' + (node.getAttribute?.('aria-label') || ''));
+      const specific = /upload/i.test(String(owner.tagName || '') + ' ' + String(owner.className || ''));
+      const mentionsFile = names.some(name => text.toLowerCase().includes(name));
+      const uploading = /upload(?:ing|\s+in\s+progress)|正在上[传傳]|上[传傳]中|(?:正在)?[处處]理(?:中)?(?:图片|圖片|文件)|processing\s+(?:image|file)/i.test(text);
+      const failed = /upload\s+failed|failed\s+to\s+upload|上[传傳]失[败敗]|[无無]法上[传傳]/i.test(ownText);
+      if (!specific && !uploading && !mentionsFile && !failed) continue;
+      if (failed) {
+        error = '网页明确提示图片上传失败：' + ownText.trim().slice(0,200); break;
+      }
+      if (/upload\s+(?:complete|finished)|上[传傳](?:已)?完成|上[传傳]成功/i.test(ownText)) continue;
+      const progress = String(node.getAttribute?.('aria-valuenow') ?? node.value ?? '').slice(0,30);
+      const percent = ownText.match(/\b(\d{1,3}(?:\.\d+)?)\s*%/);
+      const busy = node.getAttribute?.('aria-busy') === 'true' || uploading || specific ||
+        mentionsFile && /progress|processing|spinner|loading|[处處]理中|[载載]入中/i.test(String(node.className || '') + ' ' + ownText);
+      if (busy) {active = true; signals.push([String(node.tagName || ''),progress,percent?.[1] || ''].join(':'));}
+    }
+    return {active, stamp:signals.sort().join('|'), error};
+  }
   function readiness() {
     const url = location.href.split('#')[0];
     const prompt = document.querySelector("flow-rich-text-editor div.ProseMirror[contenteditable='true'], div.ProseMirror[contenteditable='true']");
@@ -114,13 +273,16 @@
     }
     const ready = !!present && Date.now() - attachedAt >= timingMs('page_initial_settle_seconds',2) &&
       Date.now() - stableSince >= timingMs('page_dom_stable_seconds',1.5);
-    return {controls_ready: ready, reference_ready:window.__lzxReferenceIdentity?.ready?.() === true,
+    return {controls_ready: ready, credit_pack_submit:typeof helpers?.submitPacked === 'function', reference_ready:window.__lzxReferenceIdentity?.ready?.() === true,
+      reference_sha256_names:window.__lzxReferenceIdentity?.sha256_names === true,
+      reference_stable_sha256_names:window.__lzxReferenceIdentity?.stable_sha256_names === true,
       boot_ready: !!handler && !!helpers && (!helpers.initialized || helpers.initialized()), ready_note: ready ? '' :
       present ? '页面控件已出现，正在自动等待加载稳定…' : '正在自动等待提示词框和模型设置控件加载…'};
   }
   async function waitForControls() {
     const url = location.href.split('#')[0], until = Date.now() + timingMs('page_controls_wait_seconds',45);
     while (Date.now() < until) {
+      checkRequest();
       const issue = accountIssue();
       if (issue) throw Object.assign(new Error(issue.error), {code: issue.code});
       if (location.href.split('#')[0] !== url) break;
@@ -141,6 +303,43 @@
     tile.scrollIntoView({block: 'nearest', behavior: 'instant'});
     locatedResults.add(key);
     return true;
+  }
+  let passiveCandidate='', passiveSince=0, passiveLast='', passiveSentAt=0;
+  function observePassiveCredits() {
+    // Read only the account panel the user has already opened. Never call
+    // helpers.account/probePoints, click, close, focus, refresh or fetch here.
+    if (nativeOperation || getSnapshot?.()?.running) return;
+    const observations=[];
+    for (const panel of accountPanels()) {
+      if (panel.closest?.(ignoredAlertContent)) continue;
+      const accounts=new Set(), balances=new Set();
+      for (const node of panel.querySelectorAll?.('*') || []) {
+        if (!siteAlertVisible(node)) continue;
+        if (!node.children?.length) {const email=normalizeEmail(node.textContent);if(email)accounts.add(email);}
+      }
+      for (const node of panel.querySelectorAll?.('span.credits-count, [class*="credits-count"], a.credits-link') || []) {
+        if (!siteAlertVisible(node)) continue;
+        const text=String(node.textContent || '').trim();
+        if (!text || text.length>120 || creditRefreshClock(text) || /\d[:：.]\d|[+-]\s*\d/.test(text)) continue;
+        const compact=text.replace(/[,\u00a0\u202f]/g,''), numbers=compact.match(/\d+/g) || [];
+        if (numbers.length!==1 || !(/^\d+$/.test(compact) || /credits?|points?|积分|積分|點數|点数|點|点/i.test(compact))) continue;
+        const value=Number(numbers[0]);if(Number.isSafeInteger(value) && value>=0 && value<1000000)balances.add(value);
+      }
+      if(accounts.size===1 && balances.size===1)observations.push({panel,account:[...accounts][0],balance:[...balances][0]});
+    }
+    const unique=new Set(observations.map(item=>JSON.stringify([item.account,item.balance])));
+    if(unique.size!==1){passiveCandidate='';return;}
+    const stamp=[...unique][0],now=Date.now();
+    if(stamp!==passiveCandidate){passiveCandidate=stamp;passiveSince=now;return;}
+    if(now-passiveSince<500 || stamp===passiveLast && now-passiveSentAt<60000)return;
+    const item=observations[0],previous=creditRefreshObservation;
+    creditRefreshObservation=null;captureCreditRefresh(item.panel,item.account);
+    const refresh=creditRefreshObservation;creditRefreshObservation=previous;
+    passiveLast=stamp;passiveSentAt=now;
+    lastIdentity=confirmedIdentity=item.account;
+    emit({type:'credit_observation',url:location.href,page_instance:pageInstance,
+      account:item.account,balance:item.balance,observed_at:now/1000,
+      ...(refresh?.account===item.account && refresh.value ? {credit_refresh_checked:true,credit_refresh:refresh.value} : {})});
   }
   function activeEmail() {
     const panel = document.querySelector('flow-account-panel');
@@ -220,6 +419,7 @@
     const clicked = new WeakSet();
     let opens = 0, nextOpen = 0, previousGroup, optionsStamp = '', optionsAt = 0, selectedOnce = false;
     while (Date.now() < until) {
+      assertUi();
       if (location.href !== url) throw new Error('设置时长时项目地址发生变化，未提交生成。');
       const panel = settingsPanel();
       if (!panel && opens < 3 && Date.now() >= nextOpen) {
@@ -270,7 +470,7 @@
       if (location.href !== url) throw new Error('核对参数时项目地址发生变化，未提交生成。');
       try {
         verifySettings(settings, settingsPanel());
-        if (previous) return true;
+        if (previous) {renewUiAfterSuccess('settings-confirmed');return true;}
         previous = true;
       } catch (error) {failure = error; previous = false; preparedProof = null;}
       await new Promise(resolve => setTimeout(resolve, timingMs('page_control_poll_seconds',.25)));
@@ -397,7 +597,8 @@
     }
   }
   window.addEventListener('flow-task-media-failed',event=>generationFailed(event.detail?.mediaId,event.detail?.source,event.detail?.reason));
-  function snapshot(force = false) {
+  function snapshot(force = false, ui_renew) {
+    observePassiveCredits();
     if (!getSnapshot) return;
     if (force) helpers?.reconcileResults?.();
     const state = readiness();
@@ -406,10 +607,10 @@
     const data = {...getSnapshot(), ...state, native_busy:nativeOperation, page_instance:pageInstance,
       page_visibility:document.visibilityState || 'unknown', page_focused:document.hasFocus?.() === true};
     const encoded = JSON.stringify(data);
-    if (force || encoded !== lastSnapshot || Date.now() - lastSnapshotAt > timingMs('page_snapshot_seconds',15)) {
+    if (ui_renew || force || encoded !== lastSnapshot || Date.now() - lastSnapshotAt > timingMs('page_snapshot_seconds',15)) {
       lastSnapshot = encoded;
       lastSnapshotAt = Date.now();
-      emit({type: 'snapshot', data});
+      emit({type: 'snapshot', data, ...(ui_renew?{ui_renew}:{})});
     }
     if (force) {
       // A WebSocket reconnect may have lost the one-shot receipt. Replaying a
@@ -441,14 +642,90 @@
   }
   function hasPendingResults() {
     return (getSnapshot?.()?.tasks || []).some(task => (task.mediaBindings || []).some((binding, line) =>
-      binding?.schema === 2 && binding.source === 'generation_response' && binding.mediaIds?.length &&
+      binding?.schema === 2 && binding.source === 'generation_response' && binding.mediaIds?.length && !binding.desktopParked &&
+      !binding.mediaIds.every(id=>binding.failedIds?.includes(id)) &&
       task.status?.[line] !== 'success'));
   }
+  let previewWakeActive = false;
+  async function wakeResultPreview(mediaId, batchId, force=false) {
+    // Only an existing generation receipt authorizes preview playback. Never
+    // infer task ownership from the newest tile, prompt text or an image name.
+    const bound = () => (getSnapshot?.()?.tasks || []).filter(task =>
+      task.download_path === `FlowBridge/${batchId}/result.mp4` &&
+      (task.mediaBindings || []).some((binding, line) => binding?.schema === 2 &&
+        binding.source === 'generation_response' && binding.taskId === task.taskId && binding.submissionId &&
+        binding.mediaIds?.includes(mediaId) && !binding.failedIds?.includes(mediaId) &&
+        !task.downloaded?.[line] && task.status?.[line] !== 'success'));
+    if (!/^[a-f0-9]{32}$/.test(batchId || '') || !/^[A-Za-z0-9_-]{1,256}$/.test(mediaId || '') ||
+        previewWakeActive || nativeOperation || activeUiLease || bound().length !== 1) return false;
+    const identity = raw => {
+      try {
+        const url = new URL(raw, location.href);
+        if (url.protocol !== 'https:' || url.username || url.password || url.port && url.port !== '443') return '';
+        if (url.hostname === 'flow-content.google') return url.pathname.match(/^\/(?:video|image)\/([A-Za-z0-9_-]+)$/)?.[1] || '';
+        if (url.hostname === 'flow.google.com') return url.pathname.match(/^\/asb\/([A-Za-z0-9_-]+)(?:=[A-Za-z0-9_,.-]+)?$/)?.[1] || '';
+        if (url.hostname === 'labs.google' && url.pathname === '/fx/api/trpc/media.getMediaUrlRedirect') return (url.searchParams.get('name') || '').split('/').at(-1);
+      } catch {}
+      return '';
+    };
+    const source = node => node?.currentSrc || node?.src || node?.getAttribute?.('src') || '';
+    const tiles = () => [...document.querySelectorAll('flow-video-tile')].filter(tile =>
+      !tile.closest?.('flow-image-tile') && [...tile.querySelectorAll('video, video source, img')].some(node => identity(source(node)) === mediaId));
+    if (tiles().length !== 1) return false;
+    previewWakeActive = true;
+    try {
+      return await uiOperation('retry_download', async () => {
+        if (nativeOperation || bound().length !== 1) return false;
+        const matches = tiles();
+        if (matches.length !== 1) return false;
+        const tile = matches[0], started=Date.now(), until = started + 1800;
+        const loaded = tile.querySelector('video');
+        if (!force && loaded?.readyState >= 1 && identity(source(loaded)) === mediaId) return true;
+        let played = null, previousMuted = false, finished = false;
+        const restore = () => {
+          if (!played) return;
+          try {played.pause(); played.muted = previousMuted;} catch {}
+        };
+        try {
+          assertUi();
+          for (const node of [tile, tile.querySelector('img'), tile.querySelector('video')].filter(Boolean)) {
+            const rect = node.getBoundingClientRect();
+            const init = {bubbles:true, composed:true, view:window, clientX:rect.left + rect.width / 2, clientY:rect.top + rect.height / 2};
+            for (const type of ['pointerover', 'pointerenter', 'pointermove']) {
+              if (typeof PointerEvent === 'function') node.dispatchEvent(new PointerEvent(type, {...init, pointerType:'mouse', pointerId:1, isPrimary:true}));
+            }
+            for (const type of ['mouseover', 'mouseenter', 'mousemove']) node.dispatchEvent(new MouseEvent(type, init));
+          }
+          do {
+            assertUi();
+            if (nativeOperation || bound().length !== 1 || !tile.isConnected) return false;
+            const video = tile.querySelector('video');
+            if (video && (!source(video) || identity(source(video)) === mediaId)) {
+              if (video.readyState >= 1 && identity(source(video)) === mediaId && (!force || Date.now()-started>=300)) return true;
+              if (!played && video.paused !== false && typeof video.play === 'function') {
+                played = video; previousMuted = video.muted; video.muted = true;
+                // play() may remain pending. Neither autoplay denial nor a late
+                // promise completion may hold the lease or leave audio playing.
+                Promise.resolve(video.play()).then(() => {if (finished) restore();}, () => {});
+              }
+            }
+            await new Promise(resolve => setTimeout(resolve, 100));
+          } while (Date.now() < until);
+          return false;
+        } finally {finished = true; restore();}
+      }, batchId);
+    } catch {return false;}
+    finally {previewWakeActive = false;}
+  }
   window.__lzxFlowTransport = {
+    wakeResultPreview,
+    uiOperation, uiWait, assertUi, waitPrompt, afterSubmit, renewUiAfterSuccess,
+    uiLeaseToken:()=>activeUiLease?.token || '',
+    uiMutexActive:()=>uiMutexEnabled && !!activeUiLease,
     creditRefresh:captureCreditRefresh,
     isCreditRefreshText:text => /(?:每天|每日)\s*(?:于|於|在)?\s*\d{1,2}[:：]\d{2}\s*(?:刷新|重置|更新)|(?:credits?|points?).*(?:refresh|reset|renew).*(?:daily|every day)/i.test(String(text || '')),
     initReference() {if (helpers) window.__lzxReferenceIdentity?.init(helpers, timingMs);},
-    verifySettings, settingsPanel, waitForSettings, applyDuration, activeEmail, captureAccount, locateResult, readiness, waitForControls,
+    verifySettings, settingsPanel, waitForSettings, applyDuration, activeEmail, captureAccount, closeAccountPanel, uploadActivity, locateResult, readiness, waitForControls,
     findSubmission, matchesSubmission, hasPendingResults,
     batchIdle() {snapshot(true);},
     unusualActivity,
@@ -505,23 +782,64 @@
   window.addEventListener('message', async event => {
     if (event.source !== window || event.origin !== location.origin || event.data?.sender !== 'lzx-flow-extension') return;
     const message = event.data.message;
+    if(message?.action==='cancel_operation') {
+      if(/^[a-f0-9]{32}$/.test(message.target_request_id || ''))cancelledRequests.add(message.target_request_id);
+      while(cancelledRequests.size>128)cancelledRequests.delete(cancelledRequests.values().next().value);
+      return;
+    }
+    if(message?.action==='configure_browser_options') {uiMutexEnabled=message.values?.ui_mutex===true;return;}
+    if(message?.action==='ui_mutex_result') {
+      if(Number.isInteger(message.renew_seq)) {
+        const lease=activeUiLease;
+        if(lease?.token===message.token && lease.valid && Date.now()<lease.expires_at*1000 &&
+            Number.isFinite(message.expires_at) && message.expires_at>lease.expires_at)
+          lease.expires_at=message.expires_at;
+        return;
+      }
+      const resolve=uiReplies.get(message.token);
+      if(resolve){uiReplies.delete(message.token);resolve(message);}return;
+    }
+    if(message?.action==='ui_mutex_revoked') {
+      if(activeUiLease?.token===message.token) {
+        activeUiLease.valid=false;
+        if(message.stopping && activeRequest)cancelledRequests.add(activeRequest);
+      }
+      const resolve=uiReplies.get(message.token);
+      if(resolve){uiReplies.delete(message.token);resolve({ok:message.state==='disabled',state:message.state});}
+      if(message.state==='disabled')uiMutexEnabled=false;
+      return;
+    }
+    if(message?.browser_options)uiMutexEnabled=message.browser_options.ui_mutex===true;
     if (message?.action === 'configure_timing') {applyTiming(message.values); return;}
     if (message?.timing) applyTiming(message.timing);
     if (!handler || !message) return;
     if (message.action === 'ready') {pageStatus(); return;}
     if (!['get_points', 'prepare', 'upload_images', 'run_tasks', 'snapshot', 'retry_download', 'skip_download'].includes(message.action)) return;
+    try {
+      if(nativeOperation && ['get_points','prepare','upload_images','run_tasks'].includes(message.action))
+        throw Object.assign(Error('原页面操作仍在进行，未开始第二个页面操作。'),{code:'FLOW_BATCH_BUSY'});
+      if(['get_points','prepare','upload_images'].includes(message.action))await uiOperation(message.action,()=>execute(message));
+      else await execute(message);
+    }catch(error) {
+      emit({action:message.action+'_response',request_id:message.request_id,success:false,
+        code:error.code || '',error:String(error.message || error)});
+    }
+  });
+  async function execute(message) {
     let ownsOperation = false;
     try {
+      checkRequest(message.request_id);
       if (message.action === 'snapshot') { snapshot(true); return; }
       if (nativeOperation) throw Object.assign(Error('此页面仍在处理原操作，等待完成后再恢复；未提交本条生成。'), {code:'FLOW_BATCH_BUSY'});
       nativeOperation = ownsOperation = true;
+      activeRequest=message.request_id || '';
       snapshot(true);
       if (['prepare', 'upload_images', 'run_tasks', 'get_points'].includes(message.action)) {
         const issue = accountIssue();
         if (issue) throw Object.assign(new Error(issue.error), {code: issue.code});
       }
       if (message.params?.wait_for_ready && ['prepare', 'upload_images', 'run_tasks'].includes(message.action)) {
-        await waitForControls();
+        if(!readiness().controls_ready)await uiWait(()=>waitForControls());
       }
       if (message.action === 'get_points') { lastIdentity = ''; confirmedIdentity = ''; creditRefreshObservation = null; }
       if (message.action === 'prepare') {
@@ -534,6 +852,7 @@
         if (!(preparedProof && preparedProof.signature === signature(message.params) && preparedProof.url === location.href &&
             Date.now() - preparedProof.at < timingMs('page_proof_valid_seconds',5))) verifySettings(message.params);
         const email = await confirmAccount();
+        renewUiAfterSuccess('settings-confirmed');
         emit({action: 'prepare_response', request_id: message.request_id, success: true,
           data: {verified: true, model: 'omni_1_1_flash', cost: readCost(), summary: summary(), email, page_instance:pageInstance}});
       } else if (message.action === 'upload_images') {
@@ -547,7 +866,10 @@
         };
         await guardAccount();
         const data = await window.__lzxReferenceIdentity.upload(message.params || {},
-          {account:email, page_instance:pageInstance, guard:guardAccount});
+          {account:email, page_instance:pageInstance, guard:guardAccount,
+           check:()=>checkRequest(message.request_id),
+           progress:phase=>emit({type:'reference_progress',request_id:message.request_id,
+             upload_id:message.params?.upload_id,phase,url:location.href,page_instance:pageInstance})});
         emit({action:'upload_images_response', request_id:message.request_id, success:true, data});
       } else if (message.action === 'skip_download') {
         const ok = helpers.skipDownload?.(message.params?.batch_id);
@@ -568,16 +890,20 @@
             await confirmAccount() !== message.params.expected_account.toLowerCase()) {
           throw new Error('提交前登录账号发生变化或无法确认，未发送新的生成请求；请刷新账号核对。');
         }
-        await handler(message);
+        if (message.action === 'run_tasks' && message.params?.packed === true) {
+          if (!helpers.submitPacked) throw Object.assign(Error('当前页面尚不支持积分分包，未提交生成。'),{code:'FLOW_BATCH_UNCONFIRMED'});
+          const data = await helpers.submitPacked(message);
+          emit({action:'run_tasks_response',request_id:message.request_id,success:true,data});
+        } else await handler(message);
       }
     } catch (error) {
       emit({action: message.action + '_response', request_id: message.request_id, success: false,
         error: String(error.message || error), code: error.code || '',
         ...(error.code === 'FLOW_DURATION_UNSUPPORTED' ? {data: error.data} : {})});
     } finally {
-      if (ownsOperation) nativeOperation = false;
+      if (ownsOperation) {nativeOperation = false;activeRequest='';}
       snapshot(true);
     }
-  });
+  }
   statusTimer = setInterval(() => {accountIssue(); checkFailedCards(); snapshot();}, timingMs('page_poll_seconds',2));
 })();

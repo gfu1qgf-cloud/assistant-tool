@@ -44,10 +44,13 @@ def merge_snapshot_bindings(remote, bindings):
 def owns_download(job, download):
     if not isinstance(download, dict) or not isinstance(download.get('mediaId'), str) or not download['mediaId']:
         return False
-    for binding in generated_bindings(job['remote']):
+    from .video_catalog import manual_binding
+    manual = manual_binding(job)
+    bindings = [manual] if manual else generated_bindings(job['remote'])
+    for binding in bindings:
         if (binding['submissionId'] == download.get('submissionId')
                 and binding['taskId'] == download.get('taskId')
-                and binding['taskId'] == job['remote'].get('upstream_task')
+                and (manual is not None or binding['taskId'] == job['remote'].get('upstream_task'))
                 and download.get('mediaId') in binding.get('mediaIds', [])
                 and download.get('mediaId') not in binding.get('failedIds', [])
                 and download.get('mediaId') in binding.get('readyIds', [])):

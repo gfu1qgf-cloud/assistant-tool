@@ -57,7 +57,7 @@ const quiet = {log() {}, warn() {}, error() {}};
   assert.equal(data.lzxReloadSetup, undefined); assert.deepEqual(reloads, [7],
     'extension update must actually reload the original tab even if its URL did not change');
   assert.equal(created.length, 0);
-  await context.api.receive({action: 'open_project', params: {}, request_id: 'open'});
+  await context.api.receive({action: 'open_project', params: {}, request_id: 'open', browser_options:{focus_before_action:true}});
   assert.equal(created.length, 0, 'repeated open focuses the project instead of spawning tabs');
   assert.deepEqual(focused, [{id: 42, focused: true}], 'activate the owning Chrome window, not only its tab');
   const stored = structuredClone(data.lzxConfig);

@@ -11,8 +11,8 @@ class TimingSettings(QtWidgets.QWidget):
         self.loading, self.dirty = False, False
         self.edits, self.rows, self.groups = {}, {}, {}
         layout = QtWidgets.QVBoxLayout(self)
-        hint = QtWidgets.QLabel('余额有效期、低积分冷却和页面失联是三件事。检测失败或页面失联会保留上次余额；'
-            '过期后空闲时重新确认，已提交任务继续生成和下载。点击程序设置窗口的“确定”统一保存，主程序采用新参数并同步新版扩展。', self)
+        hint = QtWidgets.QLabel('鼠标悬停在名称或输入框上查看说明；点击“确定”保存。', self)
+        hint.setToolTip('余额过期后空闲重检，检测失败保留上次余额；积分冷却和页面失联分别处理。已提交任务继续生成和下载。参数由主程序统一保存。')
         hint.setWordWrap(True); layout.addWidget(hint)
         self.search = QtWidgets.QLineEdit(self); self.search.setPlaceholderText('搜索时间设置，例如：积分、下载、配对、超时')
         layout.addWidget(self.search)
@@ -39,8 +39,9 @@ class TimingSettings(QtWidgets.QWidget):
             edit.setObjectName(spec.key); edit.setToolTip(spec.help)
             field = QtWidgets.QWidget(self); row = QtWidgets.QHBoxLayout(field); row.setContentsMargins(0, 0, 0, 0)
             row.addWidget(edit, 0)
-            help_label = QtWidgets.QLabel(spec.help, field); help_label.setWordWrap(True); row.addWidget(help_label, 1)
+            row.addStretch(1)
             label = QtWidgets.QLabel(spec.label, self)
+            label.setToolTip(spec.help); field.setToolTip(spec.help)
             self.groups[spec.group][1].addRow(label, field)
             self.edits[spec.key], self.rows[spec.key] = edit, (label, field)
         buttons = QtWidgets.QHBoxLayout()
