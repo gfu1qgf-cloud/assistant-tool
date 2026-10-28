@@ -41,6 +41,9 @@ class CompletionShutdownTests(unittest.TestCase):
         cls.app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
 
     def setUp(self):
+        permission_patch = patch('model.CompletionShutdown.check_shutdown_permission')
+        self.permission = permission_patch.start()
+        self.addCleanup(permission_patch.stop)
         self.manager = FakeManager()
         self.now = [100.0]
         self.close = Mock(return_value=True)
@@ -193,17 +196,27 @@ class CompletionShutdownTests(unittest.TestCase):
                 self.app.processEvents(); time.sleep(.002)
             manager.shutdown(); owner.close(); owner.deleteLater(); manager.deleteLater(); self.app.processEvents()
 
-    def test_os_boundary_never_forces_or_schedules_uncancelable_os_timeout(self):
-        def system_directory(buffer, _length):
-            buffer.value = r'C:\Windows\System32'; return len(buffer.value)
-        with patch('model.CompletionShutdown.ctypes.windll.kernel32.GetSystemDirectoryW',side_effect=system_directory), \
-             patch('model.CompletionShutdown.subprocess.run',return_value=Mock(returncode=0)) as run:
-            request_windows_shutdown()
-        self.assertEqual(run.call_args.args[0],[r'C:\Windows\System32\shutdown.exe','/s','/t','0'])
-        self.assertFalse(run.call_args.kwargs['shell'])
-        with patch('model.CompletionShutdown.subprocess.run',return_value=Mock(returncode=5)), \
-             self.assertRaisesRegex(OSError,'Windows未接受关机请求'):
-            request_windows_shutdown()
+    def test_permission_failure_is_reported_before_arming_or_closing(self):
+        self.manager.set('one', 'running')
+        self.permission.side_effect = PermissionError('没有可用的关机权限')
+        with self.assertRaisesRegex(PermissionError, '关机权限'):
+            self.controller.arm()
+        self.assertFalse(self.controller.armed)
+        self.assertFalse(self.controller.timer.isActive())
+        self.assertTrue(self.manager.accepting)
+        self.close.assert_not_called()
+
+    def test_permission_revoked_during_work_keeps_application_and_queue(self):
+        self.finish_job()
+        self.permission.side_effect = PermissionError('关机权限已撤回')
+        self.now[0] += 60
+        self.controller.refresh()
+        self.assertFalse(self.controller.requested)
+        self.assertFalse(self.controller.armed)
+        self.assertTrue(self.manager.accepting)
+        self.close.assert_not_called()
+        self.manager.flush_history.assert_not_called()
+        self.assertIn('权限已撤回', self.controller.status)
 
     def test_os_action_occurs_after_qt_logs_and_storage_release_in_entrypoint(self):
         root = Path(__file__).resolve().parents[1]

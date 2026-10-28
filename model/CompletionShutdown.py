@@ -3,12 +3,11 @@ import ctypes
 import logging
 import math
 import os
-from pathlib import Path
-import subprocess
 import time
 
 from qt_compat import QtCore
 from model.BackgroundTasks import ACTIVE
+from model.WindowsShutdown import check_shutdown_permission, request_windows_shutdown
 
 
 class CompletionShutdown(QtCore.QObject):
@@ -47,6 +46,8 @@ class CompletionShutdown(QtCore.QObject):
             raise RuntimeError('程序已进入关机退出流程。')
         if type(allow_failed) is not bool:
             raise TypeError('关机完成条件必须明确选择。')
+        # Fail while the UI is still alive, not after hours of work and exit.
+        check_shutdown_permission()
         states = self.manager.completion_states()
         self._known = set(states)
         self._watched = {key: status for key, status in states.items() if status in ACTIVE}
@@ -120,6 +121,7 @@ class CompletionShutdown(QtCore.QObject):
         try:
             if not self.manager.is_settled():
                 raise RuntimeError('又有任务开始执行，请重新开启自动关机。')
+            check_shutdown_permission()
             if self.manager.flush_history() is False:
                 raise OSError('后台任务记录保存失败，未执行关机。')
             if not self.close_application():
@@ -134,27 +136,6 @@ class CompletionShutdown(QtCore.QObject):
         finally:
             self.finishing = False
             self.changed.emit()
-
-
-def request_windows_shutdown():
-    """Never call in tests: mock subprocess.run. No shell, /f, or timed /t.
-
-    Microsoft documents that /t > 0 implies /f, so the cancelable countdown
-    belongs to our UI. /s /t 0 lets other applications protect unsaved work.
-    https://learn.microsoft.com/windows-server/administration/windows-commands/shutdown
-    """
-    if os.name != 'nt':
-        raise OSError('自动关机目前只支持Windows。')
-    system = ctypes.create_unicode_buffer(32768)
-    size = ctypes.windll.kernel32.GetSystemDirectoryW(system, len(system))
-    if not size or size >= len(system):
-        raise OSError('无法确定Windows系统目录，未执行关机。')
-    executable = Path(system.value) / 'shutdown.exe'
-    result = subprocess.run([str(executable), '/s', '/t', '0'], shell=False,
-        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        timeout=15, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
-    if result.returncode:
-        raise OSError(f'Windows未接受关机请求（代码{result.returncode}）；可能缺少权限或已有系统关机任务。')
 
 
 def report_shutdown_failure(error):
