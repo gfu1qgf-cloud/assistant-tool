@@ -273,6 +273,24 @@ class ThreadLifecycleTests(unittest.TestCase):
         # Reviewed exceptions are QProcess, host task handles, QRunnable signals,
         # or native owners that already join and bind the exact worker identity.
         approved = {
+            # QRunnable, not QThread: the module owns its signal object until
+            # completion; cancellation and destroyed-signal shutdown are tested.
+            'PYUI/elevenlabs_key_probe.py': {'self.signals.finished.connect','worker.signals.finished.connect'},
+            # The schema editor submits to BackgroundTaskManager; its handle
+            # is GUI-owned and native workers are joined by the manager.
+            'PYUI/task_schema_node_pyui.py': {'handle.finished.connect'},
+            # QVariantAnimation lives under the flashing widget, no worker thread.
+            'app_plugins/builtin/batch_text_video/caption_parameter_window.py': {'self.animation.finished.connect'},
+            # QDialog.finished only stops its GUI-owned countdown timer.
+            'app_plugins/builtin/flow_assistant/high_credit_ui.py': {'self.finished.connect'},
+            # The bound deleteLater receiver is the exact old worker QObject;
+            # the QThread wrapper itself uses identity-qualified lifecycle cleanup.
+            # box/picker below are GUI-owned nonmodal dialogs, not threads.
+            'app_plugins/builtin/flow_assistant/plugin.py': {'self.thread.finished.connect','box.finished.connect'},
+            'app_plugins/builtin/flow_assistant/queue_ui.py': {'picker.finished.connect'},
+            'app_plugins/builtin/script_segmenter/duration_warning.py': {'box.finished.connect'},
+            # QDialog completion exits its own local GUI decision loop.
+            'app_plugins/builtin/smart_video_editor/postprocess_ui.py': {'dialog.finished.connect'},
             # GUI-owned nonmodal QMessageBox; not a worker/QThread signal.
             'PYUI/background_tasks_pyui.py': {'box.finished.connect'},
             # Drive browsing submits through PluginContext; this is likewise a
@@ -306,7 +324,6 @@ class ThreadLifecycleTests(unittest.TestCase):
             # Host-owned handle; QuickCopyController is a GUI-thread QObject.
             # Tests cover main-thread clipboard publication and late cancellation.
             'app_plugins/builtin/script_segmenter/quick_copy.py': {'self.handle.finished.connect'},
-            'model/MediaPlayback.py': {'self.process.finished.connect'},
             'app_plugins/builtin/smart_video_editor/plugin.py': {'handle.finished.connect'},
             # Explicit isinstance(BackgroundTaskHandle) guard before connecting;
             # current-task refresh uses host-owned QObject completion, not a QThread.

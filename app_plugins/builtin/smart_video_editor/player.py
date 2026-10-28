@@ -2,10 +2,6 @@
 
 Plugin consumers must import the shared module directly, not this adapter.
 """
-from model.MediaPlayback import (
-    FfplayReviewSurface, resolve_ffplay, resolve_mpv,
-    _EmbeddedFfplayReviewSurface, _EmbeddedMpvReviewSurface, _QtMediaReviewSurface,
-    _native_client_size, _windows_user32,
-)
+from model.MediaPlayback import FfplayReviewSurface, QtMediaReviewSurface
 
-__all__ = ["FfplayReviewSurface", "resolve_ffplay", "resolve_mpv"]
+__all__ = ["FfplayReviewSurface", "QtMediaReviewSurface"]

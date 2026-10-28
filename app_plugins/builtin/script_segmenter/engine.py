@@ -11,6 +11,8 @@ DEFAULT_SETTINGS = {"durations": [6, 8, 10], "preferred_seconds": 10,
                     "boundary_strategy": "fewest", "total_limit_seconds": 180}
 ABBREVIATIONS = {"dr", "prof", "mr", "mrs", "ms", "sv", "napr", "tzv", "resp", "str", "č", "atď"}
 SPECIAL = re.compile(r"https?://[^\s<>]+|[\w.+-]+@[\w.-]+\.[\w-]+", re.UNICODE)
+SHORT_TAIL_SECONDS = 3.0
+TAIL_MERGE_OVERRUN_SECONDS = 3.0
 
 
 def _number(value, default, low, high):
@@ -162,6 +164,7 @@ def _punctuation_first_choices(prefix, boundaries, settings, canceled, links):
     count, start = len(boundaries), 0
     maximum, padding = max(settings["durations"]), settings["padding_seconds"]
     choices = [None] * count
+    previous_start, tail_start = None, None
     while start < count:
         if canceled and canceled():
             from model.BackgroundTasks import BackgroundTaskCanceled
@@ -183,7 +186,22 @@ def _punctuation_first_choices(prefix, boundaries, settings, canceled, links):
         # In automatic mode a shorter complete phrase may only need 6/8 sec.
         # Fixed 6/8/10-second modes still use exactly the user's chosen length.
         choices[start] = (end, min(fits) if fits else maximum, estimated, warning)
+        previous_start, tail_start = tail_start, start
         start = end
+    if previous_start is not None:
+        tail = choices[tail_start]
+        previous = choices[previous_start]
+        merged_estimated = prefix[count] - prefix[previous_start]
+        overrun = merged_estimated + padding - maximum
+        # Only absorb a genuinely short final segment. Existing oversized units
+        # retain their warnings; the normal strategy and earlier cuts stay intact.
+        if (tail[2] <= SHORT_TAIL_SECONDS + 1e-9 and not tail[3] and not previous[3]
+                and overrun <= TAIL_MERGE_OVERRUN_SECONDS + 1e-9):
+            fits = [seconds for seconds in settings["durations"]
+                    if merged_estimated + padding <= seconds + 1e-9]
+            warning = ("" if fits else
+                       f"末段过短，已并入上一段；预计朗读加预留超出{maximum}秒约{overrun:.2f}秒（最多允许3秒）。")
+            choices[previous_start] = (count, min(fits) if fits else maximum, merged_estimated, warning)
     return choices
 
 

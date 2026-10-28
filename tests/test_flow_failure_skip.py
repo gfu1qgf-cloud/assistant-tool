@@ -90,7 +90,12 @@ class FailureSkipTests(unittest.TestCase):
     def test_manual_recovery_of_skipped_result_only_downloads_the_saved_original(self):
         service=self.service(); row,client=self.stopped(service,ready=True)
         service.watch_transfer_retries(); service.retry_download(service.store.get(row['id']))
-        self.assertEqual(service.store.get(row['id'])['status'],'downloading')
+        current=service.store.get(row['id'])
+        self.assertEqual(current['status'],'download_parked')
+        self.assertTrue(current['remote']['transfer_retries']['download']['active'])
+        self.assertTrue(current['remote']['download_backlog'])
+        self.assertEqual(current['attempt'],row['attempt'])
+        self.assertEqual(current['remote']['bindings'],row['remote']['bindings'])
         self.assertTrue(any(p['action']=='retry_download' for p in service.pending.values()))
         self.assertFalse(any(p['action']=='run_tasks' for p in service.pending.values()))
 

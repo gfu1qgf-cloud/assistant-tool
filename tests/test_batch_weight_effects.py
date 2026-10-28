@@ -174,8 +174,12 @@ class WeightAndEffectsTests(unittest.TestCase):
             state["music"] = [{"id": "m", "path": "first.mp3", "cursor": 23}]
             state["next_music_id"] = "m"
             state["jobs"] = [{"id": "j", "path": state["backgrounds"][0], "status": "已完成", "output": "out.mp4"}]
-            first_snapshot = snapshot(state)
             state = store.save(state, 0)
+            first_snapshot = snapshot(state)  # Profiles clone canonical saved data.
+            saved_title=next(layer for layer in state['settings']['layers'] if layer['id']=='title')
+            self.assertEqual(saved_title['font_weight'],650)
+            self.assertEqual(saved_title['outline_color'],'#ff00ff')
+            self.assertEqual(saved_title['outline_width'],6.5)
             first = state["active_profile"]
             clone = store.create_profile(state, "副本", clone=True)
             clone_id = clone["active_profile"]

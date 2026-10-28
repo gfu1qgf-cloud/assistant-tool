@@ -105,7 +105,10 @@ class UnifiedSourcesTests(unittest.TestCase):
     def test_pool_plus_button_and_audio_mixing_folded_by_default(self):
         with tempfile.TemporaryDirectory() as root, patch.object(BatchTextVideoDialog, "request_background"):
             dialog = BatchTextVideoDialog(store=Store(root))
-            self.assertIs(dialog.resources.cornerWidget(QtCore.Qt.Corner.TopRightCorner), dialog.new_pool_button)
+            self.assertIsNone(dialog.resources.cornerWidget(QtCore.Qt.Corner.TopRightCorner))
+            self.assertTrue(dialog.pool_tools.isAncestorOf(dialog.new_pool_button))
+            self.assertFalse(dialog.new_pool_button.isHidden())
+            self.assertEqual(dialog.new_pool_button.text(),'新建池…')
             self.assertFalse(dialog.mix_toggle.isChecked())
             labels = [section.toggle.text() for section in dialog.project_sections.sections.values()]
             self.assertIn("音频设置", labels); self.assertNotIn("混音细节", labels)

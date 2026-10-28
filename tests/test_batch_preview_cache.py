@@ -29,8 +29,12 @@ class PreviewCacheTests(unittest.TestCase):
                 with preview_cache.audition_temporary() as folder:
                     self.assertFalse(Path(folder).is_relative_to(private))
                 self.assertFalse(Path(folder).exists())
-                storage.redirects = [(root/'local', private)]
-                with self.assertRaisesRegex(ValueError, '加密卷'): preview_cache.cache_root('thumbnails')
+                # Redirect lookup is compiled at construction. Build a real
+                # redirected storage rather than mutating its diagnostic list.
+                redirected=ApplicationStorage(private,guard=guard,redirects=[(root/'local',private)])
+                with patch('model.AppDataStorage.application_storage',return_value=redirected), \
+                     patch('model.MediaStorage.application_storage',return_value=redirected):
+                    with self.assertRaisesRegex(ValueError, '加密卷'): preview_cache.cache_root('thumbnails')
 
     @unittest.skipUnless(FFMPEG, 'Real FFmpeg required')
     def test_real_audio_audition_survives_private_default_temp_and_cleans_both_ab_outputs(self):

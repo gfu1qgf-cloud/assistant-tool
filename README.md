@@ -82,9 +82,9 @@ python -m venv .venv
 
 下载后解压整个目录，运行 `AssistantTool.exe` 并完成首次使用向导。保留 `config.example.json` 作为初始化模板；不要只移动 EXE，旁边的 `_internal` 目录是运行所需依赖。
 
-时间线播放器使用固定版本的官方 mpv Windows 运行库。发布构建会从官方
-GitHub Release 下载并校验 SHA-256；校验失败或文件缺失时会直接终止打包，
-不会生成缺少播放器的发布包。
+视频预览使用 PyQt6 自带的 Qt Multimedia，等比显示完整画面，不再嵌入 mpv／FFplay 外部窗口。
+发布包包含 Qt6 媒体模块与解码插件，完整性检查会验证这些文件，不再下载或打包 mpv。
+剪辑导出、字幕渲染和媒体探测继续使用随包提供的标准 FFmpeg 工具。
 
 验证发布包来源：
 

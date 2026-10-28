@@ -63,7 +63,7 @@ class ExportPolishTests(unittest.TestCase):
                 values = []
                 worker.progress.connect(lambda _id, value:values.append(value))
                 with patch.dict("app_plugins.builtin.batch_text_video.ui.RENDERERS",
-                                {"static_text":Mock(side_effect=error)}):
+                                {"static_text":Mock(spec=lambda:None, side_effect=error)}):
                     worker.run()
                 self.assertEqual(values, [0])
 

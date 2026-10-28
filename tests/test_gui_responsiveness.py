@@ -13,7 +13,7 @@ from unittest.mock import Mock, patch
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 from qt_compat import QtCore, QtGui, QtWidgets
 from model import MediaThumbnail
-from model.MediaPlayback import _EmbeddedFfplayReviewSurface
+from model.MediaPlayback import QtMediaReviewSurface
 from model.QtProcessLifecycle import retire_process
 from PyQt6 import sip
 from app_plugins.builtin.batch_text_video.component_ui import TextBoxProperties, FontCombo
@@ -152,15 +152,16 @@ class ResponsivenessTests(unittest.TestCase):
             self.assertGreater(actual.pixelColor(10,10).red(), 240)
             loader.deleteLater()
 
-    def test_ffplay_resize_does_not_redecode(self):
-        surface = _EmbeddedFfplayReviewSurface()
-        surface._thumbnail.request = Mock()
-        surface.source = 'synthetic.mp4'
-        surface._show_still_frame(1)
-        surface._show_still_frame(1)
-        surface.resize(500, 400)
-        self.assertEqual(surface._thumbnail.request.call_count, 1)
-        surface.close()
+    def test_native_preview_resize_does_not_reload_media(self):
+        surface = QtMediaReviewSurface()
+        try:
+            with patch.object(surface.backend, '_set_media') as load:
+                surface.resize(500, 400)
+                surface.resize(180, 120)
+                self.app.processEvents()
+                load.assert_not_called()
+        finally:
+            surface.close()
 
     def test_classifier_resize_reuses_thumbnail(self):
         dialog = ImageClassifierDialog({})

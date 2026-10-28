@@ -37,7 +37,8 @@ class CaptionInspectorPolishTests(unittest.TestCase):
         editor = CaptionProperties()
         self.addCleanup(editor.deleteLater)
         editor.set_layer(layer)
-        self.assertIn('按字', editor.display_note.text())
+        self.assertIn('逐字', editor.display_note.text())
+        self.assertIn('不是逐字语音对齐',editor.display_note.text())
         duration = editor.controls['caption_pop_ms']
         self.assertIn('逐词弹入', editor.form_for(duration).labelForField(duration).text())
         editor.controls['caption_display_mode'].setCurrentIndex(

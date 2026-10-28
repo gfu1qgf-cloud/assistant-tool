@@ -1,799 +1,32 @@
-"""Reusable embedded media playback with mpv, Qt and FFplay backends.
+"""Qt6-native media preview; no embedded external player windows or processes."""
 
-The original review surface launched and embedded a new ``ffplay.exe`` process
-for every source range.  That made clip boundaries visibly freeze and, on
-Windows, could leave the old child window painted over the next frame. A pinned
-mpv runtime is now preferred because it embeds into the existing Qt widget,
-keeps one decoder process alive between clips and supports the source codecs
-used by the editor more reliably.
-
-QtMultimedia and the existing FFplay implementation remain automatic fallbacks
-when mpv is unavailable or cannot initialize on a particular machine.
-"""
-
-from __future__ import annotations
-
-import ctypes
-from ctypes import wintypes
-import json
-import os
-import shutil
-import sys
-import time
-import uuid
 from pathlib import Path
-
-from app_paths import APP_ROOT
-from qt_compat import QtCore, QtGui, QtNetwork, QtWidgets
-from model.QtProcessLifecycle import retire_process
+from qt_compat import QtCore, QtGui, QtWidgets
 
 
-_USER32 = None
-# Qt 5 delegates video decoding to the Windows multimedia stack.  Some
-# otherwise valid H.264 files are rejected there even though FFmpeg can play
-# them.  Once that happens, retrying QMediaPlayer for every newly opened
-# review dialog only repeats the same modal error and delays the fallback.
-_QT_MEDIA_DISABLED_FOR_SESSION = False
-
-
-def _windows_user32():
-    """Return user32 with pointer-safe signatures on 32/64-bit Windows."""
-    global _USER32
-    if os.name != "nt":
-        return None
-    if _USER32 is not None:
-        return _USER32
-
-    user32 = ctypes.windll.user32
-    enum_proc = ctypes.WINFUNCTYPE(
-        wintypes.BOOL,
-        wintypes.HWND,
-        wintypes.LPARAM,
-    )
-    user32._lzx_enum_proc_type = enum_proc
-    user32.EnumWindows.argtypes = [enum_proc, wintypes.LPARAM]
-    user32.EnumWindows.restype = wintypes.BOOL
-    user32.GetWindowTextLengthW.argtypes = [wintypes.HWND]
-    user32.GetWindowTextLengthW.restype = ctypes.c_int
-    user32.GetWindowTextW.argtypes = [
-        wintypes.HWND,
-        wintypes.LPWSTR,
-        ctypes.c_int,
-    ]
-    user32.GetWindowTextW.restype = ctypes.c_int
-    user32.GetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int]
-    user32.GetWindowLongW.restype = wintypes.LONG
-    user32.SetWindowLongW.argtypes = [
-        wintypes.HWND,
-        ctypes.c_int,
-        wintypes.LONG,
-    ]
-    user32.SetWindowLongW.restype = wintypes.LONG
-    user32.SetParent.argtypes = [wintypes.HWND, wintypes.HWND]
-    user32.SetParent.restype = wintypes.HWND
-    user32.MoveWindow.argtypes = [
-        wintypes.HWND,
-        ctypes.c_int,
-        ctypes.c_int,
-        ctypes.c_int,
-        ctypes.c_int,
-        wintypes.BOOL,
-    ]
-    user32.MoveWindow.restype = wintypes.BOOL
-    user32.GetClientRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
-    user32.GetClientRect.restype = wintypes.BOOL
-    user32.GetParent.argtypes = [wintypes.HWND]
-    user32.GetParent.restype = wintypes.HWND
-    user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
-    user32.GetWindowThreadProcessId.restype = wintypes.DWORD
-    user32.EnumChildWindows.argtypes = [wintypes.HWND, enum_proc, wintypes.LPARAM]
-    user32.EnumChildWindows.restype = wintypes.BOOL
-    _USER32 = user32
-    return user32
-
-
-def _native_client_size(hwnd):
-    """Qt sizes are logical pixels; Win32 child windows need physical pixels."""
-    rect = wintypes.RECT()
-    user32 = _windows_user32()
-    if not user32 or not user32.GetClientRect(int(hwnd), ctypes.byref(rect)):
-        return 0, 0
-    return max(1, rect.right - rect.left), max(1, rect.bottom - rect.top)
-
-
-def resolve_ffplay(ffmpeg_path=""):
-    configured = str(ffmpeg_path or "").strip()
-    if configured:
-        sibling = Path(configured).with_name("ffplay.exe")
-        if sibling.is_file():
-            return str(sibling)
-    return shutil.which("ffplay") or ""
-
-
-def resolve_mpv():
-    """Return the pinned bundled mpv, or an explicitly installed one."""
-    if os.environ.get("QT_QPA_PLATFORM", "").lower() == "offscreen":
-        return ""
-    configured = str(os.environ.get("LZX_MPV_PATH") or "").strip()
-    candidates = []
-    if configured:
-        candidates.append(Path(configured))
-    if getattr(sys, "frozen", False):
-        root = Path(sys.executable).resolve().parent
-    else:
-        root = APP_ROOT
-    candidates.extend((
-        root / "runtime" / "mpv" / "mpv.exe",
-        root / "mpv.exe",
-    ))
-    system_mpv = shutil.which("mpv")
-    if system_mpv:
-        candidates.append(Path(system_mpv))
-    for candidate in candidates:
-        if candidate.is_file():
-            return str(candidate)
-    return ""
-
-
-class _EmbeddedFfplayReviewSurface(QtWidgets.QFrame):
-    positionChanged = QtCore.pyqtSignal(float)
-    playingChanged = QtCore.pyqtSignal(bool)
-    rangeFinished = QtCore.pyqtSignal()
-    errorOccurred = QtCore.pyqtSignal(str)
-
-    def __init__(self, ffplay_path="", parent=None):
+class _VideoFrameView(QtWidgets.QWidget):
+    """Paint the accepted Qt frame into this pane's own logical coordinates."""
+    def __init__(self, parent=None):
         super().__init__(parent)
-        self.ffplay_path = resolve_ffplay(ffplay_path)
-        self.source = ""
-        self.range_start = 0.0
-        self.range_end = 0.0
-        self.position = 0.0
-        self._playing = False
-        self._base_position = 0.0
-        self._play_clock = 0.0
-        self._window_title = ""
-        self._child_hwnd = 0
-        self._embed_attempts = 0
-        self._intentional_stop = False
+        self.frame = None
+        self.setMinimumSize(0, 0)
+        self.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored, QtWidgets.QSizePolicy.Policy.Ignored)
+        self.setAttribute(QtCore.Qt.WidgetAttribute.WA_OpaquePaintEvent)
 
-        self.setFrameShape(QtWidgets.QFrame.StyledPanel)
-        self.setStyleSheet("QFrame { background:#050608; border:1px solid #303746; }")
-        self.setMinimumHeight(190)
-        layout = QtWidgets.QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        self.placeholder = QtWidgets.QLabel("选择时间线片段后在这里预览", self)
-        self.placeholder.setAlignment(QtCore.Qt.AlignCenter)
-        self.placeholder.setStyleSheet("color:#9AA3B8; background:#050608; border:0;")
-        self.placeholder.setScaledContents(False)
-        layout.addWidget(self.placeholder)
-        from model.MediaThumbnail import LatestMediaThumbnail
-        self._thumbnail = LatestMediaThumbnail(self)
-        self._thumbnail.ready.connect(self._still_ready)
-        self._still_image = QtGui.QImage()
-        self._still_key = None
+    def set_frame(self, frame):
+        self.frame = frame
+        self.update()
 
-        self._create_process()
-        self.clock_timer = QtCore.QTimer(self)
-        self.clock_timer.setInterval(40)
-        self.clock_timer.timeout.connect(self._tick)
-        self.embed_timer = QtCore.QTimer(self)
-        self.embed_timer.setInterval(60)
-        self.embed_timer.timeout.connect(self._try_embed)
-
-    def _create_process(self):
-        self.process = QtCore.QProcess(self)
-        self.process.started.connect(self._on_started)
-        self.process.finished.connect(self._on_finished)
-        self.process.errorOccurred.connect(self._on_process_error)
-
-    def is_playing(self):
-        return self._playing
-
-    def configure_ffplay(self, ffmpeg_path=""):
-        self.ffplay_path = resolve_ffplay(ffmpeg_path)
-
-    def prepare(self, source, start, end, position=0.0):
-        self.pause(show_frame=False)
-        self.source = str(source or "")
-        self.range_start = max(0.0, float(start or 0.0))
-        self.range_end = max(self.range_start + 0.01, float(end or 0.0))
-        self.position = max(
-            0.0,
-            min(self.range_end - self.range_start, float(position or 0.0)),
-        )
-        self._show_still_frame(self.range_start + self.position)
-        self.positionChanged.emit(self.position)
-
-    def play(self):
-        if not self.source or not Path(self.source).is_file():
-            self.errorOccurred.emit(f"视频文件不存在：{self.source}")
-            return False
-        if not self.ffplay_path:
-            self.errorOccurred.emit("没有找到 ffplay.exe，无法在时间线中播放。")
-            return False
-        if self.position >= self.range_end - self.range_start - 0.02:
-            self.position = 0.0
-        self._thumbnail.cancel()
-        self._still_key = None
-        self._stop_process()
-        self._window_title = f"LZX-SmartReview-{uuid.uuid4().hex}"
-        remaining = max(0.05, self.range_end - self.range_start - self.position)
-        args = [
-            "-loglevel", "error",
-            "-nostats",
-            "-autoexit",
-            "-noborder",
-            "-window_title", self._window_title,
-            "-ss", f"{self.range_start + self.position:.6f}",
-            "-t", f"{remaining:.6f}",
-            self.source,
-        ]
-        self.process.setProgram(self.ffplay_path)
-        self.process.setArguments(args)
-        self._base_position = self.position
-        self._play_clock = time.monotonic()
-        self._intentional_stop = False
-        self._child_hwnd = 0
-        self._embed_attempts = 0
-        self.placeholder.setText("正在启动预览…")
-        self.placeholder.show()
-        self.process.start()
-        return True
-
-    def pause(self, show_frame=True):
-        if self._playing:
-            self._tick()
-        self._playing = False
-        self.clock_timer.stop()
-        self.embed_timer.stop()
-        self._stop_process()
-        if show_frame and self.source:
-            self._show_still_frame(self.range_start + self.position)
-        self.playingChanged.emit(False)
-
-    def reset_source(self):
-        self.pause(show_frame=False)
-        self._thumbnail.cancel()
-        self._still_image = QtGui.QImage()
-        self._still_key = None
-        self.source, self.position = "", 0.0
-        self.placeholder.clear()
-        self.placeholder.setText("请选择片段")
-
-    def stop(self):
-        self.position = 0.0
-        self.pause(show_frame=bool(self.source))
-        self.positionChanged.emit(self.position)
-
-    def _stop_process(self):
-        if self.process.state() == QtCore.QProcess.NotRunning:
-            self._child_hwnd = 0
-            return
-        self._intentional_stop = True
-        retire_process(self.process, kill=True)
-        self._create_process()
-        self._child_hwnd = 0
-
-    def _on_started(self):
-        self._playing = True
-        self._play_clock = time.monotonic()
-        self.clock_timer.start()
-        self.playingChanged.emit(True)
-        if os.name == "nt":
-            self.embed_timer.start()
-        else:
-            self.placeholder.setText("当前系统不支持嵌入 ffplay，视频已在独立窗口播放。")
-
-    def _on_finished(self, _exit_code, _status):
-        intentional = self._intentional_stop
-        self._intentional_stop = False
-        self.embed_timer.stop()
-        self.clock_timer.stop()
-        self._child_hwnd = 0
-        if intentional:
-            return
-        self._tick(force_end=True)
-        self._playing = False
-        self.playingChanged.emit(False)
-        self._show_still_frame(self.range_end)
-        self.rangeFinished.emit()
-
-    def _on_process_error(self, _error):
-        if self._intentional_stop:
-            return
-        self._playing = False
-        self.clock_timer.stop()
-        self.errorOccurred.emit(
-            f"ffplay 启动失败：{self.process.errorString()}"
-        )
-
-    def _tick(self, force_end=False):
-        if force_end:
-            value = self.range_end - self.range_start
-        elif not self._playing:
-            value = self.position
-        else:
-            value = self._base_position + time.monotonic() - self._play_clock
-        self.position = max(
-            0.0,
-            min(self.range_end - self.range_start, value),
-        )
-        self.positionChanged.emit(self.position)
-
-    def _show_still_frame(self, source_time):
-        self.placeholder.show()
-        if not self.source:
-            self._thumbnail.cancel()
-            self.placeholder.setText("选择时间线片段后在这里预览")
-            self.placeholder.setPixmap(QtGui.QPixmap())
-            return
-        key = (self.source, round(max(0.0, source_time), 4))
-        if key == self._still_key:
-            self._fit_still_image()
-            return
-        self._still_key = key
-        self._still_image = QtGui.QImage()
-        self.placeholder.clear()
-        self.placeholder.setText("正在读取预览画面…")
-        self._thumbnail.request(self.source, source_time, ffmpeg_path=self.ffplay_path)
-
-    def _still_ready(self, _generation, image, error):
-        if error:
-            self._still_key = None  # A later request can retry a transient error.
-            self.placeholder.setText(error)
-            return
-        self._still_image = image
-        self._fit_still_image()
-
-    def _fit_still_image(self):
-        if not self._still_image.isNull():
-            self.placeholder.setPixmap(QtGui.QPixmap.fromImage(self._still_image).scaled(
-                self.placeholder.size(), QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation))
-
-    @staticmethod
-    def _window_with_title(title):
-        if os.name != "nt" or not title:
-            return 0
-        user32 = _windows_user32()
-        result = {"hwnd": 0}
-        callback_type = user32._lzx_enum_proc_type
-
-        def callback(hwnd, _lparam):
-            length = user32.GetWindowTextLengthW(hwnd)
-            if length <= 0:
-                return True
-            buffer = ctypes.create_unicode_buffer(length + 1)
-            user32.GetWindowTextW(hwnd, buffer, length + 1)
-            if buffer.value == title:
-                result["hwnd"] = int(hwnd)
-                return False
-            return True
-
-        callback_ref = callback_type(callback)
-        user32.EnumWindows(callback_ref, 0)
-        return result["hwnd"]
-
-    def _try_embed(self):
-        self._embed_attempts += 1
-        hwnd = self._window_with_title(self._window_title)
-        if hwnd:
-            user32 = _windows_user32()
-            get_window_long = user32.GetWindowLongW
-            set_window_long = user32.SetWindowLongW
-            style = get_window_long(hwnd, -16)
-            style &= ~(0x80000000 | 0x00C00000 | 0x00040000)
-            style |= 0x40000000 | 0x10000000
-            set_window_long(hwnd, -16, style)
-            user32.SetParent(hwnd, int(self.winId()))
-            self._child_hwnd = hwnd
-            self.placeholder.hide()
-            self._resize_child()
-            self.embed_timer.stop()
-            return
-        if self._embed_attempts >= 35:
-            self.embed_timer.stop()
-            self.placeholder.setText(
-                "预览未能嵌入，ffplay 已在独立窗口继续播放。"
-            )
-
-    def _resize_child(self):
-        if self._child_hwnd and os.name == "nt":
-            width, height = _native_client_size(self.winId())
-            _windows_user32().MoveWindow(
-                self._child_hwnd,
-                0,
-                0,
-                width,
-                height,
-                True,
-            )
-
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        self._resize_child()
-        if not self._playing and self.source:
-            self._fit_still_image()
-
-    def closeEvent(self, event):
-        self._thumbnail.cancel()
-        self._stop_process()
-        super().closeEvent(event)
-
-    def release(self):
-        self._thumbnail.cancel()
-        self._stop_process()
-
-
-class _EmbeddedMpvReviewSurface(QtWidgets.QFrame):
-    """Persistent mpv process embedded in a native Qt widget via ``--wid``."""
-
-    positionChanged = QtCore.pyqtSignal(float)
-    playingChanged = QtCore.pyqtSignal(bool)
-    rangeFinished = QtCore.pyqtSignal()
-    errorOccurred = QtCore.pyqtSignal(str)
-
-    def __init__(self, mpv_path, parent=None):
-        super().__init__(parent)
-        self.mpv_path = str(mpv_path or "")
-        self.source = ""
-        self.loaded_source = ""
-        self.range_start = 0.0
-        self.range_end = 0.01
-        self.position = 0.0
-        self._play_requested = False
-        self._playing = False
-        self._waiting_for_file = False
-        self._finishing_range = False
-        self._releasing = False
-        self._connected = False
-        self._connect_attempts = 0
-        self._read_buffer = bytearray()
-        self._request_id = 10
-        self._path_request_id = None
-        self._pipe_name = "lzx_mpv_" + uuid.uuid4().hex
-        self._pipe_path = "\\\\.\\pipe\\" + self._pipe_name
-
-        self.setAttribute(QtCore.Qt.WA_NativeWindow, True)
-        self.setFrameShape(QtWidgets.QFrame.StyledPanel)
-        self.setStyleSheet(
-            "QFrame { background:#050608; border:1px solid #303746; }"
-        )
-        self.setMinimumHeight(190)
-        layout = QtWidgets.QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        self.placeholder = QtWidgets.QLabel(
-            "选择时间线片段后在这里预览", self
-        )
-        self.placeholder.setAlignment(QtCore.Qt.AlignCenter)
-        self.placeholder.setStyleSheet(
-            "color:#9AA3B8; background:#050608; border:0;"
-        )
-        layout.addWidget(self.placeholder)
-
-        self.process = QtCore.QProcess(self)
-        self.process.started.connect(self._process_started)
-        self.process.errorOccurred.connect(self._process_error)
-        self.process.finished.connect(self._process_finished)
-        self.socket = QtNetwork.QLocalSocket(self)
-        self.socket.connected.connect(self._socket_connected)
-        self.socket.readyRead.connect(self._socket_ready_read)
-        self.connect_timer = QtCore.QTimer(self)
-        self.connect_timer.setInterval(80)
-        self.connect_timer.timeout.connect(self._connect_socket)
-
-    def is_playing(self):
-        return self._playing
-
-    def configure_ffplay(self, _ffmpeg_path=""):
-        return None
-
-    def _ensure_started(self):
-        if self.process.state() != QtCore.QProcess.NotRunning:
-            return
-        if not self.mpv_path or not Path(self.mpv_path).is_file():
-            self.errorOccurred.emit("没有找到内置 mpv 播放器。")
-            return
-        self._releasing = False
-        self._connect_attempts = 0
-        self.process.setProgram(self.mpv_path)
-        self.process.setArguments([
-            "--no-config",
-            "--idle=yes",
-            "--force-window=yes",
-            "--keep-open=yes",
-            "--osc=no",
-            "--input-default-bindings=no",
-            "--input-vo-keyboard=no",
-            "--terminal=no",
-            "--really-quiet",
-            "--hwdec=auto-safe",
-            "--vo=gpu-next",
-            "--gpu-api=d3d11",
-            "--wid=" + str(int(self.winId())),
-            "--input-ipc-server=" + self._pipe_path,
-        ])
-        self.process.start()
-
-    def _process_started(self):
-        self.connect_timer.start()
-        self._connect_socket()
-        QtCore.QTimer.singleShot(200, self._resize_native_video)
-
-    def _resize_native_video(self):
-        if os.name != "nt" or self.process.state() == QtCore.QProcess.NotRunning:
-            return
-        user32 = _windows_user32()
-        host = int(self.winId())
-        width, height = _native_client_size(host)
-        process_id = int(self.process.processId())
-        if not width or not height or not process_id:
-            return
-
-        def resize_child(hwnd, _lparam):
-            pid = wintypes.DWORD()
-            user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
-            if int(user32.GetParent(hwnd) or 0) == host and pid.value == process_id:
-                user32.MoveWindow(hwnd, 0, 0, width, height, True)
-            return True
-
-        callback = user32._lzx_enum_proc_type(resize_child)
-        user32.EnumChildWindows(host, callback, 0)
-
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        self._resize_native_video()
-
-    def _connect_socket(self):
-        if self._connected or self._releasing:
-            return
-        if self.socket.state() != QtNetwork.QLocalSocket.UnconnectedState:
-            return
-        self._connect_attempts += 1
-        if self._connect_attempts > 75:
-            self.connect_timer.stop()
-            self.errorOccurred.emit("mpv 已启动，但控制通道连接失败。")
-            return
-        self.socket.abort()
-        self.socket.connectToServer(
-            self._pipe_path, QtCore.QIODevice.ReadWrite
-        )
-
-    def _socket_connected(self):
-        self._connected = True
-        self.connect_timer.stop()
-        self._send(["observe_property", 1, "time-pos"])
-        self._send(["observe_property", 2, "pause"])
-        self._apply_prepare()
-
-    def _send(self, command):
-        if not self._connected:
-            return None
-        self._request_id += 1
-        request_id = self._request_id
-        payload = json.dumps(
-            {"command": command, "request_id": request_id},
-            ensure_ascii=False,
-            separators=(",", ":"),
-        ) + "\n"
-        if self.socket.write(payload.encode("utf-8")) < 0:
-            return None
-        self.socket.flush()
-        return request_id
-
-    def _socket_ready_read(self):
-        self._read_buffer.extend(bytes(self.socket.readAll()))
-        while b"\n" in self._read_buffer:
-            raw, _, remainder = self._read_buffer.partition(b"\n")
-            self._read_buffer = bytearray(remainder)
-            if not raw.strip():
-                continue
-            try:
-                message = json.loads(raw.decode("utf-8", "replace"))
-            except (TypeError, ValueError):
-                continue
-            self._handle_message(message)
-
-    def _handle_message(self, message):
-        if (
-            self._path_request_id is not None
-            and message.get("request_id") == self._path_request_id
-        ):
-            self._path_request_id = None
-            if str(message.get("error") or "success") != "success":
-                self.errorOccurred.emit("mpv 无法确认当前视频文件。")
-                return
-            loaded_source = str(message.get("data") or "")
-            self.loaded_source = loaded_source
-            if not self._same_source(loaded_source, self.source):
-                self._apply_prepare()
-                return
-            self._waiting_for_file = False
-            self.placeholder.hide()
-            self._seek_absolute(self.range_start + self.position)
-            self._send(["set_property", "pause", not self._play_requested])
-            return
-        event = str(message.get("event") or "")
-        if event == "file-loaded":
-            self._resize_native_video()
-            self._path_request_id = self._send(["get_property", "path"])
-            return
-        if event == "property-change":
-            name = str(message.get("name") or "")
-            data = message.get("data")
-            if name == "time-pos" and not self._waiting_for_file:
-                self._update_absolute_position(data)
-            elif name == "pause" and isinstance(data, bool):
-                self._set_playing(not data and bool(self.loaded_source))
-            return
-        if event == "end-file":
-            reason = str(message.get("reason") or "")
-            if reason == "eof" and self._play_requested:
-                self._finish_range()
-            elif reason == "error":
-                detail = str(
-                    message.get("file_error")
-                    or message.get("error")
-                    or "未知解码错误"
-                )
-                self.errorOccurred.emit(f"mpv 无法播放该视频：{detail}")
-
-    @staticmethod
-    def _same_source(left, right):
-        if not left or not right:
-            return False
-        try:
-            return os.path.normcase(os.path.abspath(left)) == os.path.normcase(
-                os.path.abspath(right)
-            )
-        except (OSError, TypeError, ValueError):
-            return str(left) == str(right)
-
-    def _update_absolute_position(self, value):
-        try:
-            absolute = float(value)
-        except (TypeError, ValueError):
-            return
-        self.position = max(
-            0.0,
-            min(self.range_end - self.range_start, absolute - self.range_start),
-        )
-        self.positionChanged.emit(self.position)
-        if (
-            self._play_requested
-            and not self._finishing_range
-            and absolute >= self.range_end - 0.025
-        ):
-            self._finish_range()
-
-    def _set_playing(self, playing):
-        playing = bool(playing)
-        if self._playing == playing:
-            return
-        self._playing = playing
-        self.playingChanged.emit(playing)
-
-    def _seek_absolute(self, seconds):
-        self._send([
-            "seek", max(0.0, float(seconds or 0.0)), "absolute+exact"
-        ])
-
-    def prepare(self, source, start, end, position=0.0):
-        self.source = str(source or "")
-        self.range_start = max(0.0, float(start or 0.0))
-        self.range_end = max(self.range_start + 0.01, float(end or 0.0))
-        self.position = max(
-            0.0,
-            min(self.range_end - self.range_start, float(position or 0.0)),
-        )
-        self._play_requested = False
-        self._finishing_range = False
-        self.positionChanged.emit(self.position)
-        self._ensure_started()
-        if self._connected:
-            self._apply_prepare()
-
-    def _apply_prepare(self):
-        if not self.source or not Path(self.source).is_file():
-            return
-        self._send(["set_property", "pause", True])
-        if self.loaded_source != self.source:
-            self._waiting_for_file = True
-            self.placeholder.setText("正在加载预览…")
-            self.placeholder.show()
-            self._send(["loadfile", self.source, "replace"])
-        else:
-            self._waiting_for_file = False
-            self._seek_absolute(self.range_start + self.position)
-
-    def play(self):
-        if not self.source or not Path(self.source).is_file():
-            self.errorOccurred.emit(f"视频文件不存在：{self.source}")
-            return False
-        if self.position >= self.range_end - self.range_start - 0.02:
-            self.position = 0.0
-        self._play_requested = True
-        self._finishing_range = False
-        self._ensure_started()
-        if self._connected:
-            if self.loaded_source != self.source:
-                self._apply_prepare()
-            else:
-                self._seek_absolute(self.range_start + self.position)
-                self._send(["set_property", "pause", False])
-        return True
-
-    def pause(self, show_frame=True):
-        del show_frame
-        self._play_requested = False
-        self._send(["set_property", "pause", True])
-        self._set_playing(False)
-
-    def reset_source(self):
-        self._play_requested = False
-        self._finishing_range = False
-        self._waiting_for_file = False
-        self.source = self.loaded_source = ""
-        self.position = 0.0
-        self._send(["stop"])
-        self._set_playing(False)
-        self.placeholder.setText("请选择片段")
-        self.placeholder.show()
-
-    def stop(self):
-        self.pause()
-        self.position = 0.0
-        self._seek_absolute(self.range_start)
-        self.positionChanged.emit(0.0)
-
-    def queue(self, _source, _start, _end):
-        # mpv stays alive between files, so the expensive process start is
-        # already avoided.  Native playlist preloading cannot retain a unique
-        # start/end range for every entry.
-        return False
-
-    def clear_queue(self):
-        return None
-
-    def _finish_range(self):
-        if self._finishing_range:
-            return
-        self._finishing_range = True
-        self._play_requested = False
-        self._send(["set_property", "pause", True])
-        self.position = self.range_end - self.range_start
-        self.positionChanged.emit(self.position)
-        self._set_playing(False)
-        QtCore.QTimer.singleShot(0, self.rangeFinished.emit)
-
-    def _process_error(self, _error):
-        if not self._releasing:
-            self.errorOccurred.emit(
-                f"mpv 播放器启动失败：{self.process.errorString()}"
-            )
-
-    def _process_finished(self, exit_code, _status):
-        self._connected = False
-        self.connect_timer.stop()
-        self.socket.abort()
-        self._set_playing(False)
-        if not self._releasing:
-            self.errorOccurred.emit(f"mpv 播放器意外退出：{exit_code}")
-
-    def release(self):
-        if self._releasing:
-            return
-        self._releasing = True
-        self.connect_timer.stop()
-        if self._connected:
-            self._send(["quit"])
-        self._connected = False
-        self.socket.abort()
-        retire_process(self.process)
-        self._set_playing(False)
-
-    def closeEvent(self, event):
-        self.release()
-        super().closeEvent(event)
+    def paintEvent(self, _event):
+        painter = QtGui.QPainter(self)
+        painter.fillRect(self.rect(), QtGui.QColor("#050608"))
+        if self.frame is not None and self.frame.isValid():
+            from qt_compat import QtMultimedia
+            options = QtMultimedia.QVideoFrame.PaintOptions()
+            options.aspectRatioMode = QtCore.Qt.AspectRatioMode.KeepAspectRatio
+            options.backgroundColor = QtGui.QColor("#050608")
+            self.frame.paint(painter, QtCore.QRectF(self.rect()), options)
+        painter.end()
 
 
 class _QtMediaReviewSurface(QtWidgets.QFrame):
@@ -806,8 +39,9 @@ class _QtMediaReviewSurface(QtWidgets.QFrame):
 
     def __init__(self, parent=None, preload_enabled=True):
         super().__init__(parent)
-        from qt_compat import QtMultimedia, QtMultimediaWidgets
-
+        from qt_compat import QtMultimedia
+        if QtMultimedia is None:
+            raise RuntimeError("当前安装缺少 Qt6 Multimedia，请安装完整的 PyQt6 运行库。")
         self._multimedia = QtMultimedia
         self.source = ""
         self.range_start = 0.0
@@ -824,15 +58,21 @@ class _QtMediaReviewSurface(QtWidgets.QFrame):
         self._queued = None
         self._display_generation = 0
         self._target_positions = [0] * decoder_count
+        self._seek_pending = [False] * decoder_count
+        self._setting_media = [False] * decoder_count
+        self._last_frames = [None] * decoder_count
+        self._stopped = True
 
         self.setFrameShape(QtWidgets.QFrame.StyledPanel)
         self.setStyleSheet(
             "QFrame { background:#050608; border:1px solid #303746; }"
         )
-        self.setMinimumHeight(190)
+        self.setMinimumSize(0, 0)
+        self.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored, QtWidgets.QSizePolicy.Policy.Ignored)
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         self.stack = QtWidgets.QStackedWidget(self)
+        self.stack.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored, QtWidgets.QSizePolicy.Policy.Ignored)
         layout.addWidget(self.stack)
 
         self.placeholder = QtWidgets.QLabel(
@@ -850,22 +90,13 @@ class _QtMediaReviewSurface(QtWidgets.QFrame):
         self.video_widgets = []
         self.video_probes = []
         for index in range(decoder_count):
-            video = QtMultimediaWidgets.QVideoWidget(self.stack)
-            video.setStyleSheet("background:#050608; border:0;")
-            video.setAspectRatioMode(QtCore.Qt.KeepAspectRatio)
-            video.setAutoFillBackground(True)
-            palette = video.palette()
-            palette.setColor(QtGui.QPalette.Window, QtGui.QColor("#050608"))
-            video.setPalette(palette)
-            video.setSizePolicy(
-                QtWidgets.QSizePolicy.Expanding,
-                QtWidgets.QSizePolicy.Expanding,
-            )
+            video = _VideoFrameView(self.stack)
             self.stack.addWidget(video)
             player = QtMultimedia.QMediaPlayer(self)
             audio_output = QtMultimedia.QAudioOutput(self)
             player.setAudioOutput(audio_output)
-            player.setVideoOutput(video)
+            probe = QtMultimedia.QVideoSink(self)
+            player.setVideoSink(probe)
             player.positionChanged.connect(
                 lambda milliseconds, slot=index: self._position_changed(
                     slot, milliseconds
@@ -883,7 +114,6 @@ class _QtMediaReviewSurface(QtWidgets.QFrame):
                 )
             except (AttributeError, TypeError):
                 pass
-            probe = video.videoSink()
             try:
                 probe.videoFrameChanged.connect(
                     lambda frame, slot=index: self._frame_probed(slot, frame)
@@ -899,7 +129,7 @@ class _QtMediaReviewSurface(QtWidgets.QFrame):
         return bool(self.players)
 
     def is_playing(self):
-        return (
+        return self._play_requested or (
             self.players[self._active].playbackState()
             == self._multimedia.QMediaPlayer.PlaybackState.PlayingState
         )
@@ -912,17 +142,31 @@ class _QtMediaReviewSurface(QtWidgets.QFrame):
         source = str(source or "")
         position_ms = max(0, int(round(float(position_seconds or 0.0) * 1000)))
         self._target_positions[slot] = position_ms
-        if self._sources[slot] != source:
-            player.stop()
-            self._sources[slot] = source
-            self._pending_positions[slot] = position_ms
-            player.setSource(QtCore.QUrl.fromLocalFile(source))
-        else:
-            self._pending_positions[slot] = None
-            player.setPosition(position_ms)
+        self._seek_pending[slot] = True
+        self._setting_media[slot] = True
+        try:
+            if self._sources[slot] != source:
+                self._last_frames[slot] = None
+                self._sources[slot] = source
+                self._pending_positions[slot] = position_ms
+                player.stop()
+                player.setSource(QtCore.QUrl.fromLocalFile(source))
+            elif self._pending_positions[slot] is not None:
+                self._pending_positions[slot] = position_ms
+            else:
+                player.setPosition(position_ms)
+                player.pause()
+        finally:
+            self._setting_media[slot] = False
+        # A paused/preloaded player at exactly this target need not decode
+        # again. Only reuse a frame stamped on the current source/clock.
+        frame = self._last_frames[slot]
+        if frame is not None:
+            self._frame_probed(slot, frame)
 
     def prepare(self, source, start, end, position=0.0):
         self._display_generation += 1
+        self._stopped = False
         self._play_requested = False
         self._finishing_range = False
         self._reported_error = False
@@ -947,10 +191,8 @@ class _QtMediaReviewSurface(QtWidgets.QFrame):
             0.0,
             min(self.range_end - self.range_start, float(position or 0.0)),
         )
-        # QMediaPlayer emits positionChanged before QVideoWidget has painted the
-        # corresponding frame.  Keep every native video surface hidden until a
-        # short settle pass, otherwise Windows can expose the previous frame as
-        # a ghost image while seeking or changing clips.
+        # Hide the previous frame until the sink confirms the requested PTS.
+        # Position signals alone can precede the actual seek/decoded picture.
         for video in self.video_widgets:
             video.hide()
         self.placeholder.setText("正在定位预览画面…")
@@ -993,18 +235,20 @@ class _QtMediaReviewSurface(QtWidgets.QFrame):
         if not self.source or not Path(self.source).is_file():
             self.errorOccurred.emit(f"视频文件不存在：{self.source}")
             return False
-        if self.position >= self.range_end - self.range_start - 0.02:
+        if self._stopped or self.position >= self.range_end - self.range_start - 0.02:
             self.position = 0.0
-            self.players[self._active].setPosition(
-                int(round(self.range_start * 1000))
-            )
+            self._stopped = False
+            self._set_media(self._active, self.source, self.range_start)
         self._play_requested = True
         self._finishing_range = False
-        self.players[self._active].play()
+        if not self._seek_pending[self._active] and self._pending_positions[self._active] is None:
+            self.players[self._active].play()
+        self.playingChanged.emit(True)
         return True
 
     def pause(self, show_frame=True):
         del show_frame
+        self._display_generation += 1
         self._play_requested = False
         self.players[self._active].pause()
         self.playingChanged.emit(False)
@@ -1014,6 +258,7 @@ class _QtMediaReviewSurface(QtWidgets.QFrame):
         self.source, self.position = "", 0.0
 
     def stop(self):
+        self._stopped = True
         self._display_generation += 1
         self._play_requested = False
         self.position = 0.0
@@ -1027,41 +272,57 @@ class _QtMediaReviewSurface(QtWidgets.QFrame):
 
     def release(self):
         """Release Windows decoder handles so source files can be replaced."""
+        self._stopped = True
         self._play_requested = False
         self._display_generation += 1
         self._queued = None
         for index, player in enumerate(self.players):
+            self._setting_media[index] = True
             player.stop()
             player.setSource(QtCore.QUrl())
             self._sources[index] = ""
             self._pending_positions[index] = None
+            self._seek_pending[index] = False
+            self._last_frames[index] = None
+            self._setting_media[index] = False
             self.video_widgets[index].hide()
+            self.video_widgets[index].set_frame(None)
         self.stack.setCurrentWidget(self.placeholder)
+        self.source, self.position = "", 0.0
+        self.playingChanged.emit(False)
 
-    def _schedule_reveal(self, slot, delay=55):
+    def _reveal(self, slot):
         if slot != self._active:
             return
-        generation = self._display_generation
-
-        def reveal():
-            if generation != self._display_generation or slot != self._active:
-                return
-            video = self.video_widgets[slot]
-            video.setAspectRatioMode(QtCore.Qt.KeepAspectRatio)
-            self.stack.setCurrentWidget(video)
-            video.show()
-            video.raise_()
-            video.update()
-
-        QtCore.QTimer.singleShot(max(0, int(delay)), reveal)
+        video = self.video_widgets[slot]
+        self.stack.setCurrentWidget(video)
+        video.show()
 
     def _frame_probed(self, slot, frame):
         """Reveal only after the decoder supplied a real frame for this seek."""
-        if slot != self._active or not frame.isValid():
+        if (self._setting_media[slot] or not self._sources[slot] or not frame.isValid()
+                or slot == self._active and self._stopped):
             return
-        player_position = int(self.players[slot].position())
-        if abs(player_position - int(self._target_positions[slot])) <= 350:
-            self._schedule_reveal(slot, delay=0)
+        timestamp = frame.startTime()
+        milliseconds = timestamp / 1000.0 if timestamp >= 0 else self.players[slot].position()
+        rate = frame.surfaceFormat().frameRate()
+        tolerance = max(60.0, min(250.0, 1100.0 / rate)) if rate > 0 else 150.0
+        if self._seek_pending[slot] and abs(milliseconds - self._target_positions[slot]) > tolerance:
+            return
+        if slot == self._active and self._finishing_range:
+            return
+        if slot == self._active and self._play_requested and milliseconds >= self.range_end * 1000:
+            self._finish_current_range(slot)
+            return
+        self._last_frames[slot] = self._multimedia.QVideoFrame(frame)
+        self.video_widgets[slot].set_frame(self._last_frames[slot])
+        self._seek_pending[slot] = False
+        if slot != self._active:
+            return
+        self._reveal(slot)
+        self._publish_position(slot, milliseconds)
+        if self._play_requested and not self._finishing_range:
+            self.players[slot].play()
 
     def _media_status_changed(self, slot, status):
         ready_states = {
@@ -1073,10 +334,14 @@ class _QtMediaReviewSurface(QtWidgets.QFrame):
             if pending is not None:
                 self._pending_positions[slot] = None
                 self.players[slot].setPosition(pending)
-            if slot == self._active:
-                self._schedule_reveal(slot, delay=120)
-                if self._play_requested:
-                    self.players[slot].play()
+            if self._seek_pending[slot]:
+                # Loading leaves QMediaPlayer stopped. Enter paused decoding
+                # explicitly so a seek can deliver its still frame silently.
+                self.players[slot].pause()
+            if self.players[slot].hasAudio() and not self.players[slot].hasVideo():
+                self._seek_pending[slot] = False
+            if slot == self._active and self._play_requested and not self._seek_pending[slot]:
+                self.players[slot].play()
         elif (
             status == self._multimedia.QMediaPlayer.MediaStatus.InvalidMedia
             and slot == self._active
@@ -1086,21 +351,25 @@ class _QtMediaReviewSurface(QtWidgets.QFrame):
             status == self._multimedia.QMediaPlayer.MediaStatus.EndOfMedia
             and slot == self._active
             and self._play_requested
+            and not self._seek_pending[slot]
             and not self._finishing_range
         ):
             self._finish_current_range(slot)
 
     def _position_changed(self, slot, milliseconds):
-        if slot != self._active:
+        # Video progress follows presented frame timestamps. This event can
+        # report a new seek target while the old frame is still on screen.
+        if slot != self._active or self._setting_media[slot] or self._seek_pending[slot]:
             return
+        if not self.players[slot].hasVideo():
+            self._publish_position(slot, milliseconds)
+
+    def _publish_position(self, slot, milliseconds):
         absolute = max(0.0, float(milliseconds) / 1000.0)
         self.position = max(
             0.0,
             min(self.range_end - self.range_start, absolute - self.range_start),
         )
-        target = self._target_positions[slot]
-        if abs(int(milliseconds) - int(target)) <= 250:
-            self._schedule_reveal(slot, delay=120)
         self.positionChanged.emit(self.position)
         if (
             self._play_requested
@@ -1117,7 +386,11 @@ class _QtMediaReviewSurface(QtWidgets.QFrame):
         self.players[slot].pause()
         self.position = self.range_end - self.range_start
         self.positionChanged.emit(self.position)
-        QtCore.QTimer.singleShot(0, self.rangeFinished.emit)
+        generation = self._display_generation
+        def finished():
+            if generation == self._display_generation and self._finishing_range and slot == self._active:
+                self.rangeFinished.emit()
+        QtCore.QTimer.singleShot(0, finished)
 
     def _state_changed(self, slot, state):
         if slot != self._active:
@@ -1125,9 +398,7 @@ class _QtMediaReviewSurface(QtWidgets.QFrame):
         playing = (
             state == self._multimedia.QMediaPlayer.PlaybackState.PlayingState
         )
-        if playing:
-            self._schedule_reveal(slot, delay=100)
-        self.playingChanged.emit(playing)
+        self.playingChanged.emit(playing or self._play_requested)
 
     def _player_error(self, slot):
         if slot != self._active:
@@ -1136,6 +407,11 @@ class _QtMediaReviewSurface(QtWidgets.QFrame):
         if self._reported_error:
             return
         self._reported_error = True
+        self._play_requested = False
+        self.players[slot].pause()
+        self.placeholder.setText("预览解码失败，可选择其他片段重试。")
+        self.stack.setCurrentWidget(self.placeholder)
+        self.playingChanged.emit(False)
         message = self.players[slot].errorString() or "未知的媒体解码错误"
         self.errorOccurred.emit(f"Qt 原生播放器无法播放该视频：{message}")
 
@@ -1144,100 +420,45 @@ class _QtMediaReviewSurface(QtWidgets.QFrame):
         super().closeEvent(event)
 
 
-class FfplayReviewSurface(QtWidgets.QFrame):
-    """Stable public surface selecting mpv/Qt playback with FFplay fallback."""
-
+class QtMediaReviewSurface(QtWidgets.QFrame):
+    """Shared Qt6 preview with the historical range/queue API kept compatible."""
     positionChanged = QtCore.pyqtSignal(float)
     playingChanged = QtCore.pyqtSignal(bool)
     rangeFinished = QtCore.pyqtSignal()
     errorOccurred = QtCore.pyqtSignal(str)
 
     def __init__(self, ffplay_path="", parent=None, preload_enabled=True):
-        global _QT_MEDIA_DISABLED_FOR_SESSION
         super().__init__(parent)
-        self.ffplay_path = resolve_ffplay(ffplay_path)
-        self.mpv_path = resolve_mpv()
-        self._using_fallback = False
-        self._backend_kind = ""
+        # The positional path argument remains accepted by existing consumers;
+        # native Qt playback neither resolves nor starts an external executable.
+        self._backend_kind = "qt"
         self._last_prepare = ("", 0.0, 0.01, 0.0)
-        self.setMinimumHeight(190)
-        self._layout = QtWidgets.QVBoxLayout(self)
-        self._layout.setContentsMargins(0, 0, 0, 0)
-        backend = None
-        if self.mpv_path:
-            backend = _EmbeddedMpvReviewSurface(self.mpv_path, self)
-            self._backend_kind = "mpv"
-        elif not _QT_MEDIA_DISABLED_FOR_SESSION:
-            try:
-                candidate = _QtMediaReviewSurface(
-                    self,
-                    preload_enabled=preload_enabled,
-                )
-                if candidate.is_available():
-                    backend = candidate
-                    self._backend_kind = "qt"
-                else:
-                    candidate.deleteLater()
-            except (ImportError, RuntimeError, OSError):
-                backend = None
-        if backend is None:
-            backend = _EmbeddedFfplayReviewSurface(self.ffplay_path, self)
-            self._using_fallback = True
-            self._backend_kind = "ffplay"
-        self._install_backend(backend)
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        self.setMinimumSize(0, 0)
+        self.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored, QtWidgets.QSizePolicy.Policy.Ignored)
+        self.backend = _QtMediaReviewSurface(self, preload_enabled=preload_enabled)
+        layout.addWidget(self.backend)
+        self.backend.positionChanged.connect(self.positionChanged)
+        self.backend.playingChanged.connect(self.playingChanged)
+        self.backend.rangeFinished.connect(self.rangeFinished)
+        self.backend.errorOccurred.connect(self.errorOccurred)
 
-    def _install_backend(self, backend):
-        self.backend = backend
-        self._layout.addWidget(backend)
-        backend.positionChanged.connect(self.positionChanged)
-        backend.playingChanged.connect(self.playingChanged)
-        backend.rangeFinished.connect(self.rangeFinished)
-        backend.errorOccurred.connect(self._backend_error)
-
-    def _backend_error(self, message):
-        global _QT_MEDIA_DISABLED_FOR_SESSION
-        if self._backend_kind != "ffplay" and self.ffplay_path:
-            if self._backend_kind == "qt":
-                _QT_MEDIA_DISABLED_FOR_SESSION = True
-            was_playing = self.backend.is_playing()
-            old_backend = self.backend
-            if hasattr(old_backend, "release"):
-                old_backend.release()
-            old_backend.setParent(None)
-            old_backend.deleteLater()
-            self._using_fallback = True
-            self._backend_kind = "ffplay"
-            self._install_backend(
-                _EmbeddedFfplayReviewSurface(self.ffplay_path, self)
-            )
-            self.backend.prepare(*self._last_prepare)
-            if was_playing:
-                self.backend.play()
-            # The compatible backend is already ready.  Do not interrupt the
-            # review with a modal warning for a failure that was recovered.
-            return
-        self.errorOccurred.emit(str(message))
+    def configure_ffplay(self, _ffmpeg_path=""):
+        """Compatibility no-op: preview uses Qt6's bundled multimedia backend."""
 
     def is_playing(self):
         return self.backend.is_playing()
-
-    def configure_ffplay(self, ffmpeg_path=""):
-        self.ffplay_path = resolve_ffplay(ffmpeg_path)
-        if hasattr(self.backend, "configure_ffplay"):
-            self.backend.configure_ffplay(ffmpeg_path)
 
     def prepare(self, source, start, end, position=0.0):
         self._last_prepare = (source, start, end, position)
         return self.backend.prepare(source, start, end, position)
 
     def queue(self, source, start, end):
-        if hasattr(self.backend, "queue"):
-            return self.backend.queue(source, start, end)
-        return False
+        return self.backend.queue(source, start, end)
 
     def clear_queue(self):
-        if hasattr(self.backend, "clear_queue"):
-            self.backend.clear_queue()
+        self.backend.clear_queue()
 
     def play(self):
         return self.backend.play()
@@ -1246,7 +467,6 @@ class FfplayReviewSurface(QtWidgets.QFrame):
         return self.backend.pause(show_frame=show_frame)
 
     def reset_source(self):
-        """Invalidate paused/preloaded bytes after an explicit source refresh."""
         self._last_prepare = ("", 0.0, 0.01, 0.0)
         return self.backend.reset_source()
 
@@ -1254,12 +474,12 @@ class FfplayReviewSurface(QtWidgets.QFrame):
         return self.backend.stop()
 
     def release(self):
-        if hasattr(self.backend, "release"):
-            self.backend.release()
-        else:
-            self.backend.stop()
+        self.backend.release()
 
     def closeEvent(self, event):
         self.release()
-        self.backend.close()
         super().closeEvent(event)
+
+
+# Existing plugin imports and third-party callers retain one shared class.
+FfplayReviewSurface = QtMediaReviewSurface

@@ -83,7 +83,7 @@ class ReleaseNotesTests(unittest.TestCase):
         self.assertIn("generate_release_notes: false", workflow)
         self.assertIn("Copy-Item CHANGELOG.md", workflow)
         self.assertLess(workflow.index("name: Fetch pinned standard FFmpeg runtime"), workflow.index("name: Run tests"))
-        self.assertLess(workflow.index("name: Fetch pinned mpv runtime"), workflow.index("name: Run tests"))
+        self.assertNotIn("fetch_mpv.py", workflow)
 
 
 class ReleaseNotesUiTests(unittest.TestCase):

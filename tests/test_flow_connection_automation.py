@@ -34,6 +34,9 @@ class ConnectionAutomationTests(unittest.TestCase):
         QtWidgets.QApplication.clipboard().setText('https://example.test/project/not-flow')
         self.assertFalse(commands)
         QtWidgets.QApplication.clipboard().setText(setups.PROJECT)
+        # Native clipboard notifications may be delivered on the next Qt turn.
+        deadline=time.monotonic()+1
+        while not commands and time.monotonic()<deadline:QtTest.QTest.qWait(10)
         self.assertEqual(commands[-1]['action'], 'setup_profile')
         self.assertEqual(commands[-1]['profile'], 'Profile 23')
         self.assertEqual(commands[-1]['project'], setups.PROJECT)

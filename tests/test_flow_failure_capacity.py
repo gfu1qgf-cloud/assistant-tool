@@ -63,6 +63,13 @@ class FailureCapacityTests(unittest.TestCase):
         for row in held:service.store.update(row['id'],'download_failed',remote={**row['remote'],'bindings':[{'mediaIds':['original-media']}]})
         before=service.store.rows()
         self.assertEqual(admission_profiles(service),set())
+        # Task admission and physical window budgets are separate. Existing
+        # four windows fill the default ceiling at concurrency=2, even though
+        # failed downloads release every generation lane.
+        from app_plugins.builtin.flow_assistant.browser_budget import maximum,profiles
+        self.assertEqual(len(profiles(service)),maximum(service))
+        self.assertFalse(can_start(service,'Another Account'))
+        service.preferences['browser_window_limit']=8
         self.assertTrue(can_start(service,'Another Account'))
         self.assertEqual(service.store.rows(),before)
         self.assertEqual(summary(service)['unresolved'],4)

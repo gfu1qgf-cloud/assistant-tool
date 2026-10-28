@@ -4,7 +4,7 @@ from app_plugins.api import MAIN_MENU, TASK_CONTEXT_MENU, PluginCommand
 class ScriptSegmenterPlugin:
     plugin_id = "script_segmenter"
     display_name = "智能文案分段助手"
-    version = "1.1"
+    version = "1.1.1"
     required_api_version = 1
 
     def __init__(self):

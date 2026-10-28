@@ -291,7 +291,8 @@ class MainSettingDialog(QtWidgets.QDialog, Ui_MainSettingDialog):
         self.plugin_host = plugin_host
         self._chrome_managed_by_plugin = bool(
             plugin_host is not None
-            and plugin_host.plugin("chrome_launcher") is not None
+            and (plugin_host.plugin("chrome_launcher") is not None or
+                 getattr(plugin_host.plugin('flow_assistant'), 'browser_launcher', None) is not None)
         )
         self._audio_managed_by_plugin = bool(
             plugin_host is not None

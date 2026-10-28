@@ -168,7 +168,8 @@ class SmartVideoLocationGuiTests(unittest.TestCase):
 
     def test_timeline_context_location_and_existing_include_action_are_distinct(self):
         widget = SmartTimelineWidget(); self.addCleanup(widget.deleteLater)
-        widget._segment_rects = [(QtCore.QRectF(0, 0, 100, 100), {"clip_index": 7, "included": True})]
+        widget._segment_rects = [(QtCore.QRectF(0, 0, 100, 100), {"clip_index": 7, "included": True,
+            'source_start':0.0,'source_end':5.0,'timeline_start':0.0,'timeline_end':5.0})]
         event = SimpleNamespace(pos=lambda: QtCore.QPoint(20, 20), globalPos=lambda: QtCore.QPoint(20, 20), accept=Mock())
         reveal, include = Mock(), Mock()
         widget.clipLocationRequested.connect(reveal); widget.clipInclusionRequested.connect(include)
@@ -176,7 +177,8 @@ class SmartVideoLocationGuiTests(unittest.TestCase):
             return next(action for action in menu.actions() if action.text() == "打开文件位置")
         with patch.object(QtWidgets.QMenu, "exec", choose_location): widget.contextMenuEvent(event)
         reveal.assert_called_once_with(7); include.assert_not_called(); event.accept.assert_called_once()
-        with patch.object(QtWidgets.QMenu, "exec", lambda menu, _position: menu.actions()[0]): widget.contextMenuEvent(event)
+        with patch.object(QtWidgets.QMenu, "exec", lambda menu, _position: next(
+                action for action in menu.actions() if action.text()=='删除整个原始片段（保留原文件）')): widget.contextMenuEvent(event)
         include.assert_called_once_with(7, False)
 
 

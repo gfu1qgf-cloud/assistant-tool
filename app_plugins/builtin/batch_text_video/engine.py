@@ -659,6 +659,12 @@ def _prepare_static_text(job, state, directory, cancel=None, progress=None, repo
 
 @contextmanager
 def prepare_static_text(job, state, directory, cancel=None, progress=None, report=None, preview=False, *, node_effects=None, preview_limit=None):
+    # Reject a malformed/forbidden proxy limit before reading state, creating
+    # cache sessions or touching media. Keep formal export untruncated.
+    if preview_limit is not None and (not preview or isinstance(preview_limit, bool) or
+            not isinstance(preview_limit, (int, float)) or not math.isfinite(preview_limit) or
+            not 0 < preview_limit <= 86400):
+        raise ValueError('预览时长限制只用于播放预览，须为0–86400秒之间的正数；不会截短正式导出。')
     from .music_preparation import MusicPreparationSession, current_music_session, music_session
     with ExitStack() as stack:
         if not state['settings'].get('keep_media_cache', True) and current_music_session() is None:

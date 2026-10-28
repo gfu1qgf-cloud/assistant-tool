@@ -79,7 +79,8 @@ class SettingsLifecycleTests(unittest.TestCase):
 
     def test_real_add_button_then_save_keeps_existing_keys_and_profiles(self):
         previous = Path.cwd()
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory() as directory, \
+             patch('model.ElevenLabsPermissions.inspect_key',return_value={'permission_probe_status':'partial'}):
             os.chdir(directory)
             original = {'elevenlabs_api_keys': ['synthetic-existing'], 'run_upload': False,
                 'audio_settings': {'test': {'model': 'elevenlabs', 'voice_ids': ['synthetic-voice']}},
@@ -91,16 +92,29 @@ class SettingsLifecycleTests(unittest.TestCase):
                 dialog.add_api_key_btn.click()
                 self.assertEqual(dialog.get_api_keys(), ['synthetic-existing', 'synthetic-added'])
                 dialog.ok_btn.click()
-                self.app.processEvents()
+                deadline=time.monotonic()+2
+                while dialog.result()!=QtWidgets.QDialog.DialogCode.Accepted and time.monotonic()<deadline:
+                    self.app.processEvents();time.sleep(.005)
                 self.assertEqual(dialog.result(), QtWidgets.QDialog.DialogCode.Accepted)
                 saved = json.loads(Path('config.json').read_text(encoding='utf-8'))
                 self.assertEqual(saved['elevenlabs_api_keys'], ['synthetic-existing', 'synthetic-added'])
                 self.assertEqual(saved['private_business_data'], original['private_business_data'])
                 self.assertIn('test', saved['audio_settings'])
             finally:
+                dialog.elevenlabs_key_probe.stop()
                 dialog.deleteLater()
                 self.app.sendPostedEvents(None, QtCore.QEvent.Type.DeferredDelete)
                 os.chdir(previous)
+
+    def test_late_probe_after_qt_signal_destruction_drops_result_and_releases_owned_worker(self):
+        from PyQt6 import sip
+        from PYUI.elevenlabs_key_probe import _Probe,_ACTIVE
+        worker=_Probe([('synthetic-key',0)])
+        _ACTIVE[worker.identifier]=worker
+        sip.delete(worker.signals)
+        with patch('model.ElevenLabsPermissions.inspect_key',return_value={'permission_probe_status':'partial'}):
+            worker.run()
+        self.assertNotIn(worker.identifier,_ACTIVE)
 
 
 if __name__ == '__main__':

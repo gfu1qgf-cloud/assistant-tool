@@ -96,7 +96,10 @@ class ProtectedIntegrationTests(unittest.TestCase):
             self.assertEqual(hits[0]['thumbnail'],str(thumbnail))
             self.assertFalse((self.old/'SmartImageSearch').exists())
             self.provider.available=False
-            with self.assertRaises(StorageUnavailable):index._connect()
+            # The context manager acquires the handle on entry, not when its
+            # inert descriptor is created. Losing the volume must fail before SQL.
+            with self.assertRaises(StorageUnavailable):
+                with index._connect():self.fail('unmounted volume was opened')
 
     def test_closed_database_connections_are_not_kept_alive_by_tracking(self):
         db=self.storage.for_plugin('test').file('db.sqlite3').connect()

@@ -95,7 +95,7 @@ class CaptionBaselineTests(unittest.TestCase):
             return original(value)
         with patch('app_plugins.builtin.batch_text_video.playback.hashlib.sha256',side_effect=sha):
             preview_key(dict(path='',title='',body=''),fresh_state())
-        self.assertEqual(json.loads(captured[-1])[0],'playback-v22-caption-parameter-snapshots')
+        self.assertEqual(json.loads(captured[-1])[0],'playback-v30-fractional-matte')
 
 
 if __name__=='__main__':unittest.main()

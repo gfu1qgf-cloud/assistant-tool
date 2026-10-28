@@ -17,9 +17,13 @@ def route(plugin, entry):
     client=next((c for c in plugin.snapshot.get('clients',[]) if c.get('profile')==entry['profile'] and
         project_identity(c.get('saved_project') or c.get('project'))==identity),None) if identity else None
     args=parse_qs(urlsplit(url).fragment)
-    if identity and args.get('lzx_setup') and (not client or not compatible_extension(client.get('extension_version'),minimum_patch=54)):
+    settings_requested=args.get('lzx_action',[''])[0] in {'options','update'}
+    if identity and args.get('lzx_setup') and (settings_requested or
+            client and not compatible_extension(client.get('extension_version'),minimum_patch=54)):
         # The on-disk options script can upgrade an old running worker. Opening
         # this privileged settings entrance does not duplicate its Flow page.
+        # A missing connection alone is NOT an update request: ordinary cold
+        # pairing must still open its HTTPS project, never an internal-only tab.
         ticket=args['lzx_setup'][0];port=args.get('lzx_port',[''])[0]
         return [OPTIONS_URL+'#setup='+ticket+'&port='+port]
     if not client:return None

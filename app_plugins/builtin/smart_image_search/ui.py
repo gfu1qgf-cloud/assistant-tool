@@ -295,6 +295,9 @@ class SmartImageSearchDialog(QtWidgets.QDialog):
         self.results.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
         self.results.customContextMenuRequested.connect(self._show_context_menu)
         self.results.moveDropFinished.connect(self._schedule_drag_cleanup)
+        self.delete_shortcut = QtGui.QShortcut(QtGui.QKeySequence("Delete"), self.results)
+        self.delete_shortcut.setContext(QtCore.Qt.ShortcutContext.WidgetShortcut)
+        self.delete_shortcut.activated.connect(self._delete_selected)
         layout.addWidget(self.results, 1)
 
         self.load_more_button = QtWidgets.QPushButton("加载更多")
@@ -315,6 +318,10 @@ class SmartImageSearchDialog(QtWidgets.QDialog):
         self.move_button.setToolTip("移动原图；成功后立即从搜图索引注销，不重算其他图片。")
         self.move_button.clicked.connect(lambda: self._transfer("move"))
         action_row.addWidget(self.move_button)
+        self.delete_button = QtWidgets.QPushButton("删除选中图片…")
+        self.delete_button.setToolTip("将选中的原图移入系统回收站，并从搜索结果中移除。")
+        self.delete_button.clicked.connect(self._delete_selected)
+        action_row.addWidget(self.delete_button)
         layout.addLayout(action_row)
         self.model_combo.currentIndexChanged.connect(self._search_options_changed)
         self.text_weight.valueChanged.connect(self._search_options_changed)
@@ -474,7 +481,7 @@ class SmartImageSearchDialog(QtWidgets.QDialog):
         self.cancel_statistics()
         if self.is_busy():
             self.worker.requestInterruption()
-            self.status.setText("正在停止；当前图片处理完后会保存已完成的索引。")
+            self.status.setText("正在停止；当前图片处理完后会保留已完成的操作。")
 
     def _start(self, task, message):
         if self._shutting_down or self.is_busy():
@@ -488,6 +495,7 @@ class SmartImageSearchDialog(QtWidgets.QDialog):
         self.search_button.setEnabled(False)
         self.move_button.setEnabled(False)
         self.copy_button.setEnabled(False)
+        self.delete_button.setEnabled(False)
         self.load_more_button.setEnabled(False)
         self.model_combo.setEnabled(False)
         self.text_weight.setEnabled(False)
@@ -623,6 +631,26 @@ class SmartImageSearchDialog(QtWidgets.QDialog):
             self.status.setText(f"已移出 {len(moved)} 张；其余图片的模型特征没有重算。")
         elif kind == "copy":
             self.status.setText(f"已复制 {len(result['paths'])} 张图片。")
+        elif kind == "delete":
+            self._remove_result_paths(result["deleted"])
+            self._refresh_index_status()
+            message = f"已将 {len(result['deleted'])} 张图片移入回收站。"
+            if result["cancelled"]:
+                message += " 已停止，其余图片未删除。"
+            failures = result["failures"]
+            if failures:
+                message += f" {len(failures)} 张删除失败，已保留在结果中。"
+            if result.get("index_error"):
+                message += " 索引更新失败，请点击“增量更新索引”修复。"
+            self.status.setText(message)
+            if failures or result.get("index_error"):
+                details = "\n".join(failures)
+                if result.get("index_error"):
+                    details += "\n索引更新失败：" + result["index_error"]
+                notice = QtWidgets.QMessageBox(QtWidgets.QMessageBox.Icon.Warning,
+                    "删除图片", message, parent=self)
+                notice.setDetailedText(details.strip())
+                notice.exec()
 
     def _failed(self, message):
         self.status.setText("操作失败：" + message)
@@ -644,6 +672,7 @@ class SmartImageSearchDialog(QtWidgets.QDialog):
         self.search_button.setEnabled(True)
         self.move_button.setEnabled(True)
         self.copy_button.setEnabled(True)
+        self.delete_button.setEnabled(True)
         self.load_more_button.setEnabled(True)
         self.model_combo.setEnabled(True)
         self.text_weight.setEnabled(True)
@@ -836,6 +865,41 @@ class SmartImageSearchDialog(QtWidgets.QDialog):
         if Path(path).is_file():
             QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(path))
 
+    def _delete_selected(self):
+        if self.is_busy() or self._shutting_down:
+            return
+        selected = self._selected_records()
+        if not selected:
+            self.status.setText("请先选择一张或多张结果图片。")
+            return
+        # The search page owns only explicitly configured loose libraries.
+        # Managed inventory records require their own store transaction.
+        if any(kind != "folder" for _path, kind in selected):
+            QtWidgets.QMessageBox.warning(self, "删除图片", "请在库存管理中删除程序库存或人物素材。")
+            return
+        paths = list(dict.fromkeys(path for path, _kind in selected))
+        roots = self._selected_roots()
+        confirm = QtWidgets.QMessageBox(QtWidgets.QMessageBox.Icon.Warning,
+            "确认删除原图", f"将选中的 {len(paths)} 张原图移入系统回收站？",
+            QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No,
+            self)
+        confirm.setInformativeText("删除后会从图片库和搜索结果中消失。无法移入回收站的图片将保留。")
+        confirm.setDetailedText("\n".join(paths))
+        confirm.setDefaultButton(QtWidgets.QMessageBox.StandardButton.No)
+        if confirm.exec() != QtWidgets.QMessageBox.StandardButton.Yes:
+            return
+        index = self.index
+        def task(progress, cancelled):
+            from .image_delete import trash_selected
+            result = trash_selected(paths, roots, progress, cancelled)
+            if result["deleted"]:
+                try:
+                    index.remove_paths(result["deleted"])
+                except Exception as error:
+                    result["index_error"] = str(error)
+            return result
+        self._start(task, "正在将选中图片移入回收站…")
+
     def _show_context_menu(self, position):
         item = self.results.itemAt(position)
         if item is None:
@@ -853,4 +917,7 @@ class SmartImageSearchDialog(QtWidgets.QDialog):
         menu.addSeparator()
         menu.addAction("移出素材库到…", lambda: self._transfer("move"))
         menu.addAction("复制到…", lambda: self._transfer("copy"))
+        menu.addSeparator()
+        delete_action = menu.addAction("删除选中图片…", self._delete_selected)
+        delete_action.setEnabled(not self.is_busy())
         menu.exec(self.results.viewport().mapToGlobal(position))

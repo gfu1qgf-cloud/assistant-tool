@@ -55,7 +55,7 @@ class ScriptSegmenterDialog(QtWidgets.QDialog):
         self.strategy = QtWidgets.QComboBox()
         self.strategy.addItem("减少段数（原策略）", "fewest")
         self.strategy.addItem("优先完整句（放不下就退回停顿处）", "punctuation_first")
-        self.strategy.setToolTip("新策略优先在逗号、句号等停顿处结束，不为凑满而开始下一句；单句太长或没有标点时按完整词拆分。自动模式按估时选6/8/10秒，可能增加段数。不能替代实际音频计时。")
+        self.strategy.setToolTip("优先在逗号、句号等停顿处结束；单句太长或没有标点时按完整词拆分。末段预计朗读不超过3秒时并入上一段，合并后含预留最多超出所选时长3秒，超时会明确提醒。自动模式按估时选6/8/10秒。不能替代实际音频计时。")
         strategy_row.addWidget(self.strategy)
         strategy_row.addStretch()
         layout.addLayout(strategy_row)

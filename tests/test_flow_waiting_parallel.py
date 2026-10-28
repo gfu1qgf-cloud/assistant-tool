@@ -86,7 +86,7 @@ class WaitingParallelTests(unittest.TestCase):
         self.assertEqual(service.store.get(rows[1]['id'])['browser'],owners[0]['id'])
         self.assertFalse(launches)
 
-    def test_wait_does_not_relax_account_image_exclusion_or_duplicate_account_lock(self):
+    def test_idle_image_history_can_be_reused_but_duplicate_busy_account_stays_locked(self):
         service,busy,owners,spares,rows,launches = self.fixture()
         other = self.target/'other.png'; other.write_bytes(b'different reference')
         service.store.enqueue(self.jobs(images=[other],duration=8,budget=0))
@@ -94,7 +94,8 @@ class WaitingParallelTests(unittest.TestCase):
         remember_owner(service,other_row,spares[0])
         spares[1]['account'] = busy['account'].upper()
         service._tick()
-        self.assertEqual(service.store.get(rows[1]['id'])['browser'],spares[2]['id'])
+        self.assertEqual(service.store.get(rows[1]['id'])['browser'],spares[0]['id'])
+        self.assertNotIn(spares[1]['id'],[r['browser'] for r in service.store.rows() if r['status']=='preparing'])
         self.assertEqual(service.store.get(other_row['id'])['status'],'queued')
         self.assertFalse(launches)
 

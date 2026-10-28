@@ -12,7 +12,7 @@ sys.setrecursionlimit(max(sys.getrecursionlimit(), 5000))
 project_root = Path(SPECPATH).parent
 datas = []
 binaries = []
-hiddenimports = []
+hiddenimports = ["PyQt6.QtMultimedia", "PyQt6.QtMultimediaWidgets"]
 
 app_icon = project_root / "app_icon.ico"
 if not app_icon.is_file():
@@ -51,22 +51,6 @@ for resource in ("OpenSans[wdth,wght].ttf", "OpenSans-Italic[wdth,wght].ttf", "O
     if not data_file.is_file():
         raise SystemExit("Missing bundled Open Sans resource: " + resource)
     datas.append((str(data_file), data_file.parent.relative_to(project_root).as_posix()))
-
-mpv_runtime = project_root / "runtime" / "mpv"
-required_mpv_files = ("mpv.exe", "vulkan-1.dll")
-missing_mpv_files = [
-    name for name in required_mpv_files
-    if not (mpv_runtime / name).is_file()
-]
-if missing_mpv_files:
-    raise SystemExit(
-        "Missing pinned mpv runtime: " + ", ".join(missing_mpv_files)
-        + ". Run: python packaging/fetch_mpv.py"
-    )
-for runtime_name in (*required_mpv_files, "README.md"):
-    runtime_file = mpv_runtime / runtime_name
-    if runtime_file.is_file():
-        datas.append((str(runtime_file), "runtime/mpv"))
 
 # Bundle the standard, pinned FFmpeg processes and their original notices.
 ffmpeg_runtime = project_root / "runtime" / "ffmpeg"

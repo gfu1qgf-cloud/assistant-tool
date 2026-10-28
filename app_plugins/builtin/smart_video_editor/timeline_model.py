@@ -137,6 +137,8 @@ def build_task_review_timeline(task):
             continue
         deleted = _merged_deleted_ranges(clip, duration)
         boundaries = {0.0, duration}
+        boundaries.update(_number(point) for point in clip.get("manual_split_points", [])
+                          if 0.001 < _number(point) < duration - 0.001)
         for left, right, _reason in deleted:
             boundaries.update((left, right))
         boundaries = sorted(boundaries)
@@ -159,6 +161,7 @@ def build_task_review_timeline(task):
             segments.append({
                 "clip_index": clip_index,
                 "range_index": range_index,
+                "segment_id": f"{clip_index}:{source_start:.4f}:{source_end:.4f}",
                 "source": str(clip.get("source") or ""),
                 "file_name": str(clip.get("file_name") or ""),
                 "status": str(clip.get("status") or "green"),

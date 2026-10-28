@@ -39,9 +39,13 @@ def render_resources(bundle):
                   and smart_video_task_review_decision(task) != "skipped"}))
 
 
-def run_smart_video_job(payload, context):
+def run_smart_video_job(payload, context, *, registry=None):
     phase, settings = payload["phase"], payload["settings"]
     context.report("正在准备视频处理", 0)
+    if phase == "export" and settings.get("postprocess_enabled") and any(
+        smart_video_task_review_decision(task) != "skipped" for task in payload["bundle"].get("tasks", [])
+    ) and (registry is None or not payload.get("postprocess")):
+        raise ValueError("导出后处理缺少提交时的节点快照，请重新选择工作流后提交。")
     for source, version in payload.get("source_versions", {}).items():
         if version_of(source) != version:
             raise RuntimeError(f"排队期间源视频已变化：{Path(source).name}；请刷新片段后重试。")
@@ -82,6 +86,9 @@ def run_smart_video_job(payload, context):
             result = export_smart_video_bundle(payload["bundle"], settings,
                 progress=progress, cancelled=context.is_canceled, alignment_model=model,
                 alignment_model_loader=model_loader)
+            if payload.get("postprocess"):
+                from .postprocess_workflow import process_results
+                result = process_results(result, payload["bundle"], payload["postprocess"], registry, context, settings)
         elif phase == "breath_export":
             result = export_breath_cut_bundle(payload["bundle"], settings,
                 progress=progress, cancelled=context.is_canceled)
@@ -90,6 +97,9 @@ def run_smart_video_job(payload, context):
     except InterruptedError as error:
         raise BackgroundTaskCanceled(str(error)) from error
     result["paths"] = [str(item["video"]) for item in result["completed"] if item.get("video")]
+    for item in result["failed"]:
+        if item.get("original_video"):
+            result["paths"].append(str(item["original_video"]))
     if result["failed"]:
         raise BackgroundTaskResultError(
             f"成功 {len(result['completed'])}，暂缓 {len(result['skipped'])}，失败 {len(result['failed'])}；点击结果核对。", result)

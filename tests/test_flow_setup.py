@@ -168,13 +168,13 @@ class SetupTests(unittest.TestCase):
         self.assertIn('安装／更新完成，打开 Flow', dialog.setup.status.text())
         self.assertFalse(any(item['action'] in {'enqueue', 'start'} for item in commands))
 
-    def test_installed_but_offline_opens_options_not_reinstallation(self):
+    def test_installed_but_offline_opens_saved_https_project_not_reinstallation(self):
         self.preferences(self.installed())
         dialog, launcher, commands = self.ui()
         with patch('app_plugins.builtin.flow_assistant.ui.open_path') as open_path:
             self.prepare(dialog.setup, commands)
         open_path.assert_not_called()
-        self.assertEqual(launcher.launch_profile.call_args.kwargs['urls'], [OPTIONS_URL+'#setup='+TICKET+'&port=18189'])
+        self.assertEqual(launcher.launch_profile.call_args.kwargs['urls'], [PROJECT_ENTRY])
         self.assertNotIn('Ctrl+V', dialog.setup.status.text())
 
     def test_online_extension_is_definitive_without_reading_profile_files(self):
@@ -183,7 +183,7 @@ class SetupTests(unittest.TestCase):
         with patch('app_plugins.builtin.flow_assistant.setup_ui.inspect_extension') as inspect:
             self.prepare(dialog.setup, commands)
         inspect.assert_not_called()
-        self.assertEqual(launcher.launch_profile.call_args.kwargs['urls'], [OPTIONS_URL+'#setup='+TICKET+'&port=18189'])
+        self.assertEqual(launcher.launch_profile.call_args.kwargs['urls'], [PROJECT_ENTRY])
 
     def test_disabled_extension_requests_enable_not_duplicate_install(self):
         self.preferences(self.installed(state=0))

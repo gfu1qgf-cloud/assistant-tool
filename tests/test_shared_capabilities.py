@@ -146,15 +146,10 @@ class SharedCompatibilityTests(unittest.TestCase):
             for key in ("large", "large336"):
                 self.assertEqual(ImageSearchIndex(root, key).path.name, f"index-{key}.sqlite3")
 
-    def test_mpv_runtime_uses_app_root_after_extraction(self):
+    def test_media_preview_does_not_depend_on_app_root_or_external_executables(self):
         from model import MediaPlayback
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            executable = root / "runtime" / "mpv" / "mpv.exe"
-            executable.parent.mkdir(parents=True)
-            executable.write_bytes(b"test-executable")
-            with patch.object(MediaPlayback, "APP_ROOT", root), \
-                 patch.object(MediaPlayback.sys, "frozen", False, create=True), \
-                 patch.object(MediaPlayback.shutil, "which", return_value=None), \
-                 patch.dict(os.environ, {"QT_QPA_PLATFORM": "", "LZX_MPV_PATH": ""}):
-                self.assertEqual(MediaPlayback.resolve_mpv(), str(executable))
+        self.assertIs(MediaPlayback.FfplayReviewSurface, MediaPlayback.QtMediaReviewSurface)
+        source = Path(MediaPlayback.__file__).read_text(encoding='utf-8-sig')
+        self.assertNotIn('QProcess', source)
+        self.assertNotIn('SetParent', source)
+        self.assertNotIn('resolve_mpv', source)

@@ -25,8 +25,11 @@ class SmartTimelineWidget(QtWidgets.QWidget):
     clipActivated = QtCore.pyqtSignal(int)
     clipReorderRequested = QtCore.pyqtSignal(int, int)
     clipInclusionRequested = QtCore.pyqtSignal(int, bool)
+    clipApprovalRequested = QtCore.pyqtSignal(int)
     clipLocationRequested = QtCore.pyqtSignal(int)
     removedSegmentRestoreRequested = QtCore.pyqtSignal(object)
+    segmentDeletionRequested = QtCore.pyqtSignal(object)
+    segmentSplitRequested = QtCore.pyqtSignal(object, float)
     markerActivated = QtCore.pyqtSignal(object)
     subtitleActivated = QtCore.pyqtSignal(object)
 
@@ -43,6 +46,7 @@ class SmartTimelineWidget(QtWidgets.QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.segments = []
+        self.clip_approval_enabled = True
         self.markers = []
         self.subtitle_tracks = {"recognized": [], "aligned": []}
         self.waveforms = {}
@@ -492,7 +496,7 @@ class SmartTimelineWidget(QtWidgets.QWidget):
                     f"{format_time(segment['timeline_end'])}\n"
                     f"原片 {format_time(segment['source_start'])} → "
                     f"{format_time(segment['source_end'])}"
-                    + "\n右键可排除或恢复整个片段（不会删除源文件）"
+                    + "\n右键可删除当前小段、切开小段或排除整个原始片段（保留源文件）"
                     + (
                         "\n点击后可在右侧重复片段列表切换保留版本"
                         if segment.get("duplicate_group_id")
@@ -526,17 +530,40 @@ class SmartTimelineWidget(QtWidgets.QWidget):
         clip_index = int(segment["clip_index"])
         included = bool(segment.get("included", True))
         menu = QtWidgets.QMenu(self)
-        action = menu.addAction(
-            "从成片中删除此片段（保留原文件）"
-            if included else "恢复此片段到成片"
+        removed = bool(segment.get("is_removed"))
+        approve = None
+        if self.clip_approval_enabled:
+            approve = menu.addAction("确认保留（解除多余判定）")
+            approve.setEnabled(included and not removed)
+            approve.setToolTip("人工确认当前保留内容应参与生成，解除该原始片段的多余阻拦；不恢复已删除的小段。")
+            menu.addSeparator()
+        action = menu.addAction("恢复当前小段" if removed else "删除当前小段（保留原文件）")
+        action.setToolTip("只处理点中的连续时间区间，不影响同一原始视频的其他小段。")
+        whole = menu.addAction(
+            "删除整个原始片段（保留原文件）"
+            if included else "恢复整个原始片段到成片"
         )
-        action.setToolTip("只改变智能剪辑导出，不会删除硬盘上的源视频。")
+        whole.setToolTip("处理这个原始视频的全部小段，不删除硬盘上的源视频。")
+        source_time = float(segment["source_start"]) + max(0.0, min(
+            float(segment["source_end"]) - float(segment["source_start"]),
+            self._time_for_x(point.x()) - float(segment["timeline_start"])))
+        split = menu.addAction("在此处切开小段")
+        split.setEnabled(float(segment["source_start"]) + 0.08 < source_time < float(segment["source_end"]) - 0.08)
         menu.addSeparator()
         location = menu.addAction("打开文件位置")
         location.setToolTip("打开该片段的文件夹，并选中源视频；不改变当前播放位置。")
         selected = menu.exec(event.globalPos())
-        if selected is action:
+        if approve is not None and selected is approve:
+            self.clipApprovalRequested.emit(clip_index)
+        elif selected is action:
+            if removed:
+                self.removedSegmentRestoreRequested.emit(dict(segment))
+            else:
+                self.segmentDeletionRequested.emit(dict(segment))
+        elif selected is whole:
             self.clipInclusionRequested.emit(clip_index, not included)
+        elif selected is split:
+            self.segmentSplitRequested.emit(dict(segment), source_time)
         elif selected is location:
             self.clipLocationRequested.emit(clip_index)
         event.accept()

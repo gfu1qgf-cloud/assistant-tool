@@ -7,6 +7,7 @@ import os
 import sqlite3
 import threading
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 import numpy as np
@@ -114,11 +115,18 @@ class ImageSearchIndex:
     def for_encoder(cls, encoder, root=None):
         return cls(root=root, model_key=encoder.model_key)
 
+    @contextmanager
     def _connect(self):
         connection = data_file(str(self.path)).connect(timeout=20)
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA busy_timeout=20000")
-        return connection
+        try:
+            connection.row_factory = sqlite3.Row
+            connection.execute("PRAGMA busy_timeout=20000")
+            with connection:
+                yield connection
+        finally:
+            # sqlite's transaction context commits/rolls back but does NOT
+            # close. Release each short-lived handle on its owning thread.
+            connection.close()
 
     def count(self, model_id=None, *, allowed_roots=None, cancelled=None):
         cancelled = cancelled or (lambda: False)

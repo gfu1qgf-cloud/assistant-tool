@@ -124,6 +124,8 @@ DEFAULT_SMART_VIDEO_EDITOR_SETTINGS = {
     "existing_output": "version",
     "auto_export_clean": True,
     "export_mode": "joined",
+    "postprocess_enabled": False,
+    "postprocess_workflow": "",
 }
 
 
@@ -280,6 +282,8 @@ def normalize_smart_video_editor_settings(value=None):
         source.get("auto_export_clean", True)
     )
     result["export_mode"] = "segments" if source.get("export_mode") == "segments" else "joined"
+    result["postprocess_enabled"] = bool(source.get("postprocess_enabled", False))
+    result["postprocess_workflow"] = str(source.get("postprocess_workflow") or "").strip()
     return result
 
 
@@ -3835,7 +3839,7 @@ def _task_missing_review_signature(task, findings=None):
 
 
 def set_smart_video_missing_review(task, decision):
-    """Record a human decision for all current hard gaps in one task."""
+    """Approve current hard gaps, or defer the whole task regardless of findings."""
     decision = str(decision or "").strip().lower()
     if not decision:
         task.pop("missing_review", None)
@@ -3843,7 +3847,7 @@ def set_smart_video_missing_review(task, decision):
     if decision not in {"approved", "skipped"}:
         raise ValueError(f"未知的缺段处理决定：{decision}")
     findings = _task_missing_findings(task)
-    if not findings:
+    if not findings and decision == "approved":
         raise ValueError("这个任务当前没有需要人工处理的确认缺段。")
     review = {
         "decision": decision,
@@ -3864,7 +3868,7 @@ def smart_video_task_review_decision(task, findings=None):
     if decision not in {"approved", "skipped"}:
         return ""
     findings = _task_missing_findings(task) if findings is None else list(findings)
-    if not findings:
+    if not findings and decision == "approved":
         return ""
     if str(review.get("signature") or "") != _task_missing_review_signature(
         task, findings
@@ -3894,15 +3898,41 @@ def smart_video_missing_findings(bundle):
     return findings
 
 
+def _export_script_coverage(clip):
+    """Script space actually assigned to this clip and retained for export."""
+    start = _signature_int(clip.get("script_word_start"))
+    end = _signature_int(clip.get("script_word_end"))
+    if start < 0 or end < start:
+        return set()
+    timeline = clip.get("word_timeline") or []
+    if not timeline:
+        return set(range(start, end + 1)) if clip.get("content_order_reliable") else set()
+    ranges = clip.get("kept_ranges")
+    if ranges is None:
+        ranges = [[float(clip.get("trim_start") or 0.0),
+                   float(clip.get("trim_end") or clip.get("original_duration") or 0.0)]]
+    return {
+        _signature_int(word.get("script_word_index"))
+        for word in timeline
+        if word.get("anchor", True)
+        and start <= _signature_int(word.get("script_word_index")) <= end
+        and any(min(float(word.get("end") or 0.0), float(right))
+                - max(float(word.get("start") or 0.0), float(left)) > 0.001
+                for left, right in ranges)
+    }
+
+
 def smart_video_extra_clip_findings(bundle):
     """Surface included takes which cannot safely be assigned unique script space."""
     findings = []
     for task_index, task in enumerate(bundle.get("tasks", [])):
+        task_decision = smart_video_task_review_decision(task)
         clips = task.get("clips", []) or []
         included = [
             (index, clip) for index, clip in enumerate(clips)
             if clip.get("included", True)
         ]
+        coverage = {index: _export_script_coverage(clip) for index, clip in included}
         suspicious = {}
         for index, clip in included:
             start = int(clip.get("script_word_start", -1))
@@ -3918,18 +3948,12 @@ def smart_video_extra_clip_findings(bundle):
                 right_words = text_units(right.get("recognized_text", ""))
                 if min(len(left_words), len(right_words)) < 5:
                     continue
-                if _range_overlap_ratio(
-                    {
-                        "start": left.get("content_order_start", -1),
-                        "end": left.get("content_order_end", -1),
-                        "reliable": left.get("content_order_reliable", False),
-                    },
-                    {
-                        "start": right.get("content_order_start", -1),
-                        "end": right.get("content_order_end", -1),
-                        "reliable": right.get("content_order_reliable", False),
-                    },
-                ) < 0.80 or _sequence_score(left_words, right_words) < 0.70:
+                left_coverage, right_coverage = coverage[left_index], coverage[right_index]
+                if not left_coverage or not right_coverage:
+                    continue
+                if (len(left_coverage & right_coverage)
+                        / min(len(left_coverage), len(right_coverage)) < 0.80
+                        or _sequence_score(left_words, right_words) < 0.70):
                     continue
                 loser_index, _loser = min(
                     ((left_index, left), (right_index, right)),
@@ -3952,7 +3976,8 @@ def smart_video_extra_clip_findings(bundle):
                 "file_name": name,
                 "text": name,
                 "issue_reason": reason + "；请在时间线右键排除，或试听后人工确认保留。",
-                "review_decision": "approved" if clip.get("extra_clip_approved") else "",
+                "review_decision": "skipped" if task_decision == "skipped" else
+                                   "approved" if clip.get("extra_clip_approved") else "",
             })
     return findings
 
@@ -3964,7 +3989,7 @@ def smart_video_export_blockers(bundle):
         if block.get("review_decision") not in {"approved", "skipped"}
     ] + [
         block for block in smart_video_extra_clip_findings(bundle)
-        if block.get("review_decision") != "approved"
+        if block.get("review_decision") not in {"approved", "skipped"}
     ]
 
 
@@ -4036,7 +4061,7 @@ def update_smart_video_pending_reviews(existing, bundle):
         record_id = _pending_record_id(task)
         findings = _task_missing_findings(task)
         decision = smart_video_task_review_decision(task, findings)
-        if not findings or decision == "approved":
+        if (not findings and decision != "skipped") or decision == "approved":
             records.pop(record_id, None)
             continue
         records[record_id] = {
@@ -5549,7 +5574,7 @@ def export_smart_video_bundle(
                 "task_id": task.get("task_id", ""),
                 "label": task.get("label", ""),
                 "status": "skipped_missing_segment",
-                "message": "人工选择暂缓：检测到缺段，本次未导出",
+                "message": "人工选择暂缓整个任务，本次未导出",
                 "task_dir": str(task.get("task_dir") or ""),
                 "report_path": str(task.get("report_path") or ""),
             })
@@ -5629,7 +5654,10 @@ class SmartVideoEditorThread(QtCore.QThread):
             elif self.mode == "export":
                 if not isinstance(self.bundle, dict):
                     raise ValueError("没有可导出的智能剪辑分析结果")
-                if self.settings["export_mode"] != "segments":
+                if self.settings["export_mode"] != "segments" and any(
+                    smart_video_task_review_decision(task) != "skipped"
+                    for task in self.bundle.get("tasks", [])
+                ):
                     self._load_requested_model()
                 result = export_smart_video_bundle(
                     self.bundle,

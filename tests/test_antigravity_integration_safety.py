@@ -275,7 +275,13 @@ class HostAndLifecycleTests(unittest.TestCase):
         names = [n.args[0].func.id for n in installs]
         self.assertEqual(names.count("AntigravityAccountSwitcherPlugin"), 1)
         self.assertIn("CodexAccountSwitcherPlugin", names)
-        self.assertIn("ChromeLauncherPlugin", names)
+        # Chrome is owned by the combined Flow plugin, not registered twice.
+        self.assertEqual(names.count("FlowAssistantPlugin"),1)
+        self.assertNotIn("ChromeLauncherPlugin", names)
+        from app_plugins.builtin.flow_assistant.plugin import FlowAssistantPlugin
+        from app_plugins.builtin.chrome_launcher import ChromeLauncherPlugin
+        flow=FlowAssistantPlugin();self.addCleanup(flow.stop)
+        self.assertIsInstance(flow.browser_launcher,ChromeLauncherPlugin)
 
     def test_actual_host_menu_registers_lazily_and_respects_plugin_disable(self):
         from app_plugins.host import PluginHost

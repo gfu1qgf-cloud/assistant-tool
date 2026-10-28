@@ -50,6 +50,14 @@ class BalanceDispatchTests(unittest.TestCase):
             request = service.high_credit_pending
             self.assertIsNone(request, 'a launch timeout does not prove the ordinary balance is exhausted')
             service.execute({'action':'set_high_credit_permission','keys':['profile:'+rich['profile']], 'permission':'allow'})
+            # The long stall starts an explicit balance recheck. Permission
+            # cannot bypass its in-flight hold; a real reply must release it.
+            service._tick()
+            self.assertEqual(service.store.get(row['id'])['status'],'queued')
+            self.assertTrue(rich['credit_check']['hold_dispatch'])
+            check=next(key for key,p in service.pending.items() if p['client']==rich['id'] and p['action']=='get_points')
+            service._response(rich,{'request_id':check,'success':True,'data':{'email':rich['account'],'remaining_points':1300}})
+            service._snapshot(rich,{'url':fixtures.PROJECT,'running':False,'controls_ready':True,'tasks':[]})
             service._tick()
         self.assertEqual(service.store.get(row['id'])['browser'], rich['id'])
         self.assertEqual(launched, [small['profile']])

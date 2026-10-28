@@ -42,15 +42,13 @@ jobs:
       - name: Check installed dependency consistency
         run: python -m pip check
 
-      - name: Fetch pinned mpv runtime
-        run: python packaging/fetch_mpv.py
-
       - name: Fetch pinned standard FFmpeg runtime
         run: python packaging/fetch_ffmpeg.py
 
       - name: Run tests
         env:
           PYTHONDONTWRITEBYTECODE: "1"
+          NODE_FFMPEG: ${{ github.workspace }}/runtime/ffmpeg/ffmpeg.exe
         run: python packaging/run_tests_isolated.py
 
       - name: Test fresh Flow browser bridge with network disabled

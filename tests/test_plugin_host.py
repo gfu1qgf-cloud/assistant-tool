@@ -452,6 +452,19 @@ class PluginHostTests(unittest.TestCase):
             ["first.quick_actions", "second.quick_actions"],
         )
 
+    def test_chrome_flow_merge_preserves_the_old_main_card_position_without_duplicates(self):
+        class Card:
+            def __init__(self, plugin_id): self.plugin_id=plugin_id
+            def register(self, context):
+                context.register_main_widget(PluginMainWidget('quick_actions',QtWidgets.QWidget))
+        self.main.config[PLUGIN_MAIN_WIDGET_ORDER_CONFIG_KEY]=[
+            'other.quick_actions','chrome_launcher.quick_actions','flow_assistant.quick_actions',{}]
+        self.host.install(Card('flow_assistant'));self.host.install(Card('other'))
+        self.host.attach_main_widget_area(QtWidgets.QFrame(self.main))
+        self.assertEqual(self.host.main_widget_order(),['other.quick_actions','flow_assistant.quick_actions'])
+        config={};self.host.update_runtime_config(config)
+        self.assertEqual(config[PLUGIN_MAIN_WIDGET_ORDER_CONFIG_KEY],['other.quick_actions','flow_assistant.quick_actions'])
+
     def test_rejects_plugins_requiring_newer_api(self):
         plugin = DemoPlugin()
         plugin.required_api_version = self.host.api_version + 1

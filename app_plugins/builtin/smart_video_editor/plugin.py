@@ -1,6 +1,7 @@
 import logging
 import os
 import weakref
+from functools import partial
 from pathlib import Path
 
 from qt_compat import QtWidgets
@@ -24,6 +25,7 @@ from .engine import (
     normalize_smart_video_pending_reviews,
     smart_video_jobs_require_model,
     smart_video_export_blockers,
+    smart_video_task_review_decision,
     summarize_smart_video_export_blockers,
     update_smart_video_pending_reviews,
 )
@@ -52,7 +54,7 @@ class SmartVideoEditorPlugin:
 
     plugin_id = "smart_video_editor"
     display_name = "智能剪辑"
-    version = "1.2"
+    version = "1.8"
     required_api_version = 1
 
     def __init__(self):
@@ -75,6 +77,9 @@ class SmartVideoEditorPlugin:
         if callable(register_node):
             from .workflow_nodes import edit_node
             register_node(edit_node(self))
+        if callable(getattr(context, "register_workflow_type", None)):
+            from .postprocess_workflow import register
+            register(context)
         config = context.load_config()
         self.settings = normalize_smart_video_editor_settings(
             config.get(SMART_VIDEO_EDITOR_CONFIG_KEY)
@@ -387,6 +392,14 @@ class SmartVideoEditorPlugin:
             return None
         load_model = bool(model_loader) and not (phase == "export" and settings.get("export_mode") == "segments")
         resources = render_resources(bundle) if rendering else analysis_resources(phase, settings, jobs, files)
+        runner, postprocess = run_smart_video_job, None
+        if phase == "export" and settings.get("postprocess_enabled") and any(
+            smart_video_task_review_decision(task) != "skipped" for task in (bundle or {}).get("tasks", [])
+        ):
+            from .postprocess_workflow import prepare
+            postprocess, registry, extra_resources = prepare(settings, self.context)
+            resources = tuple(sorted(set(resources) | set(extra_resources)))
+            runner = partial(run_smart_video_job, registry=registry)
         count = len((bundle or {}).get("tasks", [])) if rendering else len(jobs or files or [])
         label = {"analyze": "智能剪辑分析", "breath_analyze": "气口分析",
                  "export": "智能剪辑导出", "breath_export": "气口剪辑导出"}[phase]
@@ -397,10 +410,10 @@ class SmartVideoEditorPlugin:
                  else Path(item).stem for item in items[:3]]
         description = "、".join(names)[:60] + ("…" if len(items) > 3 else "")
         handle = self.context.submit_background_task(
-            title=f"{label} · {count} 个任务" + (f" · {description}" if description else ""), runner=run_smart_video_job,
+            title=f"{label} · {count} 个任务" + (f" · {description}" if description else ""), runner=runner,
             payload={"phase": phase, "settings": settings, "jobs": jobs or [],
                      "files": files or [], "bundle": bundle, "load_model": load_model,
-                     "source_versions": render_inputs(bundle) if rendering else refresh_inputs(jobs)},
+                     "source_versions": render_inputs(bundle) if rendering else refresh_inputs(jobs), "postprocess": postprocess},
             # Only colliding output directories serialize. Shared Whisper is
             # guarded inside native recognition/alignment, not during encoding.
             kind="media", resources=resources, retryable=False)
@@ -706,6 +719,7 @@ class SmartVideoEditorPlugin:
                 save_breath_defaults=self._save_timeline_breath_defaults,
                 reanalyze_task=self._reanalyze_review_task,
                 on_closed_bundle=keep_latest_review,
+                workflow_services=self.context,
             )
             if reviewed is None:
                 # An in-place refresh may already have replaced one task.
@@ -721,9 +735,12 @@ class SmartVideoEditorPlugin:
             )
             bundle["settings"] = settings
         self._remember_pending_reviews(bundle)
-        if settings.get("export_mode") != "segments" and not self._model_ready(settings):
+        has_exports = any(smart_video_task_review_decision(task) != "skipped"
+                          for task in bundle.get("tasks", []))
+        if has_exports and settings.get("export_mode") != "segments" and not self._model_ready(settings):
             return
-        self.context.log("[智能剪辑] 核对已确认，开始导出分段视频。" if settings.get("export_mode") == "segments"
+        self.context.log("[智能剪辑] 所有任务均已暂缓，本次不生成视频。" if not has_exports else
+                         "[智能剪辑] 核对已确认，开始导出分段视频。" if settings.get("export_mode") == "segments"
                          else "[智能剪辑] 核对已确认，开始生成视频与 SRT。")
         self._start_worker(
             "export",

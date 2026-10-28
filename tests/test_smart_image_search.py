@@ -4,6 +4,7 @@ import sqlite3
 import tempfile
 import time
 import unittest
+from contextlib import closing
 from unittest.mock import Mock, patch
 from pathlib import Path
 
@@ -276,11 +277,12 @@ class ImageSearchIndexTests(unittest.TestCase):
         self.index.sync(group(source), self.encoder)
         legacy = self.index.thumbnails / "legacy.jpg"
         Image.new("RGB", (95, 170), (255, 0, 1)).save(legacy)
-        with sqlite3.connect(self.index.path) as connection:
-            connection.execute(
-                "UPDATE images SET thumbnail=? WHERE path=?",
-                (str(legacy), os.path.normcase(os.path.abspath(source))),
-            )
+        with closing(sqlite3.connect(self.index.path)) as connection:
+            with connection:
+                connection.execute(
+                    "UPDATE images SET thumbnail=? WHERE path=?",
+                    (str(legacy), os.path.normcase(os.path.abspath(source))),
+                )
         previous_calls = len(self.encoder.calls)
         result = self.index.sync(group(source), self.encoder)
         self.assertEqual(result["new_or_changed"], 0)

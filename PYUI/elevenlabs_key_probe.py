@@ -24,6 +24,18 @@ class _Probe(QtCore.QRunnable):
         self.signals = _Signals()
         self.signals.finished.connect(_release)
 
+    def emit(self, name, *args):
+        try:
+            getattr(self.signals,name).emit(*args)
+            return True
+        except RuntimeError:
+            # QApplication can delete its QObject tree while a bounded network
+            # lookup is still returning. No result belongs to that dead UI.
+            from PyQt6 import sip
+            if sip.isdeleted(self.signals):
+                return False
+            raise
+
     def run(self):
         from model.ApiKeyHelper import api_key_id
         from model.ElevenLabsPermissions import inspect_key
@@ -37,9 +49,10 @@ class _Probe(QtCore.QRunnable):
                     # Never put credentials or raw API exception bodies in UI/logs.
                     result = {'permission_probe_status': 'network_error'}
                 if not self.cancel.is_set():
-                    self.signals.result.emit(api_key_id(key), epoch, result)
+                    self.emit('result',api_key_id(key), epoch, result)
         finally:
-            self.signals.finished.emit(self.identifier)
+            if not self.emit('finished',self.identifier):
+                _release(self.identifier)
 
 
 class KeyProbeController(QtCore.QObject):

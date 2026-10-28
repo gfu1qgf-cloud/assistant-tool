@@ -106,11 +106,6 @@ def normalize_plan(plan):
                    encoding=plan.encoding or value.encoding)
 
 
-def compression_inspector(params, changed, parent):
-    from PYUI.node_compression_ui import CompressionInspector
-    return CompressionInspector(params, changed, parent)
-
-
 def register_video_nodes(registry):
     from .contracts import NodeDefinition, NodeParameter, NodePort
     def compress(inputs, params, _context):
@@ -125,6 +120,6 @@ def register_video_nodes(registry):
     registry.register('core', NodeDefinition('core.compress', '视频压缩 · 编码设置',
         inputs=(NodePort('video', '视频', 'video'), NodePort('enabled', '是否压缩（不接时开启）', 'boolean', required=False)),
         outputs=(NodePort('video', '视频', 'video'),),
-        parameters=PARAMETERS, build=compress, inspector_factory=compression_inspector,
+        parameters=PARAMETERS, build=compress,
         validate_parameters=from_parameters,
         description='默认：MP4／H.264 质量30／MP3 128kbps／立体声44100Hz。只记录设置，在最终保存时一次编码，不生成中间视频；质量模式不保证文件一定更小，可选目标码率控制体积。后面的启用压缩节点覆盖前面的设置；是否压缩为假则原样传递。'))

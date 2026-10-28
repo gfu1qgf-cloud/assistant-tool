@@ -24,6 +24,17 @@ FFMPEG=os.environ.get('NODE_FFMPEG','')
 
 
 class CompressionTests(unittest.TestCase):
+    def test_headless_registry_stays_gui_free_and_workspace_installs_same_inspector(self):
+        registry=NodeRegistry();register_core(registry)
+        self.assertIsNone(registry.definitions['core.compress'].inspector_factory)
+        before=registry.definitions['core.compress']
+        from PYUI.node_inspectors import install_core_inspectors
+        install_core_inspectors(registry)
+        after=registry.definitions['core.compress']
+        self.assertIs(after.inspector_factory,CompressionInspector)
+        self.assertIs(after.build,before.build)
+        self.assertEqual(after.parameters,before.parameters)
+
     @classmethod
     def setUpClass(cls):
         cls.app=QtWidgets.QApplication.instance() or QtWidgets.QApplication([])

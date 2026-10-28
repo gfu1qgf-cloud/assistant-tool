@@ -199,7 +199,7 @@ class TextPathNodeTests(unittest.TestCase):
             [c, "boolean", d, "enabled"], [a, "video", d, "video"], [d, "video", e, "value"]])
         self.assertFalse(validate(graph, self.registry, root_id=e)[0])
         result = evaluate_graph(graph, self.registry, self.context, root_id=e)["value"]
-        self.assertEqual(result.encoding.crf, 23)
+        self.assertEqual(result.encoding.crf, 30)  # User's Shana-style default.
         nodes[2]["params"]["needle"] = "其他人"
         result = evaluate_graph(graph, self.registry, self.context, root_id=e)["value"]
         self.assertIsNone(result.encoding)

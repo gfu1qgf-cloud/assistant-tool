@@ -73,6 +73,9 @@ class MainPluginIntegrationTests(unittest.TestCase):
         ), patch(
             "app_plugins.builtin.chrome_launcher.ChromeRunnerDialog.load_profiles",
             lambda self: None,
+        ), patch(
+            "app_plugins.builtin.waste_reminder.plugin.WasteReminderPlugin.start",
+            lambda self: None,
         ), patch.object(MainDialog, "setupNotificationTray", lambda self: None), patch.object(
             MainDialog,
             "saveCurrentConfig",
@@ -111,7 +114,9 @@ class MainPluginIntegrationTests(unittest.TestCase):
                 self.assertIn("批量文案视频…", plugin_titles)
                 self.assertIn("智能文案分段助手…", plugin_titles)
                 self.assertIn("监听剪贴板中的 Google 链接", plugin_titles)
-                self.assertIn("Chrome 启动器", plugin_titles)
+                self.assertIn("Chrome 与 Flow 助手…", plugin_titles)
+                self.assertNotIn("Chrome 启动器", plugin_titles)
+                self.assertNotIn('chrome_launcher', plugin_ids)
                 self.assertNotIn("启动下一个 Chrome", plugin_titles)
                 self.assertIn("Codex 多账号切换…", plugin_titles)
                 self.assertIsNotNone(window.antigravity_account_switcher_plugin,
@@ -119,7 +124,7 @@ class MainPluginIntegrationTests(unittest.TestCase):
                 self.assertIn("Antigravity 多账号切换…", plugin_titles)
                 self.assertIn("antigravity_account_switcher", plugin_ids)
                 self.assertIsNone(window.antigravity_account_switcher_plugin.store)
-                self.assertIn("Flow 视频助手…", plugin_titles)
+                self.assertNotIn("Flow 视频助手…", plugin_titles)
                 self.assertIn("flow_assistant", plugin_ids)
                 self.assertIn("智能剪辑", plugin_titles)
                 self.assertNotIn("智能剪辑并生成 SRT…", plugin_titles)
@@ -241,7 +246,7 @@ class MainPluginIntegrationTests(unittest.TestCase):
                     self.assertIn("库存插件", tab_titles)
                     self.assertIn("素材整理", tab_titles)
                     self.assertIn("智能剪辑", tab_titles)
-                    self.assertIn("Chrome 插件", tab_titles)
+                    self.assertIn("Chrome启动与快捷键", tab_titles)
                     self.assertIn("切分音频插件", tab_titles)
                     self.assertIn("音频与字幕插件", tab_titles)
                     self.assertNotIn("生成音频设置", tab_titles)
@@ -252,6 +257,12 @@ class MainPluginIntegrationTests(unittest.TestCase):
                     settings.deleteLater()
             finally:
                 window.close()
+                self.app.processEvents()
+                # Destroy the test-owned window while config writes are still
+                # mocked; suite-wide Qt cleanup must not close it a second time
+                # after those mocks have gone out of scope.
+                window.deleteLater()
+                QtCore.QCoreApplication.sendPostedEvents(None, QtCore.QEvent.Type.DeferredDelete)
 
 
 if __name__ == "__main__":

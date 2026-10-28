@@ -177,7 +177,8 @@ class SmartTimelineQt6EventTests(unittest.TestCase):
             lambda index, included: requested.append((index, included))
         )
         with mock.patch.object(
-            QtWidgets.QMenu, "exec", lambda menu, *_args: menu.actions()[0]
+            QtWidgets.QMenu, "exec", lambda menu, *_args: next(
+                action for action in menu.actions() if action.text().startswith("删除整个原始片段"))
         ):
             widget.contextMenuEvent(event)
         self.assertEqual(requested, [(2, False)])
@@ -365,7 +366,8 @@ class SmartVideoEditorTests(unittest.TestCase):
                     )
                     review._apply_preview_aspect()
                 self.assertEqual(review._detected_preview_aspect, "landscape")
-                self.assertGreaterEqual(review.player.minimumWidth(), 360)
+                self.assertGreaterEqual(review.preview_column.minimumWidth(), 390)
+                self.assertGreaterEqual(review.player.minimumWidth(), 120)
                 internal_removed = next(
                     segment for segment in review.segments
                     if segment.get("is_removed")
@@ -378,10 +380,17 @@ class SmartVideoEditorTests(unittest.TestCase):
                 )
                 backend = review.player.backend
                 if hasattr(backend, "video_widgets"):
-                    self.assertTrue(all(
-                        video.aspectRatioMode() == QtCore.Qt.KeepAspectRatio
-                        for video in backend.video_widgets
-                    ))
+                    for video in backend.video_widgets:
+                        if hasattr(video,'set_frame'):
+                            # The new frame view paints QVideoFrame directly.
+                            # Verify actual paint options, not QVideoWidget API.
+                            frame=mock.Mock();frame.isValid.return_value=True
+                            video.set_frame(frame);video.grab()
+                            frame.paint.assert_called()
+                            self.assertEqual(frame.paint.call_args.args[2].aspectRatioMode,
+                                             QtCore.Qt.AspectRatioMode.KeepAspectRatio)
+                        else:
+                            self.assertEqual(video.aspectRatioMode(),QtCore.Qt.KeepAspectRatio)
             finally:
                 dialog.close()
 
@@ -836,7 +845,7 @@ class SmartVideoEditorTests(unittest.TestCase):
                 "-f",
                 "lavfi",
                 "-i",
-                "aevalsrc=if(between(t\,1\,2.5)\,0.5*sin(2*PI*440*t)\,0):s=48000:d=4",
+                            r"aevalsrc=if(between(t\,1\,2.5)\,0.5*sin(2*PI*440*t)\,0):s=48000:d=4",
                 str(source),
             ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             settings = normalize_smart_video_editor_settings({
@@ -1438,11 +1447,21 @@ class SmartVideoEditorTests(unittest.TestCase):
                 sources[1].name: second_text,
             }), {"silence_detection_enabled": False})
             clips = bundle["tasks"][0]["clips"]
+            # Keep the second script paragraph covered while introducing an
+            # extra take of the first paragraph for this blocker-only test.
+            clips.append(dict(clips[1], file_name="second-coverage.mp4", export_order=3, source_index=2))
             clips[1]["recognized_text"] = clips[0]["recognized_text"]
             clips[1]["content_order_start"] = clips[0]["content_order_start"]
             clips[1]["content_order_end"] = clips[0]["content_order_end"]
             clips[1]["content_order_reliable"] = True
             clips[1]["similarity"] = 0.8
+            # A genuinely duplicated take has duplicated final alignment too.
+            # Distinct final allocations with overlapping raw recognition are
+            # covered separately by the adjacent-clip regression.
+            clips[1]["script_word_start"] = clips[0]["script_word_start"]
+            clips[1]["script_word_end"] = clips[0]["script_word_end"]
+            clips[1]["expected_text"] = clips[0]["expected_text"]
+            clips[1]["word_timeline"] = [dict(word) for word in clips[0].get("word_timeline", [])]
             dialog = SmartVideoReviewDialog(bundle)
             try:
                 self.assertFalse(dialog.export_button.isEnabled())
@@ -2010,7 +2029,7 @@ class SmartVideoEditorTests(unittest.TestCase):
 
                 dialog.timeline_review.skip_task_button.click()
                 self.assertTrue(dialog.export_button.isEnabled())
-                self.assertEqual(dialog.export_button.text(), "导出其余任务")
+                self.assertEqual(dialog.export_button.text(), "保存暂缓并结束")
                 self.assertIn(
                     "本次将跳过",
                     dialog.timeline_review.task_decision_status.text(),

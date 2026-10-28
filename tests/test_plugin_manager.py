@@ -310,6 +310,7 @@ class PluginManagerTests(unittest.TestCase):
                         self.assertEqual(dumped[key], config[key])
             finally:
                 window.close()
+                window.deleteLater()
                 self.app.sendPostedEvents(None, QtCore.QEvent.Type.DeferredDelete)
 
 

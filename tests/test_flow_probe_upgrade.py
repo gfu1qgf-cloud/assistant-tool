@@ -70,7 +70,7 @@ class ProbeUpgradeTests(unittest.TestCase):
         self.assertEqual(result['browser_launch_failures']['Transient'],transient)
         self.assertEqual(result['browser_probe_retries'],prefs['browser_probe_retries'])
 
-    def test_worker_restart_rechecks_twenty_nine_backups_and_fills_only_seven_free_lanes(self):
+    def test_worker_restart_rechecks_backup_records_but_recovers_seven_existing_idle_accounts_first(self):
         service,owners,spares,_=capacity_fixtures.ImageCapacityTests.queue(self)
         service.store.enqueue(self.jobs(images=[self.target/'new-image.png'],count=4,duration=8,budget=0))
         spares+=['New spare '+str(i) for i in range(5,29)]
@@ -89,24 +89,25 @@ class ProbeUpgradeTests(unittest.TestCase):
             client['page_ready']=False
         launches=[];restarted.launch_requested.connect(launches.append);restarted.paused=False
         restarted.fill_dispatch_slots()
-        self.assertEqual(launches,spares[:7])
+        self.assertFalse(launches)
+        self.assertEqual(len([p for p in restarted.pending.values() if p['action']=='repair_project']),7)
         self.assertEqual(restarted.preferences['account_images'],claims)
         self.assertFalse(restarted.preferences['browser_launch_failures'])
         self.assertFalse(restarted.preferences['browser_probe_retries'])
         self.assertTrue(all(row['status']=='queued' for row in restarted.store.rows()[4:]))
-        restarted.fill_dispatch_slots();self.assertEqual(launches,spares[:7])
+        restarted.fill_dispatch_slots();self.assertFalse(launches)
+        self.assertEqual(len([p for p in restarted.pending.values() if p['action']=='repair_project']),7)
         self.assertFalse(any(p['action']=='run_tasks' for p in restarted.pending.values()))
 
-    def test_waiting_reason_reports_backup_launch_errors_instead_of_hiding_them(self):
+    def test_idle_history_does_not_misreport_other_image_exclusion_or_unneeded_backup_failures(self):
         service,owners,spares,_=capacity_fixtures.ImageCapacityTests.queue(self,cold=False)
         service.preferences['browser_launch_failures']={p:version_failure('1.1.99') for p in spares}
         rows=service.store.rows()
         reason=waiting_reason(rows[4],list(service.clients.values()),rows,service.preferences,{},service.store.batches())
-        self.assertIn('其他参考图独占',reason)
-        self.assertIn('5 个备用配置启动检查失败',reason)
-        self.assertIn(spares[0],reason)
-        self.assertIn('1.1.99',reason)
-        self.assertNotIn('继续寻找其他已打开账号或启动备用浏览器',reason)
+        self.assertNotIn('其他参考图独占',reason)
+        self.assertNotIn('备用配置启动检查失败',reason,'usable existing accounts do not need these backups')
+        self.assertTrue(reason)
+        self.assertFalse(any(row['status']=='failed' for row in rows))
 
     def test_online_and_unmatched_profiles_do_not_count_as_backup_launch_failures(self):
         service,owners,spares,_=capacity_fixtures.ImageCapacityTests.queue(self,cold=False)

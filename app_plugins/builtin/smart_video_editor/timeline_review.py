@@ -337,7 +337,7 @@ class SmartVideoTimelineReview(QtWidgets.QWidget):
         self.player.playingChanged.connect(self._player_state_changed)
         self.player.rangeFinished.connect(self._play_next_range)
         self.player.errorOccurred.connect(self._show_player_error)
-        self.player.setMinimumSize(210, 360)
+        self.player.setMinimumSize(120, 90)
         preview_layout.addWidget(self.player, 1)
 
         playback_buttons = QtWidgets.QHBoxLayout()
@@ -495,6 +495,11 @@ class SmartVideoTimelineReview(QtWidgets.QWidget):
         self.timeline.clipActivated.connect(self._timeline_clip_activated)
         self.timeline.clipReorderRequested.connect(self._move_clip_to)
         self.timeline.clipInclusionRequested.connect(self._set_clip_included)
+        self.timeline.clip_approval_enabled = not self.breath_only
+        self.timeline.clipApprovalRequested.connect(
+            lambda clip_index: self.acknowledgeRequested.emit(self.task_index, int(clip_index)))
+        self.timeline.segmentDeletionRequested.connect(self._delete_visible_segment)
+        self.timeline.segmentSplitRequested.connect(self._split_visible_segment)
         self.timeline.clipLocationRequested.connect(self.open_clip_location)
         self.timeline.removedSegmentRestoreRequested.connect(
             self._restore_removed_segment
@@ -611,7 +616,7 @@ class SmartVideoTimelineReview(QtWidgets.QWidget):
         self.duplicate_group_panel.setMaximumHeight(180)
         self.duplicate_group_panel.hide()
         right_layout.addWidget(self.duplicate_group_panel)
-        task_decision = QtWidgets.QGroupBox("当前任务缺段决定", right)
+        task_decision = QtWidgets.QGroupBox("当前任务生成决定", right)
         self.task_decision_panel = task_decision
         task_decision_layout = QtWidgets.QVBoxLayout(task_decision)
         self.task_decision_status = QtWidgets.QLabel("", task_decision)
@@ -1016,6 +1021,7 @@ class SmartVideoTimelineReview(QtWidgets.QWidget):
             ]
             has_manual = any((
                 clip.get("manual_delete_ranges"),
+                clip.get("manual_split_points"),
                 clip.get("manual_keep_ranges"),
                 clip.get("manual_keep_head"),
                 clip.get("manual_keep_tail"),
@@ -1478,7 +1484,40 @@ class SmartVideoTimelineReview(QtWidgets.QWidget):
         if right - left < 0.08:
             self.breath_status_label.setText("删除区间至少需要 0.08 秒。")
             return
+        self._manual_delete_anchor = None
+        self._delete_source_range(clip_index, left, right)
+
+    def _remember_split_points(self, clip, *points):
         duration = float(clip.get("original_duration") or 0.0)
+        clip["manual_split_points"] = sorted({round(float(point), 4)
+            for point in list(clip.get("manual_split_points", [])) + list(points)
+            if 0.001 < float(point) < duration - 0.001})
+
+    def _split_visible_segment(self, segment, source_time):
+        if not float(segment["source_start"]) + 0.08 < source_time < float(segment["source_end"]) - 0.08:
+            return
+        clip = self.bundle["tasks"][self.task_index]["clips"][int(segment["clip_index"])]
+        self._remember_split_points(clip, source_time)
+        self.orderChanged.emit(self.task_index)
+        self.refresh(preserve_time=True)
+
+    def _delete_visible_segment(self, segment):
+        if not segment.get("is_removed"):
+            self._delete_source_range(int(segment["clip_index"]),
+                                      float(segment["source_start"]), float(segment["source_end"]))
+
+    def _delete_source_range(self, clip_index, left, right):
+        task = self.bundle["tasks"][self.task_index]
+        clip = task["clips"][clip_index]
+        duration = float(clip.get("original_duration") or 0.0)
+        left, right = max(0.0, left), min(duration, right)
+        if right - left < 0.08:
+            return
+        remaining = subtract_time_ranges(clip.get("kept_ranges", [[0.0, duration]]), [[left, right]], duration)
+        if not remaining:
+            self._remember_split_points(clip, left, right)
+            self._set_clip_included(clip_index, False)
+            return
         manual_deletes = list(clip.get("manual_delete_ranges", []) or [])
         manual_deletes.append([left, right])
         clip["manual_delete_ranges"] = manual_deletes
@@ -1492,7 +1531,9 @@ class SmartVideoTimelineReview(QtWidgets.QWidget):
         if right >= duration - 0.001:
             clip["manual_keep_tail"] = False
         apply_manual_breath_overrides(clip)
+        self._remember_split_points(clip, left, right)
         clip.pop("review_acknowledged", None)
+        clip.pop("extra_clip_approved", None)
         self._manual_delete_anchor = None
         self.orderChanged.emit(self.task_index)
         self.refresh(preserve_time=True)
@@ -1521,6 +1562,14 @@ class SmartVideoTimelineReview(QtWidgets.QWidget):
         left = float(segment.get("source_start") or 0.0)
         right = float(segment.get("source_end") or left)
         duration = float(clip.get("original_duration") or 0.0)
+        if not clip.get("included", True):
+            if clip.get("auto_excluded_duplicate"):
+                select_duplicate_group_clip(self.bundle["tasks"][self.task_index], clip_index,
+                                             self.bundle.get("settings", {}))
+            clip["included"], clip["manual_excluded"] = True, False
+            clip["manual_delete_ranges"] = [[0.0, duration]]
+            clip["manual_keep_ranges"] = []
+            clip["manual_keep_head"] = clip["manual_keep_tail"] = False
         keep_ranges = list(clip.get("manual_keep_ranges", []) or [])
         keep_ranges.append([left, right])
         clip["manual_keep_ranges"] = keep_ranges
@@ -1535,6 +1584,7 @@ class SmartVideoTimelineReview(QtWidgets.QWidget):
         elif reason == "片尾气口":
             clip["manual_keep_tail"] = True
         apply_manual_breath_overrides(clip)
+        self._remember_split_points(clip, left, right)
         clip.pop("review_acknowledged", None)
         self.orderChanged.emit(self.task_index)
         self.refresh(preserve_time=True)
@@ -1552,6 +1602,7 @@ class SmartVideoTimelineReview(QtWidgets.QWidget):
             "manual_keep_ranges",
             "manual_keep_head",
             "manual_keep_tail",
+            "manual_split_points",
         ):
             clip.pop(key, None)
         apply_manual_breath_overrides(clip)
@@ -1699,11 +1750,9 @@ class SmartVideoTimelineReview(QtWidgets.QWidget):
         if mode == "auto":
             mode = self._detected_preview_aspect
         if mode == "landscape":
-            self.player.setMinimumSize(360, 210)
             self.preview_column.setMinimumWidth(390)
             self.body_splitter.setSizes([480, 650, 360])
         else:
-            self.player.setMinimumSize(210, 360)
             self.preview_column.setMinimumWidth(230)
             self.body_splitter.setSizes([310, 740, 390])
 
@@ -2041,6 +2090,7 @@ class SmartVideoTimelineReview(QtWidgets.QWidget):
             self._update_position_ui()
             return
         segment, source_time = location
+        self._preview_removed_once = bool(segment.get("is_removed"))
         local_position = source_time - segment["source_start"]
         same_segment = self.current_segment is segment
         self.current_segment = segment
@@ -2070,8 +2120,13 @@ class SmartVideoTimelineReview(QtWidgets.QWidget):
         self.expected_text.setPlainText(str(clip.get("expected_text") or ""))
         self.recognized_text.setPlainText(str(clip.get("recognized_text") or ""))
         self._select_task_script_range(clip)
-        self.acknowledge_button.setEnabled(not bool(clip.get("review_acknowledged")))
+        extra_blocked = any(block.get("kind") == "extra_clip"
+                            and block.get("task_index") == self.task_index
+                            and block.get("clip_index") == clip_index
+                            for block in self._export_blockers)
+        self.acknowledge_button.setEnabled(extra_blocked or not bool(clip.get("review_acknowledged")))
         self.acknowledge_button.setText(
+            "✓ 确认保留（解除多余判定）" if extra_blocked else
             "✓ 已人工核对" if clip.get("review_acknowledged") else "✓ 当前片段没问题"
         )
         self._update_duplicate_group_controls(clip_index)
@@ -2272,7 +2327,7 @@ class SmartVideoTimelineReview(QtWidgets.QWidget):
             segment = self.segments[playable]
             source_time = segment["source_start"]
             self.output_position = segment["timeline_start"]
-        self._preview_removed_once = False
+        self._preview_removed_once = bool(segment.get("is_removed"))
         self.current_segment = segment
         self.player.prepare(
             segment["source"],
@@ -2284,6 +2339,7 @@ class SmartVideoTimelineReview(QtWidgets.QWidget):
         self._queue_following_range(segment)
 
     def _play_next_range(self):
+        self._preview_removed_once = False
         if self.current_segment is None:
             return
         try:
@@ -2403,12 +2459,12 @@ class SmartVideoTimelineReview(QtWidgets.QWidget):
             text = "⛔ 检测到缺段：请试听后选择继续生成或跳过当前任务。"
             color = "#B3261E"
         else:
-            text = "当前任务没有确认缺段，无需作任务级决定。"
+            text = "当前任务将生成；若口播或素材有误，可跳过整个任务。"
             color = "#616B7E"
         self.task_decision_status.setText(text)
         self.task_decision_status.setStyleSheet(f"color:{color};font-weight:600;")
         self.approve_task_button.setEnabled(has_missing and decision != "approved")
-        self.skip_task_button.setEnabled(has_missing and decision != "skipped")
+        self.skip_task_button.setEnabled(not self.breath_only and decision != "skipped")
         self.clear_task_decision_button.setEnabled(bool(decision))
 
     def _slider_pressed(self):

@@ -956,8 +956,12 @@ class TestHermeticNetworkIsolationEnforcement(unittest.TestCase):
         """Verify local loopback addresses (127.0.0.1, localhost) are not blocked by guard."""
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         try:
-            with self.assertRaises(OSError) as ctx:
-                s.connect(("127.0.0.1", 59999))
+            # Prove delegation without assuming a real local port is unused,
+            # or bypassing the outer test runner's no-network boundary.
+            with patch(__name__+'._ORIGINAL_SOCKET_CONNECT',side_effect=ConnectionRefusedError('synthetic refused')) as connect:
+                with self.assertRaises(OSError) as ctx:
+                    s.connect(("127.0.0.1", 59999))
+                connect.assert_called_once_with(s,('127.0.0.1',59999))
             self.assertNotIsInstance(ctx.exception, RuntimeError)
             self.assertNotIn("Hermetic test network violation", str(ctx.exception))
         finally:

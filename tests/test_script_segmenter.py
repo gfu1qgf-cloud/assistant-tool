@@ -36,6 +36,10 @@ class SegmentationEngineTests(unittest.TestCase):
             if not item["warning"]:
                 self.assertLessEqual(item["estimated_seconds"] + result["settings"]["padding_seconds"],
                                      item["seconds"] + .001)
+            elif '已并入上一段' in item['warning']:
+                self.assertIs(item, result['segments'][-1])
+                self.assertLessEqual(item['estimated_seconds'] + result['settings']['padding_seconds'],
+                                     item['seconds'] + 3 + .001)
 
     def test_prefers_ten_seconds_and_minimal_segments_then_short_tail(self):
         source = " ".join(["amen"] * 60)
@@ -70,6 +74,97 @@ class SegmentationEngineTests(unittest.TestCase):
             result = split_copy(source, {'durations': durations, 'boundary_strategy': 'punctuation_first'})
             self.assertTrue(all(s['seconds'] in durations for s in result['segments']))
             self.assert_integrity(source, result)
+
+    def test_punctuation_strategy_absorbs_short_tail_and_preserves_result_fields(self):
+        source = ' '.join(['amen'] * 14) + '. ' + ' '.join(['amen'] * 22) + '. Amen.'
+        result = split_copy(source, {'boundary_strategy': 'punctuation_first'})
+        self.assertEqual([s['word_count'] for s in result['segments']], [14, 23])
+        last = result['segments'][-1]
+        self.assertEqual(last['index'], 2)
+        self.assertEqual(last['seconds'], 10)
+        self.assertEqual(last['estimated_seconds'], 9.8)
+        self.assertEqual(last['spoken_word_count'], 23)
+        self.assertEqual(last['boundary'], '文案结束')
+        self.assertIn('已并入上一段', last['warning'])
+        self.assertIn('0.20秒', last['warning'])
+        self.assertEqual(result['warning_count'], 1)
+        self.assertEqual(result['estimated_seconds'], 15.7)
+        self.assertEqual(result['video_seconds'], 18)
+        self.assertIn('超出10秒，需人工处理', format_result(result))
+        self.assertTrue(format_result(result).endswith(last['text']))
+        self.assert_integrity(source, result)
+
+    def test_short_tail_merge_applies_to_all_four_duration_rules(self):
+        for durations in ([6, 8, 10], [10], [8], [6]):
+            with self.subTest(durations=durations):
+                maximum = max(durations)
+                source = ' '.join(['amen'] * (maximum - 1)) + '. Amen.'
+                result = split_copy(source, {'durations': durations, 'words_per_minute': 60,
+                                            'pause_seconds': 0, 'boundary_strategy': 'punctuation_first'})
+                self.assertEqual(len(result['segments']), 1)
+                self.assertEqual(result['segments'][0]['seconds'], maximum)
+                self.assertAlmostEqual(result['segments'][0]['estimated_seconds'], maximum)
+                self.assertIn('0.40秒', result['segments'][0]['warning'])
+                self.assert_integrity(source, result)
+
+    def test_short_tail_merge_allows_exactly_three_seconds_overrun_but_no_more(self):
+        first = ' '.join(['amen'] * 6) + '. '
+        settings = {'durations': [6], 'words_per_minute': 60, 'pause_seconds': 0,
+                    'padding_seconds': 0, 'boundary_strategy': 'punctuation_first'}
+        at_limit = first + ' '.join(['amen'] * 3) + '.'
+        result = split_copy(at_limit, settings)
+        self.assertEqual(len(result['segments']), 1)
+        self.assertEqual(result['segments'][0]['estimated_seconds'], 9)
+        self.assertIn('3.00秒', result['segments'][0]['warning'])
+        self.assert_integrity(at_limit, result)
+        # A long word adds a fractional reading unit, just beyond the boundary.
+        above_limit = first + 'amen amen abcdefghijklm.'
+        result = split_copy(above_limit, settings)
+        self.assertEqual(len(result['segments']), 2)
+        self.assertEqual(result['warning_count'], 0)
+        self.assert_integrity(above_limit, result)
+
+    def test_short_tail_merge_counts_padding_in_overrun(self):
+        source = ' '.join(['amen'] * 5) + '. amen amen.'
+        result = split_copy(source, {'durations': [6], 'words_per_minute': 60,
+                                    'pause_seconds': 0, 'padding_seconds': 1,
+                                    'boundary_strategy': 'punctuation_first'})
+        self.assertEqual(len(result['segments']), 1)
+        self.assertEqual(result['segments'][0]['estimated_seconds'], 7)
+        self.assertIn('2.00秒', result['segments'][0]['warning'])
+        self.assert_integrity(source, result)
+
+    def test_short_tail_merge_does_not_absorb_oversized_units(self):
+        settings = {'boundary_strategy': 'punctuation_first'}
+        for source in ('1' * 50 + '. Amen.', 'Amen. ' + '1' * 50 + '.'):
+            with self.subTest(source=source):
+                result = split_copy(source, settings)
+                self.assertEqual(len(result['segments']), 2)
+                self.assertEqual(result['warning_count'], 1)
+                self.assertNotIn('已并入上一段', format_result(result))
+                self.assertTrue(any('单个完整词' in s['warning'] for s in result['segments']))
+                self.assert_integrity(source, result)
+
+    def test_short_tail_merge_only_changes_last_pair_and_keeps_list_marker_and_quote(self):
+        source = (' '.join(['amen'] * 6) + '.\n') * 3 + '1. “Amen!”'
+        result = split_copy(source, {'durations': [6], 'words_per_minute': 60,
+                                    'pause_seconds': 0, 'padding_seconds': 0,
+                                    'boundary_strategy': 'punctuation_first'})
+        self.assertEqual([s['word_count'] for s in result['segments']], [6, 6, 8])
+        self.assertTrue(result['segments'][-1]['text'].endswith('1. “Amen!”'))
+        self.assertEqual(result['warning_count'], 1)
+        self.assert_integrity(source, result)
+
+    def test_fewest_strategy_and_single_short_source_keep_existing_behavior(self):
+        source = ' '.join(['amen'] * 24) + '. Amen.'
+        old = split_copy(source, {'boundary_strategy': 'fewest'})
+        self.assertEqual(len(old['segments']), 2)
+        self.assertEqual(old['warning_count'], 0)
+        self.assert_integrity(source, old)
+        short = split_copy('Amen.', {'boundary_strategy': 'punctuation_first'})
+        self.assertEqual(len(short['segments']), 1)
+        self.assertEqual(short['warning_count'], 0)
+        self.assert_integrity('Amen.', short)
 
     def test_new_strategy_combines_short_complete_sentences_and_falls_back_for_long_ones(self):
         short = 'Amen. Boh nás miluje. Mária plače.'
@@ -117,7 +212,10 @@ class SegmentationEngineTests(unittest.TestCase):
                     result = split_copy(source,{'boundary_strategy':strategy,'durations':durations})
                     self.assertTrue(any('1. Pane' in s['text'] for s in result['segments']))
                     self.assertFalse(any(re.search(r'\b1\.$',s['text']) for s in result['segments']))
-                    self.assertEqual(result['warning_count'],0)
+                    expected_warnings = int(strategy == 'punctuation_first' and durations == [8])
+                    self.assertEqual(result['warning_count'], expected_warnings)
+                    if expected_warnings:
+                        self.assertIn('已并入上一段', result['segments'][-1]['warning'])
                     self.assert_integrity(source,result)
 
     def test_list_marker_formats_stay_attached_with_spaces_indents_and_line_endings(self):
@@ -539,6 +637,20 @@ class SegmentationUiTests(unittest.TestCase):
         self.wait_quick_copy(plugin)
         self.assertIn('需人工处理',self.app.clipboard().text())
         self.assertIn('1段超时需人工核对',self.context.logs[-1])
+
+    def test_quick_copy_short_tail_uses_merged_result_and_keeps_overrun_notice(self):
+        plugin = self.quick_plugin()
+        source = ' '.join(['amen'] * 14) + '. ' + ' '.join(['amen'] * 22) + '. Amen.'
+        self.context.config[CONFIG_KEY] = {'boundary_strategy': 'punctuation_first'}
+        self.context.targets = [self.task(1, source)]
+        plugin.copy_segments([0])
+        self.wait_quick_copy(plugin)
+        copied = self.app.clipboard().text()
+        self.assertIn('第2段｜超出10秒，需人工处理', copied)
+        self.assertNotIn('第3段', copied)
+        self.assertTrue(copied.endswith('Amen.'))
+        self.assertIn('1段超时需人工核对', self.context.logs[-1])
+        self.assertEqual(self.context.targets[0]['task'].task_audio_text, source)
 
     def test_reads_current_host_selection_and_no_table_write(self):
         self.context.targets = [self.task(1, "Amen."), self.task(2, "Boh nás miluje.")]

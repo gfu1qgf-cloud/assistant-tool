@@ -95,11 +95,12 @@ class TabReuseTests(unittest.TestCase):
         plugin.launch_browser(client['profile'],[PROJECT],bootstrap_existing=True)
         self.assertEqual(launcher.launch_profile.call_args.kwargs['urls'],[PROJECT])
 
-    def test_offline_pairing_ticket_does_not_add_a_second_flow_project_page(self):
+    def test_offline_pairing_ticket_opens_one_saved_https_project_not_internal_only_tab(self):
         service,client,plugin,launcher,commands=self.bound();plugin.snapshot['clients']=[]
         target=PROJECT+'#lzx_setup='+'a'*32+'&lzx_port=18189'
         plugin.launch_browser(client['profile'],[target])
-        self.assertEqual(launcher.launch_profile.call_args.kwargs['urls'],[OPTIONS_URL+'#setup='+'a'*32+'&port=18189'])
+        self.assertEqual(launcher.launch_profile.call_args.kwargs['urls'],[target])
+        self.assertEqual(launcher.launch_profile.call_count,1)
 
 
 if __name__=='__main__':unittest.main()

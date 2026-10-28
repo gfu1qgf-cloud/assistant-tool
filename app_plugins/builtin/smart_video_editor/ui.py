@@ -21,6 +21,7 @@ from .engine import (
     smart_video_export_blockers,
     smart_video_extra_clip_findings,
     smart_video_missing_findings,
+    smart_video_task_review_decision,
 )
 from .timeline_review import SmartVideoTimelineReview
 from .renaming import (
@@ -288,7 +289,7 @@ class SmartVideoPendingDialog(QtWidgets.QDialog):
 
         layout = QtWidgets.QVBoxLayout(self)
         note = QtWidgets.QLabel(
-            "这里保留了上次没有处理或选择暂缓的缺段任务。"
+            "这里保留了上次没有处理的缺段任务，以及选择暂缓生成的任务。"
             "选择任务后可重新加载视频并分析；双击可打开任务目录。",
             self,
         )
@@ -319,7 +320,7 @@ class SmartVideoPendingDialog(QtWidgets.QDialog):
                 "已暂缓" if record.get("status") == "skipped" else "待处理",
                 timestamp,
                 str(record.get("label") or record.get("task_id") or "任务"),
-                missing_text,
+                missing_text or ("人工选择暂缓整个任务" if record.get("status") == "skipped" else ""),
                 str(record.get("task_dir") or ""),
             ])
             row.setData(0, QtCore.Qt.UserRole, index)
@@ -403,6 +404,7 @@ class SmartVideoReviewDialog(QtWidgets.QDialog):
         save_subtitle_defaults=None,
         save_breath_defaults=None,
         reanalyze_task=None,
+        workflow_services=None,
     ):
         super().__init__(parent)
         self.bundle = copy.deepcopy(bundle)
@@ -738,6 +740,9 @@ class SmartVideoReviewDialog(QtWidgets.QDialog):
         )
         self.export_mode_combo.setCurrentIndex(1 if self.bundle.get("settings", {}).get("export_mode") == "segments" else 0)
         export_row.addWidget(self.export_mode_combo)
+        from .postprocess_ui import PostprocessControls
+        self.postprocess_controls = PostprocessControls(self.bundle.get("settings", {}), workflow_services, self)
+        export_row.addWidget(self.postprocess_controls, 1)
         export_row.addStretch(1)
 
         layout.addLayout(export_row)
@@ -827,6 +832,7 @@ class SmartVideoReviewDialog(QtWidgets.QDialog):
         self.blocker_panel.setEnabled(not running)
         self.rename_videos_button.setEnabled(not running)
         self.save_review_button.setEnabled(not running)
+        self.postprocess_controls.setEnabled(not running)
         self.timeline_review.body_splitter.setEnabled(not running)
         self.timeline_review.timeline_scroll.setEnabled(not running)
         self.timeline_review.clip_actions_menu.setEnabled(not running)
@@ -1374,8 +1380,9 @@ class SmartVideoReviewDialog(QtWidgets.QDialog):
                 or (tuple(selected_data) in extra_clips if selected_data else False)
             )
         )
+        extra_blocked = bool(selected_data and tuple(selected_data) in extra_clips)
         self.acknowledge_clip_button.setEnabled(
-            has_clip and needs_review and not reviewed
+            has_clip and needs_review and (not reviewed or extra_blocked)
         )
         self.clear_clip_acknowledgement_button.setEnabled(has_clip and reviewed)
 
@@ -1417,12 +1424,9 @@ class SmartVideoReviewDialog(QtWidgets.QDialog):
     def _update_missing_preview_buttons(self):
         block = self._selected_missing_block()
         is_missing = bool(block and block.get("kind") != "extra_clip")
-        for button in (
-            self.approve_missing_button,
-            self.skip_missing_button,
-            self.clear_missing_decision_button,
-        ):
-            button.setEnabled(is_missing)
+        self.approve_missing_button.setEnabled(is_missing)
+        self.skip_missing_button.setEnabled(bool(block))
+        self.clear_missing_decision_button.setEnabled(bool(block))
         self.preview_missing_before_button.setEnabled(
             self._missing_neighbor_clip(block, "previous") is not None
         )
@@ -1553,7 +1557,11 @@ class SmartVideoReviewDialog(QtWidgets.QDialog):
         self.export_button.setToolTip(
             "请先处理缺段和疑似多余片段。" if blocked else ""
         )
-        self.blocker_banner.setVisible(bool(findings))
+        skipped_tasks = {
+            index for index, task in enumerate(self.bundle.get("tasks", []))
+            if smart_video_task_review_decision(task) == "skipped"
+        }
+        self.blocker_banner.setVisible(bool(findings or skipped_tasks))
         if blocked:
             self.export_button.setText("确认并生成视频与 SRT")
             self.blocker_banner.setStyleSheet(
@@ -1563,17 +1571,13 @@ class SmartVideoReviewDialog(QtWidgets.QDialog):
             self.blocker_banner.setText(
                 f"⛔ 不能导出：缺段 {unresolved_missing} 个，多余片段 {unresolved_extra} 个。点击下方问题定位并处理。"
             )
-            self.blocker_banner.setToolTip("多余片段可直接排除，或试听后确认保留；缺段可在时间线中人工核对或跳过任务。")
+            self.blocker_banner.setToolTip("多余片段可排除或确认保留；若整个任务口播或素材有误，可直接跳过当前任务，让其余任务继续生成。")
             if select_tab:
                 self.detail_tabs.setCurrentIndex(self.coverage_tab_index)
-        elif findings:
+        elif findings or skipped_tasks:
             approved_tasks = {
                 item.get("task_index") for item in findings
                 if item.get("review_decision") == "approved"
-            }
-            skipped_tasks = {
-                item.get("task_index") for item in findings
-                if item.get("review_decision") == "skipped"
             }
             self.blocker_banner.setStyleSheet(
                 "QLabel { background:#7A5A00; color:white; border-radius:4px; "
@@ -1591,13 +1595,19 @@ class SmartVideoReviewDialog(QtWidgets.QDialog):
         else:
             self.export_button.setText("确认并导出分段视频" if self.export_mode_combo.currentData() == "segments"
                                        else "确认并生成视频与 SRT")
+        if not blocked and self.bundle.get("tasks") and all(
+            smart_video_task_review_decision(task) == "skipped"
+            for task in self.bundle["tasks"]
+        ):
+            self.export_button.setText("保存暂缓并结束")
+            self.export_button.setToolTip("本次所有任务均暂缓，保存待处理记录后结束，不生成视频。")
         self._refresh_problem_rows()
         return blockers
 
     def _set_missing_decision(self, decision):
         item = self.missing_tree.currentItem()
         block = self._selected_missing_block()
-        if block and block.get("kind") == "extra_clip":
+        if block and block.get("kind") == "extra_clip" and decision == "approved":
             QtWidgets.QMessageBox.information(
                 self, "处理多余片段", "请到时间线右键排除该片段，或试听后在片段详情中标记已核对。"
             )
@@ -1634,7 +1644,7 @@ class SmartVideoReviewDialog(QtWidgets.QDialog):
             )
             return
         try:
-            self.collect()
+            self.collect(skipping_task_index=task_index if decision == "skipped" else None)
         except ValueError as error:
             QtWidgets.QMessageBox.warning(self, "核对内容无效", str(error))
             return
@@ -2016,12 +2026,23 @@ class SmartVideoReviewDialog(QtWidgets.QDialog):
             return
         QtWidgets.QMessageBox.information(self, "视频命名", f"已命名 {len(plan)} 个原视频。")
 
-    def collect(self):
+    def collect(self, skipping_task_index=None):
         self.timeline_review.apply_pending_subtitle_settings()
         self.bundle.setdefault("settings", {})["export_mode"] = self.export_mode_combo.currentData()
+        self.bundle["settings"].update(self.postprocess_controls.selection())
+        skipped_tasks = {
+            index for index, task in enumerate(self.bundle.get("tasks", []))
+            if smart_video_task_review_decision(task) == "skipped"
+        }
         for row in range(self.table.rowCount()):
             clip = self._clip_for_row(row)
             include_item = self.table.item(row, self.COL_INCLUDE)
+            task_index, _clip_index = include_item.data(QtCore.Qt.UserRole)
+            # A task-level skip must also be possible while other tasks have
+            # unfinished table drafts. Export still collects those normally.
+            if skipping_task_index is not None and task_index != skipping_task_index:
+                continue
+            skip_validation = task_index == skipping_task_index or task_index in skipped_tasks
             try:
                 export_order = int(
                     self.table.item(row, self.COL_ORDER).text().strip()
@@ -2031,15 +2052,23 @@ class SmartVideoReviewDialog(QtWidgets.QDialog):
                 start = float(self.table.item(row, self.COL_START).text().strip())
                 end = float(self.table.item(row, self.COL_END).text().strip())
                 expected = self.table.item(row, self.COL_EXPECTED).text().strip()
+                reviewed_clip = copy.deepcopy(clip) if skip_validation else clip
                 apply_clip_review(
-                    clip,
+                    reviewed_clip,
                     include_item.checkState() == QtCore.Qt.Checked,
                     start,
                     end,
                     expected,
                 )
-                clip["export_order"] = export_order
+                reviewed_clip["export_order"] = export_order
+                if skip_validation:
+                    clip.clear()
+                    clip.update(reviewed_clip)
             except (TypeError, ValueError) as error:
+                # Invalid table drafts must not force a deferred task to be
+                # repaired before the rest can export. Keep its stored plan.
+                if skip_validation:
+                    continue
                 self.table.selectRow(row)
                 raise ValueError(f"第 {row + 1} 行：{error}") from error
         return self.bundle
@@ -2063,11 +2092,14 @@ class SmartVideoReviewDialog(QtWidgets.QDialog):
             return
         try:
             bundle = self.collect()
-            if not any(
+            export_tasks = [task for task in bundle.get("tasks", [])
+                            if smart_video_task_review_decision(task) != "skipped"]
+            self.postprocess_controls.selection(validate=bool(export_tasks))
+            if not bundle.get("tasks") or (export_tasks and not any(
                 clip.get("included", True)
-                for task in bundle.get("tasks", [])
+                for task in export_tasks
                 for clip in task.get("clips", [])
-            ):
+            )):
                 raise ValueError("至少保留一个需要生成的片段。")
             blockers = smart_video_export_blockers(bundle)
             if blockers:
@@ -2107,6 +2139,7 @@ class SmartVideoReviewDialog(QtWidgets.QDialog):
         save_breath_defaults=None,
         reanalyze_task=None,
         on_closed_bundle=None,
+        workflow_services=None,
     ):
         dialog = cls(
             bundle,
@@ -2114,8 +2147,13 @@ class SmartVideoReviewDialog(QtWidgets.QDialog):
             save_subtitle_defaults=save_subtitle_defaults,
             save_breath_defaults=save_breath_defaults,
             reanalyze_task=reanalyze_task,
+            workflow_services=workflow_services,
         )
-        accepted = dialog.exec() == QtWidgets.QDialog.Accepted
+        if callable(getattr(workflow_services, "open_workflow_editor", None)):
+            from .postprocess_ui import exec_review
+            accepted = exec_review(dialog) == QtWidgets.QDialog.Accepted
+        else:
+            accepted = dialog.exec() == QtWidgets.QDialog.Accepted
         if callable(on_closed_bundle):
             on_closed_bundle(copy.deepcopy(dialog.bundle))
         if accepted:
@@ -2136,6 +2174,7 @@ class SmartVideoExportResultDialog(QtWidgets.QDialog):
             f"成功 {len(completed)} 个任务，暂缓 {len(skipped)} 个任务，"
             f"失败 {len(failed)} 个任务。"
             "双击成功项可打开视频，双击暂缓项可打开任务目录。"
+            + ("后处理失败项可双击打开保留的原成片。" if any(item.get("stage") == "postprocess" for item in failed) else "")
             + ("失败详情已写入程序日志。" if failed else ""),
             self,
         )
@@ -2166,11 +2205,12 @@ class SmartVideoExportResultDialog(QtWidgets.QDialog):
             reason = str(item.get("error") or "")
             row = QtWidgets.QTreeWidgetItem([
                 str(item.get("label") or item.get("task_id") or ""),
-                "失败",
+                "后处理失败" if item.get("stage") == "postprocess" else "失败",
                 reason,
                 "",
             ])
             row.setToolTip(2, reason)
+            row.setData(0, QtCore.Qt.UserRole, str(item.get("original_video") or ""))
             row.setBackground(1, QtGui.QColor("#F4CCCC"))
             tree.addTopLevelItem(row)
         for item in skipped:

@@ -40,7 +40,8 @@ class Qt6MigrationTests(unittest.TestCase):
             / "MediaPlayback.py"
         ).read_text(encoding="utf-8-sig")
         self.assertIn("QAudioOutput", source)
-        self.assertIn("videoSink()", source)
+        self.assertIn("QVideoSink", source)
+        self.assertIn("setVideoSink(", source)
         self.assertIn("setSource(", source)
         self.assertNotIn("QMediaContent", source)
         self.assertNotIn("QMediaPlayer.VideoSurface", source)

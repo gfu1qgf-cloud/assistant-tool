@@ -152,13 +152,14 @@ class BatchTextVideoTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             store = Store(directory)
             state = fresh_state()
-            state["jobs"] = [{"id": "a", "path": "a.mp4", "status": "待生成"},
-                             {"id": "b", "path": "b.mp4", "status": "待生成"}]
+            state['settings']['output_dir']=directory
+            state["jobs"] = [{"id": "a", "name":"a", "path": "a.mp4", "status": "待生成"},
+                             {"id": "b", "name":"b", "path": "b.mp4", "status": "待生成"}]
             state["music"] = [{"id": "song", "cursor": 5}]
             state = store.save(state, 0)
             output = Path(directory)/"b.mp4"
             output.touch()
-            fake = Mock(side_effect=[TextDoesNotFit("放不下"), (output, None)])
+            fake = Mock(spec=lambda:None, side_effect=[TextDoesNotFit("放不下"), (output, None)])
             worker = BatchWorker(store, state, ["a", "b"])
             with patch.dict("app_plugins.builtin.batch_text_video.ui.RENDERERS", {"static_text": fake}):
                 worker.run()
@@ -170,21 +171,25 @@ class BatchTextVideoTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             store = Store(directory)
             state = fresh_state()
-            state["jobs"] = [{"id": "a", "path": "a.mp4", "status": "待生成"}]
+            state['settings']['output_dir']=directory
+            state["jobs"] = [{"id": "a", "name":"a", "path": "a.mp4", "status": "待生成"}]
             state = store.save(state, 0)
             worker = BatchWorker(store, state, ["a"])
-            with patch.dict("app_plugins.builtin.batch_text_video.ui.RENDERERS", {"static_text": Mock(side_effect=Cancelled())}):
+            renderer=Mock(spec=lambda:None,side_effect=Cancelled())
+            with patch.dict("app_plugins.builtin.batch_text_video.ui.RENDERERS", {"static_text": renderer}):
                 worker.run()
+            renderer.assert_called_once()
             self.assertEqual(store.load(), state)
 
     def test_ledger_failure_stops_before_rendering_the_next_video(self):
         with tempfile.TemporaryDirectory() as directory:
             store = Store(directory)
             state = fresh_state()
-            state["jobs"] = [{"id": "a", "path": "a.mp4", "status": "待生成"},
-                             {"id": "b", "path": "b.mp4", "status": "待生成"}]
+            state['settings']['output_dir']=directory
+            state["jobs"] = [{"id": "a", "name":"a", "path": "a.mp4", "status": "待生成"},
+                             {"id": "b", "name":"b", "path": "b.mp4", "status": "待生成"}]
             state = store.save(state, 0)
-            renderer = Mock(return_value=(Path(directory)/"a.mp4", None))
+            renderer = Mock(spec=lambda:None, return_value=(Path(directory)/"a.mp4", None))
             worker = BatchWorker(store, state, ["a", "b"])
             with patch.dict("app_plugins.builtin.batch_text_video.ui.RENDERERS", {"static_text": renderer}), \
                  patch.object(store, "completed", side_effect=OSError("disk failure")):

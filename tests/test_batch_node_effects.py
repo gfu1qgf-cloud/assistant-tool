@@ -206,7 +206,9 @@ class NodeEffectsTests(unittest.TestCase):
         panel = LayerPanel(state['settings']['layers'], self.root, services=self.services); self.addCleanup(panel.deleteLater)
         panel.set_layers(state['settings']['layers']); panel.select_layer_id(effect['id'])
         self.assertEqual(panel.node_effect_properties.workflow.currentData(),graph['workflow_id'])
-        self.assertTrue(('node' in panel.editor.sections)); self.assertFalse(('position' in panel.editor.sections))
+        self.assertIs(panel.editor.targets['node'],panel.node_effect_properties)
+        self.assertNotIn('node',panel.editor.sections)  # Flat UI, no redundant fold.
+        self.assertFalse(('position' in panel.editor.sections))
         panel.node_effect_properties.open.click(); self.assertEqual(calls[-1]['workflow_id'],graph['workflow_id'])
         panel.node_effect_properties.new.click(); self.assertEqual(calls[-1]['workflow_type'],fx.TYPE_ID)
         panel.select_layer_id('title'); panel.select_layer_id(effect['id'])

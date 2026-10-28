@@ -57,7 +57,8 @@ class ExportTerminalTests(unittest.TestCase):
         graph = self.export_graph()
         scene = NodeScene(graph, self.registry)
         exporting = scene.nodes[graph['output_node']]
-        self.assertEqual(set(exporting.ports), {(False, 'plan')})
+        self.assertEqual(set(exporting.ports), {(False, 'plan'),(False,'output')})
+        self.assertFalse(any(direction for direction,_key in exporting.ports))
         settling = scene.nodes[graph['nodes'][1]['id']]
         self.assertIn((True, 'plan'), settling.ports)
         self.assertIn((True, 'video'), settling.ports)

@@ -274,18 +274,10 @@ class RefreshGuiTests(unittest.TestCase):
             self.release.set(); self.wait(lambda:opened.call_count==1)
             self.assertTrue(opened.call_args.kwargs['force_review'])
 
-    def test_player_reset_contract_for_all_existing_backends(self):
-        from model.MediaPlayback import _EmbeddedMpvReviewSurface, _QtMediaReviewSurface, _EmbeddedFfplayReviewSurface, FfplayReviewSurface
-        mpv=SimpleNamespace(source='old',loaded_source='old',_send=Mock(),_set_playing=Mock(),placeholder=Mock())
-        _EmbeddedMpvReviewSurface.reset_source(mpv)
-        self.assertEqual(mpv.loaded_source,''); self.assertEqual(mpv.source,'')
-        mpv._send.assert_called_once_with(['stop'])
+    def test_player_reset_contract_for_native_qt_backend_and_public_alias(self):
+        from model.MediaPlayback import _QtMediaReviewSurface, FfplayReviewSurface
         qt=SimpleNamespace(source='old',position=1,release=Mock())
         _QtMediaReviewSurface.reset_source(qt); qt.release.assert_called_once(); self.assertEqual(qt.source,'')
-        ff=SimpleNamespace(source='old',position=1,pause=Mock(),placeholder=Mock(),_thumbnail=Mock())
-        _EmbeddedFfplayReviewSurface.reset_source(ff); ff.pause.assert_called_once_with(show_frame=False)
-        ff._thumbnail.cancel.assert_called_once_with()
-        self.assertEqual(ff.source,'')
         public=SimpleNamespace(_last_prepare=('old',0,1,0),backend=Mock())
         FfplayReviewSurface.reset_source(public)
         public.backend.reset_source.assert_called_once(); self.assertEqual(public._last_prepare[0],'')
