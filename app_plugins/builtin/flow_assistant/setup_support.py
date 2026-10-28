@@ -8,7 +8,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit, urlunsplit
 from model.AppDataStorage import data_file
 
 EXTENSION_ID = 'pnjppjjfgiccpcfajkpooklgohgihdom'
-EXTENSION_VERSION = '1.1.59'
+EXTENSION_VERSION = '1.1.60'
 # Reviewed bridge releases with the same protocol and no automatic page reload.
 # A patch update is available, but is not a reason to disable a working client.
 def compatible_extension(version, *, minimum_patch=8):

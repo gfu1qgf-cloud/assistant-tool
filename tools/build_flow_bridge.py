@@ -8,13 +8,14 @@ import shutil
 ROOT = Path(__file__).resolve().parents[1]
 PIN = 'a5a4a3607e55c85c9c0c2e8e4700f2140eefb36d'
 UPSTREAM_VERSION = '1.1.6'
-BRIDGE_VERSION = '1.1.59'
+BRIDGE_VERSION = '1.1.60'
 KEY = 'MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAnvFDGkX5m/XE6cRqK89rmU6CkCtcOue7G3zgttpk45gF21Y9SQi4L6IvLh4SgLIPcU3Gm5MsXjB4UqmC03ssHqI9Q5SG4TqkGpS+LunJanIVy9Q7ak3IevqA1A3QgA28iAbMHsX9a8sEL/qhi13afdr7n42eF6A4XzJs3+9An6pjzAPNjK4AJLF7PytIzY9YxJ4eg7ANPQUPVTC233hvW5OGMXOxdo4QX1/qGe1npm6E8wwnGfp85NkRPLohy9t1cfJreXcqfswkRa1QlyeKsCfTIKQX2vclCDavsoddro3w98YS4SRb4Tz8NRnbJITsOoPqCbMtXyaWP2QIyy/S6QIDAQAB'
 HASHES = {
     'background.js': '756e503f5612b4f1218ea5b7f87ee7a3b17fdcd36009058d7442867df5b87139',
     'content-isolated.js': '7688010740c451e349d95d5bf9bde45c2cbfefe6e50e6e73ac255482936c1c5c',
     'injects/flow-proxy.js': '2d9a170f412a6d623f60a699265b1758b2e008c3338ba650855f87d272b4c4c1',
     'injects/ui.js': '446071a45886b7a2a9514d7cb3d2fe7f1bdad1f80b86684b2954f20e02f0bf2b',
+    'injects/ui.css': 'd87a649da79d1bc7a8171764e95c6122084c3655bb4759c0c3809f35c691ef73',
     'manifest.json': 'ff6f81d8ebddafbda818735270d807c4f14518d5a7f63aebbdba03f064ea6394',
 }
 
@@ -38,6 +39,10 @@ def build(root=ROOT, *, destination=None):
     pack_patches = importlib.util.module_from_spec(pack_spec)
     pack_spec.loader.exec_module(pack_patches)
     ui = pack_patches.patch_ui(ui)
+    security_spec = importlib.util.spec_from_file_location('flow_security_patches', Path(__file__).with_name('flow_security_patches.py'))
+    security = importlib.util.module_from_spec(security_spec)
+    security_spec.loader.exec_module(security)
+    background = security.patch_background(background, (root / 'browser_extensions/flow_adapter/page_boundary.js').read_text('utf-8'))
     destination.mkdir(parents=True, exist_ok=True)
     shutil.copytree(source, destination, dirs_exist_ok=True)
     for name, content in {'injects/ui.js': ui, 'injects/flow-proxy.js': proxy, 'background.js': background}.items():
@@ -72,6 +77,7 @@ def build(root=ROOT, *, destination=None):
         'upstream_version': UPSTREAM_VERSION, 'bridge_version': BRIDGE_VERSION, 'protocol': 1,
         'patch_module': 'tools/flow_bridge_patches.py',
         'patches': [
+            'page storage whitelist excludes pairing and host journals; native file drag requires a live desktop-approved exact-path grant; webpage cannot close all browser windows',
             'optional confirmed-progress UI lease renewal on the same token; serialized desktop expiry and stop acknowledgement include in-flight native input before handoff',
             'read-only loaded project-video catalog with bounded thumbnail previews; explicit desktop user selection creates a separate download-only binding without altering generation receipts or page ownership',
             'explicit pasted video detail URLs select the exact existing tab without moving the generation owner; bounded authenticated exact-ID lookup also works without a rendered result tile',

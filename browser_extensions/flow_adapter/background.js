@@ -9,6 +9,19 @@ let timingValues = {};
 let browserOptions = {focus_before_action:false,visual_upload_fallback:false,ui_mutex:false};
 const uiLeases = new Map();
 const visualUploads = new Map();
+const nativeUploads = new Map();
+const uploadPath = value => typeof value==='string'?value.replace(/\\/g,'/').toLowerCase():'';
+globalThis.__lzxNativeUploadGuard=(tabId,paths)=>{
+  const entry=nativeUploads.get(tabId);
+  const check=()=>{
+    if(!authenticated || tabId!==ownedTab || !entry || nativeUploads.get(tabId)!==entry ||
+        entry.epoch!==connectionEpoch || entry.project!==config.project ||
+        Date.now()-entry.at>Math.min(3600000,8*(timingMs('page_upload_max_seconds',180)+2*timingMs('page_controls_wait_seconds',45)+180000)) ||
+        !Array.isArray(paths) || !paths.length || !paths.every(path=>uploadPath(path)===entry.path))
+      throw Object.assign(Error('本地图片不属于主程序当前授权的上传，未读取文件'),{uploadDispatched:false});
+  };
+  check();return {check};
+};
 const downloadParkProgress = new Map();
 async function applyBrowserOptions(raw, persist = true) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw) || typeof raw.focus_before_action !== 'boolean') return;
@@ -279,6 +292,14 @@ async function forward(message) {
         foregroundAttempted = true;
       }
       if (message.action === 'upload_images') {
+        const proof=message.params?.reference;
+        if(authenticated && proof?.upload_id===message.params?.upload_id && /^[a-f0-9]{32}$/.test(proof?.upload_id || '') &&
+            typeof proof.path==='string' && Array.isArray(message.params?.paths) && message.params.paths.length===1 &&
+            uploadPath(message.params.paths[0])===uploadPath(proof.path)) {
+          const previous=nativeUploads.get(tabId);
+          if(previous?.request!==message.request_id)nativeUploads.set(tabId,{path:uploadPath(proof.path),
+            request:message.request_id,project:config.project,epoch:connectionEpoch,at:Date.now()});
+        } else nativeUploads.delete(tabId);
         const reference=message.params?.visual_reference;
         if (browserOptions.visual_upload_fallback && reference?.upload_id===message.params?.upload_id &&
             reference.sha256===message.params?.reference?.sha256 && /^[a-f0-9]{32}$/.test(reference.upload_id) &&
@@ -322,6 +343,7 @@ async function readyWorkTab(tabId, message = {}) {
 }
 async function receive(message) {
   if(message.type==='cancel_operation') {
+    if(nativeUploads.get(ownedTab)?.request===message.target_request_id)nativeUploads.delete(ownedTab);
     if(Number.isInteger(ownedTab) && /^[a-f0-9]{32}$/.test(message.target_request_id || '')) {
       try {
         const tab=await chrome.tabs.get(ownedTab);
@@ -1211,7 +1233,10 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
   if (message.action !== 'lzxPageEvent' || sender.tab?.id !== ownedTab || sender.frameId !== 0) return;
   const event = message.data;
   if (!event || typeof event !== 'object') return;
-  if(event.action==='upload_images_response')visualUploads.delete(sender.tab.id);
+  if(event.action==='upload_images_response') {
+    visualUploads.delete(sender.tab.id);
+    if(nativeUploads.get(sender.tab.id)?.request===event.request_id)nativeUploads.delete(sender.tab.id);
+  }
   if (event.action === 'run_tasks_response') {
     serialize(async () => {
       const saved = await local(), batches = saved.lzxBatches || {};
@@ -1373,9 +1398,9 @@ async function projectSetupAction(entry, sender) {
         if (reply.type !== 'setup_reload_allowed') return;
         if (reply.ticket !== ticket || !reply.profile || new URL(reply.project).href.replace(/\/$/, '') !== project) throw Error('项目与本次连接请求不匹配。');
         receiving = true; clearTimeout(timer);
-        if (chrome.runtime.getManifest().version !== '1.1.59') {
+        if (chrome.runtime.getManifest().version !== '1.1.60') {
           await chrome.storage.local.set({lzxReloadSetup: {...entry, tabId: sender.tab.id,
-            mode: reply.mode || 'pair', profile: reply.profile, version: '1.1.59'}});
+            mode: reply.mode || 'pair', profile: reply.profile, version: '1.1.60'}});
           finish(null, {success: true, updating: true}); chrome.runtime.reload(); return;
         }
         if (action === 'options') {

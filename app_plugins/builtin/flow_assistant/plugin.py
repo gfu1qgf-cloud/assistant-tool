@@ -14,7 +14,7 @@ class FlowAssistantPlugin(QtCore.QObject):
     command = QtCore.pyqtSignal(object)
     plugin_id = 'flow_assistant'
     display_name = 'Chrome 与 Flow 助手'
-    version = '0.6.28'
+    version = '0.6.29'
     upstream_version = '1.1.6'
     ui_api_version = 4
     manual_credit_check_api = 1

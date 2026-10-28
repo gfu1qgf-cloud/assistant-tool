@@ -13,7 +13,7 @@ from qt_compat import QtCore, QtTest, QtWidgets
 import test_flow_assistant as fixtures
 from app_plugins.builtin.flow_assistant.setup_support import (
     EXTENSION_ID, EXTENSION_VERSION, OPTIONS_URL, EXTENSIONS_URL,
-    inspect_extension, project_url, project_block)
+    inspect_extension, project_url, project_block, compatible_extension)
 from app_plugins.builtin.flow_assistant.policy import capable
 from app_plugins.builtin.flow_assistant.plugin import FlowAssistantPlugin
 from app_plugins.builtin.flow_assistant.ui import FlowDialog
@@ -108,7 +108,10 @@ class SetupTests(unittest.TestCase):
         before = path.read_bytes()
         result = inspect_extension(self.root / 'Chrome', 'Profile 23')
         self.assertEqual(result['status'], 'unknown')  # Disk hints do not prove live readiness.
-        self.assertTrue(result['can_launch']); self.assertEqual(result['version'], EXTENSION_VERSION)
+        # This manifest can be an older loaded build until normal restart.
+        # Read-only inspection reports its real version, not the host target.
+        self.assertTrue(result['can_launch']); self.assertEqual(result['version'], manifest['version'])
+        self.assertTrue(compatible_extension(result['version']))
         dialog, launcher, commands = self.ui()
         dialog.plugin.snapshot = {'preferences': {'profile_projects': {'Profile 23': PROJECT}}}
         dialog.plugin._launch_checked(result)

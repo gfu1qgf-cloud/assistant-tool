@@ -53,6 +53,9 @@ jobs:
           PYTHONDONTWRITEBYTECODE: "1"
         run: python packaging/run_tests_isolated.py
 
+      - name: Test fresh Flow browser bridge with network disabled
+        run: python packaging/run_flow_browser_tests.py
+
       - name: Build Windows application
         run: pyinstaller --noconfirm --clean packaging/AssistantTool.spec
 
@@ -74,15 +77,25 @@ jobs:
       - name: Check release privacy and completeness
         run: python packaging/check_release_artifact.py dist_final/AssistantTool-Windows.zip
 
+      - name: Package matching Flow extension and corresponding sources
+        run: python packaging/package_flow_extension.py --application dist/AssistantTool --output dist_final/flow --commit "$env:GITHUB_SHA"
+
       - name: Attest build provenance
         uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
         with:
-          subject-path: dist_final/AssistantTool-Windows.zip
+          subject-path: |
+            dist_final/AssistantTool-Windows.zip
+            dist_final/flow/FlowBridge-*.zip
+            dist_final/flow/FLOW_SHA256.json
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
-          files: dist_final/AssistantTool-Windows.zip
+          files: |
+            dist_final/AssistantTool-Windows.zip
+            dist_final/flow/FlowBridge-*.zip
+            dist_final/flow/FLOW_SHA256.json
+            dist_final/flow/FLOW_REVIEW.txt
           body_path: dist_final/RELEASE_NOTES.md
           generate_release_notes: false
 
