@@ -1,0 +1,162 @@
+做视频辅助工具：3.0 本地安全自审与运行时迁移记录
+日期：2026-10-28
+状态：本地自审及候选运行时验证；不是外部审核通过证明，不是已发布 EXE 的验收。
+
+一、范围与方法
+
+按 https://tpscsm-web.pages.dev/ 的依赖、代码、凭据及发布边界要求检查。
+起始源码提交：7ebe038cab22de7cc7a045baf07c24be6d283d6c。
+同时检查工作区内尚未提交的改动；未将这些其他开发中的改动混入本轮提交。
+初始清单：1174 个已跟踪文件、129 个未跟踪文件；其中 1087 个 Python 文件均可解析。
+全量文本规则/AST 检查之后，人工复核高风险入口，不宣称逐行人工读完全部源码。
+人工重点：Flow 本地 WebSocket/配对、网页消息、下载及归档，主程序存储接口，
+插件读写、Python 自定义代码节点及导入授权，下载重定向、文档/压缩包解析，
+日志脱敏、构建资源白名单与 GitHub Actions。未执行真实账户或付费生成操作。
+
+依赖：核对 28 个直接运行依赖、构建依赖、123 项旧约束、实际虚拟环境及 Rust Cargo.lock。
+查询只发送公开包名和版本，不上传源码、日志、配置或用户文件。
+使用 OSV 批量查询，并核对维护方 GitHub 公告、Qt 公告、Python/Pillow 官方发布说明。
+原环境 135 组包/版本查询命中 69 条数据库记录；其中包含同一漏洞的别名重复，
+不能理解为 69 个独立、可被本程序利用的漏洞。未把无命中等同于不存在漏洞。
+新环境再次查询 135 组实际包/版本（含 Rust 依赖），保留 2 条 Torch 条件性记录。
+公开依赖核验摘要见 docs/security/dependency-audit-20261028.json。
+
+二、发现及处理
+
+S01 高/严重：Pillow 12.3.0 命中多个图像解析、内存访问公告。
+位置：requirements.txt:17，旧约束中的 pillow。
+条件：处理攻击者构造、且触及相应解码器/操作的图片；各公告条件不同。
+处理：迁移到 Pillow 13.0.0。因其要求 Python >=3.11，未强行塞进 3.10 环境。
+结果：新环境图片、字体、RGBA、实际视频合成验证通过；不执行恶意崩溃 PoC。
+
+S02 严重：旧 certifi 包含公告涉及的 emSign 根证书。
+位置：packaging/constraints-win-py310.txt 中 certifi，旧系统 Python 另有更旧版本。
+条件：攻击者控制受影响证书链并具备网络中间人位置。
+处理：新环境 certifi 2026.10.19，同时使用包含相关 SSL 安全修复的 Python 3.14.10。
+没有关闭 TLS 验证、增加不安全信任根或修改系统证书存储。
+
+S03 中/高（按各公告分别判断）：aiohttp 3.14.3 的资源耗尽、Cookie 等问题。
+位置：旧约束 aiohttp；程序通过 SDK 使用客户端，不提供 aiohttp 公网服务器。
+处理：3.14.4。服务器专属漏洞未冒充本程序已暴露的服务器漏洞；客户端问题仍修补。
+
+S04 中/高：pypdf 6.19.0 对特制 PDF 可能发生长耗时/大内存等问题。
+位置：requirements.txt:18；生活提醒中的 PDF 文本读取。
+处理：6.21.2，保留原有输入大小/来源/段落限制；PDF 读写与相关插件回归通过。
+这不代表对任意未来恶意 PDF 都有沙箱或强制内存隔离。
+
+S05 中/低：OpenTelemetry tracestate 解析、setuptools 旧 wheel 安装路径问题。
+位置：依赖锁和 packaging/requirements-build.txt。
+处理：分别更新至 1.45.1、84.1.0。前者未发现本程序处理外部请求 tracestate 的入口；
+后者主要影响构建/安装阶段；仍升级避免后续误用受影响版本。
+
+C01 中（可用性）：扩展准备在 Windows 不可写目录下使用 tempfile 时可能长时间重试。
+位置：app_plugins/builtin/flow_assistant/bridge_install.py 的 atomic()/prepare()。
+处理：单次独占 mkdir/xb 创建，权限失败及时抛出；只清理本次成功创建的临时对象。
+保留权限/版本匹配、禁止降级、冻结程序不运行源码构建、manifest 最后发布和回滚。
+验证：不可写目录/文件、名字碰撞、替换失败、旧文件保留和现有回滚共 10 条通过。
+该隔离故障确实被检出，但不能据此断言用户所有卡顿都是同一原因。
+
+C02 中（存储约定）：部分 Flow 资源检查/参考图及视频缓存仍绕过主程序读写接口。
+位置：flow_assistant/{bridge_install,reference_image,setup_support,store}.py，
+batch_text_video/{thumbnails,dnx_alpha}.py。
+处理：接回 data_file/data_directory/data_io；外部媒体缓存继续在原位置，不移入密盘。
+DNxHR 读取租约通过 ExitStack 保持真实文件句柄到整个使用结束，避免提前清理。
+验证：全插件 I/O 静态契约通过；并发读、缓存复用、取消/失败清理及真实 Alpha 导出通过。
+说明：这修复接口约定，不是声称所有这些原始读写都会泄漏凭据。
+
+C03 中（检查覆盖）：CodeQL 原先仅配置 Python，漏掉浏览器扩展 JavaScript。
+位置：.github/workflows/codeql.yml。
+处理：增加 Python/JavaScript-TypeScript 矩阵，保留完整 SHA 固定和最小权限。
+本轮仅修改配置，没有推送或运行远端 CodeQL，因此没有把“配置已补”称为“扫描通过”。
+
+三、凭据与隐私检查
+
+通过已验证挂载卷的 volume/storage 身份读取凭据，仅在内存中比较，不读旧明文配置兜底。
+比较 35 个实际凭据值；扫描全部 3529 个可达历史 blob（本次无超过 8MiB 的排除项）
+以及本轮源码清单，未发现这些实际值的精确匹配。未保存或输出密钥本身。
+此结论只覆盖当前可获得的凭据值、当前仓库可达历史；不覆盖已轮换旧 Key、远端缓存、
+已删除/不可达对象、他人 fork 或所有过去发布包，不能替代泄漏后的密钥轮换。
+规则扫描发现的 4 处 Google key 为第三方公开网页快照中的同一个 Maps key，
+不是用户配置中的凭据，单独分类，不据此轮换第三方密钥。
+
+Git/发行：保留内部/外部配置的私有本地分发目录，继续忽略配置、OAuth、日志、运行数据；
+新增忽略 .venv-py314 和个人开发待办。发布包检查拒绝新环境目录。
+开发手册仍只随源码保存，不增加到 EXE 资源；没有复制私人配置进仓库或测试目录。
+
+四、运行时决策与回退
+
+采用官方 Python 3.14.10 x64（普通 GIL 构建），不采用刚发布而关键依赖尚缺轮子的 3.15。
+Python 官方计划：3.14 维护至 2030-10；3.11 只到 2027-10，3.10 已停止维护。
+安装包来自 python.org，SHA256 与官方发布页一致，Windows PSF 签名有效。
+并行安装，不卸载 3.10、不改 PATH、不改文件关联；不把旧环境 352 个包整体搬过来。
+程序使用 .venv-py314，旧 .venv/系统 3.10 保留给回退或其他程序，但不视为已修补环境。
+新环境锁定 126 项实际包版本，额外补齐 audioop-lts/standard-aifc 等新 Python 兼容依赖。
+配套 NumPy 2.5.4、SciPy 1.18.1、ONNX Runtime 1.31.1；Torch/torchaudio 保持验证过的 2.10。
+普通/VC 源码启动入口和发行 CI 一起切换；IDE 请明确选择 .venv-py314/Scripts/python.exe。
+配置、密盘绑定、模型缓存和业务状态不迁移、不重置。
+
+五、保留风险与不适用项
+
+R01 Torch：GHSA-rrmf-rvhw-rf47（jit.script）与 PYSEC-2026-139/CVE-2026-4538（.pt2）。
+未发现程序源码调用 torch.jit.script 或 torch.export.load，也不提供 .pt2 导入通道。
+不把“暂未触及”写成依赖已修复；只信任模型/插件/代码节点的来源。后续若增加这些调用，
+必须重做适用性检查。Torch 大幅升级和模型语义验收不由本轮安全补丁替代。
+
+R02 Qt：当前 PyQt6-Qt6 官方可安装轮子仍为 6.11.2；Qt 官方公告还涉及 HTTP/2 和
+旧二进制 JSON 解析路径（CVE-2026-95620、CVE-2026-101201）。未发现程序直接使用
+这些解析/请求入口；NTLM 公告 CVE-2026-105946 的修复版本 6.11.2 已满足。
+不强换成不兼容 DLL，也不伪称 Qt 原生库全无风险；等待兼容轮子/经验证的新 Qt，
+外部审核需结合实际调用及打包模块复核。普通 Python 包 OSV 查询不覆盖全部 Qt C++ 漏洞。
+
+R03 OpenCV：其内嵌 avcodec 61.19.100/avformat 61.7.100 与独立 FFmpeg 9.0.2 不是同一份。
+已记录 PNG 1.6.57/JPEG/WebP/TIFF 等构建信息；未声称这些原生组件都已进行二进制漏洞扫描。
+后续发行物应附 BUILD_INFO、原生依赖出处，限制不可信模型/素材，继续跟踪供应商修复。
+
+R04 插件/Python 代码：插件是可信本地 Python，不是安全沙箱。Python 节点要求代码指纹授权，
+外部导入/粘贴会清除授权，子进程有超时/取消/输出限制，但代码仍有本机用户权限。
+Flow 扩展的 debugger/tabs/downloads 等权限具有实质能力，不能按“只读插件”对外描述。
+Flow 仅监听本地，校验扩展 Origin、token、一次性票据和媒体/项目/执行号绑定。
+
+R05 stable-ts 等维护活跃度较低依赖未被随意替换；未进行第三方服务/浏览器本体渗透测试。
+
+六、验收证据与限制
+
+- 新运行时 pip check 无冲突；真实原生库导入、Torch/NumPy、Pillow 字体/RGBA、
+  PDF、WAV、H.264 编码、本地缓存 Whisper 初始化及合成音频推理均通过。
+- 功能回归 21 模块、292 项，无失败；其中可选硬件/素材/环境项另行列明，不冒充已测。
+- 正式新环境安全/存储/发布契约回归 28 模块、386 项，无失败，1 项可选环境跳过。
+- 浏览器 64 个隔离脚本全部通过；所有未模拟网络均被禁止，没有操作真实网页任务。
+- 原生透明视频另用用户指定只读 MOV 完整验证 16 项，无跳过；301 帧导出约 3.63 秒，
+  Alpha 缓存约 2.47MB，原素材不变，暖缓存不重建。该耗时只是这一测试，不是全程序性能承诺。
+- 修正两处已过时测试：全局渲染质量不再按旧项目恢复；循环源缓冲区按原比例缩小。
+  后者在本轮修改前的旧源码上同样复现，未通过改变业务画幅来迎合测试。
+- 安全/存储/发布契约按模块分进程检查；测试启动器显式 UTF-8，禁用真实账户及扩展激活，
+  设置单模块超时并只清理测试自有进程；具体报告保存在本机审查工作目录。
+
+未执行：整仓所有功能用例、实际 Intel QSV/NVENC 全组合、真实付费 Flow/ELE 请求、
+每种字体/字幕/项目的人工视觉验收、最终 3.0 EXE 启动和 ZIP 成品隐私检查、远端 CodeQL。
+不以旧版本测试报告或本轮部分回归代替上述步骤。
+
+七、审核准备门禁（不自动执行外部动作）
+
+1. 冻结拟发布源码与依赖版本；处理/选择其他未提交功能，不能把开发中变更冒充已审核版本。
+2. 从干净副本使用 Python 3.14.10 + 锁定依赖打包，生成真实提交 SHA 的 BUILD_INFO。
+3. 检查实际 ZIP 资源白名单、配置/OAuth/日志/本地分发/开发文档排除，并在新 Windows 用户下启动。
+4. 核对首次使用/密盘/退出、字幕及音视频样例和扩展连接；重测剩余硬件与人工验收项。
+5. 用户授权推送后运行远端 CodeQL 两种语言扫描，复核供应商保留项，准备 Release 哈希与审核材料。
+6. 只有另行授权才创建 tag/Release/PR、上传程序或向审核网站提交，不自动代替用户作风险接受。
+
+主要公开依据
+https://devguide.python.org/versions/
+https://www.python.org/downloads/release/python-31410/
+https://pillow.readthedocs.io/en/stable/releasenotes/13.0.0.html
+https://github.com/certifi/python-certifi/security/advisories/GHSA-6q48-6c7w-9gw2
+https://github.com/aio-libs/aiohttp/security/advisories/GHSA-2g87-pp6c-29x5
+https://github.com/py-pdf/pypdf/security/advisories/GHSA-6c7f-9265-g8fw
+https://github.com/pytorch/pytorch/pull/176791
+https://github.com/pytorch/pytorch/issues/149623
+https://www.qt.io/blog/security-advisory-cve-2026-95620
+https://www.qt.io/blog/security-advisory-cve-2026-101201
+https://www.qt.io/blog/security-advisory-cve-2026-105946
+https://ffmpeg.org/download.html
+https://docs.github.com/en/code-security/reference/code-scanning/workflow-configuration-options

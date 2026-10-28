@@ -4,7 +4,7 @@ Only MOV DNxHR alpha is intercepted. No inference, keying, or RGB transcode.
 Deferred masks keep graph preparation cheap; an encoder acquires its own lease.
 """
 from collections import OrderedDict
-from contextlib import contextmanager
+from contextlib import contextmanager, ExitStack
 from fractions import Fraction
 import hashlib
 import json
@@ -17,6 +17,7 @@ import threading
 import time
 import uuid
 import re
+from model.AppDataStorage import data_directory, data_file, data_io
 
 VERSION = 'dnx-alpha-1'
 DISK_LIMIT = 512*1024**2
@@ -78,7 +79,7 @@ def describe(path, ffmpeg='', cancel=None):
         if not packets: raise ValueError('DNxHR素材没有可读的视频帧。')
         pos, size = int(packets[0]['pos']), int(packets[0]['size'])
         if pos < 0 or not 640 <= size <= 64*1024**2 or pos+size > stamp[1]: raise ValueError('DNxHR帧位置无效。')
-        with open(path, 'rb') as source: source.seek(pos); header = source.read(640)
+        with data_file(path).open('rb') as source: source.seek(pos); header = source.read(640)
         if header[7] & 1:
             cid = int.from_bytes(header[40:44], 'big')
             # Restrict to progressive RI profiles. Never silently use opaque
@@ -118,7 +119,7 @@ def cache_key(info):
 def file_lock(path, cancel=None, *, blocking=True):
     """Cross-process build/prune exclusion; OS releases it after a crash."""
     import msvcrt
-    with open(path, 'a+b') as handle:
+    with data_file(path).open('a+b') as handle:
         if handle.tell() == 0: handle.write(b'0'); handle.flush()
         held = False
         try:
@@ -144,7 +145,7 @@ def prune(root, keep=None):
             stem = pending.name[:-len('.part.mkv')]
             with file_lock(root/(stem.split('.')[0]+'.lock'), blocking=False) as held:
                 if held:
-                    for suffix in ('.part.mkv', '.index', '.log'): (root/(stem+suffix)).unlink(missing_ok=True)
+                    for suffix in ('.part.mkv', '.index', '.log'): data_file(root/(stem+suffix)).remove(missing_ok=True)
         except OSError: pass
     files = []
     for path in root.glob('*.mkv'):
@@ -158,13 +159,13 @@ def prune(root, keep=None):
         try:
             with file_lock(path.with_suffix('.lock'), blocking=False) as held:
                 if held:
-                    path.unlink(); path.with_suffix('.json').unlink(missing_ok=True); total -= size
+                    data_file(path).remove(); data_file(path.with_suffix('.json')).remove(missing_ok=True); total -= size
         except OSError: pass
 
 
 def _ready(path, info):
     try:
-        data = json.loads(path.with_suffix('.json').read_text(encoding='utf8'))
+        data = json.loads(data_file(path.with_suffix('.json')).read_text(encoding='utf8'))
         return (data['key'] == cache_key(info) and data['bytes'] == path.stat().st_size and
                 data['frames'] > 0 and data['bytes'] <= ENTRY_LIMIT and not path.is_symlink())
     except (OSError, ValueError, KeyError, TypeError): return False
@@ -195,9 +196,9 @@ def _build(path, info, cancel, report):
     decode = encode = None
     try:
         rows = packets(info, cancel)
-        index_path.write_bytes(b'DNA1'+struct.pack('<I', len(rows))+b''.join(struct.pack('<QI', *row) for row in rows))
+        data_file(index_path).write_bytes(b'DNA1'+struct.pack('<I', len(rows))+b''.join(struct.pack('<QI', *row) for row in rows))
         report('准备素材原生透明通道（只缓存遮罩）：'+Path(info['stamp'][0]).name)
-        with open(log_path, 'w+b') as log:
+        with data_file(log_path).open('w+b') as log:
             decode = subprocess.Popen([decoder(), '--stream', info['stamp'][0], str(index_path)],
                 stdout=subprocess.PIPE, stderr=log, creationflags=FLAGS)
             encode = subprocess.Popen([info['ffmpeg'], '-nostdin', '-y', '-v', 'error', '-f', 'rawvideo',
@@ -223,21 +224,21 @@ def _build(path, info, cancel, report):
         size = pending.stat().st_size
         if size > ENTRY_LIMIT: raise ValueError('透明遮罩超过128 MB，请缩短素材。')
         meta = dict(key=cache_key(info), bytes=size, frames=len(rows), version=VERSION)
-        os.replace(pending, path)
-        path.with_suffix('.json').write_text(json.dumps(meta), encoding='utf8')
+        data_io.replace(pending, path)
+        data_file(path.with_suffix('.json')).write_text(json.dumps(meta), encoding='utf8')
     finally:
         for process in (decode, encode):
             if process and process.poll() is None: process.kill(); process.wait(timeout=10)
-        for temporary in (pending, index_path, log_path): temporary.unlink(missing_ok=True)
+        for temporary in (pending, index_path, log_path): data_file(temporary).remove(missing_ok=True)
 
 
 @contextmanager
 def mask(info, cancel=None, report=None):
     check(cancel)
-    root = cache_root(); root.mkdir(parents=True, exist_ok=True)
+    root = cache_root(); data_directory(root).ensure()
     prune(root)
     path = root/(cache_key(info)+'.mkv')
-    handle = None
+    lease = ExitStack()
     try:
         with file_lock(path.with_suffix('.lock'), cancel):
             if signature(info['stamp'][0]) != tuple(info['stamp']): raise ValueError('原素材已改变，请重新读取。')
@@ -249,12 +250,12 @@ def mask(info, cancel=None, report=None):
                 finally:
                     if acquired: _BUILDING.release()
             # No prune gap between publish and lease acquisition.
-            handle = open(path, 'rb'); os.utime(path, None)
+            lease.enter_context(data_file(path).open('rb')); os.utime(path, None)
         prune(root, path)
         yield str(path)
         if signature(info['stamp'][0]) != tuple(info['stamp']): raise ValueError('使用透明遮罩期间原素材发生变化。')
     finally:
-        if handle: handle.close()
+        lease.close()
         prune(root)
 
 
@@ -300,12 +301,11 @@ def poster(path, bounds=None, *, ffmpeg='', cancel=None, position=0.):
     rows = [info['first']] if not index else packets(info, cancel)
     if index >= len(rows): raise ValueError('所选透明视频帧超出时长。')
     pos, size = rows[index if index else 0]
-    import tempfile
     # Temporary files contain one compressed frame / small alpha plane only.
-    root = cache_root(); root.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix='poster-', dir=root) as directory:
+    root = cache_root(); data_directory(root).ensure()
+    with data_io.TemporaryDirectory(prefix='poster-', dir=root) as directory:
         packet, pgm = Path(directory)/'frame.dnx', Path(directory)/'alpha.pgm'
-        with open(path, 'rb') as source: source.seek(pos); packet.write_bytes(source.read(size))
+        with data_file(path).open('rb') as source: source.seek(pos); data_file(packet).write_bytes(source.read(size))
         command([decoder(), '--frame', str(packet), str(pgm)], cancel)
         scale = f',scale={bounds.width()}:{bounds.height()}:force_original_aspect_ratio=decrease' if bounds else ''
         output = command([ffmpeg, '-nostdin', '-v', 'error', '-threads', '1', '-i', str(path), '-i', str(pgm),

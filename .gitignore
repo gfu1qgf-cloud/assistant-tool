@@ -74,6 +74,8 @@ Thumbs.db
 
 # Local and CI build output
 /.venv/
+/.venv-py314/
+/开发待办.md
 /build/
 /dist/
 /dist_final/

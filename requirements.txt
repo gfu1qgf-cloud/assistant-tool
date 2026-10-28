@@ -1,6 +1,6 @@
-# Validated on Windows x64 / Python 3.10. The transitive pins are generated
+# Validated on Windows x64 / Python 3.14.10. The transitive pins are generated
 # from the fully tested independent environment, not the global Python.
--c packaging/constraints-win-py310.txt
+-c packaging/constraints-win-py314.txt
 comtypes==1.4.16
 defusedxml==0.7.1
 edge_tts==7.2.7
@@ -10,12 +10,12 @@ google-api-python-client==2.198.0
 google-auth==2.43.0
 google-auth-oauthlib==0.4.6
 langdetect==1.0.9
-numpy==2.2.6
-onnxruntime==1.23.2
+numpy==2.5.4
+onnxruntime==1.31.1
 odfpy==1.4.1
 opencv_contrib_python==4.14.0.94
-Pillow==12.3.0
-pypdf==6.19.0
+Pillow==13.0.0
+pypdf==6.21.2
 pydub==0.25.1
 PyQt6==6.11.0
 psutil==7.1.0
@@ -29,4 +29,4 @@ yt-dlp==2026.08.19
 librosa==0.11.0
 sentencepiece==0.2.2
 # Keep the environment's installer/runtime metadata tooling on the tested fix.
-setuptools==83.0.0
+setuptools==84.1.0

@@ -11,6 +11,7 @@ import threading
 import time
 import uuid
 import weakref
+from model.AppDataStorage import data_directory, data_file, data_io
 
 from qt_compat import QtCore, QtGui, QtWidgets
 from .preview_cache import cache_root
@@ -39,7 +40,7 @@ def _prune(root, keep):
         for _, path, size in sorted(files):
             if total <= DISK_LIMIT: break
             if path == keep: continue
-            path.unlink(missing_ok=True); total -= size
+            data_file(path).remove(missing_ok=True); total -= size
 
 
 def decode(payload, cancel):
@@ -99,16 +100,16 @@ def decode(payload, cancel):
     if max(image.width(), image.height()) > 128:
         image = image.scaled(128, 128, QtCore.Qt.AspectRatioMode.KeepAspectRatio,
                              QtCore.Qt.TransformationMode.SmoothTransformation)
-    root.mkdir(parents=True, exist_ok=True)
+    data_directory(root).ensure()
     pending = root/(key+'.'+uuid.uuid4().hex+'.part')
     try:
         if not image.save(str(pending), 'PNG'): return image
         if not cancel.is_set():
-            os.replace(pending, target); _prune(root, target)
+            data_io.replace(pending, target); _prune(root, target)
     except OSError:
         pass  # A full/unavailable disposable cache must not hide a decoded image.
     finally:
-        pending.unlink(missing_ok=True)
+        data_file(pending).remove(missing_ok=True)
     return image
 
 

@@ -1,11 +1,11 @@
 """Activate bridge files only when the matching main program starts normally."""
 import importlib.util
 import json
-import os
 from pathlib import Path
 import re
 import sys
-import tempfile
+import uuid
+from model.AppDataStorage import data_directory, data_file, data_io
 
 from .setup_support import EXTENSION_VERSION
 
@@ -17,21 +17,25 @@ def builder(root):
 
 
 def atomic(path, data):
-    path.parent.mkdir(parents=True,exist_ok=True)
+    data_directory(path.parent).ensure()
     name=None
     try:
-        with tempfile.NamedTemporaryFile(prefix='.flow-update-',suffix='.tmp',dir=path.parent,delete=False) as stream:
-            name=Path(stream.name);stream.write(data)
-        os.replace(name,path)
+        # tempfile can retry PermissionError millions of times on Windows when
+        # os.access reports a read-only directory as writable. Fail promptly;
+        # exclusive creation still prevents following an existing link/file.
+        candidate=path.parent/('.flow-update-'+uuid.uuid4().hex+'.tmp')
+        with data_file(candidate).open('xb') as stream:
+            name=candidate;stream.write(data)
+        data_io.replace(name,path)
     finally:
-        if name and name.exists():name.unlink()
+        if name and name.exists():data_file(name).remove()
 
 
 def prepare(root=None):
     root=Path(root) if root is not None else (Path(sys.executable).resolve().parent
         if getattr(sys,'frozen',False) else Path(__file__).resolve().parents[3])
     active=root/'browser_extensions/flow_bridge'
-    before=json.loads((active/'manifest.json').read_text('utf-8'))
+    before=json.loads(data_file(active/'manifest.json').read_text('utf-8'))
     current=before.get('version','')
     if current==EXTENSION_VERSION:return False
     if getattr(sys,'frozen',False):
@@ -40,22 +44,28 @@ def prepare(root=None):
     if not old or int(old[1])>int(EXTENSION_VERSION.rsplit('.',1)[1]):
         raise ValueError('当前扩展文件版本无法安全自动替换，请核对主程序与扩展来源。')
     parent=active.parent.resolve()
-    with tempfile.TemporaryDirectory(prefix='flow-bridge-build-',dir=parent) as name:
-        temporary=Path(name).resolve();assert temporary.parent==parent
+    # Use a single exclusive mkdir rather than tempfile's Windows permission
+    # retry loop. Cleanup owns only the directory successfully created here.
+    temporary=parent/('flow-bridge-build-'+uuid.uuid4().hex)
+    data_io.mkdir(temporary)
+    try:
+        assert temporary.resolve().parent==parent
         staged=temporary/'package';builder(root).build(root,destination=staged)
-        manifest=json.loads((staged/'manifest.json').read_text('utf-8'))
+        manifest=json.loads(data_file(staged/'manifest.json').read_text('utf-8'))
         if manifest.get('version')!=EXTENSION_VERSION or {k:v for k,v in before.items() if k!='version'}!={k:v for k,v in manifest.items() if k!='version'}:
             raise ValueError('新扩展版本或权限核对失败，保留原扩展文件。')
-        files={path.relative_to(staged):path.read_bytes() for path in staged.rglob('*') if path.is_file()}
+        files={path.relative_to(staged):data_file(path).read_bytes() for path in staged.rglob('*') if path.is_file()}
         assert sum(map(len,files.values()))<128*1024*1024
-        originals={path:(active/path).read_bytes() if (active/path).is_file() else None for path in files}
+        originals={path:data_file(active/path).read_bytes() if (active/path).is_file() else None for path in files}
         copied=[]
         try:
             for path in sorted(files,key=lambda p:(p.name=='manifest.json',str(p))):
                 atomic(active/path,files[path]);copied.append(path)
         except Exception:
             for path in reversed(copied):
-                if originals[path] is None:(active/path).unlink()
+                if originals[path] is None:data_file(active/path).remove()
                 else:atomic(active/path,originals[path])
             raise
+    finally:
+        data_io.rmtree(temporary)
     return True

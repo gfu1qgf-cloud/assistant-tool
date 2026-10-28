@@ -19,17 +19,19 @@ docs/developer/...              开发手册与示例，不随 EXE 发布
 
 ## 环境与启动
 
-发行 CI 当前使用 **Python 3.10**，Qt 使用 **PyQt6**，业务层统一从 `qt_compat` 导入 Qt。第三方包提示将来弃用 3.10，不代表可以单独升级解释器：Torch、音视频库、Qt 和原生 DLL 必须一起验证。
+发行 CI 当前使用 **Python 3.14.10**，Qt 使用 **PyQt6**，业务层统一从 `qt_compat` 导入 Qt。升级解释器时，Torch、音视频库、Qt 和原生 DLL 必须一起验证；不要把旧 3.10 环境的二进制包复制过来。
 
 在仓库根目录执行；以下命令会安装依赖，只在准备开发环境时运行：
 
 ```powershell
-py -3.10 -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -r requirements.txt
-.\.venv\Scripts\python.exe main.py
+py -3.14 -m venv .venv-py314
+.\.venv-py314\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv-py314\Scripts\python.exe main.py
 ```
 
 使用同一套 Python / venv 测试，不把其他解释器的 `site-packages` 拼进生产启动路径。需要打包时另读 [`packaging/AssistantTool.spec`](../../packaging/AssistantTool.spec) 和[测试发布章节](06-testing-release.md)。首次启动可能涉及已有配置和密盘流程；不要为了测试复制生产凭据到仓库。
+
+旧 `.venv` 保留用于回退，但 3.0 的启动脚本只使用 `.venv-py314`，避免误用已经停止维护的 Python 3.10。运行时迁移记录见 `docs/安全自审-2026-10-28.txt`。
 
 ## 新功能放在哪里
 

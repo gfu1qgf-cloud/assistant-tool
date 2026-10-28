@@ -177,7 +177,13 @@ class RealAlphaTests(unittest.TestCase):
         spec=LoopInput(layer,1,30,self.ffmpeg,(320,180));feed=Feed(spec)
         try:
             frames=list(cycle(feed));self.assertEqual(len(frames),12)
-            self.assertEqual(len(frames[0]),320*180*4)
+            # Loop buffers preserve the source aspect ratio inside this box;
+            # the final composition, not each source buffer, is 320x180.
+            self.assertLessEqual(spec.width,320)
+            self.assertLessEqual(spec.height,180)
+            self.assertAlmostEqual(spec.width/spec.height,spec.source_width/spec.source_height,
+                                   delta=max(1/spec.width,1/spec.height))
+            self.assertEqual(len(frames[0]),spec.width*spec.height*4)
             self.assertEqual(frames[0][3],0)
         finally:feed.close()
 

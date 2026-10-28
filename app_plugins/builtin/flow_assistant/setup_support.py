@@ -5,6 +5,7 @@ import hashlib
 from pathlib import Path
 import re
 from urllib.parse import parse_qs, urlencode, urlsplit, urlunsplit
+from model.AppDataStorage import data_file
 
 EXTENSION_ID = 'pnjppjjfgiccpcfajkpooklgohgihdom'
 EXTENSION_VERSION = '1.1.36'
@@ -97,7 +98,7 @@ def inspect_extension(root, profile):
         path = directory / name
         if not path.is_file(): continue
         try:
-            with path.open('rb') as stream:
+            with data_file(path).open('rb') as stream:
                 raw = stream.read(16 * 1024 * 1024 + 1)
             if len(raw) > 16 * 1024 * 1024: raise ValueError('preference limit')
             data = json.loads(raw.decode('utf-8-sig'))
@@ -131,7 +132,7 @@ def inspect_extension(root, profile):
                     continue
                 if not path.is_absolute(): path = directory / 'Extensions' / path
                 try:
-                    with (path / 'manifest.json').open('rb') as stream:
+                    with data_file(path / 'manifest.json').open('rb') as stream:
                         raw = stream.read(1024 * 1024 + 1)
                     if len(raw) > 1024 * 1024: continue
                     manifest = json.loads(raw.decode('utf-8-sig'))

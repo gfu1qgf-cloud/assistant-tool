@@ -18,7 +18,7 @@ def make_manifest(version, commit):
     import numpy
 
     # Assert the tested native stack; stop instead of quietly packaging old DLLs.
-    if cv2.__version__ != "4.14.0" or numpy.__version__ != "2.2.6":
+    if cv2.__version__ != "4.14.0" or numpy.__version__ != "2.5.4":
         raise ValueError("Release native stack differs from the tested OpenCV/NumPy versions")
     build = cv2.getBuildInformation()
     native = {"opencv": cv2.__version__, "numpy": numpy.__version__}

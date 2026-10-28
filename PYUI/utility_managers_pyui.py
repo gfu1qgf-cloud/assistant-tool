@@ -2,10 +2,12 @@ from model.QtThreadLifecycle import connect_thread_finished, thread_is_active
 import copy
 import math
 import os
+import platform
 from html import escape, unescape
 from datetime import datetime
 from pathlib import Path
 from model.BackgroundTasks import BackgroundTaskHandle
+from model.AppVersion import APP_VERSION
 from model.InventoryBackground import inventory_resources, run_material_job, run_material_check_job, run_material_stats_job
 
 from qt_compat import QtCore, QtGui, QtWidgets
@@ -107,6 +109,9 @@ class AboutDialog(QtWidgets.QDialog):
         title_font.setBold(True)
         title.setFont(title_font)
         layout.addWidget(title)
+
+        version = QtWidgets.QLabel(f"版本 {APP_VERSION} · Python {platform.python_version()}", self)
+        layout.addWidget(version)
 
         summary = QtWidgets.QLabel(ABOUT_SUMMARY, self)
         summary.setWordWrap(True)

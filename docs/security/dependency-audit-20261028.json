@@ -1,0 +1,1300 @@
+{
+  "date": "2026-10-28",
+  "method": "OSV package/version queries and primary advisory review; aliases are not independent flaws",
+  "baseline_query_count": 135,
+  "candidate_query_count": 135,
+  "baseline_matches": [
+    {
+      "ecosystem": "PyPI",
+      "package": "aiohttp",
+      "version": "3.14.3",
+      "records": [
+        {
+          "id": "GHSA-2g87-pp6c-29x5",
+          "aliases": [],
+          "summary": "aiohttp: Multiple instances of excessive or unbounded memory/CPU use",
+          "database_severity": "HIGH",
+          "fixed": [
+            "3.14.4"
+          ],
+          "primary_references": [
+            "https://github.com/aio-libs/aiohttp/security/advisories/GHSA-2g87-pp6c-29x5",
+            "https://github.com/aio-libs/aiohttp/commit/09bcaa73ff084a0c539bbf16a0a78743acb7141f",
+            "https://github.com/aio-libs/aiohttp/commit/0ae507423f681161efa77d20052b4054397c7fb6",
+            "https://github.com/aio-libs/aiohttp/commit/3d850ee9b92573c7e913821cbcb96005beb3f4df"
+          ]
+        },
+        {
+          "id": "GHSA-494j-54xm-rwp3",
+          "aliases": [
+            "CVE-2026-111063"
+          ],
+          "summary": "AIOHTTP: Secure attribute not enforced for shared cookie",
+          "database_severity": "MODERATE",
+          "fixed": [
+            "3.14.4"
+          ],
+          "primary_references": [
+            "https://github.com/aio-libs/aiohttp/security/advisories/GHSA-494j-54xm-rwp3",
+            "https://github.com/aio-libs/aiohttp/commit/999c356d61e966faffa97b06ab0d0455226d36c5",
+            "https://github.com/aio-libs/aiohttp",
+            "https://github.com/aio-libs/aiohttp/releases/tag/v3.14.4"
+          ]
+        },
+        {
+          "id": "GHSA-5wr8-gcqf-gqf3",
+          "aliases": [
+            "CVE-2026-111064"
+          ],
+          "summary": "aiohttp server lacks an initial request/header timeout",
+          "database_severity": "HIGH",
+          "fixed": [
+            "3.14.4"
+          ],
+          "primary_references": [
+            "https://github.com/aio-libs/aiohttp/security/advisories/GHSA-5wr8-gcqf-gqf3",
+            "https://github.com/aio-libs/aiohttp/commit/be846822b4b3a5a54b6163e794b42dc06fba54a3",
+            "https://github.com/aio-libs/aiohttp",
+            "https://github.com/aio-libs/aiohttp/releases/tag/v3.14.4"
+          ]
+        },
+        {
+          "id": "GHSA-6cjc-53gc-5rqm",
+          "aliases": [
+            "CVE-2026-111065"
+          ],
+          "summary": "AIOHTTP: Connector pool exhaustion via Max-Age overflow",
+          "database_severity": "MODERATE",
+          "fixed": [
+            "3.14.4"
+          ],
+          "primary_references": [
+            "https://github.com/aio-libs/aiohttp/security/advisories/GHSA-6cjc-53gc-5rqm",
+            "https://github.com/aio-libs/aiohttp/commit/9dd8eaf4e31f1237ef2c1574a8c82a739fca5805",
+            "https://github.com/aio-libs/aiohttp",
+            "https://github.com/aio-libs/aiohttp/releases/tag/v3.14.4"
+          ]
+        },
+        {
+          "id": "GHSA-9xw5-w5jj-pvcg",
+          "aliases": [
+            "CVE-2026-111066"
+          ],
+          "summary": "AIOHTTP: File descriptor exhaustion in multipart requests",
+          "database_severity": "HIGH",
+          "fixed": [
+            "3.14.4"
+          ],
+          "primary_references": [
+            "https://github.com/aio-libs/aiohttp/security/advisories/GHSA-9xw5-w5jj-pvcg",
+            "https://github.com/aio-libs/aiohttp/commit/2d94633b7f1b4c1ba07d647b629a8440652b2d09",
+            "https://github.com/aio-libs/aiohttp",
+            "https://github.com/aio-libs/aiohttp/releases/tag/v3.14.4"
+          ]
+        },
+        {
+          "id": "GHSA-f9xw-jh8m-3mwq",
+          "aliases": [
+            "CVE-2026-111748"
+          ],
+          "summary": "AIOHTTP: Absolute-form request targets can spoof Request.scheme",
+          "database_severity": "MODERATE",
+          "fixed": [
+            "3.14.4"
+          ],
+          "primary_references": [
+            "https://github.com/aio-libs/aiohttp/security/advisories/GHSA-f9xw-jh8m-3mwq",
+            "https://github.com/aio-libs/aiohttp/commit/6d4e7b01f9b951aa084a75d7356e907d4ee80411",
+            "https://github.com/aio-libs/aiohttp",
+            "https://github.com/aio-libs/aiohttp/releases/tag/v3.14.4"
+          ]
+        },
+        {
+          "id": "GHSA-gx76-c99x-2c96",
+          "aliases": [
+            "CVE-2026-111749"
+          ],
+          "summary": "AIOHTTP: Cookie from subdomain can remove Host-Only Scope from existing cookies",
+          "database_severity": "LOW",
+          "fixed": [
+            "3.14.4"
+          ],
+          "primary_references": [
+            "https://github.com/aio-libs/aiohttp/security/advisories/GHSA-gx76-c99x-2c96",
+            "https://github.com/aio-libs/aiohttp/commit/6a07c171ef9f3be583e2907dcd1931372efca8d6",
+            "https://github.com/aio-libs/aiohttp",
+            "https://github.com/aio-libs/aiohttp/releases/tag/v3.14.4"
+          ]
+        },
+        {
+          "id": "GHSA-pqxq-w44r-73xw",
+          "aliases": [
+            "CVE-2026-111750"
+          ],
+          "summary": "AIOHTTP: Pure-Python parser request smuggling",
+          "database_severity": "MODERATE",
+          "fixed": [
+            "3.14.4"
+          ],
+          "primary_references": [
+            "https://github.com/aio-libs/aiohttp/security/advisories/GHSA-pqxq-w44r-73xw",
+            "https://github.com/aio-libs/aiohttp/commit/9b27347e61454d9f8ca2055f4c67a37dee336e83",
+            "https://github.com/aio-libs/aiohttp",
+            "https://github.com/aio-libs/aiohttp/releases/tag/v3.14.4"
+          ]
+        }
+      ]
+    },
+    {
+      "ecosystem": "PyPI",
+      "package": "certifi",
+      "version": "2026.7.22",
+      "records": [
+        {
+          "id": "GHSA-6q48-6c7w-9gw2",
+          "aliases": [
+            "PYSEC-2026-4320"
+          ],
+          "summary": "certifi bundles emSign root CAs with compromised intermediate CA keys",
+          "database_severity": "CRITICAL",
+          "fixed": [
+            "2026.10.18"
+          ],
+          "primary_references": [
+            "https://github.com/certifi/python-certifi/security/advisories/GHSA-6q48-6c7w-9gw2",
+            "https://github.com/certifi/python-certifi"
+          ]
+        },
+        {
+          "id": "PYSEC-2026-4320",
+          "aliases": [
+            "GHSA-6q48-6c7w-9gw2"
+          ],
+          "summary": "certifi bundles emSign root CAs with compromised intermediate CA keys",
+          "database_severity": null,
+          "fixed": [
+            "2026.10.19"
+          ],
+          "primary_references": [
+            "https://github.com/certifi/python-certifi/security/advisories/GHSA-6q48-6c7w-9gw2",
+            "https://github.com/certifi/python-certifi",
+            "https://github.com/advisories/GHSA-6q48-6c7w-9gw2"
+          ]
+        }
+      ]
+    },
+    {
+      "ecosystem": "PyPI",
+      "package": "opentelemetry-api",
+      "version": "1.45.0",
+      "records": [
+        {
+          "id": "GHSA-xcq7-p3pf-p88h",
+          "aliases": [
+            "CVE-2026-114603"
+          ],
+          "summary": "OpenTelemetry Python: Unbounded tracestate parsing in opentelemetry-api",
+          "database_severity": "MODERATE",
+          "fixed": [
+            "1.45.1"
+          ],
+          "primary_references": [
+            "https://github.com/open-telemetry/opentelemetry-python/security/advisories/GHSA-xcq7-p3pf-p88h",
+            "https://github.com/open-telemetry/opentelemetry-python/pull/5749",
+            "https://github.com/open-telemetry/opentelemetry-python/commit/d5224bf4ffdf2aee1b592ad238dcc32ca957f26b",
+            "https://github.com/open-telemetry/opentelemetry-python"
+          ]
+        }
+      ]
+    },
+    {
+      "ecosystem": "PyPI",
+      "package": "pillow",
+      "version": "12.3.0",
+      "records": [
+        {
+          "id": "GHSA-22hg-r758-rrw9",
+          "aliases": [
+            "BIT-pillow-2026-112390",
+            "CVE-2026-112390"
+          ],
+          "summary": "Pillow: Infinite loop in MIC n_frames when the embedded TIFF",
+          "database_severity": "HIGH",
+          "fixed": [
+            "13.0.0"
+          ],
+          "primary_references": [
+            "https://github.com/python-pillow/Pillow/security/advisories/GHSA-22hg-r758-rrw9",
+            "https://github.com/python-pillow/Pillow/commit/26cb3ed061173b817b9ee4b6f507cb0e1e293218",
+            "https://github.com/python-pillow/Pillow",
+            "https://github.com/python-pillow/Pillow/releases/tag/13.0.0"
+          ]
+        },
+        {
+          "id": "GHSA-24rc-8hj2-v98c",
+          "aliases": [
+            "CVE-2026-96638"
+          ],
+          "summary": "Pillow: BMP RLE decoder memory-amplification DoS via unbounded delta escape / absolute mode",
+          "database_severity": "MODERATE",
+          "fixed": [
+            "13.0.0"
+          ],
+          "primary_references": [
+            "https://github.com/python-pillow/Pillow/security/advisories/GHSA-24rc-8hj2-v98c",
+            "https://github.com/python-pillow/Pillow/pull/10015",
+            "https://github.com/python-pillow/Pillow/commit/e7794835e323ff2691d9b3a974cade1a44301b9a",
+            "https://github.com/python-pillow/Pillow"
+          ]
+        },
+        {
+          "id": "GHSA-254f-3936-288h",
+          "aliases": [
+            "BIT-pillow-2026-112391",
+            "CVE-2026-112391"
+          ],
+          "summary": "Pillow: PdfParser can recurse without limit in get_value() and linearize_page_tree()",
+          "database_severity": "MODERATE",
+          "fixed": [
+            "13.0.0"
+          ],
+          "primary_references": [
+            "https://github.com/python-pillow/Pillow/security/advisories/GHSA-254f-3936-288h",
+            "https://github.com/python-pillow/Pillow/commit/94cb11c44ff7345414da17ebfea1598a529ad9cd",
+            "https://github.com/python-pillow/Pillow",
+            "https://github.com/python-pillow/Pillow/releases/tag/13.0.0"
+          ]
+        },
+        {
+          "id": "GHSA-27h8-gf7j-v5hc",
+          "aliases": [
+            "BIT-pillow-2026-112392",
+            "CVE-2026-112392",
+            "PYSEC-2026-4326"
+          ],
+          "summary": "Pillow: NULL dereference in ImagingExpand via rank filters on zero-size images",
+          "database_severity": "HIGH",
+          "fixed": [
+            "13.0.0"
+          ],
+          "primary_references": [
+            "https://github.com/python-pillow/Pillow/security/advisories/GHSA-27h8-gf7j-v5hc",
+            "https://github.com/python-pillow/Pillow/commit/443e3130a8c11594fd0e296afad497e11e678961",
+            "https://github.com/python-pillow/Pillow",
+            "https://github.com/python-pillow/Pillow/releases/tag/13.0.0"
+          ]
+        },
+        {
+          "id": "GHSA-332p-7hrc-92wf",
+          "aliases": [
+            "BIT-pillow-2026-112393",
+            "CVE-2026-112393"
+          ],
+          "summary": "Pillow: Heap buffer overflow in _tiffWriteProc when saving TIFF to BytesIO",
+          "database_severity": "CRITICAL",
+          "fixed": [
+            "13.0.0"
+          ],
+          "primary_references": [
+            "https://github.com/python-pillow/Pillow/security/advisories/GHSA-332p-7hrc-92wf",
+            "https://github.com/python-pillow/Pillow/commit/11582e5ffbdceb973d5ee593f3105af5a9852b40",
+            "https://github.com/python-pillow/Pillow",
+            "https://github.com/python-pillow/Pillow/releases/tag/13.0.0"
+          ]
+        },
+        {
+          "id": "GHSA-3j72-p6qg-6xp7",
+          "aliases": [
+            "CVE-2026-96642"
+          ],
+          "summary": "Pillow: TarIO negative size field causes infinite CPU-spin loop",
+          "database_severity": "HIGH",
+          "fixed": [
+            "13.0.0"
+          ],
+          "primary_references": [
+            "https://github.com/python-pillow/Pillow/security/advisories/GHSA-3j72-p6qg-6xp7",
+            "https://github.com/python-pillow/Pillow/pull/10012",
+            "https://github.com/python-pillow/Pillow/commit/19b695fdcc5eddc37374e2b1645fc4185edaf71d",
+            "https://github.com/python-pillow/Pillow"
+          ]
+        },
+        {
+          "id": "GHSA-4558-3h8r-v8xp",
+          "aliases": [
+            "BIT-pillow-2026-112394",
+            "CVE-2026-112394",
+            "PYSEC-2026-4327"
+          ],
+          "summary": "Pillow: P;2L and P;4L decoders may read 1 to 3 bytes past the passed buffer size",
+          "database_severity": "MODERATE",
+          "fixed": [
+            "13.0.0"
+          ],
+          "primary_references": [
+            "https://github.com/python-pillow/Pillow/security/advisories/GHSA-4558-3h8r-v8xp",
+            "https://github.com/python-pillow/Pillow/pull/9723",
+            "https://github.com/python-pillow/Pillow/commit/392ee6f0d19a4adb766a63e9a99f3c28193b8d31",
+            "https://github.com/python-pillow/Pillow"
+          ]
+        },
+        {
+          "id": "GHSA-462x-pgg6-55fp",
+          "aliases": [
+            "BIT-pillow-2026-112395",
+            "CVE-2026-112395"
+          ],
+          "summary": "Pillow tiled-TIFF decoder reads past tile buffer in copy4 (Unpack.c:1290)",
+          "database_severity": "MODERATE",
+          "fixed": [
+            "13.0.0"
+          ],
+          "primary_references": [
+            "https://github.com/python-pillow/Pillow/security/advisories/GHSA-462x-pgg6-55fp",
+            "https://github.com/python-pillow/Pillow/commit/76869efdbbf2ad7dccd7536520fb61b7a00ab61e",
+            "https://github.com/python-pillow/Pillow",
+            "https://github.com/python-pillow/Pillow/releases/tag/13.0.0"
+          ]
+        },
+        {
+          "id": "GHSA-4rm8-3hmm-39fg",
+          "aliases": [
+            "CVE-2026-96641"
+          ],
+          "summary": "Pillow: Reachable undefined behavior in native integer operations, potentially leading to denial of service or logic integrity compromise",
+          "database_severity": "MODERATE",
+          "fixed": [
+            "13.0.0"
+          ],
+          "primary_references": [
+            "https://github.com/python-pillow/Pillow/security/advisories/GHSA-4rm8-3hmm-39fg",
+            "https://github.com/python-pillow/Pillow/pull/10010",
+            "https://github.com/python-pillow/Pillow/commit/80de4be9e38d3a6148dd4d8491eb80cd12b760a4",
+            "https://github.com/python-pillow/Pillow"
+          ]
+        },
+        {
+          "id": "GHSA-4rr5-89j8-mwwm",
+          "aliases": [
+            "BIT-pillow-2026-112396",
+            "CVE-2026-112396",
+            "PYSEC-2026-4328"
+          ],
+          "summary": "Pillow: Heap use-after-free when encoding TIFF to an in-memory buffer",
+          "database_severity": "MODERATE",
+          "fixed": [
+            "13.0.0"
+          ],
+          "primary_references": [
+            "https://github.com/python-pillow/Pillow/security/advisories/GHSA-4rr5-89j8-mwwm",
+            "https://github.com/python-pillow/Pillow/commit/dc95da20207827a062cfbf551ee9f6031465a8bb",
+            "https://github.com/python-pillow/Pillow",
+            "https://github.com/python-pillow/Pillow/releases/tag/13.0.0"
+          ]
+        },
+        {
+          "id": "GHSA-58r4-6rv3-gfh8",
+          "aliases": [
+            "BIT-pillow-2026-112397",
+            "CVE-2026-112397"
+          ],
+          "summary": "Pillow: Out-of-bounds access in _imagingmorph on a zero-width image",
+          "database_severity": "HIGH",
+          "fixed": [
+            "13.0.0"
+          ],
+          "primary_references": [
+            "https://github.com/python-pillow/Pillow/security/advisories/GHSA-58r4-6rv3-gfh8",
+            "https://github.com/python-pillow/Pillow/commit/18f7c0dfee93063c51db6ed0ca8c4da2999dcb64",
+            "https://github.com/python-pillow/Pillow",
+            "https://github.com/python-pillow/Pillow/releases/tag/13.0.0"
+          ]
+        },
+        {
+          "id": "GHSA-5x8w-8jj5-q52h",
+          "aliases": [
+            "BIT-pillow-2026-112398",
+            "CVE-2026-112398"
+          ],
+          "summary": "Pillow: Heap buffer overflow in FlashPix (FPX) JPEG decoding leads to code execution",
+          "database_severity": "CRITICAL",
+          "fixed": [
+            "13.0.0"
+          ],
+          "primary_references": [
+            "https://github.com/python-pillow/Pillow/security/advisories/GHSA-5x8w-8jj5-q52h",
+            "https://github.com/python-pillow/Pillow/commit/242a059aedc1935097d9aa1dc3f099750467ba75",
+            "https://github.com/python-pillow/Pillow",
+            "https://github.com/python-pillow/Pillow/releases/tag/13.0.0"
+          ]
+        },
+        {
+          "id": "GHSA-5xm2-6676-qcp9",
+          "aliases": [
+            "BIT-pillow-2026-112399",
+            "CVE-2026-112399"
+          ],
+          "summary": "Pillow: APNG background disposal allocates full canvas before decompression bomb check",
+          "database_severity": "HIGH",
+          "fixed": [
+            "13.0.0"
+          ],
+          "primary_references": [
+            "https://github.com/python-pillow/Pillow/security/advisories/GHSA-5xm2-6676-qcp9",
+            "https://github.com/python-pillow/Pillow/commit/f1acfc54c53502948d0d14121872061df931db48",
+            "https://github.com/python-pillow/Pillow",
+            "https://github.com/python-pillow/Pillow/releases/tag/13.0.0"
+          ]
+        },
+        {
+          "id": "GHSA-654x-cwwv-5j9c",
+          "aliases": [
+            "CVE-2026-114501"
+          ],
+          "summary": "Pillow: Arrow export leaks stale heap memory when PILLOW_ALIGNMENT > 1",
+          "database_severity": "MODERATE",
+          "fixed": [
+            "13.0.0"
+          ],
+          "primary_references": [
+            "https://github.com/python-pillow/Pillow/security/advisories/GHSA-654x-cwwv-5j9c",
+            "https://github.com/python-pillow/Pillow/pull/10172",
+            "https://github.com/python-pillow/Pillow/commit/19f64946eb247b973dd4560be7dea3bf979d2e6a",
+            "https://github.com/python-pillow/Pillow"
+          ]
+        },
+        {
+          "id": "GHSA-65qm-jvmh-6pqg",
+          "aliases": [
+            "BIT-pillow-2026-112400",
+            "CVE-2026-112400"
+          ],
+          "summary": "Pillow: GIF seek keeps rejected size after DecompressionBombError, allowing DoS",
+          "database_severity": "HIGH",
+          "fixed": [
+            "13.0.0"
+          ],
+          "primary_references": [
+            "https://github.com/python-pillow/Pillow/security/advisories/GHSA-65qm-jvmh-6pqg",
+            "https://github.com/python-pillow/Pillow/commit/6faed707cfb760a4cbd726ddc8406f576cf35bf7",
+            "https://github.com/python-pillow/Pillow",
+            "https://github.com/python-pillow/Pillow/releases/tag/13.0.0"
+          ]
+        },
+        {
+          "id": "GHSA-74r2-7ff9-mjj2",
+          "aliases": [
+            "BIT-pillow-2026-112401",
+            "CVE-2026-112401"
+          ],
+          "summary": "Pillow: Quadratic GIF comment concatenation allows DoS in Image.open()",
+          "database_severity": "MODERATE",
+          "fixed": [
+            "13.0.0"
+          ],
+          "primary_references": [
+            "https://github.com/python-pillow/Pillow/security/advisories/GHSA-74r2-7ff9-mjj2",
+            "https://github.com/python-pillow/Pillow/commit/68a3fe957d8a4d552e8c69d96066d749f0614c7e",
+            "https://github.com/python-pillow/Pillow",
+            "https://github.com/python-pillow/Pillow/releases/tag/13.0.0"
+          ]
+        },
+        {
+          "id": "GHSA-78g4-xqwv-q3g8",
+          "aliases": [],
+          "summary": "Pillow: Bundled libopenjp2 2.5.4 in all wheels since 11.1.0 carries OSV-2025-219 heap-buffer-overflow write reachable from Image.open().load()",
+          "database_severity": "HIGH",
+          "fixed": [
+            "13.0.0"
+          ],
+          "primary_references": [
+            "https://github.com/python-pillow/Pillow/security/advisories/GHSA-78g4-xqwv-q3g8",
+            "https://github.com/python-pillow/Pillow/commit/5f8114c8096b181fae493543cd3837d9f9a971cc",
+            "https://github.com/python-pillow/Pillow/commit/d3470c327840f4c216a1610f30e7091dfd0b97c0",
+            "https://github.com/uclouvain/openjpeg/commit/91d08b11a72764f6d199f32fa0c1b1abd4edc2ad"
+          ]
+        },
+        {
+          "id": "GHSA-7mwm-ghpf-9vrm",
+          "aliases": [
+            "BIT-pillow-2026-112402",
+            "CVE-2026-112402"
+          ],
+          "summary": "Pillow: Double free in ImagingScaleAffine on calloc failure via Image.transform",
+          "database_severity": "HIGH",
+          "fixed": [
+            "13.0.0"
+          ],
+          "primary_references": [
+            "https://github.com/python-pillow/Pillow/security/advisories/GHSA-7mwm-ghpf-9vrm",
+            "https://github.com/python-pillow/Pillow/commit/aafa6c75f7cdabb9f409a8aac7c780bea31d08d9",
+            "https://github.com/python-pillow/Pillow",
+            "https://github.com/python-pillow/Pillow/releases/tag/13.0.0"
+          ]
+        },
+        {
+          "id": "GHSA-8g5g-8vmr-9782",
+          "aliases": [
+            "BIT-pillow-2026-112403",
+            "CVE-2026-112403"
+          ],
+          "summary": "Pillow: Heap buffer overflow in ImagingJpegDecode",
+          "database_severity": "CRITICAL",
+          "fixed": [
+            "13.0.0"
+          ],
+          "primary_references": [
+            "https://github.com/python-pillow/Pillow/security/advisories/GHSA-8g5g-8vmr-9782",
+            "https://github.com/python-pillow/Pillow/commit/242a059aedc1935097d9aa1dc3f099750467ba75",
+            "https://github.com/python-pillow/Pillow",
+            "https://github.com/python-pillow/Pillow/releases/tag/13.0.0"
+          ]
+        },
+        {
+          "id": "GHSA-9v9v-9qvf-h2hj",
+          "aliases": [
+            "CVE-2026-96644"
+          ],
+          "summary": "Pillow: Heap over-read in WMF/EMF rendering via 16-bit dimension truncation (Windows builds)",
+          "database_severity": "HIGH",
+          "fixed": [
+            "13.0.0"
+          ],
+          "primary_references": [
+            "https://github.com/python-pillow/Pillow/security/advisories/GHSA-9v9v-9qvf-h2hj",
+            "https://github.com/python-pillow/Pillow/pull/10120",
+            "https://github.com/python-pillow/Pillow/commit/4cf46bee338304c5c8968fd7f132ba0d40c428b7",
+            "https://github.com/python-pillow/Pillow"
+          ]
+        },
+        {
+          "id": "GHSA-c6hw-5grf-ff96",
+          "aliases": [
+            "BIT-pillow-2026-112404",
+            "CVE-2026-112404"
+          ],
+          "summary": "Pillow: OOB read in TiffDecode.c tile and RGBA paths leaks heap memory into pixels",
+          "database_severity": "HIGH",
+          "fixed": [
+            "13.0.0"
+          ],
+          "primary_references": [
+            "https://github.com/python-pillow/Pillow/security/advisories/GHSA-c6hw-5grf-ff96",
+            "https://github.com/python-pillow/Pillow/commit/1d4773e6cea0c4a2814e6d4cdc099bbcf56da6ce",
+            "https://github.com/python-pillow/Pillow",
+            "https://github.com/python-pillow/Pillow/releases/tag/13.0.0"
+          ]
+        },
+        {
+          "id": "GHSA-cp9v-662q-vvx9",
+          "aliases": [
+            "BIT-pillow-2026-112405",
+            "CVE-2026-112405"
+          ],
+          "summary": "Pillow: NULL pointer dereference in Image.merge via an unvalidated band 0",
+          "database_severity": "HIGH",
+          "fixed": [
+            "13.0.0"
+          ],
+          "primary_references": [
+            "https://github.com/python-pillow/Pillow/security/advisories/GHSA-cp9v-662q-vvx9",
+            "https://github.com/python-pillow/Pillow/commit/b6ee66e8b2c2c0932bdf65f963268d9f2927ef86",
+            "https://github.com/python-pillow/Pillow",
+            "https://github.com/python-pillow/Pillow/releases/tag/13.0.0"
+          ]
+        },
+        {
+          "id": "GHSA-f2g6-542v-9j58",
+          "aliases": [
+            "BIT-pillow-2026-112406",
+            "CVE-2026-112406"
+          ],
+          "summary": "Pillow: Infinite loop in PdfParser.rewrite_pages on page tree Parent cycle",
+          "database_severity": "HIGH",
+          "fixed": [
+            "13.0.0"
+          ],
+          "primary_references": [
+            "https://github.com/python-pillow/Pillow/security/advisories/GHSA-f2g6-542v-9j58",
+            "https://github.com/python-pillow/Pillow/commit/b3ebf20c694f2f12537a629c30229a1d5a53f777",
+            "https://github.com/python-pillow/Pillow",
+            "https://github.com/python-pillow/Pillow/releases/tag/13.0.0"
+          ]
+        },
+        {
+          "id": "GHSA-fc9g-5qg7-mf45",
+          "aliases": [
+            "BIT-pillow-2026-112891",
+            "CVE-2026-112891"
+          ],
+          "summary": "Pillow: Quadratic GIF comment copying during save",
+          "database_severity": "MODERATE",
+          "fixed": [
+            "13.0.0"
+          ],
+          "primary_references": [
+            "https://github.com/python-pillow/Pillow/security/advisories/GHSA-fc9g-5qg7-mf45",
+            "https://github.com/python-pillow/Pillow/commit/68a3fe957d8a4d552e8c69d96066d749f0614c7e",
+            "https://github.com/python-pillow/Pillow",
+            "https://github.com/python-pillow/Pillow/releases/tag/13.0.0"
+          ]
+        },
+        {
+          "id": "GHSA-g4qv-2jxx-769h",
+          "aliases": [
+            "CVE-2026-96643"
+          ],
+          "summary": "Pillow: PNG eXIf chunk makes EXIF parsing run in quadratic time",
+          "database_severity": "HIGH",
+          "fixed": [
+            "13.0.0"
+          ],
+          "primary_references": [
+            "https://github.com/python-pillow/Pillow/security/advisories/GHSA-g4qv-2jxx-769h",
+            "https://github.com/python-pillow/Pillow/pull/10073",
+            "https://github.com/python-pillow/Pillow/commit/806e38381c781f32bbd22f4cd026678acd40fd6c",
+            "https://github.com/python-pillow/Pillow"
+          ]
+        },
+        {
+          "id": "GHSA-g7cr-3p24-7wf7",
+          "aliases": [
+            "CVE-2026-96778"
+          ],
+          "summary": "Pillow: Heap buffer overflow writing JPEG comment after ICC profile fills buffer",
+          "database_severity": "HIGH",
+          "fixed": [
+            "13.0.0"
+          ],
+          "primary_references": [
+            "https://github.com/python-pillow/Pillow/security/advisories/GHSA-g7cr-3p24-7wf7",
+            "https://github.com/python-pillow/Pillow/pull/10124",
+            "https://github.com/python-pillow/Pillow/commit/02561b8dc6117d5670d4b469fecdd02c70854f9b",
+            "https://github.com/python-pillow/Pillow"
+          ]
+        },
+        {
+          "id": "GHSA-g842-9rc4-69pw",
+          "aliases": [
+            "CVE-2026-96637"
+          ],
+          "summary": "Pillow: Decompression bomb check bypass in SpiderImagePlugin.seek() leads to unbounded allocation DoS",
+          "database_severity": "HIGH",
+          "fixed": [
+            "13.0.0"
+          ],
+          "primary_references": [
+            "https://github.com/python-pillow/Pillow/security/advisories/GHSA-g842-9rc4-69pw",
+            "https://github.com/python-pillow/Pillow/pull/10076",
+            "https://github.com/python-pillow/Pillow/commit/7cb0e02389d8aac2a60896a490f572db0b07b841",
+            "https://github.com/python-pillow/Pillow"
+          ]
+        },
+        {
+          "id": "GHSA-gg2r-wvfm-q9rx",
+          "aliases": [
+            "BIT-pillow-2026-112892",
+            "CVE-2026-112892"
+          ],
+          "summary": "Pillow: MSP RLE decoder expands a tiny file into unbounded memory",
+          "database_severity": "HIGH",
+          "fixed": [
+            "13.0.0"
+          ],
+          "primary_references": [
+            "https://github.com/python-pillow/Pillow/security/advisories/GHSA-gg2r-wvfm-q9rx",
+            "https://github.com/python-pillow/Pillow/commit/5dcb630b9798efd91929cb873d677aeee6ed0bb3",
+            "https://github.com/python-pillow/Pillow",
+            "https://github.com/python-pillow/Pillow/releases/tag/13.0.0"
+          ]
+        },
+        {
+          "id": "GHSA-j4m9-6w36-pw47",
+          "aliases": [
+            "BIT-pillow-2026-112893",
+            "CVE-2026-112893"
+          ],
+          "summary": "Pillow: Invalid free in FreeType glyph rendering when a stroker is active",
+          "database_severity": "HIGH",
+          "fixed": [
+            "13.0.0"
+          ],
+          "primary_references": [
+            "https://github.com/python-pillow/Pillow/security/advisories/GHSA-j4m9-6w36-pw47",
+            "https://github.com/python-pillow/Pillow/commit/a7416de7f3a43128179d2cf68df3240ea8dafe13",
+            "https://github.com/python-pillow/Pillow",
+            "https://github.com/python-pillow/Pillow/releases/tag/13.0.0"
+          ]
+        },
+        {
+          "id": "GHSA-jg86-v3jv-hrpm",
+          "aliases": [
+            "BIT-pillow-2026-112894",
+            "CVE-2026-112894"
+          ],
+          "summary": "Pillow: Quadratic-time DoS in PDF save_all (PdfParser.next_object_id)",
+          "database_severity": "HIGH",
+          "fixed": [
+            "13.0.0"
+          ],
+          "primary_references": [
+            "https://github.com/python-pillow/Pillow/security/advisories/GHSA-jg86-v3jv-hrpm",
+            "https://github.com/python-pillow/Pillow/commit/f6a852555f1a1bdff7781abf25f1a3b8bd6ce6cb",
+            "https://github.com/python-pillow/Pillow",
+            "https://github.com/python-pillow/Pillow/releases/tag/13.0.0"
+          ]
+        },
+        {
+          "id": "GHSA-mrfp-p49p-3hf2",
+          "aliases": [
+            "CVE-2026-96640"
+          ],
+          "summary": "Pillow PDF append accepts malformed shared page-tree DAG causing resource exhaustion",
+          "database_severity": "HIGH",
+          "fixed": [
+            "13.0.0"
+          ],
+          "primary_references": [
+            "https://github.com/python-pillow/Pillow/security/advisories/GHSA-mrfp-p49p-3hf2",
+            "https://github.com/python-pillow/Pillow/pull/10093",
+            "https://github.com/python-pillow/Pillow/commit/6f0e7ee1f9c2fe227906f8a4b926e6622b702bc7",
+            "https://github.com/python-pillow/Pillow"
+          ]
+        },
+        {
+          "id": "GHSA-p4wg-p73j-c528",
+          "aliases": [
+            "BIT-pillow-2026-112895",
+            "CVE-2026-112895"
+          ],
+          "summary": "Pillow: Unbounded recursion parsing a PDF page tree or trailer chain (incomplete fix for CVE-2026-42310)",
+          "database_severity": "HIGH",
+          "fixed": [
+            "13.0.0"
+          ],
+          "primary_references": [
+            "https://github.com/python-pillow/Pillow/security/advisories/GHSA-p4wg-p73j-c528",
+            "https://github.com/python-pillow/Pillow/commit/e2ae7eacad6de68c37eb28b633a97bebacf2c5bf",
+            "https://github.com/python-pillow/Pillow",
+            "https://github.com/python-pillow/Pillow/releases/tag/13.0.0"
+          ]
+        },
+        {
+          "id": "GHSA-p8hx-v2p6-rp84",
+          "aliases": [
+            "CVE-2026-96636"
+          ],
+          "summary": "Pillow: Decompression-bomb protection bypass via multi-frame seek() in MPO and DCX (MpoImageFile.seek / DcxImageFile.seek)",
+          "database_severity": "MODERATE",
+          "fixed": [
+            "13.0.0"
+          ],
+          "primary_references": [
+            "https://github.com/python-pillow/Pillow/security/advisories/GHSA-p8hx-v2p6-rp84",
+            "https://github.com/python-pillow/Pillow/pull/10011",
+            "https://github.com/python-pillow/Pillow/commit/f1acfc54c53502948d0d14121872061df931db48",
+            "https://github.com/python-pillow/Pillow"
+          ]
+        },
+        {
+          "id": "GHSA-pchr-8j38-3x4p",
+          "aliases": [
+            "BIT-pillow-2026-112896",
+            "CVE-2026-112896"
+          ],
+          "summary": "Pillow: TIFF encoder ColorMap plane-size mismatch causes a heap out-of-bounds read",
+          "database_severity": "HIGH",
+          "fixed": [
+            "13.0.0"
+          ],
+          "primary_references": [
+            "https://github.com/python-pillow/Pillow/security/advisories/GHSA-pchr-8j38-3x4p",
+            "https://github.com/python-pillow/Pillow/commit/d03dc3c587a9b0bdc9e4304d70d59a635a87b742",
+            "https://github.com/python-pillow/Pillow",
+            "https://github.com/python-pillow/Pillow/releases/tag/13.0.0"
+          ]
+        },
+        {
+          "id": "GHSA-q45j-58j2-45rg",
+          "aliases": [
+            "BIT-pillow-2026-112897",
+            "CVE-2026-112897"
+          ],
+          "summary": "Pillow: TiffDecode returns uninitialized memory as pixels for short JPEG strips",
+          "database_severity": "HIGH",
+          "fixed": [
+            "13.0.0"
+          ],
+          "primary_references": [
+            "https://github.com/python-pillow/Pillow/security/advisories/GHSA-q45j-58j2-45rg",
+            "https://github.com/python-pillow/Pillow/commit/1d4773e6cea0c4a2814e6d4cdc099bbcf56da6ce",
+            "https://github.com/python-pillow/Pillow",
+            "https://github.com/python-pillow/Pillow/releases/tag/13.0.0"
+          ]
+        },
+        {
+          "id": "GHSA-rfgq-q3w2-pmv2",
+          "aliases": [
+            "BIT-pillow-2026-112898",
+            "CVE-2026-112898"
+          ],
+          "summary": "Pillow: Image.quantize() with empty palette leaks uninitialized stack memory",
+          "database_severity": "MODERATE",
+          "fixed": [
+            "13.0.0"
+          ],
+          "primary_references": [
+            "https://github.com/python-pillow/Pillow/security/advisories/GHSA-rfgq-q3w2-pmv2",
+            "https://github.com/python-pillow/Pillow/commit/13943c8f857b22f073d30f0ef9b725a0d255f1a4",
+            "https://github.com/python-pillow/Pillow",
+            "https://github.com/python-pillow/Pillow/releases/tag/13.0.0"
+          ]
+        },
+        {
+          "id": "GHSA-v9pv-5gc8-w2m6",
+          "aliases": [
+            "CVE-2026-96639"
+          ],
+          "summary": "Pillow multi-frame loaders can reuse stale native image storage after mode transitions",
+          "database_severity": "CRITICAL",
+          "fixed": [
+            "13.0.0"
+          ],
+          "primary_references": [
+            "https://github.com/python-pillow/Pillow/security/advisories/GHSA-v9pv-5gc8-w2m6",
+            "https://github.com/python-pillow/Pillow/pull/10105",
+            "https://github.com/python-pillow/Pillow/commit/78d97d994579aef81aafe123773d525f40f2522a",
+            "https://github.com/python-pillow/Pillow"
+          ]
+        },
+        {
+          "id": "GHSA-vx6w-vv9f-6gvg",
+          "aliases": [
+            "CVE-2026-112899"
+          ],
+          "summary": "Pillow: EPS load(scale) lets Ghostscript render past the decompression bomb limit",
+          "database_severity": "MODERATE",
+          "fixed": [
+            "13.0.0"
+          ],
+          "primary_references": [
+            "https://github.com/python-pillow/Pillow/security/advisories/GHSA-vx6w-vv9f-6gvg",
+            "https://github.com/python-pillow/Pillow/commit/3e8cc105588d1dfe062fcada0b6058c1b5f14b65",
+            "https://github.com/python-pillow/Pillow",
+            "https://github.com/python-pillow/Pillow/releases/tag/13.0.0"
+          ]
+        },
+        {
+          "id": "GHSA-w889-685w-c8fh",
+          "aliases": [
+            "BIT-pillow-2026-112900",
+            "CVE-2026-112900"
+          ],
+          "summary": "Pillow: Argument Injection in Ghostscript call, potentially leading into RCE",
+          "database_severity": "CRITICAL",
+          "fixed": [
+            "13.0.0"
+          ],
+          "primary_references": [
+            "https://github.com/python-pillow/Pillow/security/advisories/GHSA-w889-685w-c8fh",
+            "https://github.com/python-pillow/Pillow/commit/a2c363141da31a265dd536c945677db4b64f3ec9",
+            "https://github.com/python-pillow/Pillow",
+            "https://github.com/python-pillow/Pillow/releases/tag/13.0.0"
+          ]
+        },
+        {
+          "id": "GHSA-xgh8-jp6q-p5x8",
+          "aliases": [
+            "BIT-pillow-2026-112901",
+            "CVE-2026-112901"
+          ],
+          "summary": "Pillow: ReDoS in XbmImagePlugin: 512-byte file stalls Image.open() for minutes",
+          "database_severity": "MODERATE",
+          "fixed": [
+            "13.0.0"
+          ],
+          "primary_references": [
+            "https://github.com/python-pillow/Pillow/security/advisories/GHSA-xgh8-jp6q-p5x8",
+            "https://github.com/python-pillow/Pillow/commit/2852a3e3d568997ddec745fc800991f138878f4b",
+            "https://github.com/python-pillow/Pillow",
+            "https://github.com/python-pillow/Pillow/releases/tag/13.0.0"
+          ]
+        },
+        {
+          "id": "GHSA-xvh5-g6gv-559v",
+          "aliases": [
+            "CVE-2026-112902"
+          ],
+          "summary": " Pillow: Memory disclosure and segfault in libtiff encoder via crafted TIFF tags",
+          "database_severity": "HIGH",
+          "fixed": [
+            "13.0.0"
+          ],
+          "primary_references": [
+            "https://github.com/python-pillow/Pillow/security/advisories/GHSA-xvh5-g6gv-559v",
+            "https://github.com/python-pillow/Pillow/commit/af56ace297b0991d02988fcc2ea933e4824b4fb3",
+            "https://github.com/python-pillow/Pillow",
+            "https://github.com/python-pillow/Pillow/releases/tag/13.0.0"
+          ]
+        },
+        {
+          "id": "PYSEC-2026-4326",
+          "aliases": [
+            "BIT-pillow-2026-112392",
+            "CVE-2026-112392",
+            "GHSA-27h8-gf7j-v5hc"
+          ],
+          "summary": null,
+          "database_severity": null,
+          "fixed": [
+            "13.0.0"
+          ],
+          "primary_references": [
+            "https://github.com/python-pillow/Pillow/releases/tag/13.0.0",
+            "https://github.com/python-pillow/Pillow/commit/443e3130a8c11594fd0e296afad497e11e678961",
+            "https://github.com/python-pillow/Pillow/security/advisories/GHSA-27h8-gf7j-v5hc"
+          ]
+        },
+        {
+          "id": "PYSEC-2026-4327",
+          "aliases": [
+            "BIT-pillow-2026-112394",
+            "CVE-2026-112394",
+            "GHSA-4558-3h8r-v8xp"
+          ],
+          "summary": null,
+          "database_severity": null,
+          "fixed": [
+            "13.0.0"
+          ],
+          "primary_references": [
+            "https://github.com/python-pillow/Pillow/releases/tag/13.0.0",
+            "https://github.com/python-pillow/Pillow/commit/392ee6f0d19a4adb766a63e9a99f3c28193b8d31",
+            "https://github.com/python-pillow/Pillow/security/advisories/GHSA-4558-3h8r-v8xp"
+          ]
+        },
+        {
+          "id": "PYSEC-2026-4328",
+          "aliases": [
+            "BIT-pillow-2026-112396",
+            "CVE-2026-112396",
+            "GHSA-4rr5-89j8-mwwm"
+          ],
+          "summary": null,
+          "database_severity": null,
+          "fixed": [
+            "13.0.0"
+          ],
+          "primary_references": [
+            "https://github.com/python-pillow/Pillow/releases/tag/13.0.0",
+            "https://github.com/python-pillow/Pillow/commit/dc95da20207827a062cfbf551ee9f6031465a8bb",
+            "https://github.com/python-pillow/Pillow/security/advisories/GHSA-4rr5-89j8-mwwm"
+          ]
+        }
+      ]
+    },
+    {
+      "ecosystem": "PyPI",
+      "package": "pypdf",
+      "version": "6.19.0",
+      "records": [
+        {
+          "id": "GHSA-39mj-jf6j-2qj3",
+          "aliases": [
+            "CVE-2026-113794"
+          ],
+          "summary": "pypdf: Possible infinite loop when hitting EOF in standard xref table",
+          "database_severity": "MODERATE",
+          "fixed": [
+            "6.20.0"
+          ],
+          "primary_references": [
+            "https://github.com/py-pdf/pypdf/security/advisories/GHSA-39mj-jf6j-2qj3",
+            "https://github.com/py-pdf/pypdf/issues/4169",
+            "https://github.com/py-pdf/pypdf/pull/4170",
+            "https://github.com/py-pdf/pypdf/commit/37e1cd681744bac38b159f7e1c614eee8d639c58"
+          ]
+        },
+        {
+          "id": "GHSA-5hx5-vpf9-5wcv",
+          "aliases": [
+            "CVE-2026-113786"
+          ],
+          "summary": "pypdf: Unvalidated JPEG image data loading",
+          "database_severity": "LOW",
+          "fixed": [
+            "6.21.1"
+          ],
+          "primary_references": [
+            "https://github.com/py-pdf/pypdf/security/advisories/GHSA-5hx5-vpf9-5wcv",
+            "https://github.com/py-pdf/pypdf/pull/4222",
+            "https://github.com/py-pdf/pypdf/commit/512d8eb94eb04be1d1c90504e6da2dcef8679e07",
+            "https://github.com/py-pdf/pypdf"
+          ]
+        },
+        {
+          "id": "GHSA-6c7f-9265-g8fw",
+          "aliases": [
+            "CVE-2026-115572"
+          ],
+          "summary": "pypdf: Possible long runtimes for repeated references to the same missing object",
+          "database_severity": "HIGH",
+          "fixed": [
+            "6.21.2"
+          ],
+          "primary_references": [
+            "https://github.com/py-pdf/pypdf/security/advisories/GHSA-6c7f-9265-g8fw",
+            "https://github.com/py-pdf/pypdf/pull/4240",
+            "https://github.com/py-pdf/pypdf/commit/68a0e5046cc9e14a6c24a21a713f3c7fbde18b4b",
+            "https://github.com/py-pdf/pypdf"
+          ]
+        },
+        {
+          "id": "GHSA-6vvc-x485-93v7",
+          "aliases": [
+            "CVE-2026-113789"
+          ],
+          "summary": "pypdf: Possible long runtimes/large memory usage when retrieving form fields",
+          "database_severity": "MODERATE",
+          "fixed": [
+            "6.21.0"
+          ],
+          "primary_references": [
+            "https://github.com/py-pdf/pypdf/security/advisories/GHSA-6vvc-x485-93v7",
+            "https://github.com/py-pdf/pypdf/pull/4219",
+            "https://github.com/py-pdf/pypdf/commit/5ef728f0e16d225c853e89f861ba0a67402fe3f2",
+            "https://github.com/py-pdf/pypdf"
+          ]
+        },
+        {
+          "id": "GHSA-7mh2-4gg2-979f",
+          "aliases": [
+            "CVE-2026-113795"
+          ],
+          "summary": "pypdf: Possible large memory usage for streams with multiple filters",
+          "database_severity": "MODERATE",
+          "fixed": [
+            "6.20.0"
+          ],
+          "primary_references": [
+            "https://github.com/py-pdf/pypdf/security/advisories/GHSA-7mh2-4gg2-979f",
+            "https://github.com/py-pdf/pypdf/pull/4173",
+            "https://github.com/py-pdf/pypdf/commit/80a84d4be6022d910874ccb0d2365400f3f0e185",
+            "https://github.com/py-pdf/pypdf"
+          ]
+        },
+        {
+          "id": "GHSA-9mx8-4j7g-633p",
+          "aliases": [
+            "CVE-2026-113793"
+          ],
+          "summary": "pypdf: Possible infinite loop when removing tree items",
+          "database_severity": "MODERATE",
+          "fixed": [
+            "6.20.1"
+          ],
+          "primary_references": [
+            "https://github.com/py-pdf/pypdf/security/advisories/GHSA-9mx8-4j7g-633p",
+            "https://github.com/py-pdf/pypdf/pull/4188",
+            "https://github.com/py-pdf/pypdf/commit/c9c35b4471c2eb5fe078094f6c816e69d4ed25a0",
+            "https://github.com/py-pdf/pypdf"
+          ]
+        },
+        {
+          "id": "GHSA-cgf9-327m-v77c",
+          "aliases": [
+            "CVE-2026-113791"
+          ],
+          "summary": "pypdf: Possible large memory usage when parsing content streams",
+          "database_severity": "MODERATE",
+          "fixed": [
+            "6.21.0"
+          ],
+          "primary_references": [
+            "https://github.com/py-pdf/pypdf/security/advisories/GHSA-cgf9-327m-v77c",
+            "https://github.com/py-pdf/pypdf/pull/4218",
+            "https://github.com/py-pdf/pypdf/commit/18bd2981a74479483a0b9507602c58a63d6c9b12",
+            "https://github.com/py-pdf/pypdf"
+          ]
+        },
+        {
+          "id": "GHSA-f54x-cmq8-qg57",
+          "aliases": [
+            "CVE-2026-113790"
+          ],
+          "summary": "pypdf: Possible large memory usage when parsing arrays and dictionaries",
+          "database_severity": "MODERATE",
+          "fixed": [
+            "6.21.0"
+          ],
+          "primary_references": [
+            "https://github.com/py-pdf/pypdf/security/advisories/GHSA-f54x-cmq8-qg57",
+            "https://github.com/py-pdf/pypdf/pull/4218",
+            "https://github.com/py-pdf/pypdf/commit/18bd2981a74479483a0b9507602c58a63d6c9b12",
+            "https://github.com/py-pdf/pypdf"
+          ]
+        },
+        {
+          "id": "GHSA-gmh7-3g9r-mjh5",
+          "aliases": [
+            "CVE-2026-115580"
+          ],
+          "summary": "pypdf: Possible long runtimes for large xref table header limits",
+          "database_severity": "HIGH",
+          "fixed": [
+            "6.21.2"
+          ],
+          "primary_references": [
+            "https://github.com/py-pdf/pypdf/security/advisories/GHSA-gmh7-3g9r-mjh5",
+            "https://github.com/py-pdf/pypdf/pull/4239",
+            "https://github.com/py-pdf/pypdf/commit/a3061e34b169d34478d520f5f049c53cfb1482b2",
+            "https://github.com/py-pdf/pypdf"
+          ]
+        },
+        {
+          "id": "GHSA-jr96-gvgh-j3r4",
+          "aliases": [
+            "CVE-2026-115585"
+          ],
+          "summary": "pypdf: Possible long runtimes for repeated malformed cross-reference entries (Follow-up)",
+          "database_severity": "HIGH",
+          "fixed": [
+            "6.21.2"
+          ],
+          "primary_references": [
+            "https://github.com/py-pdf/pypdf/security/advisories/GHSA-jr96-gvgh-j3r4",
+            "https://github.com/py-pdf/pypdf/pull/4240",
+            "https://github.com/py-pdf/pypdf/commit/68a0e5046cc9e14a6c24a21a713f3c7fbde18b4b",
+            "https://github.com/py-pdf/pypdf"
+          ]
+        },
+        {
+          "id": "GHSA-qfv9-64jg-mh7p",
+          "aliases": [
+            "CVE-2026-113792"
+          ],
+          "summary": "pypdf: Possible infinite loop in PdfWriter.find_outline_item",
+          "database_severity": "MODERATE",
+          "fixed": [
+            "6.20.1"
+          ],
+          "primary_references": [
+            "https://github.com/py-pdf/pypdf/security/advisories/GHSA-qfv9-64jg-mh7p",
+            "https://github.com/py-pdf/pypdf/pull/4188",
+            "https://github.com/py-pdf/pypdf/commit/c9c35b4471c2eb5fe078094f6c816e69d4ed25a0",
+            "https://github.com/py-pdf/pypdf"
+          ]
+        }
+      ]
+    },
+    {
+      "ecosystem": "PyPI",
+      "package": "setuptools",
+      "version": "83.0.0",
+      "records": [
+        {
+          "id": "GHSA-xmj3-9gf7-h52w",
+          "aliases": [],
+          "summary": "setuptools: Windows path escape via namespace_packages.txt during legacy wheel installation  Description",
+          "database_severity": "LOW",
+          "fixed": [
+            "84.1.0"
+          ],
+          "primary_references": [
+            "https://github.com/pypa/setuptools/security/advisories/GHSA-xmj3-9gf7-h52w",
+            "https://github.com/pypa/setuptools/pull/5329",
+            "https://github.com/pypa/setuptools/commit/6d07b8d17890dda58d944ac51e58f54af92d52af",
+            "https://github.com/pypa/setuptools"
+          ]
+        }
+      ]
+    },
+    {
+      "ecosystem": "PyPI",
+      "package": "torch",
+      "version": "2.10.0",
+      "records": [
+        {
+          "id": "GHSA-rrmf-rvhw-rf47",
+          "aliases": [
+            "BIT-pytorch-2025-3000",
+            "CVE-2025-3000",
+            "PYSEC-2025-194"
+          ],
+          "summary": "PyTorch is vulnerable to memory corruption through its torch.jit.script function",
+          "database_severity": "LOW",
+          "fixed": [
+            "2.13.0"
+          ],
+          "primary_references": [
+            "https://github.com/pytorch/pytorch/issues/149623",
+            "https://github.com/pytorch/pytorch/issues/149623#issue-2935703015",
+            "https://github.com/pytorch/pytorch/commit/b90c94991cdf8b87c8f7439f79518e0ef2c4ca4f",
+            "https://github.com/pypa/advisory-database/tree/main/vulns/torch/PYSEC-2025-194.yaml"
+          ]
+        },
+        {
+          "id": "PYSEC-2026-139",
+          "aliases": [
+            "BIT-pytorch-2026-4538",
+            "CVE-2026-4538"
+          ],
+          "summary": null,
+          "database_severity": null,
+          "fixed": [],
+          "primary_references": [
+            "https://github.com/pytorch/pytorch/",
+            "https://github.com/pytorch/pytorch/pull/176791"
+          ]
+        }
+      ]
+    }
+  ],
+  "candidate_matches": [
+    {
+      "ecosystem": "PyPI",
+      "package": "torch",
+      "version": "2.10.0",
+      "records": [
+        {
+          "id": "GHSA-rrmf-rvhw-rf47",
+          "aliases": [
+            "BIT-pytorch-2025-3000",
+            "CVE-2025-3000",
+            "PYSEC-2025-194"
+          ],
+          "summary": "PyTorch is vulnerable to memory corruption through its torch.jit.script function",
+          "database_severity": "LOW",
+          "fixed": [
+            "2.13.0"
+          ],
+          "primary_references": [
+            "https://github.com/pytorch/pytorch/issues/149623",
+            "https://github.com/pytorch/pytorch/issues/149623#issue-2935703015",
+            "https://github.com/pytorch/pytorch/commit/b90c94991cdf8b87c8f7439f79518e0ef2c4ca4f",
+            "https://github.com/pypa/advisory-database/tree/main/vulns/torch/PYSEC-2025-194.yaml"
+          ]
+        },
+        {
+          "id": "PYSEC-2026-139",
+          "aliases": [
+            "BIT-pytorch-2026-4538",
+            "CVE-2026-4538"
+          ],
+          "summary": null,
+          "database_severity": null,
+          "fixed": [],
+          "primary_references": [
+            "https://github.com/pytorch/pytorch/",
+            "https://github.com/pytorch/pytorch/pull/176791"
+          ]
+        }
+      ]
+    }
+  ],
+  "limitations": [
+    "Python database results do not cover all native Qt/OpenCV/FFmpeg components",
+    "Torch conditional records retained: see security review text",
+    "Not a certification or full SAST result"
+  ]
+}

@@ -53,7 +53,7 @@ class QualityPresetTests(unittest.TestCase):
                     video_encoding_args('cpu',quality=value)
         self.assertIn('高',quality_label('high'))
 
-    def test_quality_is_profile_local_and_save_as_keeps_it(self):
+    def test_quality_is_global_and_profile_switch_does_not_restore_old_value(self):
         with tempfile.TemporaryDirectory() as directory:
             store=Store(directory);state=fresh_state()
             state['settings']['export_quality']='low';state=store.save(state,0)
@@ -62,7 +62,7 @@ class QualityPresetTests(unittest.TestCase):
             second=state['active_profile'];state['settings']['export_quality']='medium'
             state=store.save(state,state['revision'])
             state=store.select_profile(state,'default')
-            self.assertEqual(state['settings']['export_quality'],'low')
+            self.assertEqual(state['settings']['export_quality'],'medium')
             state=store.select_profile(state,second)
             self.assertEqual(state['settings']['export_quality'],'medium')
 

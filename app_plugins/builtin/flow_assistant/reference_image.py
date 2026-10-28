@@ -4,6 +4,7 @@ from pathlib import Path
 import re
 import shutil
 import tempfile
+from model.AppDataStorage import data_directory, data_file, data_io
 
 from .store import fingerprint
 
@@ -19,17 +20,17 @@ def freeze_reference(row, downloads_root):
     if target.is_file():
         if fingerprint(target)['sha256'] != expected: raise ValueError('本次参考图副本与原始内容不符，已停止上传。')
     else:
-        folder.mkdir(parents=True, exist_ok=True)
-        fd, temporary = tempfile.mkstemp(prefix='.reference-', suffix=source.suffix.lower(), dir=folder)
+        data_directory(folder).ensure()
+        fd, temporary = data_io.mkstemp(prefix='.reference-', suffix=source.suffix.lower(), dir=folder)
         try:
-            with os.fdopen(fd, 'wb') as output, source.open('rb') as incoming:
+            with os.fdopen(fd, 'wb') as output, data_file(source).open('rb') as incoming:
                 shutil.copyfileobj(incoming, output)
                 output.flush(); os.fsync(output.fileno())
             if fingerprint(temporary)['sha256'] != expected:
                 raise ValueError('参考图在复制期间发生变化，未提交生成。')
-            os.replace(temporary, target)
+            data_io.replace(temporary, target)
         finally:
-            if os.path.exists(temporary): os.unlink(temporary)
+            if os.path.exists(temporary): data_file(temporary).remove()
     return {'upload_id': attempt, 'path': str(target), 'filename': target.name, 'sha256': expected}
 
 

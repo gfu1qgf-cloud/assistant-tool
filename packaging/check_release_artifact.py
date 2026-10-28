@@ -60,6 +60,7 @@ PRIVATE_DIRECTORIES = {
     "assistanttooldata",
     "codexaccountprofiles",
     ".venv",
+    ".venv-py314",
     ".git",
     ".github",
     "logs",

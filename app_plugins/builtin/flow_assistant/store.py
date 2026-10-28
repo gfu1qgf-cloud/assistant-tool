@@ -7,6 +7,7 @@ from pathlib import Path
 import re
 import time
 import uuid
+from model.AppDataStorage import data_file
 from .routing import dispatch_rank
 from .credit_policy import balance_ready, credit_order
 from .policy import signature, capable, block_for
@@ -36,7 +37,7 @@ def fingerprint(path):
     if not path.is_file() or path.suffix.lower() not in IMAGE_SUFFIXES:
         raise ValueError('参考图片不存在或格式不支持。')
     digest = hashlib.sha256()
-    with path.open('rb') as stream:
+    with data_file(path).open('rb') as stream:
         for block in iter(lambda: stream.read(1024 * 1024), b''):
             digest.update(block)
     return {'size': stat.st_size, 'mtime_ns': stat.st_mtime_ns, 'sha256': digest.hexdigest()}

@@ -1,7 +1,7 @@
-# Generated from security-audited Windows x64 / Python 3.10 environment.
+# Legacy rollback reference only. Python 3.10 is unsupported; not the 3.0 stack.
 # Version lock (not a wheel hash lock); update and retest together.
 aiohappyeyeballs==2.7.1
-aiohttp==3.14.3
+aiohttp==3.14.4
 aiosignal==1.4.0
 annotated-doc==0.0.5
 annotated-types==0.8.0
@@ -11,7 +11,7 @@ attrs==26.1.0
 audioread==3.1.0
 av==17.1.0
 cachetools==6.2.6
-certifi==2026.7.22
+certifi==2026.10.19
 cffi==2.1.1
 charset-normalizer==3.5.2
 click==8.5.0
@@ -65,7 +65,7 @@ odfpy==1.4.1
 onnxruntime==1.23.2
 openai-whisper==20250625
 opencv-contrib-python==4.14.0.94
-opentelemetry-api==1.45.0
+opentelemetry-api==1.45.1
 packaging==26.3
 pillow==12.3.0
 platformdirs==4.12.2
@@ -83,7 +83,7 @@ pydantic_core==2.46.5
 pydub==0.25.1
 Pygments==2.21.0
 pyparsing==3.3.3
-pypdf==6.19.0
+pypdf==6.21.2
 PyQt6==6.11.0
 PyQt6-Qt6==6.11.2
 PyQt6_sip==13.12.0
