@@ -82,10 +82,13 @@ def compile_caption(operation, directory, context, video_info, *, timing=None):
         return (FilterOperation("字幕已禁用", operation.video, "null"),)
     context.check_canceled()
     assets["filename"].verify()
-    if timing:
+    from .caption_clip import geometry as clip_geometry
+    soft_clip=clip_geometry(layer,width,height) is not None
+    if timing or soft_clip:
         from .workflow_timing import caption_plane
         return caption_plane(operation, name, "ass", "", context, video_info, timing,
-                             center=(width*layer['x']/100, height*layer['y']/100))
+                             center=(width*layer['x']/100, height*layer['y']/100),
+                             clip_layer=layer if soft_clip else None,directory=directory)
     native = (FilterOperation(operation.title, operation.video, "ass", (("filename", name),)),)
     # Exactly the full-chroma blending used by the existing batch renderer.
     return ((FilterOperation("字幕全色彩混合", operation.video, "format", (("pix_fmts", "rgba"),)),) + native

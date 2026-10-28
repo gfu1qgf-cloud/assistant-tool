@@ -10,7 +10,8 @@ CHOICES = (('不跟随（原有排版）', 'none'), ('朗读跟随 · 当前词�
            ('朗读跟随 · 当前行居中', 'line'))
 DEFAULTS = {'caption_follow_mode': 'none', 'caption_focus_x': 50., 'caption_focus_y': 50.,
             'caption_follow_ms': 180, 'caption_context_opacity': 40.,
-            'caption_active_opacity': 100., 'caption_read_opacity': 100.}
+            'caption_active_opacity': 100., 'caption_read_opacity': 100.,
+            'caption_clip_feather': 0.}
 
 
 def enabled(layer):
@@ -41,6 +42,9 @@ def normalize(layer):
             raise ValueError('朗读跟随位置／透明度应为 0–100%。')
     if type(layer['caption_follow_ms']) is not int or not 0 <= layer['caption_follow_ms'] <= 2000:
         raise ValueError('朗读跟随平滑时间应为 0–2000 毫秒。')
+    value = layer['caption_clip_feather']
+    if type(value) not in (int, float) or not math.isfinite(value) or not 0 <= value <= 50:
+        raise ValueError('裁切边缘柔化应为0–50%。')
 
 
 def track_for(events, layer, box, duration):

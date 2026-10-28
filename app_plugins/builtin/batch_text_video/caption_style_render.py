@@ -590,4 +590,6 @@ def render_design(layer, width, height, *, words=None, duration=None, time=None)
             paint_blurred(painter, bounds.adjusted(-border,-border,border,border), blur, draw)
             painter.restore()
     finally: painter.end()
+    from .caption_clip import apply_preview_mask
+    apply_preview_mask(image,layer,width,height)
     return image,layer['font_max']

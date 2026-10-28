@@ -75,21 +75,30 @@ def compile_timing(operation, directory, context, video_info):
     return compile_basic_caption(source, directory, context, video_info, window)
 
 
-def caption_plane(operation, name, filter_name, style, context, video_info, timing, center=None):
+def caption_plane(operation, name, filter_name, style, context, video_info, timing, center=None, *, clip_layer=None, directory=None):
     stream = video_info["video"]
     width, height = stream.get("display_width", stream["width"]), stream.get("display_height", stream["height"])
     from fractions import Fraction
     fps = Fraction(stream.get("avg_frame_rate", "25/1"))
     if fps <= 0: fps = Fraction(25)
     duration = video_info["duration"]
-    local_duration = timing.source_duration(duration)
+    local_duration = timing.source_duration(duration) if timing is not None else duration
     caption_filter = f"{filter_name}=filename='{name}':alpha=1" + (f":force_style='{style}'" if style else "")
-    filters = [f"color=c=black@0:s={width}x{height}:r={float(fps):.9f}:d={local_duration:.9f},"
-               f"format=rgba,{caption_filter}[caption_plane]"]
-    timed = add_timed_plane(filters, "caption_plane", "caption_timed", width, height, duration, fps, timing, center=center)
+    inputs=()
+    if clip_layer is not None:
+        from .caption_clip import prepare_plane
+        filters=[]
+        mask=prepare_plane(filters,'caption_plane',Path(directory)/name,clip_layer,
+                           width,height,local_duration,fps,'0:v')
+        if mask is not None: inputs=(('-i',str(mask)),)
+    else:
+        filters = [f"color=c=black@0:s={width}x{height}:r={float(fps):.9f}:d={local_duration:.9f},"
+                   f"format=rgba,{caption_filter}[caption_plane]"]
+    timed = (add_timed_plane(filters, "caption_plane", "caption_timed", width, height, duration, fps, timing, center=center)
+             if timing is not None else 'caption_plane')
     filters.append(f"[input][{timed}]overlay=0:0:format=auto:eof_action=pass[output]")
     context.check_canceled()
-    return (VideoFilterFragment(operation.video, (), tuple(filters)),)
+    return (VideoFilterFragment(operation.video, inputs, tuple(filters)),)
 
 
 def compile_basic_caption(operation, directory, context, info, timing):

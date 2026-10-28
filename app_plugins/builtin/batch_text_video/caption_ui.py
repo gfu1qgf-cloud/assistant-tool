@@ -154,6 +154,7 @@ class CaptionProperties(QtWidgets.QWidget):
         for key,label,low,high,suffix in (
                 ('caption_focus_x','聚焦位置 X',0,100,' %'),
                 ('caption_focus_y','聚焦位置 Y',0,100,' %'),
+                ('caption_clip_feather','裁切边缘柔化',0,50,' %'),
                 ('caption_context_opacity','未读不透明度',0,100,' %'),
                 ('caption_active_opacity','正在读不透明度',0,100,' %'),
                 ('caption_read_opacity','已读不透明度',0,100,' %'),
@@ -168,6 +169,7 @@ class CaptionProperties(QtWidgets.QWidget):
         self.controls['caption_context_opacity'].setToolTip('朗读开始前的不透明度，默认40%。0%隐藏，100%正常显示；相对于控件总不透明度。不会让被显示方式隐藏的未读文字提前出现。')
         self.controls['caption_active_opacity'].setToolTip('当前词从开始到结束时刻的不透明度，默认100%。与未读、已读分别控制；相对于控件总不透明度。')
         self.controls['caption_read_opacity'].setToolTip('当前词朗读结束后的不透明度，默认100%，恢复正常文字显示。可独立设为0%隐藏或降低亮度；相对于控件总不透明度。')
+        self.controls['caption_clip_feather'].setToolTip('朗读跟随字幕框四边向内渐隐，数值相对框的短边。0%为硬裁切，可先试8%；作用于字幕图层及其描边、阴影和底色，不模糊字形、不影响背景视频。')
         self._organize_sections(form)
         from .caption_effect_ui import CaptionEffectEditor
         from .property_sections import PropertySection
@@ -217,7 +219,7 @@ class CaptionProperties(QtWidgets.QWidget):
         self.forms['random_size']=random_form
         typography.addRow(self.random_widget)
         root.addWidget(self.typography_widget)
-        timing={self.controls[key] for key in ('caption_timing','caption_source','caption_language','caption_cloud_consent')}
+        timing={self.controls[key] for key in ('caption_timing','caption_source','caption_language','caption_cloud_consent','caption_clip_feather')}
         timing.update((self.file_row,self.source_note))
         rhythm={self.controls[key] for key in ('caption_words','caption_per_line','caption_accumulate','caption_hold_ms')}
         random_size = {self.controls[key] for key in ('caption_random_size','caption_size_contrast','caption_seed')}
@@ -241,7 +243,7 @@ class CaptionProperties(QtWidgets.QWidget):
         self.display_note.setWordWrap(True)
         self.display_note.setStyleSheet('color: palette(mid);')
         base.insertRow(base.getWidgetPosition(self.controls['caption_display_mode'])[0]+1, self.display_note)
-        order_form_fields(self.forms['timing'],[self.controls['caption_timing'],self.file_row]+
+        order_form_fields(self.forms['timing'],[self.controls['caption_clip_feather'],self.controls['caption_timing'],self.file_row]+
             [self.controls[key] for key in ('caption_source','caption_language','caption_cloud_consent')])
         order_form_fields(rhythm_form,[self.controls[key] for key in
             ('caption_words','caption_per_line','caption_accumulate','caption_hold_ms')])
@@ -330,6 +332,8 @@ class CaptionProperties(QtWidgets.QWidget):
 
     def update_display_controls(self):
         if not self.layer: return
+        from .caption_follow import enabled as follow_enabled
+        self.controls['caption_clip_feather'].setEnabled(follow_enabled(self.layer))
         self.display_note.setText(DISPLAY_NOTES.get(
             self.controls['caption_display_mode'].currentData(), '选择字幕显示方式。'))
         self.random_widget.show()

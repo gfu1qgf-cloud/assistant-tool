@@ -511,7 +511,7 @@ def _prepare_static_text(job, state, directory, cancel=None, progress=None, repo
                 write_caption_ass(path, words, value, width, height, duration)
             elif not value.save(str(path), "PNG"):
                 raise RuntimeError("文字图层保存失败。")
-            prepared.append((kind, path))
+            prepared.append((kind, (path,value) if kind=='caption' else path))
         stage(progress, '准备音乐')
         music_started = time.monotonic()
         music = choose_music(state, duration, media_directory / 'music-cache', ffmpeg, ffprobe, cancel, report)
@@ -580,7 +580,10 @@ def _prepare_static_text(job, state, directory, cancel=None, progress=None, repo
         for index, (kind, path) in enumerate(prepared):
             label = f"layer{index}"
             if kind == "caption":
-                filters.append(f"[{background}]ass=filename={filter_path(path)}[{label}]")
+                path,caption_layer=path
+                from .caption_clip import append_caption
+                next_index+=append_caption(args,filters,background,label,path,caption_layer,
+                    width,height,duration,source_fps(media),next_index)
             elif kind == 'node_effect':
                 info = {'duration': duration, 'audio': False, 'video': {**media['video'],
                     'width': width, 'height': height, 'display_width': width, 'display_height': height,
