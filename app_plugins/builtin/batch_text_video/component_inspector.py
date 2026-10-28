@@ -17,11 +17,23 @@ EDITOR_FACTORIES = {
 }
 
 
+def _loaded_provider_ready(name, function):
+    if name not in sys.modules:
+        return True
+    module = sys.modules[name]
+    # Import machinery publishes a module before executing its factory defs.
+    # An unrelated background import is neither a stale API nor something the
+    # GUI should wait for. Its normal lazy factory import still owns loading.
+    if getattr(getattr(module, '__spec__', None), '_initializing', False):
+        return True
+    return callable(getattr(module, function, None))
+
+
 def require_editor_api(panel_type):
     # Source installation does not hot-reload existing Python classes. A panel
     # first imported later in that session must not mix incompatible UI APIs.
     providers_ready = all(
-        name not in sys.modules or callable(getattr(sys.modules[name],function,None))
+        _loaded_provider_ready(name, function)
         for module,function in EDITOR_FACTORIES.values() for name in (__package__+module,))
     if not callable(getattr(panel_type,'_inspector_edited',None)) or not providers_ready:
         raise RuntimeError('控件属性界面已更新，当前会话仍载有旧界面。请在下次正常重启后使用；不会修改当前参数。')
