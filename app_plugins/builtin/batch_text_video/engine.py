@@ -371,7 +371,7 @@ def safe_output(folder, name, inputs, *, input_identities=None):
 
 
 @contextmanager
-def prepare_static_text(job, state, directory, cancel=None, progress=None, report=None, preview=False, *, node_effects=None, preview_limit=None):
+def _prepare_static_text(job, state, directory, cancel=None, progress=None, report=None, preview=False, *, node_effects=None, preview_limit=None):
     started = time.monotonic()
     if preview_limit is not None and (not preview or isinstance(preview_limit, bool) or
             not isinstance(preview_limit, (int, float)) or not math.isfinite(preview_limit) or
@@ -474,6 +474,7 @@ def prepare_static_text(job, state, directory, cancel=None, progress=None, repor
     from .music_preparation import current_music_session
     music_session = current_music_session()
     if music_session is not None:
+        media_directory = music_session.media_cache.directory(media_directory, keep=settings.get('keep_media_cache', True))
         music_session.prime(state, media_directory / 'music-cache', ffmpeg, ffprobe)
     settings = prepare_background_settings(job["path"], media, settings, ffmpeg, directory, cancel)
     if settings.get("_background_crop"):
@@ -654,6 +655,18 @@ def prepare_static_text(job, state, directory, cancel=None, progress=None, repor
             cwd=temporary if effects else None, timings={'prepare_seconds': time.monotonic()-started},
             quality=settings['export_quality'], render_scope='' if preview else file_identity(Path(directory)/'state.json'),
             source_paths=tuple(inputs), assignment=assignment)
+
+
+@contextmanager
+def prepare_static_text(job, state, directory, cancel=None, progress=None, report=None, preview=False, *, node_effects=None, preview_limit=None):
+    from .music_preparation import MusicPreparationSession, current_music_session, music_session
+    with ExitStack() as stack:
+        if not state['settings'].get('keep_media_cache', True) and current_music_session() is None:
+            session = stack.enter_context(MusicPreparationSession(cancel, 1))
+            stack.enter_context(music_session(session))
+        prepared = stack.enter_context(_prepare_static_text(job, state, directory, cancel, progress, report, preview,
+            node_effects=node_effects, preview_limit=preview_limit))
+        yield prepared
 
 
 def render_static_text(job, state, directory, cancel=None, progress=None, report=None, preview=False, *, node_effects=None, preview_limit=None):

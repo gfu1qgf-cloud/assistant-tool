@@ -378,6 +378,11 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
         check.setChecked(self.state["settings"]["overwrite"])
         self.controls["overwrite"] = check
         render_form.addRow(check)
+        cache_check = QtWidgets.QCheckBox('保留媒体缓存（加快重复预览和导出）')
+        cache_check.setChecked(self.state['settings']['keep_media_cache'])
+        cache_check.setToolTip('所有项目共用，默认开启。关闭后，新任务的背景循环和音乐中间缓存仅在本批内共用，整批结束、取消或失败后清理；播放预览返回编辑或关闭时清理。字幕时间戳和已保存抠像结果保留。')
+        self.controls['keep_media_cache'] = cache_check
+        render_form.addRow(cache_check)
         note = QtWidgets.QLabel("点击画布或左侧图层选择控件，在右侧“控件属性”中修改字体、颜色、位置和动画。")
         note.setWordWrap(True)
         form.addRow(note)

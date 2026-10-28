@@ -79,6 +79,8 @@ class MusicPreparationSession:
         self.cache = None
         self.leases = {}
         self.cache_directories = set()
+        from .media_cache import MediaCacheSession
+        self.media_cache = MediaCacheSession()
 
     def __enter__(self):
         return self
@@ -209,9 +211,13 @@ class MusicPreparationSession:
         try:
             self.executor.shutdown(wait=True, cancel_futures=True)
         finally:
-            for lease in list(self.leases.values()):
-                lease.__exit__(None, None, None)
-            self.leases.clear()
-        from model.MediaCacheLeases import trim_generated_cache
-        for directory in self.cache_directories:
-            trim_generated_cache(directory, '.flac', 1024**3)
+            try:
+                for lease in list(self.leases.values()):
+                    lease.__exit__(None, None, None)
+                self.leases.clear()
+                from model.MediaCacheLeases import trim_generated_cache
+                for directory in self.cache_directories:
+                    trim_generated_cache(directory, '.flac', 1024**3)
+            finally:
+                # Encoding contexts and music workers have released their files.
+                self.media_cache.close()

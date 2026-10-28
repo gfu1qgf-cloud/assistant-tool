@@ -30,7 +30,7 @@ DEFAULTS = {
     "margin_bottom": 18, "line_spacing": 1.15, "gap": 22,
     "darkness": 14, "music_volume": 70, "keep_audio": False, "music_pool_id": "",
     "skip_silence": True, "silence_db": -50, "silence_seconds": 0.6,
-    "fade_seconds": 0.5, "overwrite": False, "output_dir": "", "ffmpeg_path": "",
+    "fade_seconds": 0.5, "overwrite": False, "keep_media_cache": True, "output_dir": "", "ffmpeg_path": "",
     "video_encoder": "cpu", "encoder_fallback": True, "export_workers": 1, "export_quality": "high",
     "use_voice": False, "voice_pool_id": "", "voice_pool_mode": "task", "music_enabled": True,
     "duration_strategy": "loop", "loop_transition": "fade",

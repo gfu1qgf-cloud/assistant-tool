@@ -95,11 +95,14 @@ class PlaybackWorker(QtCore.QThread):
 
     def run(self):
         result = {"key": self.key, "preview_limit": self.preview_limit}
+        from .media_cache import MediaCacheSession
+        cache_owner = MediaCacheSession()
         try:
             from model.MediaStorage import media_cache_root
-            cache = media_cache_root(self.directory, anchors=(self.job.get('task_dir'), self.state['settings'].get('output_dir'),
-                Path(self.job['path']).parent if self.job.get('path') else None),
-                                     namespace='batch-text-video') / "playback-cache"
+            root = media_cache_root(self.directory, anchors=(self.job.get('task_dir'), self.state['settings'].get('output_dir'),
+                Path(self.job['path']).parent if self.job.get('path') else None), namespace='batch-text-video')
+            keep = self.state['settings'].get('keep_media_cache', True)
+            cache = cache_owner.directory(root, keep=keep) / 'playback-cache'
             data_directory(cache).ensure(parents=True, exist_ok=True)
             target = cache / (self.key + ".mp4")
             _, ffprobe = resolve_tools(self.state["settings"]["ffmpeg_path"])
@@ -172,10 +175,15 @@ class PlaybackWorker(QtCore.QThread):
                 total -= size
                 count -= 1
             result.update(path=str(target), duration=duration)
+            if not keep:
+                # Transfer ownership to the player; worker completion is too early.
+                result['cache_owner'] = cache_owner
         except Cancelled:
             result["cancelled"] = True
         except Exception as error:
             result.update(error=str(error), traceback=traceback.format_exc())
+        if 'cache_owner' not in result:
+            cache_owner.close()
         self.ready.emit(result)
 
 
@@ -245,6 +253,10 @@ class PlaybackController:
             self.preview_stack.removeWidget(self.playback_surface)
             self.playback_surface.deleteLater()
             self.playback_surface = None
+        owner = getattr(self, '_playback_cache_owner', None)
+        self._playback_cache_owner = None
+        if owner is not None:
+            owner.close()
         self.preview_stack.setCurrentWidget(self.preview)
         self.animation_timeline.show()
         self.playback_timeline.hide()
@@ -307,7 +319,9 @@ class PlaybackController:
         self.playback_status.setText(f"正在准备{title}：{value}%（可取消）")
 
     def _playback_ready(self, result):
+        owner = result.get('cache_owner')
         if result["key"] != self._playback_key:
+            if owner is not None: owner.close()
             return
         if result.get("cancelled"):
             self.playback_status.setText("已取消播放预览；资源和轮换位置未改变。")
@@ -317,6 +331,7 @@ class PlaybackController:
             self._log("播放预览失败：" + result.get("traceback", result["error"]))
             return
         try:
+            self._playback_cache_owner = owner
             if self.playback_surface is None:
                 from model.MediaPlayback import FfplayReviewSurface
                 self.playback_surface = FfplayReviewSurface(parent=self.preview_stack, preload_enabled=False)
@@ -386,6 +401,9 @@ class PlaybackController:
             self.playback_surface.play()
 
     def return_to_editor(self):
+        if getattr(self, '_playback_cache_owner', None) is not None:
+            self.invalidate_playback()
+            return
         if self.playback_surface:
             self.playback_surface.pause()
         self.preview_stack.setCurrentWidget(self.preview)
