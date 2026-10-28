@@ -1,0 +1,35 @@
+3.0.2 CodeQL结果分级说明（2026-10-28）
+
+审核对象与实际结果
+正式标签：v3.0.2；程序源码提交：cd2a703c87a1e4f952bef3b53370f09f5fad0b4b。
+GitHub正式Release于2026-10-28 18:58:44 UTC发布，不是draft或prerelease。Windows完整程序、Flow桥接扩展1.1.60、对应源码、校验清单和扩展审核说明已上传；扩展及源码实际下载回读校验通过，完整程序包通过CI构建／隐私／完整性检查。没有声称重新下载并运行了整个远端630MB程序包。
+远端完整测试、65个浏览器脚本、打包、发行与Python／JavaScript CodeQL任务均成功。扫描任务成功不等于扫描没有发现。
+JavaScript分析2048009606于19:00:09 UTC上传，22条原始结果；Python分析2048032575于19:03:37 UTC上传，3条原始结果。二者均对应此标签和提交，晚于Release发布时间，无提取错误或分析警告。开放警报接口另列23条；原始结果与开放警报数量不能混为一谈。
+
+逐类上下文核对（含源码／生成文件／原上游重复位置）
+
+1. js/request-forgery：2条，规则标注Critical。
+位置：browser_extensions/flow_adapter/options.js:175及生成的lzx-options.js同处。
+实际调用为new WebSocket(`ws://127.0.0.1:${entry.port}`)，不是接受任意URL的服务器fetch。此前逐项要求ticket为32位十六进制、port为Number.isInteger且1024–65535。主机及协议固定；输入不能注入外部主机、URL凭证或路径。这是用户明确需要的本机配对通道。按当前入口未确认任意外部主机请求问题；不通过删除扫描或放宽来源检查消警报。
+
+2. js/remote-property-injection：4条，规则标注High。
+位置：flow_adapter/background.js:392、474及生成文件对应处。
+一处仅delete outbox[message.event_id]，对象限定于本机控制端的下载回执记录；不是把任意路径写进全局对象。另一处batches[batch]的batch已通过32位十六进制正则，无法成为__proto__、constructor或任意属性路径，并在串行去重事务中保存。未确认通用原型污染／任意配置写入。后续可进一步对ACK事件ID做显式格式与自有属性校验，作为防御性加固。
+
+3. py/weak-sensitive-data-hashing：3条原始结果，规则将数据识别为password。
+位置：AIProviderClient.py:101、ApiKeyHelper.py:55、GeminiKeyManager.py:24。
+这些SHA-256用于高熵API凭据的稳定索引、冷却／模型目录缓存、额度状态关联，不用于用户密码认证或密码数据库。AIProviderClient的索引保存在进程缓存；另外两处索引需要兼容已有凭据状态，原始凭据仍由主程序配置／存储管理。不能直接改成随机盐的密码哈希，否则会破坏稳定状态索引。若以后新增真正的用户口令认证，须采用专用慢哈希和独立设计，不可复用这些索引函数。
+
+4. js/regex/missing-regexp-anchor：4条。
+位置：上游ui.js:1120及生成ui.js:1166的两个表达式。
+正则用于排除头像图像，不是允许下载或授权主机的白名单；扩大匹配会多排除候选，不会把攻击主机提升为可信主机。仍可在后续改成URL解析，改善候选筛选精度，不把该过滤器当安全边界。
+
+5. js/incomplete-url-substring-sanitization：4条。
+两条gstatic.com判断是静态展示素材的排除条件，返回true意味着忽略，不是授权。另两条host.endsWith检查来自原上游账号桥；扩展注入受manifest的Google域名匹配约束，桌面托管模式由__lzxFlowTransport接管，早于旧connect逻辑返回；保存项目另有HTTPS、精确主机名、无凭证及项目路径检查。不能只看一段endsWith就认定扩展会在任意伪装域执行。建议后续在独立补丁层统一用URL.hostname，保留原上游源文件以便跟进。
+
+6. js/tainted-format-string：2条；js/log-injection：6条。
+这些结果位于原上游及生成扩展的浏览器console输出，包括URL、下载事件和账号读取诊断，不是原生printf、系统命令或主程序可信计费／归档日志。未确认由格式串获得代码执行；但换行、控制字符及浏览器格式符可造成调试信息混淆，保留为日志规范化改进项。后续应采用固定首参数、限制长度、清理控制字符和敏感字段，通过桥接补丁实现，不直接污染原上游文件。
+
+处置边界
+本说明是对数据用途、入口和已有约束的人工分级，不宣称全部工具结果都是误报，也不保证没有其他漏洞。没有关闭或删除GitHub警报，没有跳过JavaScript／Python扫描，没有改写原始SARIF，没有提交外部审核。
+外审前应人工复核开放警报及本说明；默认main分支的依赖告警与本次发行分支的实际依赖版本需分别核对。第三方原生库及已记录的PyTorch条件性风险继续见既有自审说明。
