@@ -255,7 +255,9 @@ def make_primitives(words, layer, width, height, duration):
         if following:
             options.update(follow_track=track, screen_clip=clip,
                            follow_spoken=(event['start'], event['spoken_end']),
-                           context_opacity=layer.get('caption_context_opacity',40)/100)
+                           follow_opacities=(layer.get('caption_context_opacity',40)/100,
+                                             layer.get('caption_active_opacity',100)/100,
+                                             layer.get('caption_read_opacity',100)/100))
         if mode == 'metronome':
             options.update(motion='word_pop_random_pulse',motion_ms=min(60/style['metronome_bpm']*1000,250))
         if context: options.update(motion='none',out='none')
@@ -407,8 +409,13 @@ def motion_at(primitive, time):
         fx,fy=offset_at(primitive['follow_track'],time)
         dx+=fx;dy+=fy
         spoken=primitive.get('follow_spoken')
-        if spoken and not spoken[0] <= time < spoken[1]:
-            alpha*=primitive.get('context_opacity',1)
+        if spoken:
+            states = primitive.get('follow_opacities')
+            if states is not None:
+                state = 0 if time < spoken[0] else 1 if time < spoken[1] else 2
+                alpha *= states[state]
+            elif not spoken[0] <= time < spoken[1]:
+                alpha *= primitive.get('context_opacity',1)
     return size,dx,dy,alpha,blur
 
 

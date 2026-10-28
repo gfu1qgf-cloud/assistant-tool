@@ -154,7 +154,9 @@ class CaptionProperties(QtWidgets.QWidget):
         for key,label,low,high,suffix in (
                 ('caption_focus_x','聚焦位置 X',0,100,' %'),
                 ('caption_focus_y','聚焦位置 Y',0,100,' %'),
-                ('caption_context_opacity','上下文不透明度',0,100,' %'),
+                ('caption_context_opacity','未读不透明度',0,100,' %'),
+                ('caption_active_opacity','正在读不透明度',0,100,' %'),
+                ('caption_read_opacity','已读不透明度',0,100,' %'),
                 ('caption_follow_ms','滚动平滑时间',0,2000,' ms')):
             control=QtWidgets.QSpinBox() if key=='caption_follow_ms' else QtWidgets.QDoubleSpinBox()
             control.setRange(low,high);control.setSuffix(suffix)
@@ -163,7 +165,9 @@ class CaptionProperties(QtWidgets.QWidget):
         self.controls['caption_focus_x'].setToolTip('相对字幕框宽度；逐词跟随时使用。50% 为字幕框水平中心。')
         self.controls['caption_focus_y'].setToolTip('相对字幕框高度；50% 为字幕框垂直中心。')
         self.controls['caption_follow_ms'].setToolTip('在下一个词开始前平滑移到聚焦位置；停顿时停住。0 ms 直接切换，绝不修改原时间戳。')
-        self.controls['caption_context_opacity'].setToolTip('非当前词的不透明度：100% 完全显示，0% 隐藏；当前词保持完整控件透明度。高亮框继续使用独立透明度。')
+        self.controls['caption_context_opacity'].setToolTip('朗读开始前的不透明度，默认40%。0%隐藏，100%正常显示；相对于控件总不透明度。不会让被显示方式隐藏的未读文字提前出现。')
+        self.controls['caption_active_opacity'].setToolTip('当前词从开始到结束时刻的不透明度，默认100%。与未读、已读分别控制；相对于控件总不透明度。')
+        self.controls['caption_read_opacity'].setToolTip('当前词朗读结束后的不透明度，默认100%，恢复正常文字显示。可独立设为0%隐藏或降低亮度；相对于控件总不透明度。')
         self._organize_sections(form)
         from .caption_effect_ui import CaptionEffectEditor
         from .property_sections import PropertySection
@@ -219,7 +223,7 @@ class CaptionProperties(QtWidgets.QWidget):
         random_size = {self.controls[key] for key in ('caption_random_size','caption_size_contrast','caption_seed')}
         font_controls={self.controls[key] for key in ('caption_first_line_emphasis','caption_first_line_bold','caption_first_line_scale')}
         follow_controls={self.controls[key] for key in ('caption_follow_mode','caption_focus_x','caption_focus_y',
-            'caption_context_opacity','caption_follow_ms')}
+            'caption_context_opacity','caption_active_opacity','caption_read_opacity','caption_follow_ms')}
         while original.rowCount():
             row = original.takeRow(0)
             field = row.fieldItem.widget() if row.fieldItem else None
@@ -249,6 +253,7 @@ class CaptionProperties(QtWidgets.QWidget):
             ('x','X',self.controls['caption_focus_x']),('y','Y',self.controls['caption_focus_y'])])
         note=QtWidgets.QLabel('按词跟随需要逐词时间戳；句级 SRT 可用按行／字幕块跟随。全文连续排版、超出字幕框裁切，'
             '不会因文案长而整篇缩小。选择“整组显示”可预先看到上下文。每行词数控制换行，每组词数仍可控制分组配色。'
+            '未读、正在读、已读不透明度分别调节；词结束后转为已读，默认恢复100%。'
             '跟随模式优先连续排版，随机定位和歌词上下文参数保留，关闭跟随后恢复。')
         note.setWordWrap(True);follow_form.addRow(note)
         # These values affect glyph SIZE, so they live with the base font size.
