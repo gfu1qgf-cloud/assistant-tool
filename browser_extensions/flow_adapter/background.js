@@ -396,6 +396,15 @@ async function receive(message) {
   }
   if (message.type === 'pong') return;
   if (!['get_points', 'prepare', 'upload_images', 'run_tasks', 'snapshot', 'retry_download', 'skip_download', 'open_project', 'refresh_project', 'repair_project', 'close_exhausted', 'close_browser', 'focus_window', 'list_project_videos', 'reuse_project_tab'].includes(message.action)) return;
+  if (message.action === 'list_project_videos') {
+    try {
+      const data=await listProjectVideos(message);
+      send({action:'list_project_videos_response',request_id:message.request_id,success:true,data});
+    } catch(error) {
+      send({action:'list_project_videos_response',request_id:message.request_id,success:false,error:String(error.message || error)});
+    }
+    return; // Read-only inventory never waits on UI options, focus or storage writes.
+  }
   await applyBrowserOptions(message.browser_options);
   const tracked = !['snapshot', 'close_exhausted', 'close_browser'].includes(message.action);
   if (tracked) commandsInFlight++;
@@ -440,11 +449,6 @@ async function receive(message) {
         catch (error) {if (!/no current window|no window with id|invalid window id/i.test(String(error.message || error))) throw error;}
       }
       send({action: 'open_project_response', request_id: message.request_id, success: true});
-      return;
-    }
-    if (message.action === 'list_project_videos') {
-      const result=await listProjectVideos(message);
-      send({action:'list_project_videos_response',request_id:message.request_id,success:true,data:result});
       return;
     }
     if (message.action === 'retry_download' && message.params?.restore) {
@@ -689,6 +693,14 @@ async function repairProject(message) {
 // Read only loaded video material; never scroll, hover, select a tab or touch
 // the generation owner. Virtualized history is explicitly a partial inventory.
 async function listProjectVideos(message) {
+  const budget={phase:'标签页查询'};let timer;
+  try {
+    return await Promise.race([readProjectVideos(message,budget),new Promise((_,reject)=>{
+      timer=setTimeout(()=>reject(Error('读取视频列表超时（'+budget.phase+'）；未刷新或切换页面，可稍后重试。')),8000);
+    })]);
+  } finally {clearTimeout(timer);}
+}
+async function readProjectVideos(message,budget) {
   const project=config.project, epoch=connectionEpoch;
   if(!project || !sameProjectTab({url:message.params?.project},project))throw Error('视频列表与原项目不一致。');
   const allTabs=(await chrome.tabs.query({})).filter(tab=>Number.isInteger(tab.id) && !tab.pendingUrl && sameProjectTab(tab,project));
@@ -698,12 +710,12 @@ async function listProjectVideos(message) {
   // Keep one page's actual Flow order. Combining tabs would interleave old
   // lists, different sort choices and detail pages into a fabricated order.
   const tabs=[pool.find(tab=>tab.active) || pool.find(tab=>tab.id===ownedTab) || pool[0]];
-  let timer;
+  budget.phase='读取网页视频';
   const read=async tab=>{
     const tabUrl=tab.url;
     try {
       const result=await chrome.scripting.executeScript({target:{tabId:tab.id,frameIds:[0]},world:'MAIN',
-        func:async project=>{
+        func:project=>{
           const same=()=>{
             try {const a=new URL(location.href),b=new URL(project),base=p=>p.replace(/\/$/,'').replace(/\/edit\/[A-Za-z0-9_-]+$/,'');
               return a.origin===b.origin && base(a.pathname)===base(b.pathname);}catch{return false;}
@@ -745,35 +757,23 @@ async function listProjectVideos(message) {
             sources.set(media,{video,image,poster:video?.poster || image?.currentSrc || image?.src || ''});
             if(found.size>=200)break;
           }
-          const thumbnail=async source=>{
+          // Metadata is the useful result. Only draw already-loaded pixels;
+          // no fetch, image decoding promise or page timer gates the list.
+          const thumbnail=source=>{
             try {
+              const image=source.image || source.video;
+              const width=image?.videoWidth || image?.naturalWidth || image?.width;
+              const height=image?.videoHeight || image?.naturalHeight || image?.height;
+              if(!width || !height)return '';
               const canvas=document.createElement('canvas');canvas.width=96;canvas.height=108;
-              const paint=image=>{
-                const width=image.videoWidth || image.naturalWidth || image.width,height=image.videoHeight || image.naturalHeight || image.height;
-                if(!width || !height)return '';
-                canvas.width=96; // Reset after a possible cross-origin canvas failure.
-                const ctx=canvas.getContext('2d'),scale=Math.min(96/width,108/height);ctx.fillStyle='#20242b';ctx.fillRect(0,0,96,108);
-                ctx.drawImage(image,(96-width*scale)/2,(108-height*scale)/2,width*scale,height*scale);
-                const data=canvas.toDataURL('image/jpeg',0.6);return data.length<14000?data:'';
-              };
-              try {const result=paint(source.image || source.video);if(result)return result;}catch{}
-              if(!source.poster || typeof fetch!=='function' || typeof createImageBitmap!=='function')return '';
-              const url=new URL(source.poster,location.href);
-              if(url.protocol!=='https:' || url.username || url.password || url.port && url.port!=='443' ||
-                !['flow.google.com','flow-content.google','labs.google'].includes(url.hostname) && !url.hostname.endsWith('.googleusercontent.com'))return '';
-              const abort=new AbortController();let timeout,bitmap;
-              try {
-                return await Promise.race([(async()=>{
-                  const response=await fetch(url.href,{credentials:'include',signal:abort.signal});
-                  if(!response.ok || !/^image\//i.test(response.headers.get('Content-Type') || ''))return '';
-                  const blob=await response.blob();if(blob.size>4000000)return '';
-                  bitmap=await createImageBitmap(blob);return paint(bitmap);
-                })(),new Promise(resolve=>{timeout=setTimeout(()=>resolve(''),700);})]);
-              }finally{clearTimeout(timeout);abort.abort();bitmap?.close();}
+              const ctx=canvas.getContext('2d'),scale=Math.min(96/width,108/height);
+              ctx.fillStyle='#20242b';ctx.fillRect(0,0,96,108);
+              ctx.drawImage(image,(96-width*scale)/2,(108-height*scale)/2,width*scale,height*scale);
+              const data=canvas.toDataURL('image/jpeg',0.6);return data.length<14000?data:'';
             }catch{return '';}
           };
           const videos=[...found.values()];
-          await Promise.all(videos.slice(0,24).map(async item=>{item.thumbnail=await thumbnail(sources.get(item.media_id));}));
+          for(const item of videos.slice(0,24))item.thumbnail=thumbnail(sources.get(item.media_id));
           return same()?{videos}: {videos:[]};
         },args:[project]});
       const current=await chrome.tabs.get(tab.id);
@@ -781,7 +781,7 @@ async function listProjectVideos(message) {
       return result?.[0]?.result;
     }catch{return null;}
   };
-  const results=await Promise.race([Promise.all(tabs.slice(0,12).map(read)),new Promise((_,reject)=>{timer=setTimeout(()=>reject(Error('读取视频列表超时，请待页面显示后刷新。')),8000);})]).finally(()=>clearTimeout(timer));
+  const results=await Promise.all(tabs.map(read));
   if(epoch!==connectionEpoch || config.project!==project)throw Error('原项目或连接已经变化，请重新刷新。');
   if(results.every(value=>!value))throw Error('原项目页面未能读取，请待网页加载完成后刷新。');
   const merged=new Map();let thumbnailBytes=0;
@@ -1398,9 +1398,9 @@ async function projectSetupAction(entry, sender) {
         if (reply.type !== 'setup_reload_allowed') return;
         if (reply.ticket !== ticket || !reply.profile || new URL(reply.project).href.replace(/\/$/, '') !== project) throw Error('项目与本次连接请求不匹配。');
         receiving = true; clearTimeout(timer);
-        if (chrome.runtime.getManifest().version !== '1.1.60') {
+        if (chrome.runtime.getManifest().version !== '1.1.61') {
           await chrome.storage.local.set({lzxReloadSetup: {...entry, tabId: sender.tab.id,
-            mode: reply.mode || 'pair', profile: reply.profile, version: '1.1.60'}});
+            mode: reply.mode || 'pair', profile: reply.profile, version: '1.1.61'}});
           finish(null, {success: true, updating: true}); chrome.runtime.reload(); return;
         }
         if (action === 'options') {

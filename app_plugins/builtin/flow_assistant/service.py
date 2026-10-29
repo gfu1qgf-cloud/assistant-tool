@@ -1635,7 +1635,7 @@ class FlowService(QtCore.QObject, FlowOperations):
                     continue
                 if request['action'] == 'list_project_videos':
                     from .video_catalog import response as catalog_response
-                    catalog_response(self, owner, request, {'success':False, 'error':'读取视频列表超时，请确认原项目页面已显示后刷新。'})
+                    catalog_response(self, owner, request, {'success':False, 'error':'读取视频列表超时：扩展20秒内未返回结果，请检查原浏览器的扩展连接与项目页。'})
                     continue
                 if request.get('retired'):
                     continue
