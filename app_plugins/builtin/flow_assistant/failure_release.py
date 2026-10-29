@@ -9,6 +9,8 @@ PRE_SUBMIT_ERRORS = {
     '提交失败: 设置面板尚未稳定，自动等待后重新核对；未提交生成。',
     '提交失败: 设置面板正在重建，自动等待后重新核对；未提交生成。',
 }
+from .problem_details import SETTINGS_WAIT_ERRORS
+PRE_SUBMIT_ERRORS |= SETTINGS_WAIT_ERRORS  # The direct bridge reply has no "提交失败:" prefix.
 EVIDENCE = ('bindings', 'upstream_task', 'generation_response', 'download',
             'unverified_download', 'page_recovery', 'cloud_finished')
 

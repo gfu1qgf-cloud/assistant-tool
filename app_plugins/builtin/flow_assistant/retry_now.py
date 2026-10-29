@@ -6,6 +6,9 @@ from .transfer_policy import retry_info
 
 def retry_kind(row):
     remote = row.get('remote', {})
+    from .problem_details import settings_wait_error
+    if (row['status'] in {'queued','failed'} and not row.get('attempt') and remote.get('environment_error') and
+            settings_wait_error(row.get('error'))):return 'environment'
     if row['status'] == 'queued' and remote.get('prepare_retry', {}).get('next_at'):
         return 'prepare'
     for stage, status in (('upload', 'uploading'), ('download', 'download_failed')):
@@ -32,7 +35,32 @@ def request_now(service, command):
         kind = retry_kind(row)
         if not kind or any(p['job'] == identifier and p['attempt'] == row['attempt'] for p in service.pending.values()): continue
         now = time.time(); remote = dict(row['remote'])
-        if kind in {'upload', 'download'}:
+        if kind=='environment':
+            from .problem_details import settings_wait_error
+            from .connection_status import browser_keys
+            from .environment_recovery import schedule
+            from .store import submission_risk
+            if submission_risk(row):continue
+            reason=settings_wait_error(row['error'])
+            identity={'id':remote.get('environment_browser',''),'profile':remote.get('profile','')}
+            keys=browser_keys(identity)
+            blocks=service.preferences.get('browser_blocks',{})
+            if any(blocks.get(key) and blocks[key]!=reason for key in keys):continue
+            if any(blocks.get(key)==reason for key in keys):
+                repairs=dict(service.preferences.get('environment_recoveries',{}))
+                for key in keys:
+                    if repairs.get(key,{}).get('error')==reason:repairs.pop(key)
+                preferences=schedule({**service.preferences,'environment_recoveries':repairs},identity,reason,'FLOW_PAGE_NOT_READY')
+                for key in keys:
+                    if preferences['environment_recoveries'].get(key,{}).get('error')==reason:
+                        preferences['environment_recoveries'][key]['next_at']=now
+                service.commit_preferences(preferences)
+                for client in service.clients.values():
+                    if browser_keys(client)&keys:
+                        client.pop('prepare_snapshot',None)
+                        client.pop('f5_recovery',None)
+            service.store.update(identifier,'queued',remote=remote,error=row['error'])
+        elif kind in {'upload', 'download'}:
             info = {**retry_info(row, kind), 'next_at': now}
             if kind == 'download': info['probe_at'] = 0
             service._save_transfer(row, kind, info)

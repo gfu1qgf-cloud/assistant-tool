@@ -517,7 +517,8 @@ class QueueStore:
             elif row['status'] == 'failed' or regenerate:
                 if not regenerate:
                     with self.connection() as db:
-                        charged = db.execute('SELECT 1 FROM charges WHERE attempt=?', (row['attempt'],)).fetchone()
+                        charged = db.execute('SELECT 1 FROM charges WHERE attempt=? AND '
+                            '(cost>0 OR COALESCE(source,"")!="rejected_before_submission")', (row['attempt'],)).fetchone()
                     if charged or any(row['remote'].get(key) for key in ('generation_response',
                             'upstream_task', 'unverified_download', 'page_recovery', 'cloud_finished')):
                         self.update(row['id'], 'uncertain', error='原记录已有提交／结果证据，保留核对；普通重试不会再次生成。')

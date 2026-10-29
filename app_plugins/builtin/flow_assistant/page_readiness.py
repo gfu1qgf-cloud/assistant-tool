@@ -22,6 +22,8 @@ def note_readiness(client):
 
 
 def defer_prepare(service, client, row, error, code=''):
+    from .problem_details import settings_wait_error
+    if not code and settings_wait_error(error):code='FLOW_SETTINGS_NOT_READY'
     if code == 'FLOW_BATCH_BUSY':
         client['batch_running'] = True
         service.store.update(row['id'], 'queued', attempt='', browser='', remote={**row['remote'],

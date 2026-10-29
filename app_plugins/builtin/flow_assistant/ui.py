@@ -156,7 +156,7 @@ class FlowDialog(QtWidgets.QDialog):
         self.start_button = self.button('开始／继续等待项', self.start_queue, controls)
         self.button('暂停后续任务', lambda: self.send('pause'), controls)
         self.retry_now_button = self.button('立即重试', self.retry_selected_now, controls)
-        self.retry_now_button.setToolTip('跳过选中任务的自动重试倒计时；保留重试次数、账号限制和原视频绑定。普通失败项沿用手动重试。')
+        self.retry_now_button.setToolTip('立即处理选中的失败项，或跳过自动重试倒计时；支持未提交的面板重建／未就绪错误。保留账号限制和原视频绑定，结果不明时先核对，不重复生成。')
         self.retry_download_button = self.button('重试下载', self.retry_selected_downloads, controls)
         self.reset_button = self.button('完全重置并重新调度', self.reset_selected_tasks, controls)
         self.reset_button.setToolTip('清除选中任务的原浏览器绑定及重试状态，重新选择可用浏览器；可能已提交的任务需先确认。')

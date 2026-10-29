@@ -1,9 +1,24 @@
 """Explain a blocked account and the exact next action without hiding the error."""
 import re
 
+SETTINGS_WAIT_ERRORS = {
+    '设置面板正在重建，自动等待后重新核对；未提交生成。',
+    '设置面板尚未稳定，自动等待后重新核对；未提交生成。',
+    '时长设置面板尚未稳定，自动等待后重新核对；未提交生成。',
+}
+
+
+def settings_wait_error(message):
+    text=str(message or '').strip()
+    for prefix in ('浏览器环境已暂停，修正后在浏览器页恢复：',
+                   '此浏览器暂不可用，等待自动恢复或由其他账号接单：','提交失败: ','提交失败：'):
+        if text.startswith(prefix):text=text[len(prefix):]
+    return text if text in SETTINGS_WAIT_ERRORS else ''
+
 
 def temporary_code(message):
     text = str(message or '').strip()
+    if settings_wait_error(text):return 'FLOW_PAGE_NOT_READY'
     if (re.fullmatch(r'(?:error:\s*)?no current window\.?', text, re.I) or
             text == '浏览器响应超时，请检查页面后恢复；未发送新的生成请求。' or
             re.fullmatch(r'页面或浏览器窗口连续未就绪，自动等待已达\d+次；未提交生成。', text) or

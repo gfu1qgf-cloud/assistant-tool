@@ -66,6 +66,9 @@ def fault_reason(client, preferences):
     blocks = preferences.get('browser_blocks', {})
     reasons = [blocks[key] for key in browser_keys(client) if blocks.get(key)]
     if PAUSED in reasons or any(not temporary_code(reason) for reason in reasons): return ''
+    repairs=preferences.get('environment_recoveries',{})
+    if any(repairs.get(key,{}).get('state') in {'waiting','refreshing'} for key in browser_keys(client)):
+        return ''  # Finish the bounded page/F5 recovery before a last-resort restart.
     return next((reason for reason in reasons if temporary_code(reason)), '') or (
         str(client['reuse_recovery'].get('reason') or '自动准备连续失败')
         if (client.get('reuse_recovery') or {}).get('state') == 'stopped' else '')
