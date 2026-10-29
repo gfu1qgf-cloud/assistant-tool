@@ -46,6 +46,8 @@ def abandon(service, client, reason):
     """Retire only unpaid automatic probes; never cancel an assigned job."""
     state = recovery_state(service, client)
     state.update(state='stopped', reason=reason, stopped_at=time.time())
+    from .fault_rotation import enabled,marked
+    if enabled(service.preferences,client):service.commit_preferences(marked(service.preferences,client,reason))
     client.update(runtime_note=reason+'；已释放准备占位，继续其他账号。可在运行时手动检测积分或恢复此账号。',
         credits_waiting_ready=False, credits_waiting_account=False, credits_retry_at=0,
         credit_check={'state':'stopped', 'at':time.time(), 'message':reason})

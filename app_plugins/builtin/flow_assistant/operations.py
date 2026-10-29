@@ -70,7 +70,12 @@ class FlowOperations(TransferRecovery, TaskReset):
         blocks[scope + ':' + key] = str(message)[:1000]
         try:
             from .environment_recovery import schedule
-            self.commit_preferences(schedule({**self.preferences, 'browser_blocks': blocks}, client, message, recovery_code))
+            from .fault_rotation import enabled,marked
+            preferences={**self.preferences, 'browser_blocks': blocks}
+            if enabled(preferences,client) and recovery_code in {'FLOW_PAGE_NOT_READY','FLOW_SETTINGS_MISMATCH'}:
+                preferences=marked(preferences,client,message)
+            else:preferences=schedule(preferences,client,message,recovery_code)
+            self.commit_preferences(preferences)
         except Exception:
             self.paused = True
             self.released.clear()
@@ -321,15 +326,12 @@ class FlowOperations(TransferRecovery, TaskReset):
                 if original and project_identity(original) != project_identity(saved):
                     raise ValueError('原任务的项目与此配置保存的地址不同，请在连接向导核对；没有打开其他项目。')
                 if client:
-                    self.request(client, 'open_project', {'url': saved})
-                    if not client.get('page_ready'):
-                        from .connection_recovery import repair_idle
-                        repair_idle(self, client)
+                    self.request(client, 'focus_window', {'manual_ui':True})
                 else:
-                    self.launch_requested.emit(profile)
+                    self.manual_launch_requested.emit({'profile':profile,'project':saved})
             elif client:
                 # Legacy unlabelled clients can only activate an existing tab.
-                self.request(client, 'open_project', {'url': row['remote'].get('page') if row else ''})
+                self.request(client, 'focus_window', {'manual_ui':True})
             else:
                 raise ValueError('原浏览器未连接，请在 Chrome 启动器打开对应配置。')
         elif action in {'priority', 'edit'}:

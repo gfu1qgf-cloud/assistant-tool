@@ -339,7 +339,7 @@ class ConnectionSetup(QtWidgets.QGroupBox):
         profile = next((p for p in getattr(launcher, 'profiles', []) if p['directory'] == self.profile.currentData()), None)
         if not profile:
             self.status.setText('未找到这个 Chrome 配置，请刷新 Chrome 启动器。'); return False
-        ok, error = self.dialog.plugin.launch_browser(profile['directory'], urls)
+        ok, error = self.dialog.plugin.launch_browser(profile['directory'], urls, manual=True)
         if not ok: self.status.setText('打开浏览器失败：' + str(error))
         return ok
 

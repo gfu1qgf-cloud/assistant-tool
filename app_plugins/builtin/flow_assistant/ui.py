@@ -623,10 +623,10 @@ class FlowDialog(QtWidgets.QDialog):
         item = self.browsers.item(row, 0)
         if not item: return
         value = item.data(QtCore.Qt.ItemDataRole.UserRole) or {}
-        if value.get('profile'):
-            self.open_setup(value['profile']); self.setup.begin()
-        elif value.get('browser'):
+        if value.get('browser'):
             self.send('open_browser', browser=value['browser'])
+        elif value.get('profile'):
+            self.open_setup(value['profile']); self.setup.begin()
 
     def resume_selected_browsers(self):
         self.send('resume_browser', keys=[value['key'] for value in self.browser_selections()])

@@ -14,7 +14,7 @@ class FlowAssistantPlugin(QtCore.QObject):
     command = QtCore.pyqtSignal(object)
     plugin_id = 'flow_assistant'
     display_name = 'Chrome 与 Flow 助手'
-    version = '0.6.32'
+    version = '0.6.33'
     upstream_version = '1.1.6'
     ui_api_version = 4
     manual_credit_check_api = 1
@@ -128,6 +128,7 @@ class FlowAssistantPlugin(QtCore.QObject):
         self.service.failed.connect(self._failed)
         self.service.scheduler_attention.connect(self._scheduler_attention)
         self.service.launch_requested.connect(self._launch)
+        self.service.manual_launch_requested.connect(lambda data:self.launch_browser(data['profile'],[data['project']],manual=True))
         self.service.project_open_requested.connect(self._open_missing_project)
         self.service.high_credit_confirmation_requested.connect(self._confirm_high_credit)
         self.service.running_changed.connect(self._running)
@@ -243,7 +244,7 @@ class FlowAssistantPlugin(QtCore.QObject):
             self.context.log('Flow 设置已写入程序设置，但本次应用失败：' + str(result.get('error') or '未知错误') +
                 '；已保留当前运行参数，下次正常启动会重新应用。')
 
-    def launch_browser(self, directory, urls, *, completed=None, guard=None, bootstrap_existing=False):
+    def launch_browser(self, directory, urls, *, completed=None, guard=None, bootstrap_existing=False, manual=False):
         """Coalesce pending opens; Flow may reuse Chrome's existing window."""
         from .timing import value as timing_value
         from .browser_manager import launcher_for
@@ -257,6 +258,10 @@ class FlowAssistantPlugin(QtCore.QObject):
         if not targets or any(not url.startswith('https://') for url in targets):
             if completed: completed(False, '没有有效的 Flow 网页地址。')
             return False, '没有有效的 Flow 网页地址。'
+        if manual:
+            entry={'profile':directory,'targets':targets,'guard':guard,'callbacks':[completed] if completed else [],
+                'ticket':uuid.uuid4().hex,'bootstrap_existing':bootstrap_existing,'manual':True}
+            return self._launch_now(entry)
         now = time.monotonic()
         wait = timing_value(self.snapshot.get('preferences', {}), 'browser_startup_seconds')
         self.browser_launches = {key: at for key, at in self.browser_launches.items() if now - at < wait}
@@ -309,7 +314,7 @@ class FlowAssistantPlugin(QtCore.QObject):
                 from .tab_reuse import route
                 reused = route(self, entry)
                 if isinstance(reused, tuple): return reused
-                options = {} if browser_options_snapshot(self.snapshot.get('preferences',{}))['focus_before_action'] else {'activate':False}
+                options = {} if entry.get('manual') or browser_options_snapshot(self.snapshot.get('preferences',{}))['focus_before_action'] else {'activate':False}
                 # A cold Chrome must receive its saved HTTPS project. An
                 # extension settings entrance alone cannot confirm navigation.
                 # Connected profiles still take the reuse route above.

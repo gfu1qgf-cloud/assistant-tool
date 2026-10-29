@@ -35,7 +35,8 @@ def route(plugin, entry):
     plugin.tab_reuse_entries=pending;pending[entry['ticket']]=entry
     entry['opened']=True;entry['tab_reuse_pending']=True
     plugin.command.emit({'action':'reuse_project_tab','profile':entry['profile'],'browser':client['id'],
-        'url':url,'request_id':entry['ticket'],'host_token':entry['ticket'] if entry.get('lease') else ''})
+        'url':url,'request_id':entry['ticket'],'host_token':entry['ticket'] if entry.get('lease') else '',
+        'manual':entry.get('manual') is True})
     def timeout():
         if entry['ticket'] in pending:
             result(plugin,{'request_id':entry['ticket'],'success':False,'error':'原标签页恢复响应超时；未额外打开Flow分页，可稍后重试。'})
@@ -74,14 +75,14 @@ def request(service, command):
     owner=state(service).get('owner') or {}
     held=bool(owner.get('host') and owner.get('token')==command.get('host_token') and
         owner.get('profile')==client['profile'] and time.time()-owner.get('at',0)<35)
-    if snapshot(service.preferences)['ui_mutex'] and not held:
+    if snapshot(service.preferences)['ui_mutex'] and not held and command.get('manual') is not True:
         fail('原标签页恢复尚未取得UI操作权限，请稍后重试；未打开新分页。');return
     if not compatible_extension(client.get('extension_version'),minimum_patch=54):
         fail('当前扩展需更新到1.1.54后才能在原标签页恢复；未启动新的Flow分页。');return
     action='reuse_project_tab'
     before=set(service.pending)
     deadline=min(time.time()+15,owner.get('at',time.time())+30) if held else time.time()+15
-    if not service.request(client,action,{'url':command['url'],'idle':True,'host_ui_lease':held,'expires_at':deadline}):
+    if not service.request(client,action,{'url':command['url'],'idle':True,'host_ui_lease':held or command.get('manual') is True,'expires_at':deadline}):
         fail('原浏览器连接未就绪，未额外打开分页。');return
     pending=next(p for k,p in service.pending.items() if k not in before)
     pending['tab_reuse_request']=command['request_id']

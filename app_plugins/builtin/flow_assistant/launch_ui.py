@@ -7,6 +7,8 @@ from .browser_options import CONFIG_KEY, normalize, snapshot
 from .timing import value
 from .setup_support import project_identity
 
+WAIT_NOTE='FLOW 启动浏览器正在等待 UI 互斥；当前传图／页面操作完成后继续。'
+START_NOTE='已取得启动权限，正在打开原浏览器项目。'
 
 def chrome_window_state():
     """Read native window appearance; never activate or close any window."""
@@ -86,9 +88,9 @@ class LaunchUiGate(QtCore.QObject):
             self.untrack(entry);self.plugin._launch_report(entry,False,error)
             return False,error
         self.active=entry;self.track(entry)
-        self.plugin.command.emit({'action':'ui_native_request','token':entry['ticket'],'profile':entry['profile']})
         if self.plugin.dialog:
-            self.plugin.dialog.note.setText('FLOW 启动浏览器正在等待 UI 互斥；当前传图／页面操作完成后继续。')
+            self.plugin.dialog.note.setText(WAIT_NOTE)
+        self.plugin.command.emit({'action':'ui_native_request','token':entry['ticket'],'profile':entry['profile']})
         return True,None
 
     @QtCore.pyqtSlot(object)
@@ -97,6 +99,8 @@ class LaunchUiGate(QtCore.QObject):
         if not entry or entry['ticket']!=token: return
         state=result.get('state')
         if state in {'granted','disabled'} and not entry.get('reported'):
+            if self.plugin.dialog and self.plugin.dialog.note.text()==WAIT_NOTE:
+                self.plugin.dialog.note.setText(START_NOTE)
             if self.plugin.stopping or state=='granted' and result.get('expires_at',0)<=time.time():
                 self.plugin._launch_report(entry,False,'已取消待启动浏览器');self.finish();return
             entry['lease']=state=='granted'
@@ -136,6 +140,8 @@ class LaunchUiGate(QtCore.QObject):
 
     def finish(self):
         self.timer.stop();entry,self.active=self.active,None
+        if self.plugin.dialog and self.plugin.dialog.note.text() in {WAIT_NOTE,START_NOTE}:
+            self.plugin.dialog.note.setText('浏览器启动的UI操作已结束。')
         if entry:
             self.untrack(entry)
             self.plugin.command.emit({'action':'ui_native_release','token':entry['ticket']})

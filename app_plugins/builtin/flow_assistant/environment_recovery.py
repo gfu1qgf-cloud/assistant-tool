@@ -40,6 +40,8 @@ def watch(service):
                for r in service.store.rows()): return False
     changed = False
     for client in list(service.clients.values()):
+        from .fault_rotation import enabled,is_fault
+        if enabled(service.preferences,client) and is_fault(client.get('profile'),service.preferences):continue
         if (not client.get('authorized') or account_hold(client, service.preferences) or
                 credit_hold(client, service.preferences)): continue
         project = project_identity(service.preferences.get('profile_projects', {}).get(client.get('profile')))

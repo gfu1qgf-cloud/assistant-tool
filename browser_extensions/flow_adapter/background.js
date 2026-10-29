@@ -411,7 +411,7 @@ async function receive(message) {
   let commandLease;
   try {
     if (closingBrowser) throw Object.assign(Error('此浏览器正在核对关闭，暂不接收新操作。'), {code:'FLOW_CLOSE_BUSY'});
-    if(browserOptions.ui_mutex && ['focus_window','repair_project','open_project'].includes(message.action)) {
+    if(browserOptions.ui_mutex && !(['focus_window','repair_project'].includes(message.action) && message.params?.manual_ui===true) && ['focus_window','repair_project','open_project'].includes(message.action)) {
       commandLease=crypto.randomUUID().replaceAll('-','');
       const permit=await acquireUiLease(await ensureTab(),message.action,commandLease);
       if(!permit.ok)throw Error('前台 UI 互斥未取得操作权限：'+permit.state);
@@ -1398,9 +1398,9 @@ async function projectSetupAction(entry, sender) {
         if (reply.type !== 'setup_reload_allowed') return;
         if (reply.ticket !== ticket || !reply.profile || new URL(reply.project).href.replace(/\/$/, '') !== project) throw Error('项目与本次连接请求不匹配。');
         receiving = true; clearTimeout(timer);
-        if (chrome.runtime.getManifest().version !== '1.1.61') {
+        if (chrome.runtime.getManifest().version !== '1.1.62') {
           await chrome.storage.local.set({lzxReloadSetup: {...entry, tabId: sender.tab.id,
-            mode: reply.mode || 'pair', profile: reply.profile, version: '1.1.61'}});
+            mode: reply.mode || 'pair', profile: reply.profile, version: '1.1.62'}});
           finish(null, {success: true, updating: true}); chrome.runtime.reload(); return;
         }
         if (action === 'options') {

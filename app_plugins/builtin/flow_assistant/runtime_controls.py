@@ -22,7 +22,8 @@ def refresh(service, client, *, automatic=False):
     now = time.time()
     if automatic and (info.get('count', 0) >= value(service.preferences, 'connection_repair_attempts') or
                       now < info.get('next_at', 0)): return False
-    if not service.request(client, 'repair_project', {'idle': True, 'url':client.get('saved_project'), 'force_reload':True}): return False
+    if not service.request(client, 'repair_project', {'idle': True, 'url':client.get('saved_project'), 'force_reload':True,
+        **({'manual_ui':True} if not automatic else {})}): return False
     if automatic:
         for pending in service.pending.values():
             if pending['client']==client['id'] and pending['action']=='repair_project':
@@ -51,7 +52,7 @@ def execute(service, command):
             if 'runtime_controls_v1' not in client.get('capabilities',[]):
                 client['runtime_note']='当前扩展尚未加载运行时激活支持；相关浏览器正常重启后可用。'
                 continue
-            service.request(client, 'focus_window')
+            service.request(client, 'focus_window', {'manual_ui':True})
             client['runtime_note'] = '正在请求激活此配置的准确项目窗口。'
         elif operation == 'credits': service.request(client,'get_points',manual_credit=True)
         else: service.request(client,'snapshot')

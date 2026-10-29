@@ -73,6 +73,7 @@ class BrowserLifecycleTests(unittest.TestCase):
         service._disconnected(client['socket'])
         with patch('time.time',return_value=until-1):lifecycle.watch(service)
         self.assertEqual(service.preferences['browser_blocks']['profile:'+profile],lifecycle.AUTO_CLOSING)
+        service.paused=False
         with patch('time.time',return_value=until+1):lifecycle.watch(service)
         self.assertNotIn('profile:'+profile,service.preferences['browser_blocks'])
         self.assertNotIn(profile,service.launch_attempts);self.assertEqual(service.store.rows(),rows)
@@ -81,7 +82,7 @@ class BrowserLifecycleTests(unittest.TestCase):
         self.confirm(service,next_client)
         entry=service.preferences['browser_lifecycle'][profile]
         self.assertEqual(entry['count'],2)
-        self.assertGreaterEqual(entry['reopen_at']-time.time(),179)
+        self.assertLessEqual(entry['reopen_at'],time.time(),'healthy-pass admission replaces fixed long delays')
 
     def test_manual_pause_login_security_and_other_profile_blocks_are_preserved(self):
         for reason in (PAUSED,'需要登录','网站提示安全限制，需要验证'):

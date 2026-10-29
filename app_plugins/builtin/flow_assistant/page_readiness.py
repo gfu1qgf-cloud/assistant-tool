@@ -32,6 +32,11 @@ def defer_prepare(service, client, row, error, code=''):
         return True
     if not missing_window(error) and code not in {'FLOW_PAGE_NOT_READY', 'FLOW_SETTINGS_NOT_READY'}:
         return False
+    from .fault_rotation import enabled
+    if enabled(service.preferences,client) and client.get('profile'):
+        client.pop('prepare_snapshot',None)
+        service.quarantine(client,row,error or '页面尚未就绪，已换用其他浏览器；未提交生成。',recovery_code='FLOW_PAGE_NOT_READY')
+        return True
     previous = client.get('prepare_wait') or row['remote'].get('prepare_retry', {})
     if previous.get('browser') != client['id']:
         previous = {}

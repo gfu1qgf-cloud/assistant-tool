@@ -86,6 +86,7 @@ class FlowService(QtCore.QObject, FlowOperations):
     tasks_reset = QtCore.pyqtSignal(object)
     preferences_saved = QtCore.pyqtSignal(object)
     video_catalog_result = QtCore.pyqtSignal(object)
+    manual_launch_requested = QtCore.pyqtSignal(object)
     tab_reused = QtCore.pyqtSignal(object)
     stopped = QtCore.pyqtSignal()
     archive_result = QtCore.pyqtSignal(object)
@@ -275,6 +276,8 @@ class FlowService(QtCore.QObject, FlowOperations):
                 client['credit_check']['hold_dispatch'] = True
                 client.pop('credit_close', None)
         params = dict(params or {})
+        if action=='focus_window' and params.get('manual_ui') is True:
+            self.pending[request_id]['manual_ui']=True
         if action=='skip_download' and params.get('park_native_downloads') is True:
             self.pending[request_id]['backlog_attempt']=params.get('batch_id')
         if action in {'prepare', 'upload_images', 'run_tasks'}:

@@ -39,6 +39,8 @@ class WindowBudgetTests(fixtures.BrowserLifecycleTests):
         self.confirm(service,client);until=service.preferences['browser_lifecycle'][names[0]]['reopen_at']
         self.assertFalse(service.reuse_recoveries,'confirmed close must retire the failed page recovery epoch')
         service._disconnected(client['socket'])
+        service.store.enqueue(self.jobs(budget=0));service.paused=False
+        for profile in names[1:]:service.preferences.setdefault('browser_blocks',{})['profile:'+profile]=PAUSED
         with patch('time.time',return_value=until-1):
             lifecycle.watch(service);self.assertFalse(slots.request_start(service,names[0],self.jobs(budget=0)[0]))
         with patch('time.time',return_value=until+1):lifecycle.watch(service)
@@ -108,15 +110,16 @@ class WindowBudgetTests(fixtures.BrowserLifecycleTests):
         self.assertFalse(slots.request_start(service,names[8]))
         self.assertTrue(all(not c.get('runtime_close') for c in clients[4:]))
 
-    def test_third_fault_enters_long_cooldown_instead_of_rapid_reopen_loop(self):
+    def test_repeated_fault_waits_for_a_new_healthy_pass_instead_of_a_fixed_long_delay(self):
         service,names=self.pool();client=self.ready(service,names[0]);slots.seen(service,client)
         service.preferences['browser_lifecycle']={names[0]:{'state':'eligible','count':2}}
         abandon(service,client,'准备超时');self.assertTrue(lifecycle.watch(service));self.confirm(service,client)
         entry=service.preferences['browser_lifecycle'][names[0]]
-        self.assertEqual(entry['count'],3);self.assertGreaterEqual(entry['reopen_at']-time.time(),1799)
+        self.assertEqual(entry['count'],3)
         service._disconnected(client['socket'])
-        with patch('time.time',return_value=entry['reopen_at']-1):
-            lifecycle.watch(service);self.assertEqual(service.preferences['browser_lifecycle'][names[0]]['state'],'cooldown')
+        lifecycle.watch(service);self.assertEqual(service.preferences['browser_lifecycle'][names[0]]['state'],'cooldown')
+        service.store.enqueue(self.jobs(budget=0));service.paused=False
+        for profile in names[1:]:service.preferences.setdefault('browser_blocks',{})['profile:'+profile]=PAUSED
         with patch('time.time',return_value=entry['reopen_at']+1):lifecycle.watch(service)
         self.assertEqual(service.preferences['browser_lifecycle'][names[0]]['count'],0)
 

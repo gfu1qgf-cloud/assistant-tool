@@ -67,6 +67,8 @@ def receive(service, client, message):
     from .ui_mutex import foreground_pending
     request_id = message.get('request_id')
     def current():
+        direct=service.pending.get(request_id)
+        if direct and direct.get('manual_ui') and direct.get('action')=='focus_window':return direct
         if snapshot(service.preferences)['ui_mutex']:
             return foreground_pending(service, client, request_id)
         return service.pending.get(request_id) or foreground_pending(service, client, request_id)
