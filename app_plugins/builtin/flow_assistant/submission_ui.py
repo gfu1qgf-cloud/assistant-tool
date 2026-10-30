@@ -147,7 +147,7 @@ class TaskImagePicker(QtWidgets.QWidget):
                     size = reader.size()
                     if size.isValid():
                         reader.setScaledSize(size.scaled(74, 68, QtCore.Qt.AspectRatioMode.KeepAspectRatio))
-                    item = QtWidgets.QListWidgetItem(QtGui.QIcon(QtGui.QPixmap.fromImage(reader.read())), path.name)
+                    item = QtWidgets.QListWidgetItem(QtGui.QIcon(QtGui.QPixmap.fromImage(reader.read())), f'{self.images.count()+1}.  {path.name}')
                     item.setData(QtCore.Qt.ItemDataRole.UserRole, str(path)); item.setToolTip(str(path))
                     self.images.addItem(item)
             selected = next((self.images.item(i) for i in range(self.images.count())

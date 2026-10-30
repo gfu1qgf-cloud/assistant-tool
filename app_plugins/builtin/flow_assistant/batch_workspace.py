@@ -42,7 +42,7 @@ class BatchWorkspace(QtWidgets.QWidget):
         self.compose.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
         self.compose.setColumnWidth(0,65);self.compose.setColumnWidth(1,95);self.compose.setColumnWidth(3,70)
         self.compose.horizontalHeader().setSectionResizeMode(2,QtWidgets.QHeaderView.ResizeMode.Stretch)
-        self.compose.verticalHeader().setVisible(False);self.compose.setMinimumWidth(340)
+        self.compose.verticalHeader().show();self.compose.verticalHeader().setMinimumWidth(32);self.compose.setMinimumWidth(340)
         self.views.addTab(self.compose,'待提交清单');self.views.addTab(self.manual.recent,'最近任务／成品')
         right.addWidget(self.views,1)
         actions=QtWidgets.QHBoxLayout()

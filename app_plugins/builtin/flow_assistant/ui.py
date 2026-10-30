@@ -146,7 +146,9 @@ class FlowDialog(QtWidgets.QDialog):
         widget.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.ExtendedSelection)
         widget.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
         widget.horizontalHeader().setStretchLastSection(True)
-        widget.verticalHeader().hide()
+        widget.verticalHeader().show()
+        widget.verticalHeader().setMinimumWidth(32)
+        widget.verticalHeader().setToolTip('行号按当前列表位置显示，用于定位记录；不影响任务编号或执行顺序。')
         return widget
 
     def _queue_page(self):

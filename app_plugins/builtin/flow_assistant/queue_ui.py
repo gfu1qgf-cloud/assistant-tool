@@ -75,6 +75,7 @@ class QueueTools:
         table.clearSpans(); table.setRowCount(0)
         group = object()
         batches = self.dialog.state.get('batches', {})
+        number = 0
         for row in visible:
             job = row['payload']; value = job.get(key, '历史未分批') if key else None
             if key and value != group:
@@ -87,7 +88,10 @@ class QueueTools:
                 if key == 'batch_id' and batch.get('fixed'): text += f' · {batch["fixed"]} 条按固定时长计费'
                 item = QtWidgets.QTableWidgetItem(text); item.setFlags(QtCore.Qt.ItemFlag.ItemIsEnabled)
                 item.setBackground(QtGui.QColor('#dce8f5')); table.setItem(index, 0, item); table.setSpan(index, 0, 1, 6)
+                table.setVerticalHeaderItem(index, QtWidgets.QTableWidgetItem(''))
             index = table.rowCount(); table.insertRow(index)
+            number += 1
+            table.setVerticalHeaderItem(index, QtWidgets.QTableWidgetItem(str(number)))
             duration = f'{job["duration"]}秒' if job.get('duration') else '默认时长'
             values = [f'{job["task_id"]} {job["task_name"]}', f'{Path(job["image"]).name} · {duration}',
                       row.get('status_label') or labels.get(row['status'], row['status']),

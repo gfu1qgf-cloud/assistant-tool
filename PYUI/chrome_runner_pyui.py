@@ -184,8 +184,8 @@ class ChromeRunnerDialog(QtWidgets.QDialog,Ui_ChromeRunnerDialog):
                 self.profiles.sort(key=lambda p: p['name'].lower())
 
                 # 添加到列表
-                for profile in self.profiles:
-                    item = QListWidgetItem(f"{profile['name']} ({profile['directory']})")
+                for number, profile in enumerate(self.profiles, 1):
+                    item = QListWidgetItem(f"{number}.  {profile['name']} ({profile['directory']})")
                     item.setData(Qt.UserRole, profile['directory'])
                     self.chrome_list_widget.addItem(item)
 
@@ -217,8 +217,8 @@ class ChromeRunnerDialog(QtWidgets.QDialog,Ui_ChromeRunnerDialog):
         self.profiles.sort(key=lambda p: self.get_profile_sort_key(p['directory']))
 
         # 添加到列表
-        for profile in self.profiles:
-            list_item = QListWidgetItem(profile['name'])
+        for number, profile in enumerate(self.profiles, 1):
+            list_item = QListWidgetItem(f"{number}.  {profile['name']}")
             list_item.setData(Qt.UserRole, profile['directory'])
             self.chrome_list_widget.addItem(list_item)
 
@@ -696,9 +696,9 @@ class ChromeRunnerDialog(QtWidgets.QDialog,Ui_ChromeRunnerDialog):
         member_list = QtWidgets.QListWidget(profile_page)
         member_list.setAlternatingRowColors(True)
         member_set = set(group.get('profile_directories', []))
-        for profile in self.profiles:
+        for number, profile in enumerate(self.profiles, 1):
             item = QListWidgetItem(
-                f"{profile['name']}  [{profile['directory']}]",
+                f"{number}.  {profile['name']}  [{profile['directory']}]",
                 member_list,
             )
             item.setData(Qt.UserRole, profile['directory'])
@@ -747,7 +747,7 @@ class ChromeRunnerDialog(QtWidgets.QDialog,Ui_ChromeRunnerDialog):
                 self.get_group_profile_directories(candidate_id)
             )
             item = QListWidgetItem(
-                f"{candidate['name']}（{effective_count} 个 Profile）",
+                f"{child_group_list.count()+1}.  {candidate['name']}（{effective_count} 个 Profile）",
                 child_group_list,
             )
             item.setData(Qt.UserRole, candidate_id)
@@ -775,6 +775,9 @@ class ChromeRunnerDialog(QtWidgets.QDialog,Ui_ChromeRunnerDialog):
             item = child_group_list.takeItem(row)
             child_group_list.insertItem(target, item)
             child_group_list.setCurrentItem(item)
+            for index in range(child_group_list.count()):
+                entry = child_group_list.item(index)
+                entry.setText(f'{index+1}.  ' + entry.text().split('.  ', 1)[1])
 
         child_up_button.clicked.connect(lambda: move_child_group(-1))
         child_down_button.clicked.connect(lambda: move_child_group(1))

@@ -107,7 +107,7 @@ class ChromeLauncherSettingsPage:
 class ChromeLauncherPlugin:
     plugin_id = "chrome_launcher"
     display_name = "Chrome 启动器"
-    version = "1.2"
+    version = "1.2.1"
     required_api_version = 1
 
     def __init__(self):

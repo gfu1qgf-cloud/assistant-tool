@@ -69,7 +69,7 @@ class RecentSubmissions(QtWidgets.QWidget):
         selected = self.selected()
         selected_id = selected[0]['id'] if selected else ''
         self.list.clear()
-        for group in list(groups.values())[-8:][::-1]:
+        for number, group in enumerate(list(groups.values())[-8:][::-1], 1):
             row, job = group[0], group[0]['payload']
             path = Path(job['image']); key = str(path)
             if key not in self.icons:
@@ -79,7 +79,7 @@ class RecentSubmissions(QtWidgets.QWidget):
                 self.icons[key] = QtGui.QIcon(QtGui.QPixmap.fromImage(reader.read()))
                 if len(self.icons) > 24: self.icons.pop(next(iter(self.icons)))
             statuses = ' / '.join(dict.fromkeys(STATUS.get(r['status'], r['status']) for r in group))
-            text = f'{job["task_id"]} · {path.name}\n{job.get("duration") or "默认"}秒 × {len(group)} · {statuses}\n{job["prompt"][:65]}'
+            text = f'{number}.  {job["task_id"]} · {path.name}\n{job.get("duration") or "默认"}秒 × {len(group)} · {statuses}\n{job["prompt"][:65]}'
             item = QtWidgets.QListWidgetItem(self.icons.get(key, QtGui.QIcon()), text)
             item.setData(QtCore.Qt.ItemDataRole.UserRole, group); item.setToolTip(job['prompt'])
             self.list.addItem(item)
