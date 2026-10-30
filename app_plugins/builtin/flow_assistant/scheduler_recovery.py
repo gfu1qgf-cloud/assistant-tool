@@ -99,6 +99,11 @@ def details(service):
                 '未取得当前登录账号的有效积分' if not balance_ready(client,preferences=service.preferences) else
                 '请在浏览器与时长分档查看此账号的排队原因')
         lines.append(str(client.get('profile') or '未识别配置')+'：'+str(reason)[:400])
+    online={c.get('profile') for c in service.clients.values() if c.get('authorized')}
+    for profile,entry in service.preferences.get('browser_slots',{}).items():
+        if profile in online:continue
+        lines.append(str(profile)+'：'+('启动后未建立扩展连接' if entry.get('state')=='opening' else '原浏览器连接已断开')+
+            '；尚未确认窗口已退出，保留物理窗口名额。请核对该配置的扩展连接及原项目是否打开。')
     lines.append('请打开“浏览器与时长分档”查看上述配置：确认原项目能打开、账号已登录及积分可用；个人标签导致无法安全关闭时，请自行收起不需要的窗口。已提交视频保留原绑定，其他账号仍继续调度。')
     return '\n'.join(lines)
 
@@ -115,10 +120,14 @@ def watch(service):
     state=getattr(service,'scheduler_recovery',{})
     # Only actual submission/result progress resets the incident. Repeated
     # probes, heartbeats and failed preparation attempts cannot hide a stall.
-    progress={(r['id'],r['attempt'],r['status']) for r in rows if
-        r['status'] in {'submitting','generating','downloading','completed','archiving','download_parked'}}
+    # Sending run_tasks is not acknowledgement. Download retries and status
+    # oscillations also cannot keep restarting a stalled generation queue.
+    progress={(r['id'],r['attempt'],'accepted' if r['status'] in {'generating','downloading'} else 'result')
+        for r in rows if r['status'] in {'generating','downloading','completed','archiving','download_parked'}}
     previous=getattr(service,'_scheduler_progress',None)
-    service._scheduler_progress=progress
+    attempts={(r['id'],r['attempt']) for r in rows}
+    previous={p for p in previous if p[:2] in attempts} if previous is not None else None
+    service._scheduler_progress=(previous or set())|progress
     pending_unpaid=any(r['status'] in {'preparing','uploading'} for r in rows)
     if (service.closing or is_offline() or service.safety_paused or not queued and not pending_unpaid or
             service.paused and not service.released or previous is None or progress-previous):

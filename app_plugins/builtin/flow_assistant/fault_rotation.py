@@ -32,16 +32,23 @@ def healthy_remaining(service):
     from .high_credit import allowed
     from .balance_dispatch import can_fund
     from .store import TRANSIENT
+    from .browser_slots import live_starting_profiles
     rows=service.store.rows();prefs=service.preferences
     pending=admitted_queue(rows,service.store.batches(),service.observed_costs,
         paused=service.paused,released=service.released)
     if not pending:return True  # Do not reset/reopen faulted browsers while idle.
     job=pending[0]['payload'];clients=[c for c in service.clients.values() if c.get('authorized')]
     affinity=affinity_context(clients,rows,prefs,{r['id'] for r in pending})
-    holds=service.store.reset_holds()
+    holds=service.store.reset_holds();starting=live_starting_profiles(service)
     for profile in configured_profiles(prefs):
         if is_fault(profile,prefs) or profile in prefs.get('browser_launch_failures',{}):continue
-        client=next((c for c in clients if c.get('profile')==profile),None) or cached_profile(profile,prefs)
+        client=next((c for c in clients if c.get('profile')==profile),None)
+        # An expired launch with no authenticated client cannot be selected
+        # again until native absence is proven. Do not let that stale reservation
+        # keep closed faulted profiles waiting for a fictional healthy browser.
+        if not client and profile not in starting and (profile in getattr(service,'launch_attempts',set()) or
+                profile in service.launched or prefs.get('browser_slots',{}).get(profile,{}).get('state')=='opening'):continue
+        client=client or cached_profile(profile,prefs)
         if (block_for(client,prefs) or client.get('blocked') or not allowed(client,prefs) or
             dispatch_rank(client,job,prefs) is None or not can_fund(client,job,prefs,service.observed_costs) or
             not allows_image(client,job,rows,prefs,affinity['images'])):continue
