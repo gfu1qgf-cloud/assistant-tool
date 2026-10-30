@@ -24,13 +24,19 @@ def config_file_lock(path):
 
 
 def read_api_statuses(path):
+    return (read_elevenlabs_state(path) or {}).get(ELEVENLABS_STATUSES, {})
+
+
+def read_elevenlabs_state(path):
+    """Read user billing labels and worker state in one protected transaction."""
     with config_file_lock(path):
         try:
             data = json.loads(data_file(Path(path)).read_text(encoding="utf-8-sig"))
         except FileNotFoundError:
-            return {}
+            return None
         statuses = data.get(ELEVENLABS_STATUSES, {})
-        return copy.deepcopy(statuses) if isinstance(statuses, dict) else {}
+        return {ELEVENLABS_STATUSES: copy.deepcopy(statuses) if isinstance(statuses, dict) else {},
+                'elevenlabs_key_preferences': copy.deepcopy(data.get('elevenlabs_key_preferences', {}))}
 
 
 def merge_latest_api_statuses(path, config, *, reset_key_ids=(), permission_updates=None):

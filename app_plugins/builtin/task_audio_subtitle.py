@@ -952,16 +952,20 @@ class TaskAudioSubtitlePlugin:
         api_keys = normalize_api_keys(api_keys)
         if not api_keys:
             return []
-        selected, next_index, selection = select_api_keys_for_attempt(
+        from model.ElevenLabsKeyPolicy import select_tts_candidates, PREFERENCES
+        selected, next_index, selection = select_tts_candidates(
             api_keys,
             config.get(API_KEY_STATUSES_CONFIG_KEY, {}),
             self._key_index,
-            capability='text_to_speech',
+            preferences=config.get(PREFERENCES),
         )
         self._key_index = next_index
         if selected:
             return selected
         mode = selection.get("mode")
+        if mode == 'paid_reserved':
+            progress('只有付费备用 Key，普通任务不会自动使用；请添加普通 Key，或明确取消某个 Key 的备用标记。', logging.ERROR)
+            return []
         if mode == "waiting_exhausted":
             key = selection.get("next_key", "")
             progress(

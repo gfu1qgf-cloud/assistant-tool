@@ -174,12 +174,23 @@ def _save_audio_with_api_keys(api_keys, filename, convert_audio,
     require_online("ElevenLabs 音频生成")
     from model.ElevenLabsPermissions import TTS, permission_updates
     from model.ApiKeyHelper import select_api_keys_for_attempt
-    from model.ConfigTransactions import read_api_statuses
-    statuses = read_api_statuses(api_key_status_config) if api_key_status_config else {}
-    api_keys, _next, _selection = select_api_keys_for_attempt(api_keys, statuses, capability=TTS)
+    from model.ConfigTransactions import read_elevenlabs_state, ELEVENLABS_STATUSES
+    from model.ElevenLabsKeyPolicy import AttemptPlan, PREFERENCES, is_paid, paid_access_error
+    state = read_elevenlabs_state(api_key_status_config) if api_key_status_config else None
+    statuses = state[ELEVENLABS_STATUSES] if state is not None else getattr(api_keys, 'statuses', {})
+    preferences = state[PREFERENCES] if state is not None else getattr(api_keys, 'preferences', {})
+    plan = AttemptPlan(api_keys, statuses, preferences, TTS)
     temp_filename = f"{filename}.part"
 
-    for index, api_key in enumerate(api_keys, 1):
+    for index, api_key in enumerate(plan.attempts(), 1):
+        if api_key_status_config:
+            latest = read_elevenlabs_state(api_key_status_config)
+            if latest is not None:
+                if is_paid(latest[PREFERENCES], api_key) and (
+                        not is_paid(plan.preferences, api_key) or not plan.permission_rejected):
+                    continue
+                if not select_api_keys_for_attempt([api_key], latest[ELEVENLABS_STATUSES], capability=TTS)[0]:
+                    continue
         audio, has_audio = None, False
         try:
             if os.path.exists(temp_filename):
@@ -190,6 +201,8 @@ def _save_audio_with_api_keys(api_keys, filename, convert_audio,
                 f"正在尝试 ElevenLabs API Key "
                 f"{index}/{len(api_keys)}"
             )
+            if is_paid(preferences, api_key):
+                _emit_progress(progress_callback, '普通 Key 已明确遇到权限限制，本次尝试已标记的付费备用 Key。')
             elevenlabs_client = ElevenLabs(api_key=api_key)
             audio = convert_audio(elevenlabs_client)
 
@@ -247,14 +260,19 @@ def _save_audio_with_api_keys(api_keys, filename, convert_audio,
             now = int(time.time())
             partial_success = has_audio or bool(getattr(audio, 'completed_requests', 0))
 
-            if error_type == 'permission':
-                _record_status(api_key_status_config, api_key, progress_callback=progress_callback,
-                               **permission_updates(TTS, False))
+            if error_type == 'permission' or paid_access_error(details):
+                if details.get('status_code') not in {400, 401, 402, 403}:
+                    _emit_progress(progress_callback, '未取得明确的权限拒绝响应，本次不换 Key 重试或启用付费备用。')
+                    break
+                if error_type == 'permission':
+                    _record_status(api_key_status_config, api_key, progress_callback=progress_callback,
+                                   **permission_updates(TTS, False))
                 if partial_success:
                     _emit_progress(progress_callback, '此前已有音频分段生成成功，本次不换 Key 从头重试，避免重复扣费。')
                     break
+                plan.permission_rejected = True
                 _emit_progress(progress_callback,
-                    f'第 {index} 个 Key 没有语音生成权限，已记录；自动改用同一清单中的其他 Key。')
+                    f'第 {index} 个 Key 权限／订阅或声音模型访问受限；先尝试其他普通 Key，必要时使用付费备用。')
                 continue  # Explicit rejection, never retry an ambiguous/billed request.
 
             if partial_success:
@@ -334,6 +352,8 @@ def _save_audio_with_api_keys(api_keys, filename, convert_audio,
             )
             break
 
+    if plan.reserve and not plan.permission_rejected:
+        _emit_progress(progress_callback, '付费备用未动用：没有明确的权限拒绝；额度、限流或网络问题不会自动转为付费。')
     _emit_progress(
         progress_callback,
         "错误: 没有可用的 ElevenLabs API Key 完成音频生成",
@@ -345,6 +365,9 @@ def _credentials(api_keys, api_key, config_path, session):
     if session:
         from model.ElevenLabsService import credentials_for_tts
         return credentials_for_tts(session)
+    from model.ElevenLabsKeyPolicy import KeyCandidates
+    if isinstance(api_keys, KeyCandidates):
+        return api_keys, config_path
     return normalize_api_keys(api_keys) or normalize_api_keys(api_key), config_path
 
 

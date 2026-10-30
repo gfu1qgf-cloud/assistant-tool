@@ -183,7 +183,7 @@ class LatestAudioApiTests(unittest.TestCase):
             self.assertEqual(target.read_bytes(), b"old-audio")
             self.assertFalse(Path(str(target) + ".part").exists())
 
-    def test_permission_error_does_not_change_voice_model_or_try_other_keys(self):
+    def test_definite_voice_access_denial_can_try_keys_without_changing_voice_or_model(self):
         class PermissionErrorFromApi(Exception):
             status_code = 403
             body = {"detail": {"status": "voice_access_denied"}}
@@ -192,8 +192,24 @@ class LatestAudioApiTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory, patch("model.AudioHelper.ElevenLabs", return_value=client) as factory:
             self.assertFalse(CreateAudioLatest("Amen.", str(Path(directory) / "out.mp3"), "voice",
                 api_keys=["dummy1", "dummy2"], api_key_status_config=None, progress_callback=lambda *_args: None))
+        self.assertEqual([call.kwargs['api_key'] for call in factory.call_args_list], ['dummy1', 'dummy2'])
+        self.assertEqual(client.text_to_dialogue.convert_with_timestamps.call_count, 2)
+        for call in client.text_to_dialogue.convert_with_timestamps.call_args_list:
+            self.assertEqual(call.kwargs['model_id'], LATEST_ELEVENLABS_MODEL_ID)
+            self.assertEqual(call.kwargs['inputs'][0].voice_id, 'voice')
+            self.assertEqual(call.kwargs['inputs'][0].text, 'Amen.')
+
+    def test_generic_forbidden_does_not_change_voice_model_or_try_other_keys(self):
+        class ForbiddenFromApi(Exception):
+            status_code = 403
+            body = {'detail': {'status': 'forbidden'}}
+        client = MagicMock()
+        client.text_to_dialogue.convert_with_timestamps.side_effect = ForbiddenFromApi()
+        with tempfile.TemporaryDirectory() as directory, patch('model.AudioHelper.ElevenLabs', return_value=client) as factory:
+            self.assertFalse(CreateAudioLatest('Amen.', str(Path(directory)/'out.mp3'), 'voice',
+                api_keys=['dummy1', 'dummy2'], api_key_status_config=None, progress_callback=lambda *_args: None))
         self.assertEqual(factory.call_count, 1)
-        self.assertEqual(client.text_to_dialogue.convert_with_timestamps.call_args.kwargs["model_id"], LATEST_ELEVENLABS_MODEL_ID)
+        self.assertEqual(client.text_to_dialogue.convert_with_timestamps.call_args.kwargs['model_id'], LATEST_ELEVENLABS_MODEL_ID)
 
     def test_invalid_key_rotation_preserved(self):
         class InvalidKey(Exception):

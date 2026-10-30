@@ -12,7 +12,9 @@ from contextlib import contextmanager
 
 from model.ApiKeyHelper import (normalize_api_keys, api_key_id, select_api_keys_for_attempt,
     API_KEY_STATUSES_CONFIG_KEY, record_api_key_status)
-from model.ConfigTransactions import read_api_statuses
+from model.ConfigTransactions import read_elevenlabs_state
+from model.ElevenLabsKeyPolicy import (PREFERENCES, normalize_preferences, select_tts_candidates,
+    AttemptPlan, is_paid, paid_access_error)
 from model.ElevenLabsPermissions import ALIGNMENT, TTS, permission_updates, missing_permission
 from model.ElevenLabsTimings import (field, fingerprint, load_timings, matching_words, character_words,
     save_timings, validate_words)
@@ -59,6 +61,7 @@ class ElevenLabsService:
         selected=str(config.get(ALIGNMENT_KEY) or '')
         statuses=config.get(API_KEY_STATUSES_CONFIG_KEY)
         snapshot={'keys':keys,'alignment':selected,'path':str(config_path or ''),
+            'preferences':normalize_preferences(config.get(PREFERENCES), keys),
             'statuses':copy.deepcopy(statuses) if isinstance(statuses,dict) else {}}
         signature=hashlib.sha256(json.dumps({k:v for k,v in snapshot.items() if k!='statuses'},
             sort_keys=True,ensure_ascii=False).encode()).hexdigest()
@@ -79,15 +82,21 @@ class ElevenLabsService:
         if row['path']:
             # Reset is represented by absence, so merging a saved snapshot
             # would resurrect invalid/quota/permission markers after reset.
-            row['statuses'] = read_api_statuses(row['path'])
+            state = read_elevenlabs_state(row['path'])
+            row['statuses'] = state[API_KEY_STATUSES_CONFIG_KEY] if state is not None else {}
+            if state is not None:
+                row['preferences'] = normalize_preferences(state[PREFERENCES], row['keys'])
         return row
 
     def tts_credentials(self,binding):
         row=self._snapshot(binding)
         with self._lock:
-            keys,next_index,state=select_api_keys_for_attempt(row['keys'],row['statuses'],self._next, capability=TTS)
+            keys,next_index,state=select_tts_candidates(row['keys'],row['statuses'],self._next,
+                                                      preferences=row['preferences'])
             self._next=next_index
         if not keys:
+            if state.get('mode') == 'paid_reserved':
+                raise ValueError('ELE 仅配置了付费备用 Key；普通任务不会自动使用。请添加普通 Key，或在设置中明确取消某个 Key 的备用标记。')
             if state.get('mode') == 'no_permission':
                 raise ValueError('ELE 共用清单没有可用的语音生成权限；请在程序设置查看权限状态。')
             raise ValueError('ELE 没有可用的语音生成密钥，请在“程序设置 → ElevenLabs 密钥”查看额度或冷却状态。')
@@ -159,9 +168,9 @@ class ElevenLabsService:
         # Preserve the old explicit choice as a migration preference, not an
         # extra list or a requirement. Confirmed permissions still rank first.
         pool=sorted(row['keys'],key=lambda key: api_key_id(key)!=row['alignment'])
-        keys,_next,selection=select_api_keys_for_attempt(pool,row['statuses'],capability=ALIGNMENT)
-        if not keys:
-            reason='权限不足' if selection['mode']=='no_permission' else '额度不足、无效或冷却中'
+        plan=AttemptPlan(pool,row['statuses'],row['preferences'],ALIGNMENT)
+        if not plan.normal and not (plan.permission_rejected and plan.reserve):
+            reason='权限不足' if plan.selection['mode']=='no_permission' else '额度不足、无效或冷却中，付费备用未动用'
             raise ValueError('ELE 共用密钥清单没有可用的逐词对齐 Key（'+reason+'）；请在程序设置查看权限状态。')
         audio=Path(audio)
         if not audio.is_file() or not 0<audio.stat().st_size<100*1024*1024:
@@ -179,12 +188,17 @@ class ElevenLabsService:
             from elevenlabs.client import ElevenLabs
             from model.AppDataStorage import data_file
             accepted=False
-            for key in keys:
+            for key in plan.attempts():
                 self._check(cancel)
-                latest=self._snapshot(binding)['statuses']
-                if not select_api_keys_for_attempt([key],latest,capability=ALIGNMENT)[0]:
+                current=self._snapshot(binding)
+                if is_paid(current['preferences'],key) and (
+                        not is_paid(plan.preferences,key) or not plan.permission_rejected):
+                    continue
+                if not select_api_keys_for_attempt([key],current['statuses'],capability=ALIGNMENT)[0]:
                     continue
                 try:
+                    if is_paid(current['preferences'],key):
+                        report('ELE 对齐权限受限，本次尝试已标记的付费备用 Key。')
                     with data_file(audio).open('rb') as stream:
                         response=ElevenLabs(api_key=key).forced_alignment.create(file=stream,text=text,
                             request_options={'max_retries':0,'timeout_in_seconds':120})
@@ -193,9 +207,11 @@ class ElevenLabsService:
                 except Exception as error:
                     from model.AudioHelper import _api_error_details
                     detail=_api_error_details(error)
-                    if missing_permission(detail):
-                        self._record(row,key,'permission_denied')
-                        report('当前 Key 缺少逐词对齐权限，已记录；自动选择共用清单中的其他 Key，语音权限不受影响。')
+                    if (missing_permission(detail) and detail['status_code'] in {400,401,402,403}) or paid_access_error(detail):
+                        if missing_permission(detail):
+                            self._record(row,key,'permission_denied')
+                        plan.permission_rejected=True
+                        report('当前 Key 的逐词对齐权限／订阅受限；先尝试其他普通 Key，必要时使用付费备用，语音权限不受影响。')
                         continue  # A definite rejection, not an ambiguous paid retry.
                     code=detail['status_code']
                     if any(marker in detail[name] for marker in ('invalid_api_key','missing_api_key','invalid_token')

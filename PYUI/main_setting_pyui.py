@@ -78,6 +78,7 @@ from model.TaskTableSchema import (
 
 
 from model.ConfigTransactions import config_file_lock, merge_latest_api_statuses
+from model.ElevenLabsKeyPolicy import PREFERENCES, normalize_preferences
 
 
 def _write_config_with_rolling_backups(config_path, config, retain=10, *, reset_api_key_ids=(), permission_updates=None):
@@ -390,6 +391,7 @@ class MainSettingDialog(QtWidgets.QDialog, Ui_MainSettingDialog):
                     )
                     if not isinstance(self.api_key_statuses, dict):
                         self.api_key_statuses = {}
+                    self._api_key_preferences = normalize_preferences(config.get(PREFERENCES), api_keys)
                     for api_key in normalize_api_keys(api_keys):
                         self._append_api_key(api_key)
                     self._refresh_alignment_keys(str(config.get('elevenlabs_alignment_key_id') or ''))
@@ -1346,19 +1348,53 @@ class MainSettingDialog(QtWidgets.QDialog, Ui_MainSettingDialog):
 
         item = QtWidgets.QListWidgetItem()
         item.setData(QtCore.Qt.UserRole, api_key)
-        self._refresh_api_key_item(item)
         self.elevenlabs_api_key_list.addItem(item)
+        self._refresh_api_key_item(item)
         return True
 
     def _refresh_api_key_item(self, item):
         from model.ElevenLabsPermissions import describe_permissions, probe_description
+        from PYUI.elevenlabs_key_row import ElevenLabsKeyRow
         api_key = item.data(QtCore.Qt.UserRole)
         status_text = describe_api_key_status(self.api_key_statuses, api_key)
         state = self.api_key_statuses.get(api_key_id(api_key), {})
         if not isinstance(state, dict):
             state = {}
-        item.setText(f"{self._masked_api_key(api_key)}    [{status_text}]\n{describe_permissions(state)}")
+        preferences = self._api_key_preferences.get(api_key_id(api_key), {})
+        role = '付费备用' if preferences.get('paid') is True else '普通 Key'
+        item.setText(f"{preferences.get('label', '')} {self._masked_api_key(api_key)} [{role}｜{status_text}]\n{describe_permissions(state)}")
         item.setToolTip(describe_permissions(state) + '\n' + probe_description(state))
+        row = self.elevenlabs_api_key_list.itemWidget(item)
+        if row is None:
+            row = ElevenLabsKeyRow(self.elevenlabs_api_key_list)
+            row.paidChanged.connect(lambda checked, key=api_key: self._edit_api_preference(key, 'paid', checked))
+            row.labelEdited.connect(lambda text, key=api_key: self._edit_api_preference(key, 'label', text))
+            self.elevenlabs_api_key_list.setItemWidget(item, row)
+        used, limit = state.get('permission_quota_used'), state.get('permission_quota_limit')
+        quota = ''
+        if type(used) in (int, float) and type(limit) in (int, float):
+            quota = f'上次查询额度 {used:g}／{limit:g}'
+        row.refresh(self._masked_api_key(api_key), preferences, status_text, describe_permissions(state), quota)
+        row.set_selected(item.isSelected())
+        item.setSizeHint(QtCore.QSize(300, max(94, row.sizeHint().height())))
+
+    def _edit_api_preference(self, api_key, name, value):
+        if name not in {'label', 'paid'}:
+            return
+        state = self._api_key_preferences.setdefault(api_key_id(api_key), {})
+        state[name] = value
+        for index in range(self.elevenlabs_api_key_list.count()):
+            item = self.elevenlabs_api_key_list.item(index)
+            if item.data(QtCore.Qt.UserRole) == api_key:
+                self._refresh_api_key_item(item)
+                break
+
+    def _api_key_selection_changed(self):
+        for index in range(self.elevenlabs_api_key_list.count()):
+            item = self.elevenlabs_api_key_list.item(index)
+            row = self.elevenlabs_api_key_list.itemWidget(item)
+            if row is not None:
+                row.set_selected(item.isSelected())
 
     def add_api_key(self):
         api_key = self.elevenlabs_api_key_edit.text().strip()
@@ -1375,6 +1411,7 @@ class MainSettingDialog(QtWidgets.QDialog, Ui_MainSettingDialog):
     def remove_selected_api_keys(self):
         for item in self.elevenlabs_api_key_list.selectedItems():
             identifier = api_key_id(item.data(QtCore.Qt.UserRole))
+            self._api_key_preferences.pop(identifier, None)
             self.elevenlabs_key_probe.invalidate([identifier])
             self._api_permission_updates.pop(identifier, None)
             self.elevenlabs_api_key_list.takeItem(
@@ -1403,6 +1440,7 @@ class MainSettingDialog(QtWidgets.QDialog, Ui_MainSettingDialog):
         """获取界面中的配置"""
         config = {
             'elevenlabs_api_keys': self.get_api_keys(),
+            PREFERENCES: normalize_preferences(self._api_key_preferences, self.get_api_keys()),
             'elevenlabs_alignment_key_id': getattr(self, '_legacy_alignment_key_id', ''),
             'audio_settings': copy.deepcopy(self.audio_settings),
             TASK_RESULT_HOTKEY_CONFIG_KEY: normalize_hotkey_sequence(
@@ -1443,6 +1481,12 @@ class MainSettingDialog(QtWidgets.QDialog, Ui_MainSettingDialog):
 
     def _build_elevenlabs_alignment_settings(self):
         from PYUI.elevenlabs_key_probe import KeyProbeController
+        from PYUI.elevenlabs_key_row import KeyRowDelegate
+        self._api_key_preferences = {}
+        self.elevenlabs_api_key_list.setItemDelegate(KeyRowDelegate(self.elevenlabs_api_key_list))
+        self.elevenlabs_api_key_list.itemSelectionChanged.connect(self._api_key_selection_changed)
+        self.elevenlabs_api_key_list.setSpacing(4)
+        self.elevenlabs_api_key_list.setAlternatingRowColors(True)
         self._api_permission_updates = {}
         self._accept_after_probe = False
         self._legacy_alignment_key_id = ''
@@ -1467,7 +1511,7 @@ class MainSettingDialog(QtWidgets.QDialog, Ui_MainSettingDialog):
                 layout.takeAt(index)
         layout.addWidget(group)
         layout.setStretch(layout.indexOf(self.elevenlabs_api_key_list), 1)
-        self.help_label.setText('所有 ELE 功能共用这一份 Key 清单，添加时自动只读检测，使用后记住对应权限。'
+        self.help_label.setText('每行可填写备注并勾选“付费备用”，保存后生效。普通 Key 优先；只有明确权限／订阅或声音模型访问受限时才尝试付费备用，额度不足／限流／网络失败不会启用。'
             '在 ElevenLabs 后台修改权限或充值后，可选中 Key 并点击“重置选中状态”，让下次使用重新确认。'
             '<a href="https://elevenlabs.io/app/settings/api-keys">管理 ElevenLabs Key</a>')
         self._refresh_alignment_keys('')

@@ -1985,7 +1985,7 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
         if 'config_hot_reload' in changed:
             applied.add('config_hot_reload')
         # These are already read directly from disk when a new operation starts.
-        dynamic = {'daily_quantity_sheet_url', 'task_submission_sheet_url', 'elevenlabs_api_keys', 'elevenlabs_alignment_key_id',
+        dynamic = {'daily_quantity_sheet_url', 'task_submission_sheet_url', 'elevenlabs_api_keys', 'elevenlabs_alignment_key_id', 'elevenlabs_key_preferences',
                    'elevenlabs_api_key_statuses', 'task_table_schema'}
         applied.update(changed & dynamic)
         deferred = changed - applied - retry
@@ -2034,7 +2034,7 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
                 self.appendLog('[AI 密钥] Gemini 配置已更新，无需重启插件或模型。')
                 return
             if changed_fields and changed_fields <= {
-                'elevenlabs_api_keys', 'elevenlabs_api_key', API_KEY_STATUSES_CONFIG_KEY,
+                'elevenlabs_api_keys', 'elevenlabs_api_key', 'elevenlabs_key_preferences', API_KEY_STATUSES_CONFIG_KEY,
             }:
                 # Audio workers read keys from config for each new generation.
                 # Adding a key must not restart unrelated monitors/models.
@@ -2521,11 +2521,12 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
         if not api_keys:
             return []
 
-        selected_keys, next_index, selection = select_api_keys_for_attempt(
+        from model.ElevenLabsKeyPolicy import select_tts_candidates, PREFERENCES
+        selected_keys, next_index, selection = select_tts_candidates(
             api_keys,
             config.get(API_KEY_STATUSES_CONFIG_KEY, {}),
             self._elevenlabs_api_key_index,
-            capability='text_to_speech',
+            preferences=config.get(PREFERENCES),
         )
         self._elevenlabs_api_key_index = next_index
 
@@ -2533,6 +2534,8 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
             return selected_keys
 
         mode = selection.get('mode')
+        if mode == 'paid_reserved':
+            emit('只有付费备用 Key，普通任务不会自动使用；请添加普通 Key，或明确取消某个 Key 的备用标记。')
         if mode == 'waiting_exhausted':
             emit(
                 f"所有 ElevenLabs API Key 的额度都已用完。"
