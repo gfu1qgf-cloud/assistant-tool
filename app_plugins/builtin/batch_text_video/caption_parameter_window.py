@@ -1,4 +1,4 @@
-"""Read-only parameter comparisons and navigation to the existing bound controls."""
+"""Parameter comparisons, validated current-value editing and navigation."""
 import copy
 import math
 
@@ -8,6 +8,7 @@ from .caption_effect_ui import EFFECT_LABELS
 from .color_ui import EffectColorEditor
 from .property_sections import PropertySection
 from .caption_parameter_values import VALUE_ROLE, SEARCH_ROLE, FILTERS, describe, decorate, swatch, searchable
+from .caption_parameter_edit import ValueDelegate, OverviewUndoKeys, editable, stale, history_host
 
 LABELS = {
     'font_min': '最小字号', 'font_max': '最大字号', 'font_weight': '字重',
@@ -139,6 +140,7 @@ class CaptionParameterWindow(QtWidgets.QDialog):
         self.layer_id = None
         self.pending = None
         self.flash = None
+        self._committing=False;self._refresh_after_edit=False
         self.setWindowTitle('字幕预设 · 参数一览')
         self.setModal(False)
         self.resize(1180, 690)
@@ -147,7 +149,7 @@ class CaptionParameterWindow(QtWidgets.QDialog):
         self.title.setTextFormat(QtCore.Qt.TextFormat.PlainText)
         heading_font=QtGui.QFont(self.font());heading_font.setPointSizeF(heading_font.pointSizeF()+2);heading_font.setBold(True)
         self.title.setFont(heading_font);root.addWidget(self.title)
-        self.note = QtWidgets.QLabel('颜色直接预览，数值显示单位；单击查看详情，双击或按回车定位并闪烁4次。窗口保持打开，可连续查看。')
+        self.note = QtWidgets.QLabel('双击当前值直接修改；双击参数名或位置可定位并闪烁4次。回车应用，Esc取消输入；对比值和预设原值只读。')
         self.note.setWordWrap(True); root.addWidget(self.note)
         row = QtWidgets.QHBoxLayout(); root.addLayout(row)
         self.mode = QtWidgets.QComboBox()
@@ -165,7 +167,7 @@ class CaptionParameterWindow(QtWidgets.QDialog):
         self.table = QtWidgets.QTreeWidget()
         self.table.setRootIsDecorated(False); self.table.setAlternatingRowColors(True)
         self.table.setSelectionMode(self.table.SelectionMode.SingleSelection)
-        self.table.setEditTriggers(self.table.EditTrigger.NoEditTriggers)
+        self.table.setEditTriggers(self.table.EditTrigger.DoubleClicked|self.table.EditTrigger.EditKeyPressed)
         self.table.setHeaderLabels(['参数', '当前值', '对比值', '位置'])
         self.table.setColumnWidth(0, 170); self.table.setColumnWidth(1, 230); self.table.setColumnWidth(2, 220)
         self.table.setIconSize(QtCore.QSize(84,20))
@@ -194,13 +196,22 @@ class CaptionParameterWindow(QtWidgets.QDialog):
         detail.addWidget(QtWidgets.QLabel('参数位置'))
         self.detail_path=QtWidgets.QLabel();self.detail_path.setWordWrap(True)
         self.detail_path.setTextFormat(QtCore.Qt.TextFormat.PlainText);detail.addWidget(self.detail_path)
-        self.locate_button=QtWidgets.QPushButton('定位到这个参数');self.locate_button.setEnabled(False)
+        self.edit_button=QtWidgets.QPushButton('修改当前值');self.edit_button.setAutoDefault(False)
+        self.edit_button.clicked.connect(self.edit_current);detail.addWidget(self.edit_button)
+        undo_row=QtWidgets.QHBoxLayout()
+        self.undo_button=QtWidgets.QPushButton('撤销');self.redo_button=QtWidgets.QPushButton('重做')
+        for button,redo in ((self.undo_button,False),(self.redo_button,True)):
+            button.setAutoDefault(False);button.clicked.connect(lambda _checked=False,redo=redo:self.move_history(redo));undo_row.addWidget(button)
+        detail.addLayout(undo_row)
+        self.locate_button=QtWidgets.QPushButton('定位到这个参数');self.locate_button.setAutoDefault(False);self.locate_button.setEnabled(False)
         self.locate_button.clicked.connect(lambda:self.locate(self.table.currentItem()) if self.table.currentItem() else None)
         detail.addWidget(self.locate_button);detail.addStretch()
         self.splitter.addWidget(self.details);self.splitter.setSizes([840,290])
         self.splitter.setStretchFactor(0,1);self.splitter.setStretchFactor(1,0)
         root.addWidget(self.splitter,1)
         self.status = QtWidgets.QLabel(); self.status.setWordWrap(True); root.addWidget(self.status)
+        self.edit_error=QtWidgets.QLabel();self.edit_error.setWordWrap(True)
+        self.edit_error.setStyleSheet('color:#b91c1c;');self.edit_error.hide();root.addWidget(self.edit_error)
         buttons = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.StandardButton.Close)
         buttons.button(QtWidgets.QDialogButtonBox.StandardButton.Close).setText('关闭')
         buttons.rejected.connect(self.hide); root.addWidget(buttons)
@@ -215,14 +226,50 @@ class CaptionParameterWindow(QtWidgets.QDialog):
         self.search.textChanged.connect(self.filter_rows)
         self.value_type.currentIndexChanged.connect(self.filter_rows)
         self.table.currentItemChanged.connect(self.show_detail)
-        self.table.itemDoubleClicked.connect(self.locate)
-        self.table.itemActivated.connect(self.locate)
+        self.undo_filter=OverviewUndoKeys(self)
+        self.delegate=ValueDelegate(self);self.table.setItemDelegate(self.delegate)
+        for child in [self,*self.findChildren(QtWidgets.QWidget)]:child.installEventFilter(self.undo_filter)
+        self.table.itemDoubleClicked.connect(self.activate_item)
+        self.table.itemActivated.connect(self.activate_item)
+
+    def show_edit_error(self,message):
+        self.edit_error.setText('未应用：'+message);self.edit_error.show()
+
+    def activate_item(self,item,column=0):
+        if column==1:self.edit_current()
+        else:self.locate(item,column)
+
+    def edit_current(self):
+        item=self.table.currentItem()
+        if item is None or item.isHidden() or self.delegate.editor is not None:return
+        key=item.data(0,QtCore.Qt.ItemDataRole.UserRole)
+        allowed,reason=editable(self,key)
+        if not allowed:self.show_edit_error(reason);return
+        self.edit_error.hide();self.table.setCurrentItem(item,1);self.table.editItem(item,1)
+
+    def move_history(self,redo=False):
+        self.delegate.cancel()
+        host=history_host(self)
+        if host is not None:
+            (host.redo_edit if redo else host.undo_edit)()
+            self.queue_refresh()
+
+    def hideEvent(self,event):
+        self.delegate.cancel()
+        super().hideEvent(event)
 
     def queue_refresh(self):
+        editor=self.delegate.editor
+        if editor is not None and not self._committing:
+            if stale(self,editor._parameter_token):
+                self.delegate.cancel();self.show_edit_error('控件、任务或原参数已变化，未提交的输入已取消。')
+            else:
+                self._refresh_after_edit=True;return
         self.refresh_timer.start(0)
 
     def refresh(self, *_args):
         self.refresh_timer.stop()
+        self.delegate.cancel()
         selected = self.table.currentItem()
         selected_key = selected.data(0, QtCore.Qt.ItemDataRole.UserRole) if selected else None
         scroll = self.table.verticalScrollBar().value()
@@ -238,8 +285,8 @@ class CaptionParameterWindow(QtWidgets.QDialog):
         mode = self.mode.currentData()
         left, right = comparison_layers(layer, mode)
         values, reference = {'layer': left, 'effect': effects(left)}, {'layer': right, 'effect': effects(right)}
-        self.table.headerItem().setText(1, '预设原值' if mode == 'preset' else '当前值')
-        self.table.headerItem().setText(2, '预设原值' if mode == 'overrides' else '基础白字')
+        self.table.headerItem().setText(1, '预设原值（只读）' if mode == 'preset' else '当前值（可修改）')
+        self.table.headerItem().setText(2, '预设原值（只读）' if mode == 'overrides' else '基础白字（只读）')
         self.table.setSortingEnabled(False)
         for key, (control, label, path) in parameter_targets(self.owner).items():
             domain, field = key
@@ -250,6 +297,7 @@ class CaptionParameterWindow(QtWidgets.QDialog):
             changed=not same_value(field,value,before)
             item = QtWidgets.QTreeWidgetItem([label,current['text'],reference_info['text'],path])
             item.setData(0, QtCore.Qt.ItemDataRole.UserRole, key)
+            if mode!='preset':item.setFlags(item.flags()|QtCore.Qt.ItemFlag.ItemIsEditable)
             item.setData(0,SEARCH_ROLE,field+' '+searchable(current)+' '+searchable(reference_info))
             item.setSizeHint(0,QtCore.QSize(0,max(34,self.fontMetrics().height()+12)))
             for column in (0,3):item.setToolTip(column,item.text(column))
@@ -267,6 +315,13 @@ class CaptionParameterWindow(QtWidgets.QDialog):
         self.show_detail(self.table.currentItem())
 
     def show_detail(self,item=None,*_args):
+        host=history_host(self)
+        for button,name in ((self.undo_button,'undo_action'),(self.redo_button,'redo_action')):
+            action=getattr(host,name,None) if host else None
+            button.setEnabled(bool(action and action.isEnabled() and not host.is_batch_busy()))
+        allowed,reason=editable(self,item.data(0,QtCore.Qt.ItemDataRole.UserRole)) if item is not None else (False,'请选择参数。')
+        self.edit_button.setEnabled(allowed and not item.isHidden() if item is not None else False)
+        self.edit_button.setToolTip('双击当前值也可以编辑；回车应用、Esc取消。' if allowed else reason)
         self.locate_button.setEnabled(item is not None and not item.isHidden())
         if item is None:
             self.detail_title.setText('选择一项参数');self.detail_kind.clear();self.detail_path.clear()
@@ -297,7 +352,7 @@ class CaptionParameterWindow(QtWidgets.QDialog):
             kind=(item.data(1,VALUE_ROLE) or {}).get('kind','text')
             show = (not query or query in text.casefold()) and (self.value_type.currentData() in ('all',kind))
             item.setHidden(not show); visible += int(show)
-        self.status.setText(f'显示 {visible} / {self.table.topLevelItemCount()} 项 · 双击定位，右侧查看详情。' if visible else '没有匹配项；可清空搜索、切换类型或取消“只看不同”。')
+        self.status.setText(f'显示 {visible} / {self.table.topLevelItemCount()} 项 · 双击当前值修改，双击参数名定位。' if visible else '没有匹配项；可清空搜索、切换类型或取消“只看不同”。')
         current=self.table.currentItem()
         if current is None or current.isHidden():
             first=next((self.table.topLevelItem(i) for i in range(self.table.topLevelItemCount()) if not self.table.topLevelItem(i).isHidden()),None)

@@ -76,7 +76,7 @@ class CaptionParameterWindowTests(unittest.TestCase):
         window = self.window(panel)
         item = self.items(window)[('effect', 'floating_amplitude')]
         window.table.scrollToItem(item); self.app.processEvents()
-        point = window.table.visualItemRect(item).center()
+        rect=window.table.visualItemRect(item);point=QtCore.QPoint(70,rect.center().y())
         QtTest.QTest.mouseClick(window.table.viewport(), QtCore.Qt.MouseButton.LeftButton, pos=point)
         QtTest.QTest.mouseDClick(window.table.viewport(), QtCore.Qt.MouseButton.LeftButton, pos=point)
         QtTest.QTest.qWait(80)
@@ -119,7 +119,7 @@ class CaptionParameterWindowTests(unittest.TestCase):
         before=copy.deepcopy(panel.current())
         for key in (('layer','font_min'),('layer','font_max')):
             item=self.items(window)[key];window.table.scrollToItem(item);self.app.processEvents()
-            point=window.table.visualItemRect(item).center()
+            rect=window.table.visualItemRect(item);point=QtCore.QPoint(70,rect.center().y())
             QtTest.QTest.mouseClick(window.table.viewport(),QtCore.Qt.MouseButton.LeftButton,pos=point)
             QtTest.QTest.mouseDClick(window.table.viewport(),QtCore.Qt.MouseButton.LeftButton,pos=point)
             QtTest.QTest.qWait(60)
