@@ -28,7 +28,13 @@ class CaptionGallery(QtWidgets.QDialog):
         self.search = QtWidgets.QLineEdit()
         self.search.setPlaceholderText("搜索样式名称")
         self.search.textChanged.connect(self.filter)
-        layout.addWidget(self.search)
+        filters=QtWidgets.QHBoxLayout();filters.addWidget(self.search,1)
+        from .caption_modern_presets import PRESETS
+        self.families=QtWidgets.QComboBox()
+        for name,key in [('全部样式','all'),('新增常用 · 20款','new'),('原有样式','legacy')]+[(name,name) for name in dict.fromkeys(value['category'] for value in PRESETS.values())]:
+            self.families.addItem(name,key)
+        self.families.currentIndexChanged.connect(lambda _index:self.filter(self.search.text()))
+        filters.addWidget(self.families);layout.addLayout(filters)
         self.list = QtWidgets.QListWidget()
         self.list.setViewMode(self.list.ViewMode.IconMode)
         self.list.setResizeMode(self.list.ResizeMode.Adjust)
@@ -47,17 +53,32 @@ class CaptionGallery(QtWidgets.QDialog):
             item = QtWidgets.QListWidgetItem(name)
             item.setSizeHint(QtCore.QSize(246, 164))
             item.setData(QtCore.Qt.ItemDataRole.UserRole, key)
+            item.setData(int(QtCore.Qt.ItemDataRole.UserRole)+1,PRESETS.get(key,{}).get('category','legacy'))
             item.setToolTip(name)
             self.list.addItem(item)
             self.pending.append((item, key))
             if key == selected: self.list.setCurrentItem(item)
         self.timer = QtCore.QTimer(self)
         self.timer.timeout.connect(self.load_next)
+        self.list.verticalScrollBar().valueChanged.connect(self.schedule)
         self.timer.start(0)
+    def schedule(self,*_args):
+        if hasattr(self,'timer') and self.pending:self.timer.start(0)
+    def resizeEvent(self,event):
+        super().resizeEvent(event)
+        self.schedule()
+    def showEvent(self,event):
+        super().showEvent(event)
+        self.schedule()
     def load_next(self):
-        if not self.pending:
+        if not self.pending or not self.isVisible():
             self.timer.stop(); return
-        item, key = self.pending.pop(0)
+        viewport=self.list.viewport().rect()
+        index=next((i for i,(item,_key) in enumerate(self.pending)
+                    if not item.isHidden() and self.list.visualItemRect(item).intersects(viewport)),None)
+        if index is None:
+            self.timer.stop();return
+        item, key = self.pending.pop(index)
         try:
             image = sample(key)
             item.setIcon(QtGui.QIcon(QtGui.QPixmap.fromImage(image)))
@@ -67,7 +88,11 @@ class CaptionGallery(QtWidgets.QDialog):
     def filter(self, text):
         for index in range(self.list.count()):
             item = self.list.item(index)
-            item.setHidden(text.casefold() not in item.text().casefold())
+            group=item.data(int(QtCore.Qt.ItemDataRole.UserRole)+1)
+            family=self.families.currentData()
+            allowed=family=='all' or (family=='new' and group!='legacy') or family==group
+            item.setHidden(not allowed or text.casefold() not in item.text().casefold())
+        self.schedule()
     def accept(self):
         item = self.list.currentItem()
         if not item: return

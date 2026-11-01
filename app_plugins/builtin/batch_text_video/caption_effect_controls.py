@@ -22,6 +22,7 @@ GROUPS = (
     ('glow','环境柔光',1,'ambient_glow_enabled',('ambient_glow_color','ambient_glow_radius','ambient_glow_opacity'),()),
     ('ambient','环境暗部',1,'ambient_lighting_enabled',('ambient_dark_color','ambient_dark_opacity'),()),
     ('active','只显示正在读的词',2,'only_show_active_word',(),()),
+    ('keywords','关键词强调',2,'keyword_emphasis_enabled',('keyword_terms','keyword_match','keyword_color','keyword_scale'),()),
     ('layout','保留特效排版',2,'styled_layout',(),()),
     ('scrolling','歌词上下文',2,'scrolling_mode',('scrolling_visible_lines','scrolling_opacity_context'),()),
     ('scatter','随机定位与旋转',2,None,('scatter_seed','scatter_min_rotate','scatter_max_rotate'),('scatter_pop','word_random_position')),
@@ -33,6 +34,7 @@ FONT_EFFECT_KEYS = {'block_typography_enabled','block_scale_min','block_scale_ma
 ADVANCED_KEYS = {key for _id,_title,_tab,switch,fields,_modes in GROUPS for key in ((switch,) if switch else ()) + fields}
 
 RANGES = {
+    'keyword_scale':(1,2,2),
     'rotation':(-180,180,1), 'scatter_min_rotate':(-180,180,1), 'scatter_max_rotate':(-180,180,1),
     'scatter_seed':(0,10000,0), 'scatter_max_words':(1,12,0),
     'scatter_accum_prob':(0,1,2), 'scrolling_visible_lines':(1,5,0),

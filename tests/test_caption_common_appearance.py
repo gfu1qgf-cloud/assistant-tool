@@ -199,7 +199,7 @@ class CaptionCommonTests(unittest.TestCase):
             with self.subTest(preset=preset):
                 layer=caption(preset,caption_group_colors=True,
                     caption_group_palette=['#5de6ff','#ff83b5','#b6a5ff'])
-                layer['caption_effects'].update(karaoke_highlight=False,stroke_expand_enabled=True,
+                layer['caption_effects'].update(karaoke_highlight=False,keyword_emphasis_enabled=False,stroke_expand_enabled=True,
                     stroke_expand_colors=['#112233'])
                 _,groups,_=groups_and_events(WORDS,layer,360,640,4.)
                 result=primitives(layer)

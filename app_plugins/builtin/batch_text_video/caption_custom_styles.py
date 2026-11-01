@@ -29,6 +29,10 @@ PRESETS = {
 }
 
 
+from .caption_modern_presets import PRESETS as MODERN_PRESETS
+PRESETS.update(MODERN_PRESETS)
+
+
 def pop_curve(progress, peak=1.28):
     points = ((0,.55,0),(.18,.86,1),(.55,peak,1),(.78,.94,1),(1,1,1))
     progress = max(0,min(1,progress))

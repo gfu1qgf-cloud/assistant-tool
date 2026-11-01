@@ -7,6 +7,7 @@ from .caption_styles import apply_style, effects, COLOR_KEYS, colors
 from .caption_effect_ui import EFFECT_LABELS
 from .color_ui import EffectColorEditor
 from .property_sections import PropertySection
+from .caption_parameter_values import VALUE_ROLE, SEARCH_ROLE, FILTERS, describe, decorate, swatch, searchable
 
 LABELS = {
     'font_min': '最小字号', 'font_max': '最大字号', 'font_weight': '字重',
@@ -87,14 +88,8 @@ def same_value(key, first, second):
     return first == second
 
 
-def display_value(control, value):
-    if type(value) is bool: return '开启' if value else '关闭'
-    if isinstance(control, QtWidgets.QComboBox):
-        index = control.findData(value)
-        if index >= 0: return control.itemText(index)
-    if isinstance(value, float): return format(value, '.8g')
-    if isinstance(value, list): return '，'.join(map(str, value))
-    return str(value)
+def display_value(control, value, key='', label=''):
+    return describe(control, value, key, label)['text']
 
 
 class ParameterFlash(QtWidgets.QWidget):
@@ -146,19 +141,25 @@ class CaptionParameterWindow(QtWidgets.QDialog):
         self.flash = None
         self.setWindowTitle('字幕预设 · 参数一览')
         self.setModal(False)
-        self.resize(980, 590)
+        self.resize(1180, 690)
         root = QtWidgets.QVBoxLayout(self)
-        self.title = QtWidgets.QLabel(); self.title.setWordWrap(True); root.addWidget(self.title)
-        self.note = QtWidgets.QLabel('比较界面中可调参数的数值差异；保留的位置、字号也计入差异。双击定位并闪烁4次；窗口保持打开，可连续查看。')
+        self.title = QtWidgets.QLabel(); self.title.setWordWrap(True)
+        self.title.setTextFormat(QtCore.Qt.TextFormat.PlainText)
+        heading_font=QtGui.QFont(self.font());heading_font.setPointSizeF(heading_font.pointSizeF()+2);heading_font.setBold(True)
+        self.title.setFont(heading_font);root.addWidget(self.title)
+        self.note = QtWidgets.QLabel('颜色直接预览，数值显示单位；单击查看详情，双击或按回车定位并闪烁4次。窗口保持打开，可连续查看。')
         self.note.setWordWrap(True); root.addWidget(self.note)
         row = QtWidgets.QHBoxLayout(); root.addLayout(row)
         self.mode = QtWidgets.QComboBox()
-        for title, key in (('当前参数 ↔ 基础白字', 'current'), ('预设原值 ↔ 基础白字', 'preset'),
-                           ('当前参数 ↔ 预设原值', 'overrides')):
+        for title, key in (('当前参数 对比 基础白字', 'current'), ('预设原值 对比 基础白字', 'preset'),
+                           ('当前参数 对比 预设原值', 'overrides')):
             self.mode.addItem(title, key)
         row.addWidget(self.mode)
-        self.search = QtWidgets.QLineEdit(); self.search.setPlaceholderText('搜索参数、位置或数值…')
+        self.search = QtWidgets.QLineEdit(); self.search.setPlaceholderText('搜索参数、位置、颜色或 HEX…')
         self.search.setClearButtonEnabled(True); row.addWidget(self.search, 1)
+        self.value_type=QtWidgets.QComboBox()
+        for title,key in FILTERS:self.value_type.addItem(title,key)
+        row.addWidget(self.value_type)
         self.only_changed = QtWidgets.QCheckBox('只看不同'); self.only_changed.setChecked(True)
         row.addWidget(self.only_changed)
         self.table = QtWidgets.QTreeWidget()
@@ -166,11 +167,39 @@ class CaptionParameterWindow(QtWidgets.QDialog):
         self.table.setSelectionMode(self.table.SelectionMode.SingleSelection)
         self.table.setEditTriggers(self.table.EditTrigger.NoEditTriggers)
         self.table.setHeaderLabels(['参数', '当前值', '对比值', '位置'])
-        self.table.setColumnWidth(0, 185); self.table.setColumnWidth(1, 180); self.table.setColumnWidth(2, 180)
+        self.table.setColumnWidth(0, 170); self.table.setColumnWidth(1, 230); self.table.setColumnWidth(2, 220)
+        self.table.setIconSize(QtCore.QSize(84,20))
+        self.table.setUniformRowHeights(True)
         self.table.header().setStretchLastSection(True)
         self.table.setSortingEnabled(True)
         self.table.sortItems(3, QtCore.Qt.SortOrder.AscendingOrder)
-        root.addWidget(self.table, 1)
+        self.splitter=QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
+        self.splitter.addWidget(self.table)
+        self.details=QtWidgets.QWidget();self.details.setMinimumWidth(240)
+        detail=QtWidgets.QVBoxLayout(self.details);detail.setContentsMargins(16,8,8,8)
+        self.detail_title=QtWidgets.QLabel('选择一项参数');self.detail_title.setWordWrap(True)
+        self.detail_title.setTextFormat(QtCore.Qt.TextFormat.PlainText);self.detail_title.setFont(heading_font)
+        detail.addWidget(self.detail_title)
+        self.detail_kind=QtWidgets.QLabel();detail.addWidget(self.detail_kind)
+        self.detail_values=[]
+        for title in ('当前值','对比值'):
+            frame=QtWidgets.QFrame();frame.setFrameShape(QtWidgets.QFrame.Shape.StyledPanel)
+            card=QtWidgets.QVBoxLayout(frame)
+            caption=QtWidgets.QLabel(title);card.addWidget(caption)
+            preview=QtWidgets.QLabel();card.addWidget(preview)
+            value=QtWidgets.QLabel();value.setWordWrap(True);value.setTextFormat(QtCore.Qt.TextFormat.PlainText)
+            value.setTextInteractionFlags(QtCore.Qt.TextInteractionFlag.TextSelectableByMouse)
+            card.addWidget(value);detail.addWidget(frame)
+            self.detail_values.append((caption,preview,value))
+        detail.addWidget(QtWidgets.QLabel('参数位置'))
+        self.detail_path=QtWidgets.QLabel();self.detail_path.setWordWrap(True)
+        self.detail_path.setTextFormat(QtCore.Qt.TextFormat.PlainText);detail.addWidget(self.detail_path)
+        self.locate_button=QtWidgets.QPushButton('定位到这个参数');self.locate_button.setEnabled(False)
+        self.locate_button.clicked.connect(lambda:self.locate(self.table.currentItem()) if self.table.currentItem() else None)
+        detail.addWidget(self.locate_button);detail.addStretch()
+        self.splitter.addWidget(self.details);self.splitter.setSizes([840,290])
+        self.splitter.setStretchFactor(0,1);self.splitter.setStretchFactor(1,0)
+        root.addWidget(self.splitter,1)
         self.status = QtWidgets.QLabel(); self.status.setWordWrap(True); root.addWidget(self.status)
         buttons = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.StandardButton.Close)
         buttons.button(QtWidgets.QDialogButtonBox.StandardButton.Close).setText('关闭')
@@ -184,6 +213,8 @@ class CaptionParameterWindow(QtWidgets.QDialog):
         self.mode.currentIndexChanged.connect(self.refresh)
         self.only_changed.toggled.connect(self.refresh)
         self.search.textChanged.connect(self.filter_rows)
+        self.value_type.currentIndexChanged.connect(self.filter_rows)
+        self.table.currentItemChanged.connect(self.show_detail)
         self.table.itemDoubleClicked.connect(self.locate)
         self.table.itemActivated.connect(self.locate)
 
@@ -215,23 +246,63 @@ class CaptionParameterWindow(QtWidgets.QDialog):
             if field not in values[domain] or field not in reference[domain]: continue
             value, before = values[domain][field], reference[domain][field]
             if self.only_changed.isChecked() and same_value(field, value, before): continue
-            item = QtWidgets.QTreeWidgetItem([label, display_value(control, value), display_value(control, before), path])
+            current=describe(control,value,field,label);reference_info=describe(control,before,field,label)
+            changed=not same_value(field,value,before)
+            item = QtWidgets.QTreeWidgetItem([label,current['text'],reference_info['text'],path])
             item.setData(0, QtCore.Qt.ItemDataRole.UserRole, key)
-            for column in range(4): item.setToolTip(column, item.text(column))
+            item.setData(0,SEARCH_ROLE,field+' '+searchable(current)+' '+searchable(reference_info))
+            item.setSizeHint(0,QtCore.QSize(0,max(34,self.fontMetrics().height()+12)))
+            for column in (0,3):item.setToolTip(column,item.text(column))
+            decorate(item,1,current,self.palette(),changed)
+            decorate(item,2,reference_info,self.palette())
             self.table.addTopLevelItem(item)
             if key == selected_key: self.table.setCurrentItem(item)
         self.table.setSortingEnabled(True)
         self.table.verticalScrollBar().setValue(scroll)
         self.filter_rows()
+        if self.table.currentItem() is None:
+            first=next((self.table.topLevelItem(i) for i in range(self.table.topLevelItemCount())
+                        if not self.table.topLevelItem(i).isHidden()),None)
+            self.table.setCurrentItem(first)
+        self.show_detail(self.table.currentItem())
+
+    def show_detail(self,item=None,*_args):
+        self.locate_button.setEnabled(item is not None and not item.isHidden())
+        if item is None:
+            self.detail_title.setText('选择一项参数');self.detail_kind.clear();self.detail_path.clear()
+            for _caption,preview,value in self.detail_values:preview.clear();preview.hide();value.clear()
+            return
+        self.detail_title.setText(item.text(0));self.detail_path.setText(item.text(3))
+        info=item.data(1,VALUE_ROLE) or {}
+        kinds={key:title for title,key in FILTERS}
+        different=not same_value(item.data(0,QtCore.Qt.ItemDataRole.UserRole)[1],
+                                 info.get('raw'),(item.data(2,VALUE_ROLE) or {}).get('raw'))
+        self.detail_kind.setText(kinds.get(info.get('kind'),'参数')+(' · 与对比值不同' if different else ' · 与对比值相同'))
+        for column,(caption,preview,value) in zip((1,2),self.detail_values):
+            caption.setText(self.table.headerItem().text(column))
+            data=item.data(column,VALUE_ROLE) or {'text':item.text(column),'kind':'text'}
+            value.setText(data['text'])
+            if data['kind'] in {'color','bool'}:
+                preview.setPixmap(swatch(data,self.palette(),width=220,height=30));preview.show()
+            else:preview.clear();preview.hide()
+            if data.get('colors'):
+                value.setText(data['text']+'\n'+'\n'.join(data['colors']))
 
     def filter_rows(self, *_args):
         query = self.search.text().strip().casefold()
         visible = 0
         for index in range(self.table.topLevelItemCount()):
             item = self.table.topLevelItem(index)
-            show = not query or query in ' '.join(item.text(i) for i in range(4)).casefold()
+            text=' '.join(item.text(i) for i in range(4))+' '+str(item.data(0,SEARCH_ROLE) or '')
+            kind=(item.data(1,VALUE_ROLE) or {}).get('kind','text')
+            show = (not query or query in text.casefold()) and (self.value_type.currentData() in ('all',kind))
             item.setHidden(not show); visible += int(show)
-        self.status.setText(f'显示 {visible} 项。双击一项即可定位。' if visible else '没有匹配项；可清空搜索或取消“只看不同”。')
+        self.status.setText(f'显示 {visible} / {self.table.topLevelItemCount()} 项 · 双击定位，右侧查看详情。' if visible else '没有匹配项；可清空搜索、切换类型或取消“只看不同”。')
+        current=self.table.currentItem()
+        if current is None or current.isHidden():
+            first=next((self.table.topLevelItem(i) for i in range(self.table.topLevelItemCount()) if not self.table.topLevelItem(i).isHidden()),None)
+            self.table.setCurrentItem(first)
+        self.show_detail(self.table.currentItem())
 
     def locate(self, item, _column=0):
         layer = self.owner.layer

@@ -6,6 +6,7 @@ from qt_compat import QtCore, QtTest, QtWidgets
 from app_plugins.builtin.batch_text_video.captions import new_caption
 from app_plugins.builtin.batch_text_video.caption_styles import apply_style, effects, PREFIX
 from app_plugins.builtin.batch_text_video.caption_parameter_window import parameter_targets, same_value
+from app_plugins.builtin.batch_text_video.caption_parameter_values import VALUE_ROLE
 from app_plugins.builtin.batch_text_video.components import new_text_component
 from app_plugins.builtin.batch_text_video.layer_ui import LayerPanel
 from app_plugins.builtin.batch_text_video.layers import normalize_layers
@@ -50,12 +51,12 @@ class CaptionParameterWindowTests(unittest.TestCase):
         panel, _ = self.panel(); before = copy.deepcopy(panel.current()); changes = []
         panel.changed.connect(lambda: changes.append(1))
         window = self.window(panel); key = ('effect', 'floating_amplitude')
-        self.assertEqual(self.items(window)[key].text(1), '37')
+        self.assertEqual(self.items(window)[key].text(1), '37 px')
         window.mode.setCurrentIndex(window.mode.findData('preset'))
         self.assertNotIn(key, self.items(window))
         window.mode.setCurrentIndex(window.mode.findData('overrides'))
-        self.assertEqual(self.items(window)[key].text(1), '37')
-        self.assertEqual(float(self.items(window)[key].text(2)), effects(apply_style(new_caption(), PREFIX+'默认白字'))['floating_amplitude'])
+        self.assertEqual(self.items(window)[key].text(1), '37 px')
+        self.assertEqual(self.items(window)[key].data(2,VALUE_ROLE)['raw'], effects(apply_style(new_caption(), PREFIX+'默认白字'))['floating_amplitude'])
         self.assertEqual(panel.current(), before); self.assertFalse(changes)
 
     def test_search_and_all_parameters_include_font_geometry_and_color_targets(self):

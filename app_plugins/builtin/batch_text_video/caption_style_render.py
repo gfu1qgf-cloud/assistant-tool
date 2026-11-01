@@ -91,7 +91,7 @@ def groups_and_events(words, layer, width, height, duration):
         per_line = layer['caption_per_line']
         def measure(fraction):
             glyphs, lines, gap = layout_glyphs(group, layer, random_sizes, scale, fraction,
-                available_width=box.width(), per_line=per_line, peak=layout_peak, edge_peak=peak, native=True,
+                available_width=box.width(), per_line=per_line, peak=layout_peak, edge_peak=peak, native=True, keyword_style=style,
                 gap_for=lambda glyphs: (max(0,max(glyph['_space_advance'] for glyph in glyphs)+layer['word_spacing']*scale)
                     if mode == 'lzx_word_pop' else max(0,8+layer['word_spacing'])*scale))
             widths = [glyph_row_width(glyphs,line,gap,layout_peak,peak) for line in lines]
@@ -312,6 +312,7 @@ def make_primitives(words, layer, width, height, duration):
                 split.extend((c,d,color) for c,d in zip(points,points[1:]))
             segments=split
         for a,b,color in segments:
+            if event.get('_keyword_emphasis'): color = style['keyword_color']
             phase = {**options,'motion':options['motion'] if abs(a-start)<.005 else 'none',
                      'out':options['out'] if abs(b-stop)<.005 else 'none'}
             add_foreground(add,path,x,y,a,b,color,base_opacity,layer,scale,

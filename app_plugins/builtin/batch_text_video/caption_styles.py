@@ -5,7 +5,8 @@ from qt_compat import QtGui
 from .caption_style_catalog import PRESETS, STYLE_DEFAULTS as CATALOG_DEFAULTS
 from .caption_custom_styles import PRESETS as CUSTOM_PRESETS, STYLE_DEFAULTS as CUSTOM_DEFAULTS
 
-STYLE_DEFAULTS = {**CATALOG_DEFAULTS, **CUSTOM_DEFAULTS}
+from .caption_keywords import DEFAULTS as KEYWORD_DEFAULTS, preserve_content
+STYLE_DEFAULTS = {**CATALOG_DEFAULTS, **CUSTOM_DEFAULTS, **KEYWORD_DEFAULTS}
 STYLE_DEFAULTS.update(pop_start=.68, pop_peak=1.15, text_gradient_enabled=False,
                       box_follow_motion=False, styled_layout=False)
 
@@ -193,6 +194,8 @@ def effects(layer, *, include_common=True):
             raise ValueError('字幕效果大小应为0–150：'+key)
     if not -150 <= style['high_offset_y'] <= 150 or not 0 <= style['dynamic_box_stroke_width'] <= 30:
         raise ValueError('当前词高亮框的偏移或边线宽度无效。')
+    from .caption_keywords import validate as validate_keywords
+    validate_keywords(style)
     return style
 
 
@@ -215,7 +218,7 @@ def apply_style(layer, preset, *, reset_layout=False):
     result.update(preset_defaults(result))
     result.update(follow)  # Tracking belongs to the component, not its look preset.
     if not is_catalog(result):
-        return freeze_effect_parameters(result)
+        return preserve_content(freeze_effect_parameters(result),layer)
     style = effects(result,include_common=False)
     requested = style['font_family']
     families = {name.casefold(): name for name in QtGui.QFontDatabase.families()}
@@ -251,7 +254,7 @@ def apply_style(layer, preset, *, reset_layout=False):
         values=copy.deepcopy(CUSTOM_PRESETS[preset]['layer'])
         result.update({key:value for key,value in values.items() if reset_layout or key not in LAYOUT_KEYS})
     result['caption_appearance_version']=2
-    return freeze_effect_parameters(result)
+    return preserve_content(freeze_effect_parameters(result),layer)
 
 
 def description(layer):
@@ -262,7 +265,9 @@ def description(layer):
     custom = CUSTOM_PRESETS.get(layer['caption_preset'])
     pieces = [custom['label'] if custom else str(layer['caption_preset'])[len(PREFIX):]]
     if custom:
-        pieces.append('按原词时间逐词柔弹；五段缩放曲线，峰值可在效果参数调整；不压缩人声时间')
+        from .caption_custom_styles import LZX_WORD_POP
+        pieces.append('按原词时间逐词柔弹；五段缩放曲线，峰值可在效果参数调整；不压缩人声时间'
+                      if layer['caption_preset'] == LZX_WORD_POP else '常用字幕：'+custom.get('description',custom['label'])+'；可继续修改各项参数')
     if style['karaoke_highlight']:
         pieces.append('读到的词高亮；本组未读文字可见')
     if style['dynamic_box']:

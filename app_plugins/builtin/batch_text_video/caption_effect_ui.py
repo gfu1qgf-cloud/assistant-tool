@@ -8,6 +8,8 @@ from .caption_effect_controls import GROUPS, number_range
 from .property_sections import PropertySections
 
 EFFECT_LABELS = {
+    'keyword_emphasis_enabled':'启用关键词强调', 'keyword_terms':'关键词列表',
+    'keyword_match':'匹配方式', 'keyword_color':'关键词颜色', 'keyword_scale':'关键词字号倍数',
     'pop_start':'回弹起始倍数', 'pop_peak':'回弹峰值倍数', 'lzx_pop_scale':'柔弹峰值倍数（1–2）',
     'anim_in_type':'入场动画', 'anim_out_type':'出场动画', 'anim_in_duration':'入场秒数',
     'anim_out_duration':'出场秒数', 'rotation':'整体旋转角度',
@@ -74,7 +76,12 @@ class CaptionEffectEditor(QtWidgets.QWidget):
         self.set_layer(layer)
 
     def _create(self, key, value):
-        if key in {'anim_in_type', 'anim_out_type'}:
+        if key == 'keyword_match':
+            from .caption_keywords import MATCHES
+            control = Combo()
+            for title, value in MATCHES: control.addItem(title, value)
+            control.currentIndexChanged.connect(self.edit)
+        elif key in {'anim_in_type', 'anim_out_type'}:
             control = Combo()
             choices = tuple(mode for mode in ANIMATIONS if mode not in {'typewriter','bullet_reveal'})
             if key == 'anim_out_type': choices = ('none','fade','pop','slide_up','slide_down','slide_left','slide_right')
@@ -91,6 +98,9 @@ class CaptionEffectEditor(QtWidgets.QWidget):
             control.setSingleStep(.05 if abs(value) < 5 else 1); control.valueChanged.connect(self.edit)
         else:
             control = QtWidgets.QLineEdit(); control.editingFinished.connect(self.edit)
+        if key == 'keyword_terms':
+            control.setPlaceholderText('例如：nádej, láska, hope, peace, 希望')
+            control.setToolTip('逗号、分号或换行分隔关键词，最多80项。不区分大小写，忽略词首尾标点；中文无空格时可选包含匹配。关键词颜色优先于当前词染色，保留朗读时机。')
         self.controls[key] = control
         return control
 

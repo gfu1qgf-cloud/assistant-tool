@@ -67,8 +67,8 @@ class CaptionStyleNodeTests(unittest.TestCase):
     def operation(self, layer):
         return build_caption({"subtitles": self.asset}, {"caption": layer}, self.context)["operations"][0]
 
-    def test_all_68_styles_compile_to_identical_batch_ass(self):
-        self.assertEqual(len(STYLES), 68)
+    def test_all_registered_styles_compile_to_identical_batch_ass(self):
+        self.assertEqual(len(STYLES), 88)
         words = subtitle_words(self.asset, 3.5)
         for index, preset in enumerate(STYLES):
             with self.subTest(preset=preset):
@@ -78,10 +78,23 @@ class CaptionStyleNodeTests(unittest.TestCase):
                 folder = self.root / str(index)
                 folder.mkdir()
                 chain = compile_filters(RenderPlan(self.video, (operation,), ""), folder, self.context, video_info=self.info)
-                name = re.search(r"ass=filename='([^']+)'", chain).group(1)
+                if isinstance(chain,str):
+                    actual=folder / re.search(r"ass=filename='([^']+)'",chain).group(1)
+                else:
+                    # A follow recipe with feathering uses the existing native
+                    # mask fragment, retaining its original canonical ASS.
+                    from model.node_workflow.filter_graph import VideoFilterChain
+                    self.assertIsInstance(chain,VideoFilterChain)
+                    self.assertEqual(len(chain.steps),1)
+                    self.assertEqual(len(chain.steps[0].inputs),1)
+                    originals=[file for file in folder.glob('*.ass') if not file.name.endswith('.clip.ass')]
+                    self.assertEqual(len(originals),1)
+                    actual=originals[0]
+                    self.assertTrue(actual.with_suffix('.clip.png').is_file())
+                    self.assertTrue(actual.with_suffix('.clip.ass').is_file())
                 expected = folder / "expected.ass"
                 write_caption_ass(expected, words, layer, 360, 640, 3.5)
-                self.assertEqual((folder / name).read_bytes(), expected.read_bytes())
+                self.assertEqual(actual.read_bytes(), expected.read_bytes())
                 self.assertFalse(list(folder.glob("*.mp4")))
                 json.dumps(dict(operation.options), ensure_ascii=False)
 
@@ -131,7 +144,7 @@ class CaptionStyleNodeTests(unittest.TestCase):
         try:
             editor.mode.setCurrentIndex(1)
             properties = editor.panel.caption_properties
-            self.assertEqual(properties.controls["caption_preset"].count(), 68)
+            self.assertEqual(properties.controls["caption_preset"].count(), 88)
             self.assertEqual(properties.controls["caption_timing"].count(), 2)
             self.assertFalse(properties.gallery_button.isHidden())
             properties.controls["caption_preset"].setCurrentIndex(

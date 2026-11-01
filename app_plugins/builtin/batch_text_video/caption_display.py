@@ -64,7 +64,7 @@ def display_settings(layer):
 
 
 def layout_glyphs(words, layer, sizes, scale, fraction, *, available_width, per_line,
-                  gap_for, peak=1, edge_peak=1, native=False):
+                  gap_for, peak=1, edge_peak=1, native=False, keyword_style=None):
     """Measure the actual first visual row with its own emphasis.
 
     Lock that row before laying out normal-sized following rows; shrinking a
@@ -74,6 +74,10 @@ def layout_glyphs(words, layer, sizes, scale, fraction, *, available_width, per_
     from .word_spacing import glyph_rows
     options = display_settings(layer)
     emphasize = options['caption_first_line_emphasis']
+    from .caption_keywords import matches
+    from .caption_styles import effects
+    keyword_style = effects(layer) if keyword_style is None else keyword_style
+    keywords = [matches(word['text'], keyword_style) for word in words]
 
     def glyph(index, first=False):
         actual = layer
@@ -82,11 +86,12 @@ def layout_glyphs(words, layer, sizes, scale, fraction, *, available_width, per_
             size *= options['caption_first_line_scale']
             if options['caption_first_line_bold']:
                 actual = {**layer, 'font_weight': 900}
+        if keywords[index]: size *= keyword_style['keyword_scale']
         value = _glyph(words[index]['text'], actual, size, native=native)
         if '_space_advance' not in value:
             from .word_spacing import natural_space
             value['_space_advance'] = natural_space(actual,size)
-        return {**value, '_first_line_emphasis': first,
+        return {**value, '_first_line_emphasis': first, '_keyword_emphasis': keywords[index],
                 '_font_pixel_size': max(1, round(size)), '_font_weight': actual['font_weight']}
 
     glyphs = [glyph(i, emphasize and i < per_line) for i in range(len(words))]

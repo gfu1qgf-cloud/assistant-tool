@@ -59,6 +59,7 @@ def make_primitives(words, layer, width, height, duration):
                     else palette[event['group']])
         segments=active_segments(start,stop,event,base_color,style)
         for a,b,color in segments:
+            if event.get('_keyword_emphasis'): color = style['keyword_color']
             phase={**options,'motion':options['motion'] if abs(a-start)<.005 else 'none'}
             add_foreground(add,path,x,y,a,b,color,1,layer,scale,
                 {**phase,'gradient_direction':style['high_gradient_direction']

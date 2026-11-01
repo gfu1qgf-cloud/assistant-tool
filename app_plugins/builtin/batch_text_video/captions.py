@@ -497,7 +497,7 @@ def caption_events(words, layer, width, height, duration, *, native=False):
         def layout(fraction):
             glyphs, lines, gap = layout_glyphs(group, layer, sizes[start_index:start_index+len(group)],
                 scale, fraction, available_width=box.width(), per_line=per_line,
-                gap_for=lambda _glyphs: max(0, 8+layer['word_spacing'])*scale, peak=peak, native=native)
+                gap_for=lambda _glyphs: max(0, 8+layer['word_spacing'])*scale, peak=peak, native=native, keyword_style=style)
             widths = [sum(glyphs[i]['width']*peak for i in line) + gap*(len(line)-1) for line in lines]
             metrics = [glyph_line_metrics([glyphs[i] for i in line]) for line in lines]
             heights = [height*peak*layer["line_spacing"] for height,_baseline in metrics]

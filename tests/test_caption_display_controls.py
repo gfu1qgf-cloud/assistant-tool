@@ -91,12 +91,12 @@ class CaptionDisplayTests(unittest.TestCase):
                          [(e['text'],e['start'],e['end']) for e in WORDS])
         self.assertEqual(layer,before)
 
-    def test_reveal_order_is_independent_of_all_68_style_choices(self):
+    def test_reveal_order_is_independent_of_all_registered_style_choices(self):
         words=WORDS[:3]
         for preset in ['pop','appear']+[key for _,key in preset_choices()]:
             for mode in ('group','word','char','line'):
                 with self.subTest(preset=preset,mode=mode):
-                    layer=caption(preset,caption_display_mode=mode,caption_accumulate=False,
+                    layer=caption(preset,caption_display_mode=mode,caption_accumulate=False,caption_follow_mode='none',
                         caption_first_line_emphasis=False,caption_cursor=False,caption_words=3,
                         caption_per_line=1,font_min=28,font_max=28)
                     layer['caption_effects'].update(only_show_active_word=False,scrolling_mode=False,
