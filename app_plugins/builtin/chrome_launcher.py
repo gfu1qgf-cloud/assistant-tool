@@ -23,26 +23,37 @@ class ChromeLauncherQuickActions(QtWidgets.QWidget):
     def __init__(self, plugin, parent=None):
         super().__init__(parent)
         self.plugin = plugin
-        layout = QtWidgets.QHBoxLayout(self)
+        layout = QtWidgets.QGridLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(8)
         self.open_button = QtWidgets.QPushButton("开启谷歌浏览器", self)
         self.open_button.setObjectName("open_chrome_btn")
         self.next_button = QtWidgets.QPushButton("启动下一个浏览器", self)
         self.next_button.setObjectName("launch_next_chrome_btn")
-        layout.addWidget(self.open_button)
-        layout.addWidget(self.next_button)
+        self.bookmarks_button = QtWidgets.QPushButton("书签库", self)
+        self.bookmarks_button.setObjectName("open_bookmarks_btn")
+        self.bookmarks_button.setToolTip("直接打开统一书签库；沿用原来的本地受保护存储。")
+        layout.addWidget(self.open_button, 0, 0)
+        layout.addWidget(self.next_button, 0, 1)
+        layout.setColumnStretch(0, 1)
+        layout.setColumnStretch(1, 1)
         self.open_button.clicked.connect(
             lambda _checked=False: plugin.open_launcher()
         )
         self.next_button.clicked.connect(
             lambda _checked=False: plugin.launch_next_profile()
         )
+        self.bookmarks_button.clicked.connect(
+            lambda _checked=False: plugin.open_bookmarks()
+        )
         if getattr(plugin, 'flow_controller', None) is not None:
             self.open_button.setText('浏览器配置／分组')
             self.flow_button = QtWidgets.QPushButton('Flow 视频生成', self)
-            layout.addWidget(self.flow_button)
+            layout.addWidget(self.bookmarks_button, 1, 0)
+            layout.addWidget(self.flow_button, 1, 1)
             self.flow_button.clicked.connect(lambda _checked=False: plugin.flow_controller.open_flow_queue())
+        else:
+            layout.addWidget(self.bookmarks_button, 1, 0, 1, 2)
 
 
 class ChromeLauncherSettingsPage:
@@ -107,7 +118,7 @@ class ChromeLauncherSettingsPage:
 class ChromeLauncherPlugin:
     plugin_id = "chrome_launcher"
     display_name = "Chrome 启动器"
-    version = "1.2.1"
+    version = "1.2.2"
     required_api_version = 1
 
     def __init__(self):

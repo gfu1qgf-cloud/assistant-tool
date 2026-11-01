@@ -1,4 +1,4 @@
-"""A compact encoder inspector; presets are editable values, never UI locks."""
+"""Compact encoder inspector using node defaults, without a redundant apply step."""
 import copy
 from dataclasses import asdict
 from qt_compat import QtCore, QtWidgets
@@ -12,9 +12,6 @@ class CompressionInspector(QtWidgets.QWidget):
         self.values = asdict(from_parameters(params))
         self.controls, self.rows, self.loading = {}, {}, True
         layout = QtWidgets.QVBoxLayout(self); layout.setContentsMargins(0,0,0,0)
-        preset = QtWidgets.QPushButton('应用截图配置 · H.264 30＋MP3 128',self)
-        preset.setToolTip('仅设置参数，不锁定任何控件。你的其他节点和连线不会改变。')
-        preset.clicked.connect(self.apply_screenshot); layout.addWidget(preset)
         self.tabs = QtWidgets.QTabWidget(self); layout.addWidget(self.tabs)
         pages = {}
         for key, name in [('video','编码'),('picture','画面'),('audio','音频'),('extra','其他')]:
@@ -100,15 +97,6 @@ class CompressionInspector(QtWidgets.QWidget):
                     elif isinstance(widget,QtWidgets.QCheckBox): widget.setChecked(self.values[key])
                     else: widget.setValue(self.values[key])
         finally: self.loading=False
-
-    def apply_screenshot(self):
-        previous=copy.deepcopy(self.values)
-        self.values=asdict(from_parameters({}))
-        try:
-            if self.changed(copy.deepcopy(self.values)) is False: raise ValueError('截图配置未保存，请检查工作流。')
-        except Exception as error:
-            self.values=previous; self.info.setText(str(error)); return
-        self.load_controls(); self.update_groups(); self.update_summary()
 
     def update_groups(self):
         active={'crf':'crf','qp':'qp','video_kbps':'bitrate'}

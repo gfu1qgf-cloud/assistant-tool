@@ -103,15 +103,14 @@ class CompressionTests(unittest.TestCase):
                        {'cfr':'yes'},{'rate_control':'crf;evil'},{'codec':'libx265','profile':'baseline'}):
             with self.subTest(values=values),self.assertRaises(ValueError): EncodingSettings(**values)
 
-    def test_inspector_keeps_existing_values_and_preset_never_locks_them(self):
+    def test_inspector_keeps_existing_values_without_an_apply_button(self):
         changes=[]
         panel=CompressionInspector({'crf':23,'audio':'aac','audio_kbps':192},changes.append)
         try:
             self.assertFalse(changes)
             self.assertEqual(panel.controls['crf'].value(),23)
-            panel.apply_screenshot()
-            self.assertEqual(changes[-1]['crf'],30)
-            self.assertEqual(changes[-1]['sample_rate'],44100)
+            self.assertEqual(panel.controls['audio'].currentData(),'aac')
+            self.assertFalse(panel.findChildren(QtWidgets.QPushButton), 'no separate apply-screenshot step')
             for key in ('codec','crf','preset','audio','audio_kbps','sample_rate','channels'):
                 self.assertTrue(panel.controls[key].isEnabled(),key)
             panel.controls['crf'].setValue(33.5)
@@ -122,13 +121,32 @@ class CompressionTests(unittest.TestCase):
             panel.controls['rate_control'].setCurrentIndex(panel.controls['rate_control'].findData('crf'))
             self.assertEqual(panel.controls['crf'].value(),33.5)
             if os.environ.get('NODE_COMPRESSION_SCREENSHOT'):
-                panel.apply_screenshot()
                 panel.resize(390,450);panel.show();self.app.processEvents()
                 panel.grab().save(os.environ['NODE_COMPRESSION_SCREENSHOT'])
                 for index in (1,2,3):
                     panel.tabs.setCurrentIndex(index);self.app.processEvents()
                     target=Path(os.environ['NODE_COMPRESSION_SCREENSHOT'])
                     panel.grab().save(str(target.with_name(target.stem+f'-{index}'+target.suffix)))
+        finally:panel.close()
+
+    def test_default_inspector_already_matches_node_defaults_without_saving(self):
+        registry=NodeRegistry();register_core(registry)
+        node=new_node(registry.definitions['core.compress'])
+        original=copy.deepcopy(node['params']);changed=Mock()
+        panel=CompressionInspector(node['params'],changed)
+        try:
+            self.assertEqual(panel.controls['codec'].currentData(),'libx264')
+            self.assertEqual(panel.controls['crf'].value(),30)
+            self.assertEqual(panel.controls['audio'].currentData(),'mp3')
+            self.assertEqual(panel.controls['audio_kbps'].value(),128)
+            self.assertEqual(panel.controls['sample_rate'].currentData(),44100)
+            self.assertEqual(panel.controls['channels'].currentData(),2)
+            self.assertFalse(panel.findChildren(QtWidgets.QPushButton))
+            changed.assert_not_called();self.assertEqual(node['params'],original)
+            if os.environ.get('NODE_COMPRESSION_SCREENSHOT'):
+                panel.resize(390,520);panel.show();self.app.processEvents()
+                target=Path(os.environ['NODE_COMPRESSION_SCREENSHOT'])
+                panel.grab().save(str(target.with_name('compression-default.png')))
         finally:panel.close()
 
     def test_inspector_rejected_edit_restores_prior_values(self):
