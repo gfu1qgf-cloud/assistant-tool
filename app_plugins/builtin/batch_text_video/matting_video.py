@@ -71,28 +71,39 @@ class MattingVideoWorker(QtCore.QThread):
         request = self.request; process = None; stack = ExitStack()
         try:
             info, path, values = request['info'], request['path'], request['values']
-            expected = fingerprint(path)
+            # Original-only loop trimming uses a cheap size/mtime check. AI
+            # workbench requests retain their full content fingerprint.
+            from .visual_loop_region import stamp
+            quick = request.get('source_stamp') if request.get('original_only') else None
+            expected = stamp(path) if quick is not None else fingerprint(path)
+            if quick is not None and expected != quick: raise ValueError('素材已改变，请重新选择后预览。')
             if request.get('expected') and expected['sha256'] != request['expected']['sha256']:
                 raise ValueError('素材已改变，请重新选择后预览。')
             check_cancel(self.cancel)
             executable, _ = resolve_tools(request.get('ffmpeg', ''))
             start = frame_position(info, request['position']); first = round(start*info['fps'])
             original_only = request.get('original_only', False)
+            width, height = info['width'], info['height']
+            if quick is not None:
+                ratio = min(1., 960/width, 540/height)
+                width, height = max(1, round(width*ratio)), max(1, round(height*ratio))
+            vf = 'fps='+info['rate']
+            if (width, height) != (info['width'], info['height']): vf += f',scale={width}:{height}'
             report = lambda text: self.message.emit(dict(generation=request['generation'], text=text))
             predictor = None if original_only else render.Predictor(values['model'], values['device'], values['quality'], request.get('models'), self.cancel, report)
             check_cancel(self.cancel)
             args = [executable, '-nostdin', '-hide_banner', '-loglevel', 'error', '-threads', '1',
-                    *seek_args(info, start), '-i', path, '-vf', 'fps='+info['rate'], '-an', '-sn',
+                    *seek_args(info, start), '-i', path, '-vf', vf, '-an', '-sn',
                     '-threads', '1', '-f', 'rawvideo', '-pix_fmt', 'rgba', 'pipe:1']
             from .dnx_alpha import raw_args
             from .matting_live import Inputs
-            native = raw_args(path, executable, vf='fps='+info['rate'], first=first, cancel=self.cancel)
+            native = raw_args(path, executable, vf=vf, first=first, cancel=self.cancel)
             inputs = stack.enter_context(Inputs(native or args, cancel=self.cancel, report=report))
             process = subprocess.Popen(inputs.args, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                                        creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
             with self._lock: self._process = process
             check_cancel(self.cancel)
-            size = info['width']*info['height']*4; emitted = 0; eof = False
+            size = width*height*4; emitted = 0; eof = False
             for index in range(first, info['frames']):
                 tick = time.monotonic(); check_cancel(self.cancel)
                 data = bytearray()
@@ -102,7 +113,7 @@ class MattingVideoWorker(QtCore.QThread):
                     data.extend(part); check_cancel(self.cancel)
                 if not data: eof = True; break
                 if len(data) != size: raise ValueError('视频预览帧解码不完整。')
-                source = np.frombuffer(data, np.uint8).reshape(info['height'], info['width'], 4)
+                source = np.frombuffer(data, np.uint8).reshape(height, width, 4)
                 position = index/info['fps']
                 base = None
                 if predictor:
@@ -123,7 +134,8 @@ class MattingVideoWorker(QtCore.QThread):
             check_cancel(self.cancel)
             if not emitted: raise ValueError('无法读取目标视频帧。')
             if eof and process.wait(timeout=5): raise ValueError('视频解码中断，请检查素材。')
-            if fingerprint(path)['sha256'] != expected['sha256']: raise ValueError('素材在预览期间已改变，请重新读取。')
+            changed = stamp(path) != expected if quick is not None else fingerprint(path)['sha256'] != expected['sha256']
+            if changed: raise ValueError('素材在预览期间已改变，请重新读取。')
         except MattingCancelled: pass
         except Exception as error:
             if not self.cancel.is_set():

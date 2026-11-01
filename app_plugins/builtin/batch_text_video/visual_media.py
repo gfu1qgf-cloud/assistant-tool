@@ -1,5 +1,6 @@
 """Visual file/pool adapter and shared FFmpeg compositing; never modify inputs."""
 import math
+import copy
 from pathlib import Path
 import subprocess
 from qt_compat import QtCore, QtGui, QtWidgets
@@ -13,7 +14,7 @@ VISUAL_SUFFIXES = ANIMATED_SUFFIXES | {".png", ".jpg", ".jpeg", ".jfif", ".webp"
 VISUAL_FILTER = "图片 / 视频 / GIF (" + " ".join("*" + item for item in sorted(VISUAL_SUFFIXES)) + ")"
 DEFAULTS = {"blend_mode": "normal", "key_mode": "none", "key_similarity": .15,
             "key_softness": .08, "key_despill": False, "media_loop": True, "use_saved_matte": True,
-            "media_loop_transition": "none", "media_loop_fade": .3,
+            "media_loop_transition": "none", "media_loop_fade": .3, "media_loop_regions": [],
             **MATTE_DEFAULTS, **ANIMATION_DEFAULTS, **KEY_DEFAULTS, **SHOW_DEFAULTS}
 
 def is_animated(path):
@@ -25,7 +26,7 @@ def normalize_visual(layer):
     if 'use_saved_matte' not in layer:
         layer['use_saved_matte'] = not (layer.get('key_mode', 'none') != 'none' or layer.get('key_method') == 'ai')
     for key, value in DEFAULTS.items():
-        layer.setdefault(key, value)
+        if key not in layer: layer[key] = copy.deepcopy(value)
     normalize_key(layer)
     if type(layer['use_saved_matte']) is not bool: raise ValueError('素材已存抠像开关无效。')
     if layer["blend_mode"] not in {"normal", "add", "screen"}:
@@ -41,6 +42,8 @@ def normalize_visual(layer):
     fade = layer['media_loop_fade']
     if type(fade) not in (int, float) or not math.isfinite(fade) or not 0 <= fade <= 3:
         raise ValueError('素材循环叠化时长须为0–3秒。')
+    from .visual_loop_region import normalize
+    layer['media_loop_regions'] = normalize(layer['media_loop_regions'])
     levels(layer)
     normalize_animation(layer)
 
@@ -190,17 +193,34 @@ def add_plane(args, filters, layer, input_index, background, label, width, heigh
     # A still source with a moving trimap is still time-dependent. Live AI and
     # video/GIF sources also keep their existing stream semantics.
     static_source = not (is_animated(path) or dynamic(layer) or is_animated(active_mask(layer)))
+    from .visual_loop_region import selected, validate, PlaylistInput
+    region = selected(layer) if is_animated(path) else None
     candidate = loop_fade_enabled(layer)
     executable = ''
-    if dynamic(layer) or candidate:
+    media, native_region = None, None
+    if dynamic(layer) or candidate or region:
         from .engine import resolve_tools
         executable = ffmpeg or (args[0] if args and not args[0].startswith('-') else resolve_tools()[0])
+    if region:
+        from .engine import probe, resolve_tools
+        from .matting_video import describe
+        from .dnx_alpha import describe as native_alpha
+        _, tool = resolve_tools(executable)
+        media = probe(path, tool)
+        validate(region, describe(media))
+        special = dynamic(layer) or candidate or is_animated(active_mask(layer)) or native_alpha(path, executable)
+        if special: candidate = True
+        else:
+            start_time = float(media['video'].get('start_time') or 0.)
+            native_region = PlaylistInput(path, region, local_duration, start_time)
     loop_source = LoopInput(layer, local_duration, fps, executable, (box_w, box_h)) if candidate else None
-    live_loop = loop_source is not None and loop_source.overlap > 0
+    live_loop = loop_source is not None and (loop_source.overlap > 0 or region is not None)
     if dynamic(layer) or live_loop:
         source = (loop_source if live_loop else
                   StreamInput(layer['_matting_binding'], local_duration, layer['media_loop'], fps, executable))
         args += source.arguments()
+    elif native_region is not None:
+        args += ['-i', native_region]
     elif is_animated(path):
         if layer["media_loop"]:
             args += ["-stream_loop", "-1"]
@@ -213,7 +233,10 @@ def add_plane(args, filters, layer, input_index, background, label, width, heigh
         effect.append('trim=end_frame=1')
     input_label = f"{input_index}:v"
     consumed = 1
-    if not (dynamic(layer) or live_loop):
+    if native_region is not None:
+        input_label = label+'_region'
+        filters.append(f'[{input_index}:v]select=concatdec_select,setpts=PTS-STARTPTS[{input_label}]')
+    elif not (dynamic(layer) or live_loop):
         from .dnx_alpha import add_source
         input_label, consumed = add_source(args, filters, path, input_index, label+'_dnx',
                                           loop=layer['media_loop'], ffmpeg=ffmpeg)
@@ -374,6 +397,14 @@ class VisualProperties(QtWidgets.QWidget):
         self.basic_form.addRow('叠化时长', fade)
         transition.setToolTip('仅控制此图片／视频控件的首尾循环交界，不改变底层背景；不够长且需要循环时才叠化。')
         fade.setToolTip('首尾重叠过渡；过长时按素材长度和可用帧缓冲自动缩短。设计画面显示首帧，交界效果请看播放预览。')
+        self.loop_region_button = QtWidgets.QPushButton('循环区间／试看…')
+        self.loop_region_button.setAutoDefault(False)
+        self.loop_region_button.clicked.connect(self._edit_loop_region)
+        self.basic_form.addRow(self.loop_region_button)
+        self.loop_region_note = QtWidgets.QLabel()
+        self.loop_region_note.setWordWrap(True)
+        self.loop_region_note.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored, QtWidgets.QSizePolicy.Policy.Preferred)
+        self.basic_form.addRow(self.loop_region_note)
         despill_mode = QtWidgets.QComboBox()
         despill_mode.addItem("基础 · 全图保守", "basic")
         despill_mode.addItem("边缘 · 仅修正边缘颜色（推荐）", "edge")
@@ -511,6 +542,13 @@ class VisualProperties(QtWidgets.QWidget):
         self.controls['media_loop_transition'].setEnabled(self.controls['media_loop'].isChecked())
         self.controls['media_loop_fade'].setEnabled(self.controls['media_loop'].isChecked()
             and self.controls['media_loop_transition'].currentData() == 'fade')
+        if hasattr(self, 'loop_region_button'):
+            from .visual_loop_region import sources
+            available = bool(self.layer and sources(self.layer))
+            self.loop_region_button.setEnabled(available and self.controls['media_loop'].isChecked())
+            count = len(self.layer.get('media_loop_regions', [])) if self.layer else 0
+            self.loop_region_note.setText(f'已为{count}个视频设置区间；首遍0→终点，之后循环起点→终点。'
+                if count else '默认循环整段。可按素材跳过后续循环中的开头准备动作。')
         mode = self.controls["key_mode"].currentData()
         ai = self.controls['key_method'].currentData() == 'ai'
         active_matte = ai or mode != 'none'
@@ -589,6 +627,26 @@ class VisualProperties(QtWidgets.QWidget):
         self.loading = False
         self._update_motion_controls()
         self._update_key_controls()
+    def _edit_loop_region(self):
+        if not self.layer: return
+        from .visual_loop_region_ui import LoopRegionDialog
+        layer = copy.deepcopy(self.layer)
+        ancestor = self.parentWidget()
+        while ancestor:
+            preview = getattr(ancestor, 'pool_preview', None)
+            if preview:
+                current = next((v for v in preview.layers if v['id'] == layer['id']), None)
+                if current: layer['sequence_cursor'] = current['sequence_cursor']
+                layer = preview.apply({'layers': [layer]})['layers'][0]
+                break
+            ancestor = ancestor.parentWidget()
+        dialog = LoopRegionDialog(layer, self)
+        if dialog.exec() == QtWidgets.QDialog.DialogCode.Accepted:
+            self.layer['media_loop_regions'] = copy.deepcopy(dialog.rules)
+            self._update_key_controls()
+            self.changed.emit(copy.deepcopy(self.layer))
+        dialog.deleteLater()
+
     def edit(self, *_args):
         if self.loading or not self.layer: return
         for key, control in self.controls.items():

@@ -29,11 +29,17 @@ class LoopInput(StreamInput):
         from .engine import resolve_tools, probe
         _, ffprobe = resolve_tools(ffmpeg)
         value.clip_duration = probe(value, ffprobe)['duration']
+        from .visual_loop_region import selected, validate
+        from .matting_video import describe
+        value.region = selected(layer)
+        if value.region: validate(value.region, describe(probe(value, ffprobe)))
         clip_frames = max(1, round(value.clip_duration*float(value.fps)))
-        requested = max(1, round(layer['media_loop_fade']*float(value.fps))) if layer['media_loop_fade'] > 0 else 0
+        if value.region: clip_frames = max(1, round((value.region['end']-value.region['start'])*float(value.fps)))
+        requested = max(1, round(layer['media_loop_fade']*float(value.fps))) if enabled(layer) else 0
         limit = BUFFER_LIMIT//(2*value.width*value.height*4)
         value.overlap = min(requested, clip_frames//3, limit)
-        if duration <= value.clip_duration + .5/float(value.fps): value.overlap = 0
+        first_duration = value.region['end'] if value.region else value.clip_duration
+        if duration <= first_duration + .5/float(value.fps): value.overlap = 0
         value.loop_layer = dict(layer)
         value.extra_sources = []
         if not dynamic(layer):
@@ -75,7 +81,7 @@ def resize_rgba(data, width, height):
     return result
 
 
-def cycle(feed):
+def cycle(feed, start=None, end=None):
     """One source pass, same key/AI operations as ordinary visual composition."""
     import numpy as np
     from . import matting_render as render
@@ -97,12 +103,13 @@ def cycle(feed):
         label, _ = add_keyed_source(args, filters, spec.loop_layer, 0, 'loop_matte', spec.fps,
                                     is_animated, duration=spec.clip_duration,
                                     source_label=label, auxiliary_index=native_count)
+    segment = (f',trim=start={start:.9f}:end={end:.9f},setpts=PTS-STARTPTS' if start is not None else '')
     if ai:
         w, h = spec.source_width, spec.source_height
-        filters.append(f'[{label}]fps={float(spec.fps):.9f},format=rgba[decoded]')
+        filters.append(f'[{label}]fps={float(spec.fps):.9f}{segment},format=rgba[decoded]')
     else:
         w, h = spec.width, spec.height
-        filters.append(f'[{label}]fps={float(spec.fps):.9f},format=rgba,scale={w}:{h},setsar=1[decoded]')
+        filters.append(f'[{label}]fps={float(spec.fps):.9f}{segment},format=rgba,scale={w}:{h},setsar=1[decoded]')
     args += ['-filter_complex', ';'.join(filters), '-map', '[decoded]', '-an', '-sn', '-f', 'rawvideo',
              '-threads', '1', '-pix_fmt', 'rgba', 'pipe:1']
     process = None; frames = 0; stack = ExitStack()
@@ -142,6 +149,9 @@ def frames(feed):
     spec = feed.spec
     verify_file(spec.binding['source'], '原素材')
     for source in spec.extra_sources: verify_file(source, '辅助遮罩')
+    if getattr(spec, 'region', None):
+        yield from region_frames(feed)
+        return
     count = max(1, math.ceil(spec.duration*float(spec.fps)))
     written, head, overlap = 0, [], spec.overlap
     first = True
@@ -174,4 +184,32 @@ def frames(feed):
                 written += 1
                 yield blend(frame, head[index], weight, spec.width, spec.height)
                 if written >= count: return
+        first = False
+
+
+def region_frames(feed):
+    """Keep intro once; overlap B with A, never with the preparation at zero."""
+    spec = feed.spec; region = spec.region
+    count = max(1, math.ceil(spec.duration*float(spec.fps)))
+    written, first, head, overlap = 0, True, [], spec.overlap
+    head_start = math.ceil(region['start']*float(spec.fps)-1e-6)
+    while written < count:
+        tail = deque(); skipped = 0; decoded = 0
+        with closing(cycle(feed, 0. if first else region['start'], region['end'])) as source:
+            for index, frame in enumerate(source):
+                check_cancel(feed.cancel); decoded += 1
+                if first and head_start <= index < head_start+overlap: head.append(frame)
+                if not first and skipped < overlap:
+                    skipped += 1; continue
+                tail.append(frame)
+                if len(tail) > overlap:
+                    written += 1; yield tail.popleft()
+                    if written >= count: return
+        if not decoded: raise ValueError('循环区间没有可解码画面，请重新设置。')
+        if len(head) != overlap or len(tail) != overlap:
+            raise ValueError('循环区间画面不足，无法完成叠化，请缩短叠化时间或重新设置区间。')
+        for index, frame in enumerate(tail):
+            written += 1
+            yield blend(frame, head[index], (index+1)/(overlap+1), spec.width, spec.height)
+            if written >= count: return
         first = False

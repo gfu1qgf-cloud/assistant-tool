@@ -147,7 +147,8 @@ def compile_layer(operation, directory, context, video_info, *, timing=None):
     value = json.loads(options["layer"])
     layer = normalize_layer(value, value["kind"])
     from .visual_loop import enabled as loop_fade_enabled
-    if layer.get('_matting_binding', {}).get('mode') == 'dynamic' or loop_fade_enabled(layer):
+    from .visual_loop_region import selected
+    if layer.get('_matting_binding', {}).get('mode') == 'dynamic' or loop_fade_enabled(layer) or selected(layer):
         from .matting_live import Inputs
         context.deferred_input_factory = Inputs
     for _, ref in operation.assets: ref.verify()
@@ -192,7 +193,8 @@ def compile_layer(operation, directory, context, video_info, *, timing=None):
         input_index += 1
         background = label
     from .dnx_alpha import MaskInput
-    if any(isinstance(value, MaskInput) for value in args):
+    from .visual_loop_region import PlaylistInput
+    if any(isinstance(value, (MaskInput, PlaylistInput)) for value in args):
         from .matting_live import Inputs
         class Cancellation:
             def is_set(self):

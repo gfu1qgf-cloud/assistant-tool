@@ -207,8 +207,12 @@ class Inputs:
         try:
             expanded = []
             from .dnx_alpha import MaskInput, mask
+            from .visual_loop_region import PlaylistInput, playlist
             for value in self.args:
-                if isinstance(value, MaskInput):
+                if isinstance(value, PlaylistInput):
+                    if not expanded or expanded.pop() != '-i': raise ValueError('循环区间输入参数无效。')
+                    expanded += self.stack.enter_context(playlist(value))
+                elif isinstance(value, MaskInput):
                     from .render_progress import stage
                     report = self.report or (lambda text: stage(self.progress, text))
                     expanded.append(self.stack.enter_context(mask(value.info, self.cancel, report)))
