@@ -22,7 +22,7 @@ TEXT_STYLE_DEFAULTS = {
     "font_weight":400,"italic":False,"underline":False,"strikeout":False,
     "capitalization":"normal","letter_spacing":0,"word_spacing":0,"paragraph_spacing":0,
     # Migration fallback: pre-style configurations rendered with a black edge.
-    "outline_width":2,"outline_color":"#000000","outline_opacity":84.31,"outline_blur":0,
+    "outline_position":"center","outline_width":2,"outline_color":"#000000","outline_opacity":84.31,"outline_blur":0,
     "shadow_enabled":False,"shadow_color":"#000000","shadow_opacity":65,"shadow_x":5,"shadow_y":5,"shadow_blur":0,
     "background_enabled":False,"background_color":"#000000","background_opacity":35,
     "background_radius":12,"padding":4,
@@ -92,6 +92,8 @@ def normalize_layers(value=None):
                     layer['shadow_blur'] = effects(layer)['shadow_blur']
             for key,default in TEXT_STYLE_DEFAULTS.items():
                 layer.setdefault(key,default)
+            if layer['outline_position'] not in ('center', 'outside'):
+                raise ValueError('描边位置须为居中或向外。')
             from .text_background import normalize_background
             normalize_background(layer)
             from .text_colors import normalize_color

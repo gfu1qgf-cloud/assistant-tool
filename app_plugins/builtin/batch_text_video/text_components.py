@@ -29,7 +29,10 @@ def draw_text_groups(painter, groups, layer, x, y, scale):
         for layout, offset in groups:
             bounds = bounds.united(layout_bounds(layout).translated(sx, sy+offset))
         paint_blurred(painter, bounds, layer.get('shadow_blur', 0)*scale, draw_shadow)
-    if outline:
+    if outline and layer.get('outline_position') == 'outside':
+        from .text_outline import draw_outside
+        draw_outside(painter, groups, layer, x, y, scale)
+    elif outline:
         def draw_outline(target):
             color = QtGui.QColor(layer.get("outline_color", "#000000"))
             color.setAlpha(round(layer.get("outline_opacity", 84.31)*2.55))

@@ -18,7 +18,7 @@ LEGACY_REVEAL_ANIMATIONS = {'typewriter','bullet_reveal'}
 LAYOUT_KEYS = ('x','y','width','height','align','vertical','caption_words','caption_per_line','caption_hold_ms')
 LAYER_KEYS = ('font', 'font_min', 'font_max', 'font_weight', 'italic', 'capitalization',
               'letter_spacing', 'word_spacing', 'line_spacing', 'color', 'outline_width',
-              'outline_color', 'outline_opacity', 'outline_blur', 'shadow_enabled', 'shadow_color',
+              'outline_color', 'outline_opacity', 'outline_blur', 'outline_position', 'shadow_enabled', 'shadow_color',
               'shadow_opacity', 'shadow_x', 'shadow_y', 'shadow_blur', 'background_enabled',
               'background_color', 'background_opacity', 'background_radius', 'padding',
               'x', 'y', 'width', 'height', 'align', 'vertical')

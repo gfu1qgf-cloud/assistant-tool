@@ -276,9 +276,16 @@ def make_primitives(words, layer, width, height, duration):
         if style['stroke_expand_enabled']:
             stroke_palette = colors(style['stroke_expand_colors'])
             for n in reversed(range(min(6,int(style['stroke_expand_layers'])))):
-                add(path,x,y,start,stop,stroke_palette[n%len(stroke_palette)],.55*base_opacity,z=-2,
-                    border=(layer['outline_width']+(n+1)*style['stroke_expand_step'])*scale,
-                    border_color=stroke_palette[n%len(stroke_palette)],blur=style['stroke_expand_feather']*scale,**options)
+                border=(layer['outline_width']+(n+1)*style['stroke_expand_step'])*scale
+                if layer.get('outline_position') == 'outside':
+                    from .text_outline import outside_ring
+                    add(outside_ring(path,border),x,y,start,stop,stroke_palette[n%len(stroke_palette)],
+                        .55*base_opacity,z=-2,blur=style['stroke_expand_feather']*scale,outline_path=True,
+                        origin_x=path.boundingRect().width()/2,origin_y=path.boundingRect().height()/2,**options)
+                else:
+                    add(path,x,y,start,stop,stroke_palette[n%len(stroke_palette)],.55*base_opacity,z=-2,
+                        border=border,border_color=stroke_palette[n%len(stroke_palette)],
+                        blur=style['stroke_expand_feather']*scale,**options)
         if mode == 'holy_glow' and not context:
             add(path,x,y,start,stop,style['holy_glow_color'],.5,z=-2,
                 border=style['holy_glow_radius']*scale,blur=style['holy_glow_radius']*scale,**options)
@@ -474,7 +481,12 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                                       if primitive['start']<t<primitive['end']})
         if not positional:
             times=[primitive['start'],primitive['end']]
-        commands=_path_commands(primitive['native'])
+        drawing_scale = 4 if primitive.get('outline_path') else 1
+        if primitive.get('outline_path'):
+            from .text_outline import ass_commands
+            commands = ass_commands(primitive['native'])
+        else:
+            commands = _path_commands(primitive['native'])
         pieces=ass_gradient_pieces(primitive)
         for start,end in zip(times,times[1:]):
             if round(start*100) >= round(end*100): continue
@@ -524,7 +536,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                     tags+=(f'\\t({begin_ms},{end_ms},\\fscx{size*100:.3f}\\fscy{size*100:.3f}'
                         f'\\blur{blur:.3f}\\1a{alpha(fade*color_alpha)}\\3a{alpha(fade*layer["outline_opacity"]/100)}{clip_at(checkpoint)})')
                     previous=checkpoint
-                tags+=f'\\1c{_ass_color(color)}\\p1'
+                tags+=f'\\1c{_ass_color(color)}\\p{drawing_scale}'
                 row = f'Dialogue: {primitive["z"]},{_ass_time(start)},{_ass_time(end)},Caption,,0,0,0,,{{{tags}}}{commands}{{\\p0}}'
                 rows.append(row); bytes_used += len(row.encode('utf8'))
                 if len(rows)>MAX_ROWS or bytes_used>64*1024*1024:

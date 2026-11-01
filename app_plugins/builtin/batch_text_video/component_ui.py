@@ -522,6 +522,13 @@ class TextBoxProperties(QtWidgets.QWidget):
         self.layout_section=PropertySection('排版与间距',layout_widget)
         form.addRow(self.layout_section)
         self.controls['word_spacing'].setToolTip('这是在基本空格之外追加的距离，不是空格总宽度。0 不会删除空格；水印和达芬奇逐词柔弹以字体自然空格为基础。数值按1080宽画布缩放。')
+        position = Combo()
+        position.addItem('居中（原方式）', 'center')
+        position.addItem('向外（保留字面）', 'outside')
+        position.setToolTip('向外：描边从字形边缘向外扩展，不覆盖原字面；厚度按向外延伸距离计算。居中保留原效果。')
+        position.currentIndexChanged.connect(self.update_values)
+        self.controls['outline_position'] = position
+        outline.addRow('描边位置', position)
         self._number(outline,"outline_width","描边厚度 px",0,15,1)
         self._outline_widths = {}
         self.outline_toggle = QtWidgets.QCheckBox('启用描边')
@@ -698,6 +705,7 @@ class TextBoxProperties(QtWidgets.QWidget):
         normalize_color(self.layer)
         from .text_background import normalize_background
         normalize_background(self.layer)
+        self.layer.setdefault('outline_position', 'center')
         layer = self.layer
         self.loading = True
         for key,control in self.controls.items():
