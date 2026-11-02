@@ -226,7 +226,7 @@ class AgentUiTests(unittest.TestCase):
         tabs = dialog.findChild(QtWidgets.QTabWidget)
         self.assertEqual(tabs.count(), 1); self.assertEqual(tabs.tabText(0), '口播')
         self.assertEqual(dialog.table.rowCount(), 1)
-        self.assertEqual(dialog.table.item(0, 5).text(), '完整中文台词：保留所有内容和标点。')
+        self.assertEqual(dialog.table.item(0, 4).text(), '完整中文台词：保留所有内容和标点。')
         self.assertIs(self.plugin.open_dialog(), dialog)
     def test_import_does_not_share_current_task_object_with_worker(self):
         self.plugin.import_rows([0]); jobs = self.plugin.store.jobs()
@@ -239,9 +239,9 @@ class AgentUiTests(unittest.TestCase):
     def test_fallback_chinese_requires_confirmation_before_export(self):
         self.context.task_targets = lambda _rows: [target(self.temp.name, chinese=None)]
         dialog = self.plugin.open_dialog(); self.plugin.import_rows([0])
-        self.assertEqual(dialog.table.item(0, 0).checkState(), QtCore.Qt.CheckState.Unchecked)
+        self.assertEqual(len(dialog.table.selectionModel().selectedRows()), 0)
         dialog.chinese_source.setChecked(True); self.plugin.import_rows([0])
-        self.assertEqual(dialog.table.item(0, 0).checkState(), QtCore.Qt.CheckState.Checked)
+        self.assertEqual(len(dialog.table.selectionModel().selectedRows()), 1)
     def test_real_host_worker_survives_dialog_close_and_finishes_cleanly(self):
         import threading
         import time

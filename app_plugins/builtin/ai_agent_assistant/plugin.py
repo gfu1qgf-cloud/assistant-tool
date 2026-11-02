@@ -9,7 +9,7 @@ from .segmentation import require_available
 class AIAgentAssistantPlugin(QtCore.QObject):
     plugin_id = 'ai_agent_assistant'
     display_name = 'AI Agent 助手'
-    version = '0.1.1'
+    version = '0.2.0'
     required_api_version = 2
 
     def __init__(self):
@@ -77,7 +77,7 @@ class AIAgentAssistantPlugin(QtCore.QObject):
         if not payloads: raise ValueError('没有可导入的口播任务。' + ('；'.join(errors[:3]) if errors else '请先加载并选择包含口播台词的任务。'))
         result = self.store.stage(payloads, new_version=new_version)
         if self.dialog:
-            self.dialog.reload()
+            self.dialog.reload(select_ids=result['imported'] + result['unchanged'])
             self.dialog.status.setText(f'已导入 {len(result["imported"])} 条，已存在 {len(result["unchanged"])} 条，未覆盖 {len(result["blocked"])} 条，跳过无台词 {skipped} 条。' + '；'.join(errors[:3]))
         return result
 

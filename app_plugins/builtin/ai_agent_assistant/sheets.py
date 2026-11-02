@@ -1,6 +1,8 @@
 """Header-based append, no existing-row rewrites and no blind write retries."""
 import csv
 import io
+import json
+import re
 
 from model.GoogleAccounts import load_managed_service
 from app_plugins.api import load_google_service
@@ -79,7 +81,24 @@ def clipboard_tsv(jobs, run=None):
 
 
 def _execute(request):
-    return request.execute(num_retries=0)
+    try:
+        return request.execute(num_retries=0)
+    except Exception as error:
+        # An API disabled on the OAuth client's Cloud project is not a Sheet
+        # sharing failure. Keep diagnostics short and never retry a write here.
+        try:
+            data = json.loads(error.content)
+            disabled = next((item for item in data.get('error', {}).get('details', [])
+                             if item.get('reason') == 'SERVICE_DISABLED'
+                             and item.get('metadata', {}).get('service') == 'sheets.googleapis.com'), None)
+        except (AttributeError, TypeError, ValueError): disabled = None
+        if disabled is not None:
+            consumer = disabled.get('metadata', {}).get('consumer', '')
+            match = re.fullmatch(r'projects/(\d+)', consumer)
+            project = '（项目 ' + match.group(1) + '）' if match else ''
+            raise ValueError('这套 OAuth 凭据所属项目尚未启用 Google Sheets API' + project + '。'
+                             '请在 Google Cloud 控制台启用，等待几分钟后再试；这不是表格共享权限错误，无需先删除凭据或重新登录。') from None
+        raise
 
 
 def inspect(service, identifier, name, run):
@@ -193,7 +212,7 @@ def run_export(payload, run, *, service=None):
             else: prepared.append(job); rows.append(row)
         remaining = prepared
     if remaining:
-        if sum(len(str(row)) for row in rows) > 1500000: raise ValueError('本批文本超过安全提交大小，请分批勾选。')
+        if sum(len(str(row)) for row in rows) > 1500000: raise ValueError('本批文本超过安全提交大小，请分批选择。')
         run.report('正在写入口播任务；不覆盖已有行', 50)
         request = service.spreadsheets().values().append(spreadsheetId=identifier,
                 range=a1(name, f'A{info["header"]}:{column(info["count"])}{info["height"]}'),
