@@ -4,7 +4,7 @@ from app_plugins.api import MAIN_MENU, TASK_CONTEXT_MENU, PluginCommand
 class ScriptSegmenterPlugin:
     plugin_id = "script_segmenter"
     display_name = "智能文案分段助手"
-    version = "1.1.1"
+    version = "1.2"
     required_api_version = 1
 
     def __init__(self):
@@ -13,6 +13,8 @@ class ScriptSegmenterPlugin:
 
     def register(self, context):
         self.context = context
+        from .nodes import segment_node
+        context.register_node(segment_node())
         context.register_command(PluginCommand(
             "open", "智能文案分段助手…", lambda _rows: self.open_dialog(),
             frozenset({MAIN_MENU}), order=17,

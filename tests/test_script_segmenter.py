@@ -434,6 +434,7 @@ class FakeContext:
         self.parent_widget = None
         self.config = {"sentinel": {"keep": True}, "api_configuration": "untouched"}
         self.logs, self.commands, self.submissions, self.targets = [], [], [], []
+        self.nodes = []
 
     def load_config(self):
         return copy.deepcopy(self.config)
@@ -453,6 +454,9 @@ class FakeContext:
 
     def register_command(self, command):
         self.commands.append(command)
+
+    def register_node(self, definition):
+        self.nodes.append(definition)
 
     def selected_task_rows(self):
         return list(range(len(self.targets)))
