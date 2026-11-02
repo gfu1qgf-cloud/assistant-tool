@@ -310,6 +310,7 @@ class MainSettingDialog(QtWidgets.QDialog, Ui_MainSettingDialog):
         self._build_additional_hotkey_editors()
         self._build_appearance_tab()
         self._build_background_tasks_tab()
+        self._build_google_accounts_tab()
         self._build_network_tab()
         self._build_gemini_tab()
         self._build_elevenlabs_alignment_settings()
@@ -1573,6 +1574,14 @@ class MainSettingDialog(QtWidgets.QDialog, Ui_MainSettingDialog):
         from PYUI.background_task_settings_pyui import BackgroundTaskSettingsPage
         self.background_task_settings=BackgroundTaskSettingsPage(self.settingTabWidget)
         self.settingTabWidget.addTab(self.background_task_settings,'后台任务与并发')
+
+    def _build_google_accounts_tab(self):
+        from PYUI.google_accounts_pyui import GoogleAccountsPage
+        tasks = getattr(self.plugin_host, 'background_tasks', None)
+        if tasks is None:
+            tasks = getattr(self.parent(), 'background_tasks', None)
+        self.google_accounts_page = GoogleAccountsPage(self.settingTabWidget, tasks=tasks)
+        self.settingTabWidget.addTab(self.google_accounts_page, 'Google 账号')
 
     def _build_appearance_tab(self):
         self.appearance_tab = QtWidgets.QWidget(self.settingTabWidget)

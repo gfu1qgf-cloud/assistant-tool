@@ -138,6 +138,10 @@ def read_drive_parent_folder_id(configured_value: str = "") -> str:
 
 def load_drive_service():
     require_online("Google Drive 请求")
+    from model.GoogleAccounts import load_managed_service
+    managed = load_managed_service('drive')
+    if managed is not None:
+        return managed
     try:
         from google.auth.transport.requests import Request
         from google.oauth2.credentials import Credentials

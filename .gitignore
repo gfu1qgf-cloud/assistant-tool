@@ -13,6 +13,7 @@
 /TaskTableSchema.json
 
 # Google OAuth credentials and renewable tokens
+/GoogleAccounts.json
 /GoogleDriveCredentials.json
 /GoogleDriveToken.json
 /GoogleSheetsCredentials.json

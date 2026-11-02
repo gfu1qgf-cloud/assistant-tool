@@ -13,6 +13,7 @@
 | 耗时处理、进度、取消、重试、退出 | [后台任务与线程](03-background-tasks.md) |
 | 自定义节点、工作流类型、媒体输入 | [节点与工作流](04-nodes.md) |
 | 保存配置、插件数据、密盘、日志和授权 | [数据与服务](05-data-services.md) |
+| Google 多账号凭据、权限绑定与 Agent 任务表设计 | [Google 账号与 Agent 交接](12-google-accounts-and-agent-tasks.md) |
 | 写测试、定位逻辑错误、源码提交和打包 | [测试与发布](06-testing-release.md) |
 | 交给另一个 AI 开发前的约束 | [AI 开发交接清单](07-ai-checklist.md) |
 | 可直接阅读、复制并运行测试的完整实现 | [示例插件](examples/sample_plugin.py) |

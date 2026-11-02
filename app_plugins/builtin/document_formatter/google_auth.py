@@ -71,6 +71,10 @@ def authorize(private_root, run):
 
 def load_service(private_root):
     require_online('Google Docs 请求')
+    from model.GoogleAccounts import load_managed_service
+    managed = load_managed_service('docs')
+    if managed is not None:
+        return managed
     from google.auth.transport.requests import Request
     from google.oauth2.credentials import Credentials
     from googleapiclient.discovery import build

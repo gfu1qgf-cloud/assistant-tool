@@ -66,6 +66,10 @@ def column_to_letter(col_idx: int) -> str:
 
 def load_sheets_service(config: Dict, config_prefix: str = "review_sheet"):
     require_online("Google Sheets 请求")
+    from model.GoogleAccounts import load_managed_service
+    managed = load_managed_service('sheets')
+    if managed is not None:
+        return managed
     try:
         from google.auth.transport.requests import Request
         from google.oauth2.credentials import Credentials

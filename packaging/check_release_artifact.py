@@ -31,6 +31,7 @@ REQUIRED_FLOW_BRIDGE_FILES = {
 REQUIRED_FILES.update("browser_extensions/flow_bridge/" + name
                       for name in REQUIRED_FLOW_BRIDGE_FILES)
 PRIVATE_FILES = {
+    "googleaccounts.json",
     "config2.json",
     "storage_bootstrap.json",
     "dailyquantitycategories.json",
