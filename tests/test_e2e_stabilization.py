@@ -776,8 +776,8 @@ class Tier2BoundaryAndCornerCaseTests(unittest.TestCase):
             {"path": "dummy.jpg", "folder": str(today_dir), "desc": [[1, 2]], "name": "dummy.jpg"}
         ]
 
-        with patch("PYUI.main_pyui.FeatureMatcher", return_value=mock_matcher), \
-             patch("PYUI.main_pyui.FeatureMatcher.scan_images_recursively", return_value=mock_matcher.scan_images_recursively.return_value):
+        with patch("app_plugins.builtin.video_sorter.worker.FeatureMatcher", return_value=mock_matcher), \
+             patch("app_plugins.builtin.video_sorter.worker.FeatureMatcher.scan_images_recursively", return_value=mock_matcher.scan_images_recursively.return_value):
             thread = VideoAssignmentThread(str(today_dir), str(videos_dir))
             completed_results = []
             thread.completed.connect(lambda m, p: completed_results.append((m, p)))
@@ -805,9 +805,9 @@ class Tier2BoundaryAndCornerCaseTests(unittest.TestCase):
         mock_matcher = MagicMock()
         img_db = [{"path": "img1.png", "folder": str(today_dir), "desc": [[1]], "name": "img1.png"}]
 
-        with patch("PYUI.main_pyui.FeatureMatcher", return_value=mock_matcher), \
-             patch("PYUI.main_pyui.FeatureMatcher.scan_images_recursively", return_value=img_db), \
-             patch("PYUI.main_pyui.FeatureMatcher.get_video_frame_clean", return_value=None):
+        with patch("app_plugins.builtin.video_sorter.worker.FeatureMatcher", return_value=mock_matcher), \
+             patch("app_plugins.builtin.video_sorter.worker.FeatureMatcher.scan_images_recursively", return_value=img_db), \
+             patch("app_plugins.builtin.video_sorter.worker.FeatureMatcher.get_video_frame_clean", return_value=None):
             thread = VideoAssignmentThread(str(today_dir), str(videos_dir))
             completed_results = []
             thread.completed.connect(lambda m, p: completed_results.append((m, p)))
@@ -833,9 +833,9 @@ class Tier2BoundaryAndCornerCaseTests(unittest.TestCase):
         mock_matcher.match.return_value = 0.90
         img_db = [{"path": "pic.png", "folder": str(today_dir), "desc": [[1, 2]], "name": "pic.png"}]
 
-        with patch("PYUI.main_pyui.FeatureMatcher", return_value=mock_matcher), \
-             patch("PYUI.main_pyui.FeatureMatcher.scan_images_recursively", return_value=img_db), \
-             patch("PYUI.main_pyui.FeatureMatcher.get_video_frame_clean", return_value=MagicMock()):
+        with patch("app_plugins.builtin.video_sorter.worker.FeatureMatcher", return_value=mock_matcher), \
+             patch("app_plugins.builtin.video_sorter.worker.FeatureMatcher.scan_images_recursively", return_value=img_db), \
+             patch("app_plugins.builtin.video_sorter.worker.FeatureMatcher.get_video_frame_clean", return_value=MagicMock()):
             thread = VideoAssignmentThread(str(today_dir), str(videos_dir), match_ratio_threshold=0.5)
             thread.run()
 

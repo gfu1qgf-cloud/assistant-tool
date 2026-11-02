@@ -21,6 +21,19 @@ PLUGIN_MAIN_WIDGET_MIME = "application/x-lzx-plugin-main-widget"
 PLUGIN_ENABLED_CONFIG_KEY = "plugin_enabled"
 
 
+def plugin_owned_property(plugin_attribute, field):
+    """Compatibility alias for old host callers, not a second runtime state."""
+    pending = '_plugin_compat_' + field
+    def get(owner):
+        plugin = getattr(owner, plugin_attribute, None)
+        return getattr(plugin, field) if plugin is not None else owner.__dict__.get(pending)
+    def set_value(owner, value):
+        plugin = getattr(owner, plugin_attribute, None)
+        if plugin is not None: setattr(plugin, field, value)
+        else: owner.__dict__[pending] = value
+    return property(get, set_value)
+
+
 def plugin_enabled_states(config):
     """Only explicit booleans change startup policy; old configs stay compatible."""
     raw = config.get(PLUGIN_ENABLED_CONFIG_KEY, {})
@@ -371,6 +384,18 @@ class PluginContext:
             return []
         return self.task_targets(range(len(window.task_list)))
 
+    def current_project_directory(self, *, require_loaded=True):
+        """GUI-side project snapshot; workers receive an ordinary path instead."""
+        root = getattr(self._host.main_window, 'loaded_project_dir', None)
+        if root is None and not require_loaded:
+            field = getattr(self._host.main_window, 'task_path_edit', None)
+            date = getattr(self._host.main_window, 'dateEdit', None)
+            # Snapshot controls only; do not scan a disk or display a dialog
+            # merely because a plugin window is being opened.
+            if field is not None and date is not None and field.text().strip():
+                root = Path(field.text().strip()) / date.date().toString('MMdd')
+        return root
+
     def current_task_table_path(self):
         """Use the loaded project, never a date selector changed but not loaded."""
         window = self._host.main_window
@@ -481,10 +506,9 @@ class PluginHost:
         self._elevenlabs = None
         from model.AppDataStorage import application_storage
         self.data_storage = application_storage()
-        from model.GoogleAuthorizationRegistry import GoogleAuthorizationRegistry, register_core_authorizations
+        from model.GoogleAuthorizationRegistry import GoogleAuthorizationRegistry
         self.google_authorizations = GoogleAuthorizationRegistry(
             lambda owner: owner == 'core' or self.is_enabled(owner))
-        register_core_authorizations(self.google_authorizations)
         self.data_storage.google_authorizations = self.google_authorizations
         # Keep the running policy immutable. Config edits take effect next launch,
         # never tear down QThreads, media players or modal reminders mid-flight.
@@ -498,6 +522,15 @@ class PluginHost:
 
     def available_nodes(self):
         return self.node_registry.subset(lambda owner: owner == "core" or self.is_enabled(owner))
+
+    def notify_project_changed(self, project, *, validated=False):
+        """GUI notification for enabled plugins; no core knowledge of consumers."""
+        for plugin_id, plugin in self._plugins.items():
+            if not self.is_enabled(plugin_id): continue
+            callback = getattr(plugin, 'on_project_changed', None)
+            if callback is None: continue
+            try: callback(project, validated=validated)
+            except Exception as error: self._report_error(plugin_id, '切换项目', error)
 
     def workflow_runtime_context(self, plugin_id):
         """GUI-side provider snapshot; never persisted in the workflow graph."""

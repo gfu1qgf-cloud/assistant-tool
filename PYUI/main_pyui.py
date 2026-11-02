@@ -15,6 +15,9 @@ from qt_compat import QDate, pyqtSignal
 from qt_compat import QMessageBox, QHeaderView
 
 from app_plugins import PluginHost
+from app_plugins.host import plugin_owned_property
+from app_plugins.builtin.sheet_monitor.plugin import SheetMonitorPlugin
+from app_plugins.builtin.video_sorter.plugin import VideoSorterPlugin
 from app_plugins.builtin import (
     AIAgentAssistantPlugin,
     AudioSplitterPlugin,
@@ -140,140 +143,21 @@ def _missing_task_table_message(today_dir, file_name):
     return message
 
 
-class VideoAssignmentThread(QtCore.QThread):
-    log = pyqtSignal(str)
-    completed = pyqtSignal(int, int)
-    failed = pyqtSignal(str, str)
-
-    def __init__(self, today_dir, video_root_dir, match_ratio_threshold=0.03, parent=None):
-        super().__init__(parent)
-        self.today_dir = str(today_dir)
-        self.video_root_dir = str(video_root_dir)
-        self.match_ratio_threshold = float(match_ratio_threshold)
-        self._interruption_requested = False
-
-    def requestInterruption(self):
-        self._interruption_requested = True
-        super().requestInterruption()
-
-    def isInterruptionRequested(self):
-        return self._interruption_requested or super().isInterruptionRequested()
-
-    def run(self):
-        try:
-            if self.isInterruptionRequested():
-                self.log.emit("视频分拣已在启动前取消。")
-                self.completed.emit(0, 0)
-                return
-
-            self.log.emit(f"正在建立图片特征库 (ORB模式): {self.today_dir} ...")
-            matcher = FeatureMatcher()
-
-            img_db = FeatureMatcher.scan_images_recursively(self.today_dir, matcher)
-            if self.isInterruptionRequested():
-                self.log.emit("视频分拣已由用户取消。")
-                self.completed.emit(0, 0)
-                return
-
-            if not img_db:
-                self.log.emit(f"任务目录下未找到有效图片特征库: {self.today_dir}")
-                self.completed.emit(0, 0)
-                return
-
-            self.log.emit(f"开始扫描视频: {self.video_root_dir} ...")
-
-            VIDEO_EXTS = ['.mp4', '.mkv', '.avi', '.mov', '.flv', '.wmv', '.ts']
-            processed = 0
-            moved = 0
-            cancelled = False
-
-            for root, dirs, files in os.walk(self.video_root_dir):
-                if self.isInterruptionRequested():
-                    cancelled = True
-                    break
-
-                for file in files:
-                    if self.isInterruptionRequested():
-                        cancelled = True
-                        break
-
-                    file_path = os.path.join(root, file)
-                    ext = os.path.splitext(file)[1].lower()
-                    if ext not in VIDEO_EXTS:
-                        continue
-
-                    self.log.emit(f"正在分析: {file} ...")
-
-                    frame = FeatureMatcher.get_video_frame_clean(file_path)
-                    if frame is None:
-                        continue
-
-                    if self.isInterruptionRequested():
-                        cancelled = True
-                        break
-
-                    _, video_desc = matcher.get_features(frame)
-                    if video_desc is None:
-                        continue
-
-                    best_score = 0.0
-                    best_match = None
-
-                    for img_data in img_db:
-                        if self.isInterruptionRequested():
-                            cancelled = True
-                            break
-                        score = matcher.match(img_data['desc'], video_desc)
-                        if score > best_score:
-                            best_score = score
-                            best_match = img_data
-
-                    if cancelled:
-                        break
-
-                    if best_score >= self.match_ratio_threshold:
-                        target_dir = best_match['folder']
-                        if os.path.abspath(root) == os.path.abspath(target_dir):
-                            processed += 1
-                            continue
-
-                        target_path = os.path.join(target_dir, file)
-                        if os.path.exists(target_path):
-                            base, ex = os.path.splitext(file)
-                            target_path = os.path.join(target_dir, f"{base}_match{ex}")
-
-                        try:
-                            self.log.emit(
-                                f"\n[匹配成功] {file}\n"
-                                f"         目标图片: {best_match['name']}\n"
-                                f"         特征重合度: {best_score:.2%}"
-                            )
-                            data_io.move(file_path, target_path)
-                            moved += 1
-                        except Exception as e:
-                            self.log.emit(f"\n[错误] 移动文件失败: {e}")
-
-                    processed += 1
-
-            if cancelled or self.isInterruptionRequested():
-                self.log.emit("\n" + "=" * 30)
-                self.log.emit(f"视频分拣已被用户中止。已处理: {moved}/{processed}")
-            else:
-                self.log.emit("\n" + "=" * 30)
-                self.log.emit(f"处理完成。归类: {moved}/{processed}")
-
-            self.completed.emit(moved, processed)
-
-        except (Exception, SystemExit) as error:
-            self.failed.emit(
-                f"{type(error).__name__}: {error}",
-                traceback.format_exc(),
-            )
+# Backward-compatible worker import; implementation belongs to the plugin.
+from app_plugins.builtin.video_sorter.worker import VideoAssignmentThread
 
 
 class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
     config_name = 'config.json' if DATA_ROOT == APP_ROOT else str(DATA_ROOT / 'config.json')
-    google_sheet_monitor_settings_key = 'google_sheet_monitor'
+    # Legacy state names delegate to plugin owners, never separate live copies.
+    google_sheet_monitor_settings = plugin_owned_property('sheet_monitor_plugin', 'google_sheet_monitor_settings')
+    google_sheet_monitor_thread = plugin_owned_property('sheet_monitor_plugin', 'google_sheet_monitor_thread')
+    google_sheet_monitor_status = plugin_owned_property('sheet_monitor_plugin', 'google_sheet_monitor_status')
+    google_sheet_monitor_pending = plugin_owned_property('sheet_monitor_plugin', 'google_sheet_monitor_pending')
+    google_sheet_monitor_unread = plugin_owned_property('sheet_monitor_plugin', 'google_sheet_monitor_unread')
+    assign_video_thread = plugin_owned_property('video_sorter_plugin', 'assign_video_thread')
+    _assign_video_button_text = plugin_owned_property('video_sorter_plugin', '_assign_video_button_text')
+    _last_video_assign_result = plugin_owned_property('video_sorter_plugin', '_last_video_assign_result')
     log_max_blocks = 200
 
     # 斯洛伐克语不着色；其他语言按首次出现顺序分配不同的浅色。
@@ -418,6 +302,8 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
         self.document_formatter_plugin = self.plugin_host.install(DocumentFormatterPlugin())
         self.ai_agent_assistant_plugin = self.plugin_host.install(AIAgentAssistantPlugin())
         self.google_drive_browser_plugin = self.plugin_host.install(GoogleDriveBrowserPlugin())
+        self.sheet_monitor_plugin = self.plugin_host.install(SheetMonitorPlugin())
+        self.video_sorter_plugin = self.plugin_host.install(VideoSorterPlugin())
         self.batch_text_video_plugin = self.plugin_host.install(BatchTextVideoPlugin())
         self.video_stitch_plugin = self.plugin_host.install(VideoStitchPlugin())
         self.facebook_contact_sheet_plugin = None
@@ -493,16 +379,11 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
         self.task_table_widget.customContextMenuRequested.connect(
             self.showTaskContextMenu
         )
-        self.assign_video_btn.clicked.connect(lambda clicked:self.assignVideo())
-        self._assign_video_button_text = self.assign_video_btn.text()
         self.task_directory_toggle_btn.toggled.connect(
             self.toggleTaskDirectory
         )
         self.toggleTaskDirectory(False)
         self._task_result_button_text = self.tidy_task_result_btn.text()
-        self.google_sheet_monitor_btn.clicked.connect(
-            lambda clicked: self.openGoogleSheetMonitor()
-        )
         self.setting_btn.clicked.connect(lambda clicked:self.openSettings())
         self.about_btn.clicked.connect(lambda clicked: self.openAbout())
         self.about_btn.installEventFilter(self)
@@ -521,7 +402,6 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
         self.task_path_edit.textChanged.connect(self.clearLoadedProject)
         self.dateEdit.dateChanged.connect(self.clearLoadedProject)
 
-        self.startGoogleSheetMonitor()
         self.startFlowParameterGuard()
 
         self.audio_settings = self._load_audio_settings()
@@ -961,11 +841,10 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
             # them from disk without starting the audio plugin or any model.
             self.load(self.load_config())
 
-        self.google_sheet_monitor_btn = QtWidgets.QPushButton(self.common_tools)
-        self.google_sheet_monitor_btn.setObjectName("google_sheet_monitor_btn")
-        self.verticalLayout.insertWidget(insert_index + 1, self.google_sheet_monitor_btn)
+        # Removed from the fixed tools area: both features now use plugin menus.
+        self.verticalLayout.removeWidget(self.assign_video_btn)
+        self.assign_video_btn.hide()
         self.updateDailyLinksButton()
-        self.updateGoogleSheetMonitorButton()
         self.updateReviewStatusButton()
 
         setting_index = self.verticalLayout.indexOf(self.setting_btn)
@@ -1067,162 +946,47 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
         if loader is not None:
             loader.cancel('任务路径或日期已改变，旧读取已取消。')
         self.loaded_project_dir = None
-        thread = self.google_sheet_monitor_thread
-        if thread is not None:
-            thread.set_project_dir(None)
+        if hasattr(self, 'plugin_host'): self.plugin_host.notify_project_changed(None)
 
     def updateGoogleSheetDownloadTarget(self):
-        thread = self.google_sheet_monitor_thread
-        if thread is not None:
-            thread.set_project_dir(self.loaded_project_dir, validated=True)
+        self.plugin_host.notify_project_changed(self.loaded_project_dir, validated=True)
 
     def startGoogleSheetMonitor(self):
         if is_offline():
             self.google_sheet_monitor_status = '离线暂停'
             self.updateGoogleSheetMonitorButton()
             return
-        if not self.google_sheet_monitor_settings.get("enabled"):
-            self.google_sheet_monitor_status = "未启用"
-            self.updateGoogleSheetMonitorButton()
-            return
-        if self.google_sheet_monitor_thread is not None:
-            return
-        thread = GoogleSheetMonitorThread(
-            self.google_sheet_monitor_settings,
-            api_config=self.load_config(),
-            parent=self,
-        )
-        thread.status.connect(self.onGoogleSheetMonitorStatus)
-        thread.detected.connect(self.onGoogleSheetLinksDetected)
-        thread.download_result.connect(self.onGoogleSheetDownloadResult)
-        thread.queue_changed.connect(self.onGoogleSheetQueueChanged)
-        thread.log.connect(self.appendLog)
-        connect_thread_finished(thread, self, 'google_sheet_monitor_thread', self.onGoogleSheetMonitorFinished, pass_thread=True)
-        self.google_sheet_monitor_thread = thread
-        thread.set_project_dir(self.loaded_project_dir)
-        self.google_sheet_monitor_status = "正在启动…"
-        self.updateGoogleSheetMonitorButton()
-        thread.start()
-
-    def stopGoogleSheetMonitor(self, wait_ms=5000):
-        thread = self.google_sheet_monitor_thread
-        if thread is None:
-            return True
-        if thread_is_active(thread):
-            thread.stop()
-            if not thread.wait(wait_ms):
-                return False
-        if self.google_sheet_monitor_thread is thread:
-            self.google_sheet_monitor_thread = None
-        thread.deleteLater()
+        plugin = self.__dict__.get('sheet_monitor_plugin')
+        if plugin is None: return SheetMonitorPlugin.startGoogleSheetMonitor(self)
+        if self.plugin_host.is_enabled('sheet_monitor'): return plugin.startGoogleSheetMonitor()
         return True
 
+    def stopGoogleSheetMonitor(self, wait_ms=5000):
+        return self.sheet_monitor_plugin.stopGoogleSheetMonitor(wait_ms)
+
     def restartGoogleSheetMonitor(self):
-        if not self.stopGoogleSheetMonitor():
-            QMessageBox.warning(self, "表格监视器", "后台检查仍在停止，请稍后再试。")
-            return
-        self.google_sheet_monitor_status = "未启用"
-        self.startGoogleSheetMonitor()
+        return self.sheet_monitor_plugin.restartGoogleSheetMonitor()
 
-    def onGoogleSheetMonitorFinished(self, thread=None):
-        thread = thread if thread is not None else self.sender()
-        if self.google_sheet_monitor_thread is not thread:
-            return
-        if self.google_sheet_monitor_thread is thread:
-            self.google_sheet_monitor_thread = None
+    def onGoogleSheetMonitorFinished(self, *args, **kwargs):
+        return self.sheet_monitor_plugin.onGoogleSheetMonitorFinished(*args, **kwargs)
 
-    def onGoogleSheetMonitorStatus(self, status):
-        self.google_sheet_monitor_status = str(status)
-        self.updateGoogleSheetMonitorButton()
+    def onGoogleSheetMonitorStatus(self, *args, **kwargs):
+        return self.sheet_monitor_plugin.onGoogleSheetMonitorStatus(*args, **kwargs)
 
-    def onGoogleSheetQueueChanged(self, count):
-        self.google_sheet_monitor_pending = max(0, int(count))
-        self.updateGoogleSheetMonitorButton()
+    def onGoogleSheetQueueChanged(self, *args, **kwargs):
+        return self.sheet_monitor_plugin.onGoogleSheetQueueChanged(*args, **kwargs)
 
-    def onGoogleSheetLinksDetected(self, payload):
-        count = int(payload.get("count", 0))
-        self.google_sheet_monitor_unread += count
-        if self.loaded_project_dir is None:
-            message = "发现 {} 个新链接；尚未加载项目，已保存到待下载队列。".format(count)
-        else:
-            message = "发现 {} 个新链接，正在下载到当前项目。".format(count)
-        self.appendLog(message)
-        self.showDesktopNotification("Google 表格发现新链接", message)
-        self.updateGoogleSheetMonitorButton()
+    def onGoogleSheetLinksDetected(self, *args, **kwargs):
+        return self.sheet_monitor_plugin.onGoogleSheetLinksDetected(*args, **kwargs)
 
-    def onGoogleSheetDownloadResult(self, result):
-        self.google_sheet_monitor_pending = int(result.get("pending", self.google_sheet_monitor_pending))
-        if result.get("ok"):
-            path = result.get("path", "")
-            self.appendLog("表格新文件已下载：{}".format(path))
-            if self.google_sheet_monitor_pending == 0:
-                self.showDesktopNotification("Google 表格下载完成", "新链接文件已经放入当前项目目录。")
-        else:
-            error = result.get("error", "未知错误")
-            self.appendLog("表格链接下载失败，已延后重试：{}".format(error))
-            self.showDesktopNotification(
-                "Google 表格下载失败",
-                "链接仍保留在队列中，稍后自动重试：{}".format(error),
-                critical=True,
-            )
-        self.updateGoogleSheetMonitorButton()
+    def onGoogleSheetDownloadResult(self, *args, **kwargs):
+        return self.sheet_monitor_plugin.onGoogleSheetDownloadResult(*args, **kwargs)
 
-    def updateGoogleSheetMonitorButton(self):
-        button = getattr(self, "google_sheet_monitor_btn", None)
-        if button is None:
-            return
-        if not self.google_sheet_monitor_settings.get("enabled"):
-            button.setText("表格监视器：未启用")
-            button.setStyleSheet("")
-        elif str(self.google_sheet_monitor_status).startswith("异常"):
-            button.setText("表格监视器：异常")
-            button.setStyleSheet("background:#D93025;color:white;font-weight:bold;")
-            button.setToolTip(self.google_sheet_monitor_status)
-        elif self.google_sheet_monitor_pending:
-            button.setText("表格待下载 {}".format(self.google_sheet_monitor_pending))
-            button.setStyleSheet("background:#F9AB00;color:#202124;font-weight:bold;")
-            button.setToolTip("加载项目后会自动下载；失败任务会延后重试")
-        elif self.google_sheet_monitor_unread:
-            button.setText("表格新链接 {}".format(self.google_sheet_monitor_unread))
-            button.setStyleSheet("background:#8AB4F8;color:#202124;font-weight:bold;")
-        else:
-            button.setText("表格监视器：运行中")
-            button.setStyleSheet("background:#CEEAD6;color:#174EA6;")
-            button.setToolTip(self.google_sheet_monitor_status)
+    def updateGoogleSheetMonitorButton(self, *args, **kwargs):
+        return self.sheet_monitor_plugin.updateGoogleSheetMonitorButton(*args, **kwargs)
 
-    def openGoogleSheetMonitor(self):
-        self.google_sheet_monitor_unread = 0
-        self.updateGoogleSheetMonitorButton()
-        result = GoogleSheetMonitorDialog.get_settings(
-            self.google_sheet_monitor_settings,
-            self.google_sheet_monitor_status,
-            self,
-        )
-        if result is None:
-            return
-        settings, reset_baseline = result
-        previous_settings = self.google_sheet_monitor_settings
-        if not self.stopGoogleSheetMonitor():
-            QMessageBox.warning(self, "表格监视器", "后台检查仍在停止，请稍后再保存。")
-            return
-        self.google_sheet_monitor_settings = settings
-        if reset_baseline:
-            try:
-                reset_monitor_baseline()
-            except OSError as error:
-                self.google_sheet_monitor_settings = previous_settings
-                self.startGoogleSheetMonitor()
-                QMessageBox.critical(self, "表格监视器", "无法重置监视记录：{}".format(error))
-                return
-        from model.AppDataStorage import application_storage
-        storage = application_storage()
-        # On volume loss exit must not save defaults or restart services just
-        # because saving is impossible. Other lifecycle checks remain intact.
-        if (not storage.protected or storage.guard.available) and not self.saveCurrentConfig():
-            self.google_sheet_monitor_settings = previous_settings
-            self.startGoogleSheetMonitor()
-            return
-        self.startGoogleSheetMonitor()
+    def openGoogleSheetMonitor(self, *args, **kwargs):
+        return self.sheet_monitor_plugin.openGoogleSheetMonitor(*args, **kwargs)
 
     def openInventoryManager(self, material_sources=None, source_label="剪贴板"):
         """Compatibility entry point for callers that predate the plugin API."""
@@ -1774,77 +1538,18 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
     def onTaskResultFinished(self):
         return self.task_delivery_plugin.controller.on_task_result_finished()
     def assignVideo(self):
-        if self.assign_video_thread is not None and thread_is_active(self.assign_video_thread):
-            self.assign_video_thread.requestInterruption()
-            self.assign_video_btn.setEnabled(False)
-            self.assign_video_btn.setText("正在停止…")
-            self.appendLog("已请求停止视频分拣，等待当前文件处理完成...")
-            return self.assign_video_thread
+        plugin = self.__dict__.get('video_sorter_plugin')
+        # Lightweight legacy callers can still exercise the original controller.
+        return VideoSorterPlugin.assignVideo(plugin or self, worker_factory=VideoAssignmentThread)
 
-        today_dir = self.getTodayDir()
-        VIDEO_ROOT_DIR = globalValue.videoSortingStationPath()
+    def onAssignVideoCompleted(self, *args, **kwargs):
+        return VideoSorterPlugin.onAssignVideoCompleted(self.__dict__.get('video_sorter_plugin', self), *args, **kwargs)
 
-        if today_dir is None:
-            return None
-        if not str(VIDEO_ROOT_DIR or "").strip():
-            self.Critical("没有配置视频来源目录。")
-            return None
+    def onAssignVideoFailed(self, *args, **kwargs):
+        return VideoSorterPlugin.onAssignVideoFailed(self.__dict__.get('video_sorter_plugin', self), *args, **kwargs)
 
-        try:
-            MATCH_RATIO_THRESHOLD = float(
-                self.load_config().get("video_match_ratio_threshold", 0.03)
-            )
-        except (TypeError, ValueError):
-            MATCH_RATIO_THRESHOLD = 0.03
-        MATCH_RATIO_THRESHOLD = min(1.0, max(0.0, MATCH_RATIO_THRESHOLD))
-
-        if not os.path.exists(VIDEO_ROOT_DIR) or not os.path.exists(today_dir):
-            self.Critical("视频来源目录或当前任务目录配置错误。")
-            return None
-
-        if not self._assign_video_button_text:
-            self._assign_video_button_text = self.assign_video_btn.text() or "分拣视频"
-        self.assign_video_btn.setText("停止分拣")
-        self.assign_video_btn.setEnabled(True)
-
-        thread = VideoAssignmentThread(
-            today_dir=today_dir,
-            video_root_dir=VIDEO_ROOT_DIR,
-            match_ratio_threshold=MATCH_RATIO_THRESHOLD,
-            parent=self,
-        )
-        thread.log.connect(self.appendLog)
-        thread.completed.connect(self.onAssignVideoCompleted)
-        thread.failed.connect(self.onAssignVideoFailed)
-        connect_thread_finished(thread, self, 'assign_video_thread', self.onAssignVideoFinished)
-
-        self.assign_video_thread = thread
-        thread.start()
-        return thread
-
-    def onAssignVideoCompleted(self, matched_count, total_count):
-        self._last_video_assign_result = (matched_count, total_count)
-
-    def onAssignVideoFailed(self, message, traceback_text):
-        self.appendLog(f"分拣视频发生异常：\n{traceback_text}")
-        QMessageBox.critical(self, "分拣视频失败", f"分拣视频过程中出现错误：\n{message}")
-
-    def onAssignVideoFinished(self, matched_count=None, total_count=None, *args, **kwargs):
-        thread = self.assign_video_thread
-        self.assign_video_thread = None
-        if hasattr(self, "assign_video_btn") and self.assign_video_btn is not None:
-            self.assign_video_btn.setEnabled(True)
-            self.assign_video_btn.setText(self._assign_video_button_text or "分拣视频")
-        if (
-            matched_count is not None
-            and total_count is not None
-            and not isinstance(matched_count, QtCore.QObject)
-        ):
-            self._last_video_assign_result = (matched_count, total_count)
-        if thread is not None:
-            delete_later = getattr(thread, "deleteLater", None)
-            if callable(delete_later):
-                delete_later()
+    def onAssignVideoFinished(self, *args, **kwargs):
+        return VideoSorterPlugin.onAssignVideoFinished(self.__dict__.get('video_sorter_plugin', self), *args, **kwargs)
 
     def chromeRunner(self):
         """Compatibility entry point; Chrome lifecycle belongs to its plugin."""
@@ -2428,9 +2133,6 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
             existing_config["subtitle_max_words_per_block"] = self.subtitle_max_words_spinbox.value()
             existing_config["subtitle_block_gap_ms"] = self.subtitle_gap_ms_spinbox.value()
         existing_config[LOAD_TASK_HOTKEY_CONFIG_KEY] = self.load_task_global_hotkey
-        existing_config[self.google_sheet_monitor_settings_key] = dict(
-            self.google_sheet_monitor_settings
-        )
         existing_config[FLOW_GUARD_CONFIG_KEY] = normalize_flow_guard_settings(
             self.flow_guard_settings
         )
@@ -2467,9 +2169,6 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
             block_gap_ms = -1
         self.subtitle_max_words_spinbox.setValue(max_words_per_block)
         self.subtitle_gap_ms_spinbox.setValue(block_gap_ms)
-        self.google_sheet_monitor_settings = normalize_monitor_settings(
-            dic.get(self.google_sheet_monitor_settings_key)
-        )
         self.flow_guard_settings = normalize_flow_guard_settings(
             dic.get(FLOW_GUARD_CONFIG_KEY)
         )

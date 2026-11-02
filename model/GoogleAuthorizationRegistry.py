@@ -76,11 +76,3 @@ class GoogleAuthorizationRegistry:
         with self._lock:
             self._entries = {key: entry for key, entry in self._entries.items() if entry.owner != owner}
             self._aliases = {key: value for key, value in self._aliases.items() if value in self._entries}
-
-
-def register_core_authorizations(registry):
-    # The monitor belongs to the host, not an installed plugin. Plugin purposes
-    # are declared only by their own register(context), never in this module.
-    registry.register('core', GoogleAuthorization('sheet_monitor', '表格监视', 'sheets', 'v4',
-        ('https://www.googleapis.com/auth/spreadsheets',), order=40, allow_legacy=True,
-        legacy_bindings=('sheet_monitor.sheets',)))

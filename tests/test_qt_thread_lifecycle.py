@@ -308,6 +308,10 @@ class ThreadLifecycleTests(unittest.TestCase):
             'app_plugins/builtin/video_stitch/ui.py': {'worker.finished.connect'},
             # box is the GUI-owned, nonmodal material-error QMessageBox.
             'PYUI/utility_managers_pyui.py': {'handle.finished.connect','box.finished.connect'},
+            # Account login and Agent submission/copy use host task handles,
+            # not plugin-owned QThreads; their native joins belong to the host.
+            'PYUI/google_accounts_pyui.py': {'self.handle.finished.connect'},
+            'app_plugins/builtin/ai_agent_assistant/plugin.py': {'self.handle.finished.connect'},
             # Reviewed: all three execution fields are returned by the host's
             # BackgroundTaskManager.submit (not plugin-owned QThreads). The
             # host joins native workers before emitting their handle.finished.

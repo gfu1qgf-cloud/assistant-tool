@@ -31,6 +31,8 @@ class MainWorkspaceLayoutTests(unittest.TestCase):
         self.config_path = Path(self.temp.name) / "config.json"
         self.config_path.write_text(json.dumps(self.config), encoding="utf-8")
         self.patches = ExitStack()
+        # Also works when startup has bound an absolute protected/test data root.
+        self.patches.enter_context(mock.patch.object(MainDialog, 'config_name', str(self.config_path)))
         for method in ("setupNotificationTray", "startGoogleSheetMonitor", "startFlowParameterGuard",
                        "registerLoadTaskGlobalHotkey", "saveCurrentConfig"):
             self.patches.enter_context(mock.patch.object(MainDialog, method, return_value=True))

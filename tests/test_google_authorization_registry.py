@@ -13,7 +13,7 @@ from app_plugins.host import PluginHost
 from model.AppDataStorage import ApplicationStorage
 from model.GoogleAccounts import (GoogleAccountManager, DISABLED, load_authorization_service,
     prepare_google_account, load_google_service, load_managed_service)
-from model.GoogleAuthorizationRegistry import GoogleAuthorizationRegistry, register_core_authorizations
+from model.GoogleAuthorizationRegistry import GoogleAuthorizationRegistry
 from test_google_accounts import CLIENT, IDENTITY, token
 
 SCOPE = 'https://www.googleapis.com/auth/tasks'
@@ -22,7 +22,9 @@ DEFINITION = GoogleAuthorization('jobs', '新插件 · Google Tasks', 'tasks', '
 
 def fixture_registry():
     """Built-in-compatible UI fixture, not a production plugin whitelist."""
-    registry = GoogleAuthorizationRegistry(); register_core_authorizations(registry)
+    registry = GoogleAuthorizationRegistry()
+    registry.register('sheet_monitor', GoogleAuthorization('sheets', '表格监视器', 'sheets', 'v4',
+        ('https://www.googleapis.com/auth/spreadsheets',), allow_legacy=True, legacy_bindings=('core.sheet_monitor',)))
     registry.register('task_delivery', GoogleAuthorization('drive', '上传', 'drive', 'v3',
         ('https://www.googleapis.com/auth/drive',), allow_legacy=True))
     registry.register('task_delivery', GoogleAuthorization('review_sheet', '审核', 'sheets', 'v4',
@@ -177,15 +179,16 @@ class HostRegistryTests(unittest.TestCase):
                 raise RuntimeError('fixture failure')
         with self.assertRaises(RuntimeError): self.host.install(Broken())
         self.assertIsNone(self.host.google_authorizations.resolve('broken.jobs'))
-        self.assertIsNotNone(self.host.google_authorizations.resolve('core.sheet_monitor'))
+        self.assertEqual(self.host.google_authorizations.entries(), ())
 
     def test_real_plugins_declare_their_own_features(self):
         from app_plugins.builtin.task_delivery import TaskDeliveryPlugin
         from app_plugins.builtin.document_formatter.plugin import DocumentFormatterPlugin
         from app_plugins.builtin.ai_agent_assistant.plugin import AIAgentAssistantPlugin
-        for cls in (TaskDeliveryPlugin, DocumentFormatterPlugin, AIAgentAssistantPlugin): self.host.install(cls())
+        from app_plugins.builtin.sheet_monitor import SheetMonitorPlugin
+        for cls in (TaskDeliveryPlugin, DocumentFormatterPlugin, AIAgentAssistantPlugin, SheetMonitorPlugin): self.host.install(cls())
         keys = {entry.key for entry in self.host.google_authorizations.entries()}
-        self.assertEqual(keys, {'core.sheet_monitor', 'task_delivery.drive', 'task_delivery.review_sheet',
+        self.assertEqual(keys, {'sheet_monitor.sheets', 'task_delivery.drive', 'task_delivery.review_sheet',
             'task_delivery.task_submission_sheet', 'document_formatter.docs', 'ai_agent_assistant.sheets'})
 
     def test_context_cannot_prepare_unregistered_purpose(self):

@@ -31,7 +31,7 @@ class TaskLoadWindow(QtWidgets.QDialog, Ui_MainDialog):
         self.errors = []
         self.task_list = ["previous-task"]
         self.loaded_project_dir = Path(root) / "old"
-        self.google_sheet_monitor_thread = Mock()
+        self.plugin_host = Mock()
         self.task_path_edit.setText(str(root))
         self.dateEdit.setDate(QtCore.QDate(2026, 10, 5))
         self.file_explorer_tree_view = Mock()
@@ -108,7 +108,7 @@ class TaskPathLoadingTests(unittest.TestCase):
         self.assertEqual(Path(chooser.call_args.args[2]), self.root)
         self.assertEqual(Path(self.window.task_path_edit.text()), selected)
         self.assertIsNone(self.window.loaded_project_dir)
-        self.window.google_sheet_monitor_thread.set_project_dir.assert_called_once_with(None)
+        self.window.plugin_host.notify_project_changed.assert_called_once_with(None)
         self.assertIn("根目录", self.window.open_task_path_btn.toolTip())
         self.window.refreshTaskWidget.assert_not_called()
         self.assertEqual(self.window.config, {"task_table_file_name": "任务登记表格.ods"})
@@ -119,7 +119,7 @@ class TaskPathLoadingTests(unittest.TestCase):
             self.window.open_task_path_btn.click()
         self.assertEqual(Path(self.window.task_path_edit.text()), self.root)
         self.assertEqual(self.window.loaded_project_dir, previous)
-        self.window.google_sheet_monitor_thread.set_project_dir.assert_not_called()
+        self.window.plugin_host.notify_project_changed.assert_not_called()
 
     def test_picker_missing_current_path_starts_in_existing_parent(self):
         self.window.task_path_edit.setText(str(self.root / "missing"))

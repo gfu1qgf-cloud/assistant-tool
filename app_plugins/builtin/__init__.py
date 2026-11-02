@@ -36,6 +36,8 @@ from .video_prompt_assistant import VideoPromptAssistantPlugin
 from .script_segmenter import ScriptSegmenterPlugin
 from .document_formatter import DocumentFormatterPlugin
 from .google_drive_browser import GoogleDriveBrowserPlugin
+from .sheet_monitor import SheetMonitorPlugin
+from .video_sorter import VideoSorterPlugin
 from .task_audio_subtitle import TaskAudioSubtitlePlugin
 from .task_delivery import TaskDeliveryPlugin
 from .waste_reminder import WasteReminderPlugin
@@ -63,6 +65,8 @@ __all__ = [
     "ScriptSegmenterPlugin",
     "DocumentFormatterPlugin",
     "GoogleDriveBrowserPlugin",
+    "SheetMonitorPlugin",
+    "VideoSorterPlugin",
     "TaskAudioSubtitlePlugin",
     "TaskDeliveryPlugin",
     "WasteReminderPlugin",
