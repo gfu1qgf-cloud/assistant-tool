@@ -9,6 +9,7 @@ from contextlib import contextmanager
 import ctypes
 import hashlib
 import json
+import re
 from uuid import uuid4
 
 from model.AIProviderKeys import _dpapi
@@ -25,6 +26,29 @@ SERVICES = {'sheets': ('sheets', 'v4'), 'drive': ('drive', 'v3'), 'docs': ('docs
 TOKEN_URI = 'https://oauth2.googleapis.com/token'
 STORE_NAME = 'GoogleAccounts.json'
 DISABLED = '@disabled'
+BINDING_LABELS = {
+    'task_delivery.drive': '任务交付 · 网盘上传／统计',
+    'review_sheet.sheets': '任务交付 · 审核表',
+    'task_submission_sheet.sheets': '任务交付 · 任务提交表',
+    'sheet_monitor.sheets': '表格监视',
+    'document_formatter.docs': '文档自动格式化',
+    'ai_agent_assistant.sheets': 'AI Agent 助手 · 口播表',
+}
+
+
+def binding_key(feature, profile=None):
+    if feature not in SCOPES: raise ValueError('未知 Google 功能。')
+    if profile is None: return feature  # Compatibility API; never inherited by a plugin.
+    if not isinstance(profile, str) or not re.fullmatch(r'[a-z][a-z0-9_]{0,79}', profile):
+        raise ValueError('Google 功能的独立授权标识无效。')
+    return profile + '.' + feature
+
+
+def binding_feature(key):
+    if key in SCOPES: return key
+    profile, separator, feature = str(key).rpartition('.')
+    if not separator or binding_key(feature, profile) != key: raise ValueError('未知 Google 功能。')
+    return feature
 
 
 def validate_client(value):
@@ -121,11 +145,80 @@ class GoogleAccountManager:
         with self.lock:
             state = self._read()
             return {'clients': [{'id': key, 'name': item['name']} for key, item in state['clients'].items()],
-                    'accounts': [{'id': key, 'email': item['email'], 'client_id': item['client_id'],
+                    'accounts': [{'id': key, 'email': item['email'], 'label': item.get('label', item['email']),
+                                  'client_id': item['client_id'],
                                   'features': [name for name, scope in SCOPES.items()
                                                if scope in token_scopes(item['credentials'])]}
                                  for key, item in state['accounts'].items()],
                     'bindings': copy.deepcopy(state['bindings'])}
+
+    def integrate_legacy(self, config=None):
+        """Register original authorizations locally, without using/replacing their tokens.
+
+        Old entry points remain authoritative by default. Importing is not binding.
+        No network, guessed identity, source writes or deletion occurs here.
+        """
+        from model.PrivateDataPaths import private_path
+        from model.PrivateDataCatalog import no_reparse
+
+        def read(path):
+            no_reparse(path, self.storage.root)
+            with self.storage.file_at(path).open('r', encoding='utf-8-sig') as stream:
+                raw = stream.read(262145)
+            if len(raw) > 262144: raise ValueError('授权文件过大。')
+            return json.loads(raw)
+
+        if config is None:
+            file = self.storage.file_at(self.storage.root / 'config.json')
+            config = file.read_json() if file.exists() else {}
+        if not isinstance(config, dict): raise ValueError('程序配置无效；未接入旧授权。')
+        pairs = [('原有网盘授权（账号未核验）', 'GoogleDriveCredentials.json', 'GoogleDriveToken.json')]
+        default_client = config.get('review_sheet_credentials_file') or 'GoogleSheetsCredentials.json'
+        default_token = config.get('review_sheet_token_file') or 'GoogleSheetsToken.json'
+        for prefix, label in [('review_sheet', '原有表格授权'), ('task_submission_sheet', '任务提交表授权'),
+                              ('sheet_monitor', '表格监视授权')]:
+            pairs.append((label + '（账号未核验）', config.get(prefix + '_credentials_file') or default_client,
+                          config.get(prefix + '_token_file') or default_token))
+        candidates, errors, seen = [], [], set()
+        for label, client_path, token_path in pairs:
+            try:
+                paths = [private_path(value, storage=self.storage, base=self.storage.root)
+                         for value in (client_path, token_path)]
+                if not all(self.storage.file_at(path).exists() for path in paths): continue
+                refs = [path.relative_to(self.storage.root).as_posix() if path.is_relative_to(self.storage.root)
+                        else str(path) for path in paths]
+                source = hashlib.sha256(json.dumps(refs).casefold().encode()).hexdigest()
+                if source in seen: continue
+                seen.add(source)
+                client, credentials = validate_client(read(paths[0])), validate_token(read(paths[1]))
+                if any(credentials[key] != client['installed'][key] for key in ('client_id', 'client_secret')):
+                    raise ValueError('客户端与令牌不匹配。')
+                candidates.append((source, label, client, credentials))
+            except Exception:
+                errors.append(label + '未接入：文件无法读取或客户端与令牌不匹配；原文件未改动。')
+        with self._transaction():
+            state = self._read(); changed = False
+            # Only the newly added Agent feature inherits the former global Sheets choice.
+            # Existing upload/review/monitor consumers must NEVER inherit global choices.
+            agent_key = 'ai_agent_assistant.sheets'
+            if (not state.get('scoped_bindings_migrated') and agent_key not in state['bindings']
+                    and 'sheets' in state['bindings']):
+                state['bindings'][agent_key] = state['bindings']['sheets']; changed = True
+            if not state.get('scoped_bindings_migrated') and 'sheets' in state['bindings']:
+                state['scoped_bindings_migrated'] = True; changed = True
+            sources = state.setdefault('legacy_sources', {})
+            for source, label, client, credentials in candidates:
+                if source in sources: continue  # Removed entries stay removed; imports are idempotent.
+                client_id = next((key for key, item in state['clients'].items()
+                                  if item['config']['installed'] == client['installed']), uuid4().hex)
+                if client_id not in state['clients']:
+                    state['clients'][client_id] = {'name': label.replace('授权（账号未核验）', '客户端'), 'config': client}
+                key = uuid4().hex
+                state['accounts'][key] = {'subject': 'legacy:' + source, 'email': '', 'label': label,
+                    'client_id': client_id, 'credentials': credentials, 'revision': uuid4().hex}
+                sources[source] = key; changed = True
+            if changed: self._write(state)
+        return errors
 
     def add_client(self, value, name):
         client = validate_client(value)
@@ -157,7 +250,7 @@ class GoogleAccountManager:
                 raise ValueError('授权客户端已改变；本次登录未保存，请重试。')
             key = next((key for key, item in state['accounts'].items()
                         if item['subject'] == identity['sub'] and item['client_id'] == client_id), uuid4().hex)
-            if any(account_id == key and SCOPES[feature] not in token_scopes(value)
+            if any(account_id == key and SCOPES[binding_feature(feature)] not in token_scopes(value)
                    for feature, account_id in state['bindings'].items()):
                 raise ValueError('本次授权缺少该账号已绑定功能的权限；请勾选这些功能后重新授权，原本地授权未覆盖。')
             state['accounts'][key] = {'subject': identity['sub'], 'email': identity['email'],
@@ -169,7 +262,7 @@ class GoogleAccountManager:
         self.bind_many({feature: account_id})
 
     def bind_many(self, bindings):
-        if not set(bindings).issubset(SCOPES): raise ValueError('未知 Google 功能。')
+        for feature in bindings: binding_feature(feature)
         with self._transaction():
             state = self._read()
             for feature, account_id in bindings.items():
@@ -177,7 +270,7 @@ class GoogleAccountManager:
                     state['bindings'][feature] = DISABLED
                 elif account_id:
                     account = state['accounts'].get(account_id)
-                    if not account or SCOPES[feature] not in token_scopes(account['credentials']):
+                    if not account or SCOPES[binding_feature(feature)] not in token_scopes(account['credentials']):
                         raise ValueError('此账号没有该功能权限，请先补充授权。')
                     state['bindings'][feature] = account_id
                 else:
@@ -222,11 +315,11 @@ class GoogleAccountManager:
             self._write(state)
 
 
-def load_managed_service(feature, *, manager=None, expected_account_id=None):
+def load_managed_service(feature, *, profile=None, manager=None, expected_account_id=None):
     """None means unbound/legacy. A bound-but-failed account NEVER falls back."""
     from model.OfflineMode import require_online
     manager = manager or GoogleAccountManager()
-    bound = manager.bound_account(feature)
+    bound = manager.bound_account(binding_key(feature, profile))
     if expected_account_id is not None and (bound is None or bound[0] != expected_account_id):
         raise ValueError('Google 功能账号在提交后发生变化，请确认账号后重新操作；未自动换号。')
     if bound is None: return None

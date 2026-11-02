@@ -100,10 +100,12 @@ class AssistantDialog(QtWidgets.QDialog):
     def refresh_auth(self):
         try:
             from model.GoogleAccounts import GoogleAccountManager
-            state = GoogleAccountManager().snapshot()
-            key = state['bindings'].get('sheets')
+            manager = GoogleAccountManager()
+            manager.integrate_legacy()
+            state = manager.snapshot()
+            key = state['bindings'].get('ai_agent_assistant.sheets')
             item = next((item for item in state['accounts'] if item['id'] == key), None)
-            self.auth.setText('表格账号：' + item['email'] if item else '尚未分配程序表格账号。请点“Google 账号”；也可先导入、预览和复制表格。浏览器登录不会自动变为 API 授权。')
+            self.auth.setText('本插件表格账号：' + (item.get('label') or item['email']) if item else '尚未分配 AI Agent 表格账号。请点“Google 账号”；其他插件的表格授权不受影响。也可先导入、预览和复制表格。')
         except Exception as error: self.auth.setText(str(error))
 
     @guarded

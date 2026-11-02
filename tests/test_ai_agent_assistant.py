@@ -254,7 +254,7 @@ class AgentUiTests(unittest.TestCase):
             run.report('模拟提交中', 50); release.wait(3)
             return {'message': '模拟提交完成'}
         try:
-            with patch.object(plugin_module, 'run_export', new=runner), patch.object(plugin_module.GoogleAccountManager, 'snapshot', return_value={'bindings': {'sheets': 'fixture-account'}, 'accounts': []}):
+            with patch.object(plugin_module, 'run_export', new=runner), patch.object(plugin_module.GoogleAccountManager, 'snapshot', return_value={'bindings': {'ai_agent_assistant.sheets': 'fixture-account'}, 'accounts': []}):
                 self.plugin.submit({'url': URL, 'sheet': '口播表格'}, [self.plugin.store.jobs()[0]['id']], 'submit')
                 with self.assertRaises(ValueError): self.plugin.submit({'url': URL, 'sheet': '口播表格'}, [], 'submit')
                 deadline = time.monotonic() + 5

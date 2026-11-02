@@ -4,7 +4,7 @@ from functools import wraps
 
 from qt_compat import QtCore, QtWidgets
 from model.AppDataStorage import data_file
-from model.GoogleAccounts import GoogleAccountManager, DISABLED
+from model.GoogleAccounts import GoogleAccountManager, DISABLED, BINDING_LABELS, binding_feature
 from model.GoogleAccountAuth import authorize
 
 LABELS = {'sheets': 'Google 表格', 'drive': 'Google 网盘', 'docs': 'Google 文档'}
@@ -43,7 +43,8 @@ class GoogleAccountsPage(QtWidgets.QWidget):
         self.setObjectName('google_accounts_page')
         layout = QtWidgets.QVBoxLayout(self)
         note = QtWidgets.QLabel(
-            '① 导入一次 Google 桌面应用客户端 → ② 登录，可添加多个账号 → ③ 分配各功能使用的账号。\n'
+            '原有网盘／表格授权会自动接入下方列表，原文件保留，无需重新登录。集中保存不代表共用账号，各用途独立分配。\n'
+            '新增账号：① 导入客户端 → ② 登录 → ③ 分配给指定插件／用途。\n'
             '客户端和令牌均使用 Windows 当前用户加密，随主程序私有数据存储；启用密盘时也在密盘内。'
             '换电脑或 Windows 用户需要重新登录。不保存 Google 密码。', self)
         note.setWordWrap(True)
@@ -67,7 +68,7 @@ class GoogleAccountsPage(QtWidgets.QWidget):
         for button in (self.login_button, self.cancel_button, self.remove_button): actions.addWidget(button)
         layout.addLayout(actions)
         self.accounts = QtWidgets.QTableWidget(0, 2, self)
-        self.accounts.setHorizontalHeaderLabels(['已验证的 Google 账号', '已授权功能'])
+        self.accounts.setHorizontalHeaderLabels(['Google 账号／原有独立授权', '已授权功能'])
         self.accounts.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
         self.accounts.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.SingleSelection)
         self.accounts.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -76,7 +77,7 @@ class GoogleAccountsPage(QtWidgets.QWidget):
         group = QtWidgets.QGroupBox('③ 功能使用哪个账号', self)
         form = QtWidgets.QFormLayout(group)
         self.bindings = {}
-        for name, label in LABELS.items():
+        for name, label in BINDING_LABELS.items():
             combo = QtWidgets.QComboBox(group)
             self.bindings[name] = combo; form.addRow(label, combo)
         self.save_button = QtWidgets.QPushButton('保存功能分配', group)
@@ -103,6 +104,7 @@ class GoogleAccountsPage(QtWidgets.QWidget):
 
     @guarded
     def reload(self):
+        errors = self.manager.integrate_legacy()
         state = self.manager.snapshot()
         selected = self.clients.currentData()
         blocker = QtCore.QSignalBlocker(self.clients)
@@ -113,20 +115,21 @@ class GoogleAccountsPage(QtWidgets.QWidget):
         del blocker
         self.accounts.setRowCount(len(state['accounts']))
         for row, item in enumerate(state['accounts']):
-            cell = QtWidgets.QTableWidgetItem(item['email'])
+            cell = QtWidgets.QTableWidgetItem(item.get('label') or item['email'])
             cell.setData(QtCore.Qt.ItemDataRole.UserRole, item['id'])
             self.accounts.setItem(row, 0, cell)
             self.accounts.setItem(row, 1, QtWidgets.QTableWidgetItem('、'.join(LABELS[key] for key in item['features'])))
         for feature, combo in self.bindings.items():
-            combo.clear(); combo.addItem('暂不接管（保持原授权）', '')
+            combo.clear(); combo.addItem('保持此用途原有独立授权' if feature != 'ai_agent_assistant.sheets' else '未分配（不借用其他插件授权）', '')
             combo.addItem('停用（不使用旧授权）', DISABLED)
             for item in state['accounts']:
-                if feature in item['features']: combo.addItem(item['email'], item['id'])
+                if binding_feature(feature) in item['features']: combo.addItem(item.get('label') or item['email'], item['id'])
             key = state['bindings'].get(feature, '')
             index = combo.findData(key)
             if index < 0: raise ValueError('原功能绑定的账号或权限已失效，请补充授权后重新分配。')
             combo.setCurrentIndex(index)
         self.update_buttons()
+        if errors: self.status.setText('；'.join(errors))
 
     def update_buttons(self, *_args):
         busy = self.handle is not None  # Keep ownership until native task finish.

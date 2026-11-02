@@ -67,7 +67,7 @@ def column_to_letter(col_idx: int) -> str:
 def load_sheets_service(config: Dict, config_prefix: str = "review_sheet"):
     require_online("Google Sheets 请求")
     from model.GoogleAccounts import load_managed_service
-    managed = load_managed_service('sheets')
+    managed = load_managed_service('sheets', profile=config_prefix)
     if managed is not None:
         return managed
     try:

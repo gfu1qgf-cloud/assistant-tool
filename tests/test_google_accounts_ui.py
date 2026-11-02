@@ -51,13 +51,30 @@ class GoogleAccountsUiTests(unittest.TestCase):
         self.page.reload()
         self.assertEqual(self.page.accounts.item(0, 0).text(), IDENTITY['email'])
         self.assertNotIn('fixture-secret', self.page.accounts.item(0, 1).text())
-        self.assertEqual(self.page.bindings['drive'].currentData(), '')
+        self.assertEqual(self.page.bindings['task_delivery.drive'].currentData(), '')
         self.assertEqual(before, self.manager.file.path.read_bytes())
 
     def test_cancel_client_selection_keeps_store_absent(self):
         with patch.object(QtWidgets.QFileDialog, 'getOpenFileName', return_value=('', '')):
             self.page.import_client()
         self.assertFalse(self.manager.file.exists())
+
+    def test_each_plugin_has_independent_binding_without_global_choices(self):
+        from model.GoogleAccounts import BINDING_LABELS
+        self.assertEqual(set(self.page.bindings), set(BINDING_LABELS))
+        self.assertNotIn('sheets', self.page.bindings)
+        self.assertEqual(set(self.page.permissions), {'sheets', 'drive', 'docs'})
+
+    def test_reload_imports_both_originals_and_keeps_legacy_routing(self):
+        import json
+        from test_google_accounts import CLIENT, token
+        for name, feature in [('Drive', 'drive'), ('Sheets', 'sheets')]:
+            (Path(self.temp.name)/f'Google{name}Credentials.json').write_text(json.dumps(CLIENT))
+            (Path(self.temp.name)/f'Google{name}Token.json').write_text(json.dumps(token((feature,))))
+        self.page.reload()
+        self.assertEqual(self.page.accounts.rowCount(), 2)
+        self.assertIn('原有', self.page.accounts.item(0, 0).text())
+        for combo in self.page.bindings.values(): self.assertEqual(combo.currentData(), '')
 
     def test_corrupt_store_error_is_inline_not_crash(self):
         self.manager.file.path.write_text('broken')

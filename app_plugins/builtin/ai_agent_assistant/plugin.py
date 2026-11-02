@@ -86,7 +86,9 @@ class AIAgentAssistantPlugin(QtCore.QObject):
         if not jobs: raise ValueError('请选择任务。')
         if operation == 'submit': require_available(self.context)
         self.store.save_settings(target)
-        account = GoogleAccountManager().snapshot()['bindings'].get('sheets')
+        manager = GoogleAccountManager()
+        manager.integrate_legacy()
+        account = manager.snapshot()['bindings'].get('ai_agent_assistant.sheets')
         if not account or account == DISABLED:
             raise ValueError('请先点“Google账号”登录并分配表格账号。本地任务已保留，也可先复制表格。')
         self.handle = self.context.submit_background_task(title='AI Agent · 口播' + ('提交' if operation == 'submit' else '核对'),

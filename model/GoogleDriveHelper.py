@@ -1,6 +1,7 @@
 
 from model.AppDataStorage import data_io, data_file, data_directory
 import hashlib
+import json
 import mimetypes
 import os
 import random
@@ -136,10 +137,10 @@ def read_drive_parent_folder_id(configured_value: str = "") -> str:
     return folder_id
 
 
-def load_drive_service():
+def load_drive_service(profile='task_delivery'):
     require_online("Google Drive 请求")
     from model.GoogleAccounts import load_managed_service
-    managed = load_managed_service('drive')
+    managed = load_managed_service('drive', profile=profile)
     if managed is not None:
         return managed
     try:
@@ -270,6 +271,21 @@ def retry_sleep_seconds(retry_count: int) -> float:
     return base + random.uniform(0.0, 1.5)
 
 
+def _raise_parent_permission_error(error):
+    """An ACL failure is not a rate limit and must not trigger account rotation."""
+    try:
+        if int(getattr(getattr(error, 'resp', None), 'status', 0)) != 403: return
+        data = json.loads(error.content)
+        reasons = {item.get('reason') for item in data.get('error', {}).get('errors', [])}
+    except (ValueError, TypeError, AttributeError):
+        return
+    if 'insufficientParentPermissions' in reasons:
+        raise PermissionError('当前网盘上传授权没有目标文件夹的写入权限。请检查“程序设置 → Google 账号 → '
+                              '任务交付 · 网盘上传／统计”；保持原授权或选择有权限的账号。'
+                              '目标文件夹必须允许该账号添加文件／子文件夹。表格账号不会用于网盘上传；'
+                              '未自动换号、修改共享权限或重试上传。') from None
+
+
 def list_remote_children(
     service,
     parent_id: str,
@@ -348,6 +364,7 @@ def get_or_create_remote_folder(
             print(f"已创建云端文件夹: {folder_name_text}")
             return folder["id"]
         except Exception as exc:
+            _raise_parent_permission_error(exc)
             if not is_retryable_upload_error(exc) or attempt >= max_retries:
                 raise
             wait_seconds = retry_sleep_seconds(attempt + 1)
@@ -390,6 +407,7 @@ def ensure_remote_file_shortcut(
             print(f"已在本批次目录创建视频快捷方式：{file_name}")
             return created["id"]
         except Exception as exc:
+            _raise_parent_permission_error(exc)
             if not is_retryable_metadata_error(exc) or attempt >= max_retries:
                 raise
             time.sleep(retry_sleep_seconds(attempt + 1))
