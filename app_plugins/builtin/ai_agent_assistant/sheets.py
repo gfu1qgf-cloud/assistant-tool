@@ -25,6 +25,10 @@ FIELDS = [
     ('expires', '租约到期时间', ()), ('checksum', '成品校验信息', ()),
 ]
 REQUIRED = {'job_id', 'task_id', 'title', 'spoken', 'chinese', 'language', 'status'}
+# Only producer-owned fields are written. JSON null skips other cells in the
+# values API, preserving template defaults/formulas and customer-added columns.
+SUBMISSION_FIELDS = {'job_id', 'task_id', 'title', 'task_type', 'priority', 'status', 'language',
+                     'spoken', 'chinese', 'requirements', 'reference', 'archive', 'notes', 'created', 'updated'}
 
 
 def column(index):
@@ -62,8 +66,9 @@ def row_values(job, mapping, count, run=None):
     values['spoken'] = segmented['text']
     note = f'外文分为{segmented["count"]}段，每段约10秒；按语速与标点估算，不是精密音频对齐。段号和秒数标签仅用于分组，不朗读。'
     values['notes'] = '\n'.join(item for item in (payload.get('notes', ''), note, segmented['warnings']) if item)
-    row = [''] * count
-    for key, index in mapping.items(): row[index] = str(values.get(key) or '')
+    row = [None] * count
+    for key, index in mapping.items():
+        if key in SUBMISSION_FIELDS: row[index] = str(values.get(key) or '')
     return row
 
 
@@ -76,7 +81,7 @@ def clipboard_tsv(jobs, run=None):
         if run is not None: run.check_canceled()
         row = row_values(job, mapping, len(FIELDS), run)
         # Browser paste parses leading '=' as a formula even though API RAW does not.
-        writer.writerow(["'" + value if value.startswith(('=', '+', '-', '@')) else value for value in row])
+        writer.writerow(["'" + value if value and value.startswith(('=', '+', '-', '@')) else value for value in row])
     return stream.getvalue()
 
 
@@ -216,7 +221,9 @@ def run_export(payload, run, *, service=None):
         run.report('正在写入口播任务；不覆盖已有行', 50)
         request = service.spreadsheets().values().append(spreadsheetId=identifier,
                 range=a1(name, f'A{info["header"]}:{column(info["count"])}{info["height"]}'),
-                valueInputOption='RAW', insertDataOption='INSERT_ROWS', body={'values': rows})
+                # Fill preformatted blank rows instead of inserting new rows
+                # inheriting header style and pushing dropdown templates down.
+                valueInputOption='RAW', insertDataOption='OVERWRITE', body={'values': rows})
         run.check_canceled()
         store.begin(remaining, destination)
         ids = [job['id'] for job in remaining]

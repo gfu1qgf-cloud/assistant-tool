@@ -104,7 +104,7 @@ class AgentTests(unittest.TestCase):
         titles = [title for _key, title, _aliases in FIELDS][::-1] + ['客户额外字段']
         _row, mapping, count = headers([titles]); job = self.store.jobs([self.stage()])[0]
         row = row_values(job, mapping, count)
-        self.assertTrue(row[mapping['spoken']].endswith(self.payload['spoken'])); self.assertEqual(row[-1], '')
+        self.assertTrue(row[mapping['spoken']].endswith(self.payload['spoken'])); self.assertIsNone(row[-1])
     def test_missing_duplicate_or_multiple_headers_block(self):
         titles = [title for _key, title, _aliases in FIELDS]
         for rows in ([titles + ['作业ID']], [titles, titles], [['任务编号']]):
@@ -113,7 +113,7 @@ class AgentTests(unittest.TestCase):
         api = FakeSheets(); result = self.export(api)
         self.assertEqual(result['added'], 1)
         request, options = api.writes[0]
-        self.assertEqual(request['valueInputOption'], 'RAW'); self.assertEqual(request['insertDataOption'], 'INSERT_ROWS')
+        self.assertEqual(request['valueInputOption'], 'RAW'); self.assertEqual(request['insertDataOption'], 'OVERWRITE')
         self.assertEqual(options['num_retries'], 0)
         serialized = json.dumps(request, ensure_ascii=False)
         self.assertNotIn(str(self.root), serialized)
