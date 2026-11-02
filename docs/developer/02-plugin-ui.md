@@ -77,6 +77,14 @@ context.register_settings_page(PluginSettingsPage(
 
 不要在构造时把默认值立即保存。设置页关闭/取消不能写入用户配置。正常保存经宿主配置事务；快速修改少数字段时使用 `context.patch_config(updates, expected=旧值快照)`，明确处理失败或并发冲突，不拿旧整包配置覆写新 Key 状态。
 
+## Google 授权用途（API 2）
+
+从 `app_plugins.api` 导入 `GoogleAuthorization`，在 `register(context)` 调用
+`context.register_google_authorization(...)` 声明用途。主程序自动生成权限勾选与账号分配 UI；
+插件 ID 自动作为命名空间，不需要修改主界面、账号页或 API 白名单。
+登录、加密保存、续期与超时由宿主负责。完整代码与兼容约束见
+[Google 授权注册](12-google-accounts-and-agent-tasks.md#插件注册授权用途api-2)。
+
 ## 布局和交互底线
 
 - 内容来源和常用设置就近显示；复杂参数折叠但保留值。预设是参数配方，不是禁用用户参数的理由。

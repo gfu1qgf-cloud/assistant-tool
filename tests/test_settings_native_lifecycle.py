@@ -8,11 +8,12 @@ import os
 import subprocess
 import sys
 import textwrap
+import tempfile
 import unittest
 from pathlib import Path
 
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(os.environ.get('LZX_TEST_BASE_ROOT', Path(__file__).resolve().parents[1]))
 
 
 class SettingsNativeLifecycleTests(unittest.TestCase):
@@ -103,14 +104,17 @@ class SettingsNativeLifecycleTests(unittest.TestCase):
         """)
         env = os.environ.copy()
         env["QT_QPA_PLATFORM"] = "offscreen"
-        result = subprocess.run(
-            [sys.executable, "-c", script],
-            cwd=ROOT,
-            env=env,
-            text=True,
-            capture_output=True,
-            timeout=90,
-        )
+        with tempfile.TemporaryDirectory(prefix='settings-native-isolated-') as directory:
+            # Bind before importing any UI/config/store module in the child.
+            # It must never read or save the developer's real configuration.
+            bootstrap = ("import app_paths; app_paths.bind_data_root(" + repr(directory) + "); "
+                         "from model.AppDataStorage import ApplicationStorage, bind_application_storage; "
+                         "bind_application_storage(ApplicationStorage(" + repr(directory) +
+                         ", redirects=[(" + repr(str(ROOT)) + ", " + repr(directory) + ")]))\n")
+            result = subprocess.run(
+                [sys.executable, "-c", bootstrap + script],
+                cwd=ROOT, env=env, text=True, capture_output=True, timeout=90,
+            )
         self.assertEqual(
             result.returncode, 0,
             f"Qt process exited {result.returncode}:\n{result.stdout}\n{result.stderr}",

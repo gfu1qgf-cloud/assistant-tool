@@ -177,12 +177,13 @@ class GoogleAccountsTests(unittest.TestCase):
             with self.assertRaises(PermissionError): authorize({}, run, manager=self.manager)
         browser.assert_not_called()
 
-    def oauth(self, *, callback_state='fixture-state', granted=None, cancel=False):
+    def oauth(self, *, callback_state='fixture-state', granted=None, cancel=False, requested=None):
         import io
         flow = Mock()
         flow.authorization_url.return_value = ('https://accounts.google.com/fixture', 'fixture-state')
-        flow.credentials.to_json.return_value = json.dumps(token())
-        flow.credentials.granted_scopes = granted if granted is not None else list(SCOPES.values())
+        value = token() if requested is None else {**token(), 'scopes': requested}
+        flow.credentials.to_json.return_value = json.dumps(value)
+        flow.credentials.granted_scopes = granted if granted is not None else (list(SCOPES.values()) if requested is None else requested)
         flow.credentials.token = 'fixture-access'
         class FakeServer:
             def __init__(self, address, handler): self.address, self.handler, self.server_port = address, handler, 12345
@@ -202,7 +203,8 @@ class GoogleAccountsTests(unittest.TestCase):
         from contextlib import ExitStack
         with ExitStack() as stack:
             mocks = [stack.enter_context(item) for item in patches]
-            result = authorize({'client_id': self.client, 'features': ['sheets', 'drive']}, run, manager=self.manager)
+            payload = {'client_id': self.client, 'features': ['sheets', 'drive']} if requested is None else {'client_id': self.client, 'scopes': requested}
+            result = authorize(payload, run, manager=self.manager)
         return result, flow, mocks, run
 
     def test_oauth_pkce_verified_identity_saved_after_state_callback(self):
@@ -214,6 +216,18 @@ class GoogleAccountsTests(unittest.TestCase):
         self.assertEqual(flow.fetch_token.call_args.kwargs['timeout'], 30)
         self.assertIn('openid', mocks[4].call_args.args[1])
         self.assertEqual(len(self.manager.snapshot()['accounts']), 1)
+
+    def test_oauth_new_registered_scope_does_not_require_fixed_feature_name(self):
+        scope = 'https://www.googleapis.com/auth/tasks'
+        result, flow, mocks, run = self.oauth(requested=[scope])
+        self.assertIn(scope, mocks[4].call_args.args[1])
+        self.assertIn(scope, self.manager.account(result['account_id'])['credentials']['scopes'])
+
+    def test_oauth_rejects_arbitrary_scope_server_without_browser(self):
+        with patch('webbrowser.open') as browser:
+            with self.assertRaisesRegex(ValueError, '权限声明无效'):
+                authorize({'client_id': self.client, 'scopes': ['https://evil.test/auth/tasks']}, Mock(), manager=self.manager)
+        browser.assert_not_called()
 
     def test_invalid_callback_state_eventually_times_out_without_saving(self):
         before = self.manager.file.path.read_bytes()

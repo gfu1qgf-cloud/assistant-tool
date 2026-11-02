@@ -234,6 +234,20 @@ class PluginContext:
     def register_tab_page(self, page):
         self._host.register_tab_page(self.plugin_id, page)
 
+    def register_google_authorization(self, definition):
+        """Declare an OAuth purpose; no login, token reads or network during register."""
+        return self._host.google_authorizations.register(self.plugin_id, definition)
+
+    def prepare_google_account(self, purpose_id):
+        """Freeze only this plugin's registered purpose/account for a job payload."""
+        app = QtWidgets.QApplication.instance()
+        if app is None or QtCore.QThread.currentThread() != app.thread():
+            raise RuntimeError('Google 账号快照只能在 GUI 主线程准备。')
+        if not self._host.is_enabled(self.plugin_id): raise ValueError('插件已禁用。')
+        from model.GoogleAccounts import GoogleAccountManager, prepare_google_account
+        return prepare_google_account(self.plugin_id, purpose_id,
+            manager=GoogleAccountManager(self._host.data_storage, registry=self._host.google_authorizations))
+
     def register_node(self, definition):
         """Register a pure plan builder, not a widget or live worker resource."""
         self._host.node_registry.register(self.plugin_id, definition)
@@ -308,7 +322,7 @@ class PluginContext:
     def open_google_account_manager(self):
         """Host-owned core account UI; plugins never own or copy Google tokens."""
         from PYUI.google_accounts_pyui import open_google_accounts
-        return open_google_accounts(self.parent_widget, self.background_tasks)
+        return open_google_accounts(self.parent_widget, self.background_tasks, registry=self._host.google_authorizations)
 
     @property
     def ai_client(self):
@@ -440,7 +454,7 @@ class PluginContext:
 class PluginHost:
     """Registers built-in plugins and connects them to the host UI."""
 
-    api_version = 1
+    api_version = 2
 
     def __init__(self, main_window):
         self.main_window = main_window
@@ -467,6 +481,11 @@ class PluginHost:
         self._elevenlabs = None
         from model.AppDataStorage import application_storage
         self.data_storage = application_storage()
+        from model.GoogleAuthorizationRegistry import GoogleAuthorizationRegistry, register_core_authorizations
+        self.google_authorizations = GoogleAuthorizationRegistry(
+            lambda owner: owner == 'core' or self.is_enabled(owner))
+        register_core_authorizations(self.google_authorizations)
+        self.data_storage.google_authorizations = self.google_authorizations
         # Keep the running policy immutable. Config edits take effect next launch,
         # never tear down QThreads, media players or modal reminders mid-flight.
         self._enabled_states = plugin_enabled_states(main_window.load_config())
@@ -590,6 +609,7 @@ class PluginHost:
         plugin_id = str(getattr(plugin, "plugin_id", "") or "").strip()
         if not plugin_id:
             raise ValueError("插件缺少 plugin_id。")
+        if plugin_id == 'core': raise ValueError('core 是主程序保留的插件 ID。')
         if plugin_id in self._plugins:
             raise ValueError(f"插件 ID 重复：{plugin_id}")
         required_api = int(getattr(plugin, "required_api_version", 1))
@@ -610,6 +630,7 @@ class PluginHost:
         try:
             plugin.register(context)
         except Exception:
+            self.google_authorizations.unregister_owner(plugin_id)
             self._plugins.pop(plugin_id, None)
             self._contexts.pop(plugin_id, None)
             for command_id in set(self._commands) - existing_commands:

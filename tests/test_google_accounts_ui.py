@@ -18,6 +18,8 @@ class GoogleAccountsUiTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(); self.addCleanup(self.temp.cleanup)
         self.manager = GoogleAccountManager(ApplicationStorage(self.temp.name))
+        from test_google_authorization_registry import fixture_registry
+        self.manager.registry = fixture_registry()
         self.page = GoogleAccountsPage(manager=self.manager)
 
     def tearDown(self):
@@ -60,10 +62,9 @@ class GoogleAccountsUiTests(unittest.TestCase):
         self.assertFalse(self.manager.file.exists())
 
     def test_each_plugin_has_independent_binding_without_global_choices(self):
-        from model.GoogleAccounts import BINDING_LABELS
-        self.assertEqual(set(self.page.bindings), set(BINDING_LABELS))
+        self.assertEqual(set(self.page.bindings), {entry.key for entry in self.manager.registry.entries()})
         self.assertNotIn('sheets', self.page.bindings)
-        self.assertEqual(set(self.page.permissions), {'sheets', 'drive', 'docs'})
+        self.assertEqual(set(self.page.permissions), set(self.page.bindings))
 
     def test_reload_imports_both_originals_and_keeps_legacy_routing(self):
         import json
@@ -102,6 +103,7 @@ class GoogleAccountsUiTests(unittest.TestCase):
             return {'account_id': 'synthetic'}
         page = GoogleAccountsPage(tasks=tasks, manager=self.manager)
         page.reload()
+        next(iter(page.permissions.values())).setChecked(True)
         try:
             with patch('PYUI.google_accounts_pyui.authorize', new=run):
                 page.login(); page.login()

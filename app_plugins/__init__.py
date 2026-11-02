@@ -1,6 +1,6 @@
 """Application plugin framework and built-in plugins."""
 
-from .api import PluginCommand, PluginMainWidget, PluginSettingsPage, PluginTabPage
+from .api import PluginCommand, PluginMainWidget, PluginSettingsPage, PluginTabPage, GoogleAuthorization, load_google_service
 from .host import PluginHost
 
 __all__ = [
@@ -9,4 +9,6 @@ __all__ = [
     "PluginMainWidget",
     "PluginSettingsPage",
     "PluginTabPage",
+    "GoogleAuthorization",
+    "load_google_service",
 ]

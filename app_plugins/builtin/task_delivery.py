@@ -5,7 +5,7 @@ import logging
 
 from qt_compat import QtCore, QtWidgets
 
-from app_plugins.api import MAIN_MENU, PluginCommand, PluginMainWidget
+from app_plugins.api import MAIN_MENU, PluginCommand, PluginMainWidget, GoogleAuthorization
 from app_plugins.builtin.task_delivery_controller import TaskDeliveryController
 from app_plugins.builtin.task_delivery_board import DeliveryBoardDialog, DeliveryBoardWidget
 from model.DeliveryTodoStore import DeliveryTodoStore, collect_delivery_todos
@@ -145,7 +145,7 @@ class TaskDeliveryPlugin:
     plugin_id = "task_delivery"
     display_name = "任务交付"
     version = "1.0"
-    required_api_version = 1
+    required_api_version = 2
 
     def __init__(self):
         self.context = None
@@ -164,6 +164,14 @@ class TaskDeliveryPlugin:
 
     def register(self, context):
         self.context = context
+        context.register_google_authorization(GoogleAuthorization('drive', '任务交付 · 网盘上传／统计',
+            'drive', 'v3', ('https://www.googleapis.com/auth/drive',), order=10, allow_legacy=True))
+        context.register_google_authorization(GoogleAuthorization('review_sheet', '任务交付 · 审核表',
+            'sheets', 'v4', ('https://www.googleapis.com/auth/spreadsheets',), order=20,
+            allow_legacy=True, legacy_bindings=('review_sheet.sheets',)))
+        context.register_google_authorization(GoogleAuthorization('task_submission_sheet', '任务交付 · 任务提交表',
+            'sheets', 'v4', ('https://www.googleapis.com/auth/spreadsheets',), order=30,
+            allow_legacy=True, legacy_bindings=('task_submission_sheet.sheets',)))
         from .task_delivery_workflow import register
         register(context)
         self.controller = TaskDeliveryController(self, context)

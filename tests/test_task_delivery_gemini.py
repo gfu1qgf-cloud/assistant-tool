@@ -20,6 +20,9 @@ class FakeContext:
     def register_command(self, _command):
         pass
 
+    def register_google_authorization(self, _definition):
+        pass
+
     def register_node(self, _node):
         pass
 

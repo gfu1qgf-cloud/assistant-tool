@@ -3,6 +3,7 @@ import csv
 import io
 
 from model.GoogleAccounts import load_managed_service
+from app_plugins.api import load_google_service
 from .tasks import normalize, spreadsheet_id, validate_payload
 from .store import Store
 from .segmentation import split_spoken
@@ -148,7 +149,11 @@ def run_export(payload, run, *, service=None):
     if len(jobs) != len(set(payload['ids'])): raise ValueError('部分任务已不存在，请重新选择。')
     if not jobs: raise ValueError('请选择要提交或核对的任务。')
     destination = identifier + ':' + name
-    service = service or load_managed_service('sheets', profile='ai_agent_assistant', expected_account_id=payload.get('account_id'))
+    if service is None:
+        if payload.get('google_authorization'):
+            service = load_google_service(payload['google_authorization'])
+        else:  # Previously queued requests retain their submission-time account check.
+            service = load_managed_service('sheets', profile='ai_agent_assistant', expected_account_id=payload.get('account_id'))
     if service is None:
         raise ValueError('请在“程序设置 → Google账号”登录并分配 Google 表格账号。浏览器登录不等于程序API授权；本地待提交任务已保留，也可先复制表格。')
     run.report('检查口播分页与列名', 10)

@@ -1,6 +1,13 @@
 from dataclasses import dataclass
 from model.node_workflow.workflow_types import WorkflowTypeDefinition
 from typing import Callable, FrozenSet
+from model.GoogleAuthorizationRegistry import GoogleAuthorization
+
+
+def load_google_service(request):
+    """Use context.prepare_google_account()'s frozen account in a worker."""
+    from model.GoogleAccounts import load_google_service as load
+    return load(request)
 
 # Optional node interface. Build a plan or execute a headless compute step;
 # prepare() snapshots scoped inputs on the GUI thread before job submission.

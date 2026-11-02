@@ -199,7 +199,9 @@ class AgentUiTests(unittest.TestCase):
         from model.AppDataStorage import data_directory
         self.main = QtWidgets.QWidget(); self.plugin = AIAgentAssistantPlugin()
         self.context = SimpleNamespace(storage=data_directory(self.temp.name), parent_widget=self.main,
-            register_command=Mock(), register_main_widget=Mock(), task_language=lambda _task: 'sk',
+            register_command=Mock(), register_main_widget=Mock(), register_google_authorization=Mock(),
+            prepare_google_account=Mock(return_value={'authorization_id': 'ai_agent_assistant.sheets', 'account_id': 'fixture-account'}),
+            task_language=lambda _task: 'sk',
             task_targets=lambda _rows: [target(self.temp.name)], log=Mock(),
             available_nodes=lambda: SimpleNamespace(definitions={'script_segmenter.split': object()}))
         self.plugin.register(self.context)
@@ -254,7 +256,7 @@ class AgentUiTests(unittest.TestCase):
             run.report('模拟提交中', 50); release.wait(3)
             return {'message': '模拟提交完成'}
         try:
-            with patch.object(plugin_module, 'run_export', new=runner), patch.object(plugin_module.GoogleAccountManager, 'snapshot', return_value={'bindings': {'ai_agent_assistant.sheets': 'fixture-account'}, 'accounts': []}):
+            with patch.object(plugin_module, 'run_export', new=runner):
                 self.plugin.submit({'url': URL, 'sheet': '口播表格'}, [self.plugin.store.jobs()[0]['id']], 'submit')
                 with self.assertRaises(ValueError): self.plugin.submit({'url': URL, 'sheet': '口播表格'}, [], 'submit')
                 deadline = time.monotonic() + 5

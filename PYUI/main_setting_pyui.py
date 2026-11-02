@@ -1580,7 +1580,8 @@ class MainSettingDialog(QtWidgets.QDialog, Ui_MainSettingDialog):
         tasks = getattr(self.plugin_host, 'background_tasks', None)
         if tasks is None:
             tasks = getattr(self.parent(), 'background_tasks', None)
-        self.google_accounts_page = GoogleAccountsPage(self.settingTabWidget, tasks=tasks)
+        self.google_accounts_page = GoogleAccountsPage(self.settingTabWidget, tasks=tasks,
+            registry=getattr(self.plugin_host, 'google_authorizations', None))
         self.settingTabWidget.addTab(self.google_accounts_page, 'Google 账号')
 
     def _build_appearance_tab(self):

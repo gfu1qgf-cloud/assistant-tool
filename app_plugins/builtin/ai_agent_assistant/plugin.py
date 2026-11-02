@@ -1,17 +1,16 @@
 from qt_compat import QtCore, QtWidgets
-from app_plugins.api import MAIN_MENU, TASK_CONTEXT_MENU, PluginCommand, PluginMainWidget
+from app_plugins.api import MAIN_MENU, TASK_CONTEXT_MENU, PluginCommand, PluginMainWidget, GoogleAuthorization
 from .store import Store
 from .tasks import snapshot, spreadsheet_id
 from .sheets import run_export, run_copy
 from .segmentation import require_available
-from model.GoogleAccounts import GoogleAccountManager, DISABLED
 
 
 class AIAgentAssistantPlugin(QtCore.QObject):
     plugin_id = 'ai_agent_assistant'
     display_name = 'AI Agent 助手'
     version = '0.1.1'
-    required_api_version = 1
+    required_api_version = 2
 
     def __init__(self):
         super().__init__()
@@ -25,6 +24,8 @@ class AIAgentAssistantPlugin(QtCore.QObject):
 
     def register(self, context):
         self.context = context
+        context.register_google_authorization(GoogleAuthorization('sheets', 'AI Agent 助手 · 口播表', 'sheets', 'v4',
+            ('https://www.googleapis.com/auth/spreadsheets',), order=60, legacy_bindings=('sheets',)))
         context.register_command(PluginCommand('open', 'AI Agent 助手…', lambda _rows: self.open_ui(), frozenset({MAIN_MENU}), order=32))
         context.register_command(PluginCommand('oral', '添加到 AI Agent 口播任务…', self.open_tasks,
             frozenset({TASK_CONTEXT_MENU}), order=35, enabled=lambda rows: bool(rows)))
@@ -86,13 +87,10 @@ class AIAgentAssistantPlugin(QtCore.QObject):
         if not jobs: raise ValueError('请选择任务。')
         if operation == 'submit': require_available(self.context)
         self.store.save_settings(target)
-        manager = GoogleAccountManager()
-        manager.integrate_legacy()
-        account = manager.snapshot()['bindings'].get('ai_agent_assistant.sheets')
-        if not account or account == DISABLED:
-            raise ValueError('请先点“Google账号”登录并分配表格账号。本地任务已保留，也可先复制表格。')
+        authorization = self.context.prepare_google_account('sheets')
         self.handle = self.context.submit_background_task(title='AI Agent · 口播' + ('提交' if operation == 'submit' else '核对'),
-            runner=run_export, payload={**target, 'ids': list(ids), 'root': str(self.context.storage.path), 'operation': operation, 'account_id': account},
+            runner=run_export, payload={**target, 'ids': list(ids), 'root': str(self.context.storage.path), 'operation': operation,
+                                        'account_id': authorization['account_id'], 'google_authorization': authorization},
             kind='network', execution='parallel', resources=['agent-sheet:' + spreadsheet_id(target['url'])], retryable=False)
         self.handle.completed.connect(self.completed); self.handle.failed.connect(self.failed); self.handle.finished.connect(self.finished)
         self.handle.progressChanged.connect(self.progress)

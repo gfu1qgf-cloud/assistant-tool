@@ -4,13 +4,10 @@ from functools import wraps
 
 from qt_compat import QtCore, QtWidgets
 from model.AppDataStorage import data_file
-from model.GoogleAccounts import GoogleAccountManager, DISABLED, BINDING_LABELS, binding_feature
+from model.GoogleAccounts import GoogleAccountManager, DISABLED
 from model.GoogleAccountAuth import authorize
 
-LABELS = {'sheets': 'Google 表格', 'drive': 'Google 网盘', 'docs': 'Google 文档'}
-
-
-def open_google_accounts(parent, tasks):
+def open_google_accounts(parent, tasks, *, registry=None):
     """Reuse the core settings page in a host-owned modeless account window."""
     dialog = getattr(parent, '_google_accounts_dialog', None)
     if dialog is None:
@@ -18,7 +15,7 @@ def open_google_accounts(parent, tasks):
         dialog.setWindowTitle('Google 账号 · 主程序管理')
         dialog.resize(880, 700)
         layout = QtWidgets.QVBoxLayout(dialog)
-        dialog.account_page = GoogleAccountsPage(dialog, tasks=tasks)
+        dialog.account_page = GoogleAccountsPage(dialog, tasks=tasks, registry=registry)
         layout.addWidget(dialog.account_page)
         parent._google_accounts_dialog = dialog
     dialog.account_page.reload()
@@ -36,9 +33,10 @@ def guarded(function):
 
 
 class GoogleAccountsPage(QtWidgets.QWidget):
-    def __init__(self, parent=None, *, tasks=None, manager=None):
+    def __init__(self, parent=None, *, tasks=None, manager=None, registry=None):
         super().__init__(parent)
-        self.manager = manager or GoogleAccountManager()
+        self.manager = manager or GoogleAccountManager(registry=registry)
+        self.registry = self.manager.registry
         self.tasks, self.handle, self.loaded = tasks, None, False
         self.setObjectName('google_accounts_page')
         layout = QtWidgets.QVBoxLayout(self)
@@ -54,13 +52,12 @@ class GoogleAccountsPage(QtWidgets.QWidget):
         self.import_button = QtWidgets.QPushButton('① 导入客户端…', self)
         row.addWidget(self.clients, 1); row.addWidget(self.import_button)
         layout.addLayout(row)
-        scopes = QtWidgets.QHBoxLayout()
+        scope_group = QtWidgets.QGroupBox('登录时申请的用途权限（不等于账号分配）', self)
+        self.scope_layout = QtWidgets.QVBoxLayout(scope_group)
         self.permissions = {}
-        for name, label in LABELS.items():
-            box = QtWidgets.QCheckBox(label + ('（上传/下载/管理）' if name == 'drive' else '（编辑）'), self)
-            box.setChecked(name in {'sheets', 'drive'})
-            self.permissions[name] = box; scopes.addWidget(box)
-        layout.addLayout(scopes)
+        scope_scroll = QtWidgets.QScrollArea(self); scope_scroll.setWidgetResizable(True)
+        scope_scroll.setWidget(scope_group); scope_scroll.setMaximumHeight(160)
+        layout.addWidget(scope_scroll)
         actions = QtWidgets.QHBoxLayout()
         self.login_button = QtWidgets.QPushButton('② 登录 / 补充授权…', self)
         self.cancel_button = QtWidgets.QPushButton('取消本次登录', self)
@@ -75,14 +72,15 @@ class GoogleAccountsPage(QtWidgets.QWidget):
         self.accounts.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.ResizeMode.Stretch)
         layout.addWidget(self.accounts, 1)
         group = QtWidgets.QGroupBox('③ 功能使用哪个账号', self)
-        form = QtWidgets.QFormLayout(group)
+        self.binding_form = QtWidgets.QFormLayout(group)
         self.bindings = {}
-        for name, label in BINDING_LABELS.items():
-            combo = QtWidgets.QComboBox(group)
-            self.bindings[name] = combo; form.addRow(label, combo)
-        self.save_button = QtWidgets.QPushButton('保存功能分配', group)
-        form.addRow(self.save_button)
-        layout.addWidget(group)
+        self.declarations = ()
+        self.declaration_signature = None
+        binding_scroll = QtWidgets.QScrollArea(self); binding_scroll.setWidgetResizable(True)
+        binding_scroll.setWidget(group); binding_scroll.setMinimumHeight(120); binding_scroll.setMaximumHeight(270)
+        layout.addWidget(binding_scroll)
+        self.save_button = QtWidgets.QPushButton('保存功能分配', self)
+        layout.addWidget(self.save_button)
         self.status = QtWidgets.QLabel('账号管理操作立即加密保存；关闭设置窗口不撤销已完成的登录和分配。', self)
         self.status.setWordWrap(True); layout.addWidget(self.status)
         self.import_button.clicked.connect(self.import_client)
@@ -94,7 +92,28 @@ class GoogleAccountsPage(QtWidgets.QWidget):
         self.clients.currentIndexChanged.connect(self.update_buttons)
         if tasks is not None and hasattr(tasks, 'changed'):
             tasks.changed.connect(self.host_changed)
+        self._sync_declarations()
         self.update_buttons()
+
+    def _sync_declarations(self):
+        entries = self.registry.entries(active_only=True)
+        signature = tuple((entry.key, entry.definition) for entry in entries)
+        if signature == self.declaration_signature: return
+        selected = {key for key, box in self.permissions.items() if box.isChecked()}
+        for target in (self.scope_layout, self.binding_form):
+            while target.count():
+                item = target.takeAt(0)
+                if item.widget(): item.widget().deleteLater()
+        self.permissions, self.bindings = {}, {}
+        self.declarations, self.declaration_signature = entries, signature
+        for entry in entries:
+            box = QtWidgets.QCheckBox(entry.definition.title)
+            box.setToolTip('\n'.join(entry.definition.scopes)); box.setChecked(entry.key in selected)
+            self.permissions[entry.key] = box; self.scope_layout.addWidget(box)
+            combo = QtWidgets.QComboBox()
+            self.bindings[entry.key] = combo; self.binding_form.addRow(entry.definition.title, combo)
+        if not entries:
+            self.scope_layout.addWidget(QtWidgets.QLabel('当前没有已启用插件注册的 Google 授权用途。'))
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -104,6 +123,7 @@ class GoogleAccountsPage(QtWidgets.QWidget):
 
     @guarded
     def reload(self):
+        self._sync_declarations()
         errors = self.manager.integrate_legacy()
         state = self.manager.snapshot()
         selected = self.clients.currentData()
@@ -118,15 +138,24 @@ class GoogleAccountsPage(QtWidgets.QWidget):
             cell = QtWidgets.QTableWidgetItem(item.get('label') or item['email'])
             cell.setData(QtCore.Qt.ItemDataRole.UserRole, item['id'])
             self.accounts.setItem(row, 0, cell)
-            self.accounts.setItem(row, 1, QtWidgets.QTableWidgetItem('、'.join(LABELS[key] for key in item['features'])))
+            self.accounts.setItem(row, 1, QtWidgets.QTableWidgetItem('、'.join(
+                scope.removeprefix('https://www.googleapis.com/auth/') for scope in item['scopes'])))
+        declarations = {entry.key: entry.definition for entry in self.declarations}
         for feature, combo in self.bindings.items():
-            combo.clear(); combo.addItem('保持此用途原有独立授权' if feature != 'ai_agent_assistant.sheets' else '未分配（不借用其他插件授权）', '')
+            definition = declarations[feature]
+            combo.clear(); combo.addItem('保持此用途原有独立授权' if definition.allow_legacy else '未分配（不借用其他插件授权）', '')
             combo.addItem('停用（不使用旧授权）', DISABLED)
             for item in state['accounts']:
-                if binding_feature(feature) in item['features']: combo.addItem(item.get('label') or item['email'], item['id'])
+                if set(definition.scopes).issubset(item['scopes']): combo.addItem(item.get('label') or item['email'], item['id'])
             key = state['bindings'].get(feature, '')
             index = combo.findData(key)
-            if index < 0: raise ValueError('原功能绑定的账号或权限已失效，请补充授权后重新分配。')
+            if index < 0:
+                # Preserve the stored choice and keep login usable so changed
+                # scope requirements can be repaired, not silently unbound.
+                combo.addItem('原绑定不可用（请补充授权或重新选择）', key)
+                index = combo.count() - 1
+                combo.model().item(index).setEnabled(False)
+                errors.append(definition.title + '：原账号或权限已失效，请补充授权后重新分配。')
             combo.setCurrentIndex(index)
         self.update_buttons()
         if errors: self.status.setText('；'.join(errors))
@@ -159,14 +188,15 @@ class GoogleAccountsPage(QtWidgets.QWidget):
     @guarded
     def login(self):
         if self.handle is not None: raise ValueError('当前登录尚未结束，请先完成或取消。')
-        features = [key for key, box in self.permissions.items() if box.isChecked()]
-        if not features: raise ValueError('请至少勾选一项功能权限。')
+        chosen = {key for key, box in self.permissions.items() if box.isChecked()}
+        scopes = sorted({scope for entry in self.declarations if entry.key in chosen for scope in entry.definition.scopes})
+        if not scopes: raise ValueError('请至少勾选一项功能权限。')
         if self.tasks is None or not self.clients.currentData(): raise ValueError('请先导入桌面客户端，并从主程序设置启动登录。')
         if any(item['owner'] == 'google_accounts' and item['status'] in {'queued', 'running', 'canceling'}
                for item in self.tasks.records()):
             raise ValueError('已有 Google 登录在后台处理；请先完成，或在“后台任务”中取消，不重复打开授权。')
         self.handle = self.tasks.submit(owner='google_accounts', title='Google 账号登录', runner=authorize,
-            payload={'client_id': self.clients.currentData(), 'features': features}, kind='network',
+            payload={'client_id': self.clients.currentData(), 'scopes': scopes}, kind='network',
             execution='parallel', resources=['google-accounts:login'], retryable=False)
         self.handle.completed.connect(self.completed)
         self.handle.failed.connect(self.failed)

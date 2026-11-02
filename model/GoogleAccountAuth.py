@@ -10,6 +10,7 @@ import webbrowser
 from model.GoogleAccounts import GoogleAccountManager, SCOPES, token_scopes
 from model.OfflineMode import require_online
 from model.SensitiveData import register_sensitive_values
+from model.GoogleAuthorizationRegistry import valid_scope
 
 
 def _identity(credentials):
@@ -30,9 +31,16 @@ def authorize(payload, run, *, manager=None):
     require_online('Google 账号登录')
     from google_auth_oauthlib.flow import InstalledAppFlow
     manager = manager or GoogleAccountManager()
-    features = payload.get('features', [])
-    if not features or any(item not in SCOPES for item in features): raise ValueError('请至少选择一项授权功能。')
-    scopes = ['openid', 'https://www.googleapis.com/auth/userinfo.email'] + sorted({SCOPES[name] for name in features})
+    requested = payload.get('scopes')
+    if requested is None:  # Compatibility for old queued login requests.
+        features = payload.get('features', [])
+        if not features or any(item not in SCOPES for item in features): raise ValueError('请至少选择一项授权功能。')
+        requested = [SCOPES[name] for name in features]
+    if (not isinstance(requested, list) or not 1 <= len(requested) <= 128
+            or any(not valid_scope(scope) for scope in requested)):
+        raise ValueError('Google 登录权限声明无效，未打开授权页面。')
+    requested = set(requested)
+    scopes = sorted(requested | {'openid', 'https://www.googleapis.com/auth/userinfo.email'})
     client_id = payload['client_id']
     config = manager.client(client_id)
     flow = InstalledAppFlow.from_client_config(config, scopes, autogenerate_code_verifier=True)
@@ -88,7 +96,7 @@ def authorize(payload, run, *, manager=None):
     register_sensitive_values([value.get('token'), value.get('refresh_token'), value.get('id_token')])
     granted = getattr(credentials, 'granted_scopes', None)
     if granted is not None: value['scopes'] = list(granted)
-    if not {SCOPES[name] for name in features}.issubset(token_scopes(value)):
+    if not requested.issubset(token_scopes(value)):
         raise ValueError('未授予所选功能的全部权限，原账号未改变；请重新授权。')
     identity = _identity(credentials)
     run.check_canceled()

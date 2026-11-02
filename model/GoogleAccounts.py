@@ -16,7 +16,10 @@ from model.AIProviderKeys import _dpapi
 from model.AppDataStorage import application_storage
 from model.ConfigTransactions import config_file_lock
 from model.SensitiveData import register_sensitive_values
+from model.GoogleAuthorizationRegistry import GoogleAuthorizationRegistry
 
+# Pre-registry helper/login compatibility only. New plugin declarations supply
+# their own API/version/scopes through GoogleAuthorizationRegistry.
 SCOPES = {
     'sheets': 'https://www.googleapis.com/auth/spreadsheets',
     'drive': 'https://www.googleapis.com/auth/drive',
@@ -26,14 +29,6 @@ SERVICES = {'sheets': ('sheets', 'v4'), 'drive': ('drive', 'v3'), 'docs': ('docs
 TOKEN_URI = 'https://oauth2.googleapis.com/token'
 STORE_NAME = 'GoogleAccounts.json'
 DISABLED = '@disabled'
-BINDING_LABELS = {
-    'task_delivery.drive': '任务交付 · 网盘上传／统计',
-    'review_sheet.sheets': '任务交付 · 审核表',
-    'task_submission_sheet.sheets': '任务交付 · 任务提交表',
-    'sheet_monitor.sheets': '表格监视',
-    'document_formatter.docs': '文档自动格式化',
-    'ai_agent_assistant.sheets': 'AI Agent 助手 · 口播表',
-}
 
 
 def binding_key(feature, profile=None):
@@ -82,8 +77,10 @@ def validate_token(value):
 
 
 class GoogleAccountManager:
-    def __init__(self, storage=None):
+    def __init__(self, storage=None, *, registry=None):
         self.storage = storage or application_storage()
+        self.registry = registry if registry is not None else getattr(self.storage, 'google_authorizations', None)
+        if self.registry is None: self.registry = GoogleAuthorizationRegistry()
         self.file = self.storage.file_at(self.storage.root / STORE_NAME)
         self.lock = config_file_lock(self.file.path)
 
@@ -144,13 +141,32 @@ class GoogleAccountManager:
         """Safe UI projection: never return clients, refresh/access tokens."""
         with self.lock:
             state = self._read()
+            bindings = copy.deepcopy(state['bindings'])
+            for entry in self.registry.entries():
+                selected = self._selection(state, entry.key)
+                if selected is not None: bindings[entry.key] = selected
             return {'clients': [{'id': key, 'name': item['name']} for key, item in state['clients'].items()],
                     'accounts': [{'id': key, 'email': item['email'], 'label': item.get('label', item['email']),
                                   'client_id': item['client_id'],
+                                  'scopes': sorted(token_scopes(item['credentials'])),
                                   'features': [name for name, scope in SCOPES.items()
                                                if scope in token_scopes(item['credentials'])]}
                                  for key, item in state['accounts'].items()],
-                    'bindings': copy.deepcopy(state['bindings'])}
+                    'bindings': bindings}
+
+    def required_scopes(self, key, state=None):
+        entry = self.registry.resolve(key)
+        if entry is not None: return set(entry.definition.scopes)
+        saved = (state or {}).get('binding_requirements', {}).get(key)
+        if saved: return set(saved)
+        # Compatibility for pre-registry callers only. New plugin APIs require
+        # a declaration and never infer permissions from a service name.
+        return {SCOPES[binding_feature(key)]}
+
+    def _selection(self, state, key):
+        entry = self.registry.resolve(key)
+        keys = (entry.key, *entry.definition.legacy_bindings) if entry else (key,)
+        return next((state['bindings'][item] for item in keys if item in state['bindings']), None)
 
     def integrate_legacy(self, config=None):
         """Register original authorizations locally, without using/replacing their tokens.
@@ -198,14 +214,6 @@ class GoogleAccountManager:
                 errors.append(label + '未接入：文件无法读取或客户端与令牌不匹配；原文件未改动。')
         with self._transaction():
             state = self._read(); changed = False
-            # Only the newly added Agent feature inherits the former global Sheets choice.
-            # Existing upload/review/monitor consumers must NEVER inherit global choices.
-            agent_key = 'ai_agent_assistant.sheets'
-            if (not state.get('scoped_bindings_migrated') and agent_key not in state['bindings']
-                    and 'sheets' in state['bindings']):
-                state['bindings'][agent_key] = state['bindings']['sheets']; changed = True
-            if not state.get('scoped_bindings_migrated') and 'sheets' in state['bindings']:
-                state['scoped_bindings_migrated'] = True; changed = True
             sources = state.setdefault('legacy_sources', {})
             for source, label, client, credentials in candidates:
                 if source in sources: continue  # Removed entries stay removed; imports are idempotent.
@@ -250,7 +258,7 @@ class GoogleAccountManager:
                 raise ValueError('授权客户端已改变；本次登录未保存，请重试。')
             key = next((key for key, item in state['accounts'].items()
                         if item['subject'] == identity['sub'] and item['client_id'] == client_id), uuid4().hex)
-            if any(account_id == key and SCOPES[binding_feature(feature)] not in token_scopes(value)
+            if any(account_id == key and not self.required_scopes(feature, state).issubset(token_scopes(value))
                    for feature, account_id in state['bindings'].items()):
                 raise ValueError('本次授权缺少该账号已绑定功能的权限；请勾选这些功能后重新授权，原本地授权未覆盖。')
             state['accounts'][key] = {'subject': identity['sub'], 'email': identity['email'],
@@ -262,19 +270,28 @@ class GoogleAccountManager:
         self.bind_many({feature: account_id})
 
     def bind_many(self, bindings):
-        for feature in bindings: binding_feature(feature)
+        for feature in bindings: self.required_scopes(feature)
         with self._transaction():
             state = self._read()
+            requirements = state.setdefault('binding_requirements', {})
             for feature, account_id in bindings.items():
+                entry = self.registry.resolve(feature)
+                feature = entry.key if entry else feature
+                scopes = self.required_scopes(feature)
+                if entry:
+                    for alias in entry.definition.legacy_bindings:
+                        state['bindings'].pop(alias, None); requirements.pop(alias, None)
                 if account_id == DISABLED:
                     state['bindings'][feature] = DISABLED
                 elif account_id:
                     account = state['accounts'].get(account_id)
-                    if not account or SCOPES[binding_feature(feature)] not in token_scopes(account['credentials']):
+                    if not account or not scopes.issubset(token_scopes(account['credentials'])):
                         raise ValueError('此账号没有该功能权限，请先补充授权。')
                     state['bindings'][feature] = account_id
                 else:
                     state['bindings'].pop(feature, None)
+                if account_id: requirements[feature] = sorted(scopes)
+                else: requirements.pop(feature, None)
             self._write(state)
 
     def remove(self, account_id):
@@ -289,7 +306,7 @@ class GoogleAccountManager:
     def bound_account(self, feature):
         with self.lock:
             state = self._read()
-            key = state['bindings'].get(feature)
+            key = self._selection(state, feature)
             if not key: return None
             if key == DISABLED:
                 raise ValueError('此 Google 功能已停用；请在“程序设置 → Google 账号”分配账号。不会回退旧授权。')
@@ -317,9 +334,62 @@ class GoogleAccountManager:
 
 def load_managed_service(feature, *, profile=None, manager=None, expected_account_id=None):
     """None means unbound/legacy. A bound-but-failed account NEVER falls back."""
-    from model.OfflineMode import require_online
     manager = manager or GoogleAccountManager()
-    bound = manager.bound_account(binding_key(feature, profile))
+    key = binding_key(feature, profile)
+    if manager.registry.resolve(key) is not None:
+        return load_authorization_service(key, manager=manager, expected_account_id=expected_account_id)
+    return _load_service(key, SERVICES[feature], feature=feature, manager=manager,
+                         expected_account_id=expected_account_id)
+
+
+def load_authorization_service(authorization_id, *, manager=None, expected_account_id=None):
+    manager = manager or GoogleAccountManager()
+    entry = manager.registry.resolve(authorization_id)
+    if entry is None: raise ValueError('Google 授权用途尚未注册，请检查插件是否启用。')
+    if not manager.registry.owner_enabled(entry.owner): raise ValueError('此 Google 授权用途所属插件已禁用。')
+    definition = entry.definition
+    return _load_service(entry.key, (definition.api, definition.version), manager=manager,
+                         required_scopes=definition.scopes, expected_account_id=expected_account_id)
+
+
+def prepare_google_account(owner, purpose_id, *, manager=None):
+    manager = manager or GoogleAccountManager()
+    key = owner + '.' + purpose_id
+    entry = manager.registry.resolve(key)
+    if entry is None or entry.key != key or entry.owner != owner:
+        raise ValueError('本插件尚未注册此 Google 授权用途。')
+    if not manager.registry.owner_enabled(owner): raise ValueError('此 Google 授权用途所属插件已禁用。')
+    bound = manager.bound_account(key)
+    if bound is None: raise ValueError('请在 Google 账号设置中为“' + entry.definition.title + '”分配账号。')
+    if not set(entry.definition.scopes).issubset(token_scopes(bound[1]['credentials'])):
+        raise ValueError('此用途所需权限已改变，请在 Google 账号设置补充授权。')
+    return {'authorization_id': key, 'account_id': bound[0], 'authorization_revision': _authorization_revision(entry)}
+
+
+def _authorization_revision(entry):
+    definition = entry.definition
+    return hashlib.sha256(json.dumps([definition.api, definition.version, sorted(definition.scopes)]).encode()).hexdigest()
+
+
+def load_google_service(request, *, manager=None):
+    """Worker API: plain submission snapshot, no credential objects in job payloads."""
+    if (not isinstance(request, dict) or not isinstance(request.get('authorization_id'), str)
+            or not isinstance(request.get('account_id'), str) or not request['account_id']
+            or request['account_id'] == DISABLED):
+        raise ValueError('Google 授权请求缺少提交时的用途／账号快照。')
+    manager = manager or GoogleAccountManager()
+    entry = manager.registry.resolve(request['authorization_id'])
+    if entry is None or entry.key != request['authorization_id']:
+        raise ValueError('Google 授权用途尚未注册，请检查插件是否启用。')
+    if request.get('authorization_revision') != _authorization_revision(entry):
+        raise ValueError('Google 授权用途的服务／权限在提交后改变，请重新确认后提交。')
+    return load_authorization_service(request['authorization_id'], manager=manager,
+                                      expected_account_id=request['account_id'])
+
+
+def _load_service(binding, api_version, *, manager, expected_account_id=None, feature=None, required_scopes=None):
+    from model.OfflineMode import require_online
+    bound = manager.bound_account(binding)
     if expected_account_id is not None and (bound is None or bound[0] != expected_account_id):
         raise ValueError('Google 功能账号在提交后发生变化，请确认账号后重新操作；未自动换号。')
     if bound is None: return None
@@ -331,18 +401,19 @@ def load_managed_service(feature, *, profile=None, manager=None, expected_accoun
     refresh_lock = config_file_lock(str(manager.file.path) + '.' + key + '.refresh')
     if not refresh_lock.acquire(timeout=35):
         raise RuntimeError('Google 账号正在续期，请稍后重试；其他账号不会被阻塞。')
-    try: credentials = _credentials(manager, key, feature)
+    try: credentials = _credentials(manager, key, feature, required_scopes=required_scopes)
     finally: refresh_lock.release()
-    api, version = SERVICES[feature]
+    api, version = api_version
     return build(api, version, http=AuthorizedHttp(credentials, http=httplib2.Http(timeout=30)), cache_discovery=False)
 
 
-def _credentials(manager, key, feature):
+def _credentials(manager, key, feature=None, *, required_scopes=None):
     from google.oauth2.credentials import Credentials
     from google.auth.transport.requests import Request
     account = manager.account(key)
     value = validate_token(account['credentials'])
-    if SCOPES[feature] not in token_scopes(value):
+    scopes = set(required_scopes) if required_scopes is not None else {SCOPES[feature]}
+    if not scopes.issubset(token_scopes(value)):
         raise ValueError('绑定的 Google 账号缺少此功能权限，请到“程序设置 → Google 账号”补充授权。')
     credentials = Credentials.from_authorized_user_info(value)
     if not credentials.valid:

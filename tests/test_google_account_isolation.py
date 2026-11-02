@@ -94,6 +94,8 @@ class IsolationTests(unittest.TestCase):
         self.assertFalse(self.manager.file.exists())
 
     def test_old_global_agent_selection_migrates_only_once(self):
+        from test_google_authorization_registry import fixture_registry
+        self.manager.registry = fixture_registry()
         key = self.login('agent'); self.manager.bind_many({'sheets': key, 'drive': key})
         self.manager.integrate_legacy({}); state = self.manager.snapshot()
         self.assertEqual(state['bindings']['ai_agent_assistant.sheets'], key)

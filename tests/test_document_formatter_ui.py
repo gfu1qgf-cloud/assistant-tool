@@ -27,7 +27,8 @@ class DocumentFormatterGuiTests(unittest.TestCase):
         self.window = QtWidgets.QWidget(); self.manager = BackgroundTaskManager(self.window)
         self.storage = ApplicationStorage(self.root/'private'); self.release = threading.Event()
         self.context = SimpleNamespace(parent_widget=self.window, background_tasks=self.manager,
-                                       storage=self.storage.for_plugin('document_formatter'), register_command=Mock(), notify=Mock())
+                                       storage=self.storage.for_plugin('document_formatter'), register_command=Mock(),
+                                       register_google_authorization=Mock(), notify=Mock())
         self.context.submit_background_task = lambda **kw: self.manager.submit(owner='document_formatter', **kw)
         self.dialogs = []
         for name in ('warning', 'information'):
