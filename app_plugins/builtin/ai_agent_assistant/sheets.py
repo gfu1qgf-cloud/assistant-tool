@@ -5,6 +5,7 @@ import io
 from model.GoogleAccounts import load_managed_service
 from .tasks import normalize, spreadsheet_id, validate_payload
 from .store import Store
+from .segmentation import split_spoken
 
 FIELDS = [
     ('job_id', '作业ID', ('作业编号',)), ('task_id', '所属任务编号', ('任务编号',)),
@@ -49,23 +50,28 @@ def headers(rows):
     return candidates[0]
 
 
-def row_values(job, mapping, count):
+def row_values(job, mapping, count, run=None):
     payload = job['payload']
     validate_payload(payload)
     values = {**payload, 'job_id': job['id'], 'status': '待领取', 'priority': '普通',
               'archive': '未下载', 'created': job['created'], 'updated': job['created']}
+    segmented = split_spoken(payload['spoken'], run)
+    values['spoken'] = segmented['text']
+    note = f'外文分为{segmented["count"]}段，每段约10秒；按语速与标点估算，不是精密音频对齐。段号和秒数标签仅用于分组，不朗读。'
+    values['notes'] = '\n'.join(item for item in (payload.get('notes', ''), note, segmented['warnings']) if item)
     row = [''] * count
     for key, index in mapping.items(): row[index] = str(values.get(key) or '')
     return row
 
 
-def clipboard_tsv(jobs):
+def clipboard_tsv(jobs, run=None):
     mapping = {key: index for index, (key, _title, _aliases) in enumerate(FIELDS)}
     stream = io.StringIO(newline='')
     writer = csv.writer(stream, delimiter='\t', lineterminator='\n')
     writer.writerow([title for _key, title, _aliases in FIELDS])
     for job in jobs:
-        row = row_values(job, mapping, len(FIELDS))
+        if run is not None: run.check_canceled()
+        row = row_values(job, mapping, len(FIELDS), run)
         # Browser paste parses leading '=' as a formula even though API RAW does not.
         writer.writerow(["'" + value if value.startswith(('=', '+', '-', '@')) else value for value in row])
     return stream.getvalue()
@@ -172,7 +178,16 @@ def run_export(payload, run, *, service=None):
     # A fresh complete payload is recorded before the only write attempt.
     if remaining:
         validate_options(service, identifier, name, info, run)
-        rows = [row_values(job, info['mapping'], info['count']) for job in remaining]
+        prepared, rows = [], []
+        for job in remaining:
+            run.check_canceled()
+            try: row = row_values(job, info['mapping'], info['count'], run)
+            except ValueError as error:
+                invalid.append(job['payload']['task_id'])
+                store.mark([job['id']], 'failed', '', str(error))
+            else: prepared.append(job); rows.append(row)
+        remaining = prepared
+    if remaining:
         if sum(len(str(row)) for row in rows) > 1500000: raise ValueError('本批文本超过安全提交大小，请分批勾选。')
         run.report('正在写入口播任务；不覆盖已有行', 50)
         request = service.spreadsheets().values().append(spreadsheetId=identifier,
@@ -192,3 +207,12 @@ def run_export(payload, run, *, service=None):
     run.report('口播任务提交完成', 100)
     return {'added': len(remaining), 'confirmed': len(confirmed), 'blocked': blocked, 'invalid': invalid,
             'message': f'新增 {len(remaining)} 条，已存在 {len(confirmed)} 条，待核对 {len(blocked)} 条，资料不全跳过 {len(invalid)} 条。'}
+
+
+def run_copy(payload, run):
+    jobs = Store(payload['root']).jobs(payload['ids'])
+    if len(jobs) != len(set(payload['ids'])) or not jobs: raise ValueError('部分任务已不存在，请重新选择。')
+    run.report('按约10秒分段并准备复制表格', 0)
+    text = clipboard_tsv(jobs, run)
+    run.check_canceled()
+    return {'clipboard': text, 'message': f'已复制 {len(jobs)} 条任务，外文已按约10秒分段。手动粘贴不会更改本地提交状态。'}

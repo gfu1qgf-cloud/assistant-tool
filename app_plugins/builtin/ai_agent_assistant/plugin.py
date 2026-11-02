@@ -2,14 +2,15 @@ from qt_compat import QtCore, QtWidgets
 from app_plugins.api import MAIN_MENU, TASK_CONTEXT_MENU, PluginCommand, PluginMainWidget
 from .store import Store
 from .tasks import snapshot, spreadsheet_id
-from .sheets import run_export
+from .sheets import run_export, run_copy
+from .segmentation import require_available
 from model.GoogleAccounts import GoogleAccountManager, DISABLED
 
 
 class AIAgentAssistantPlugin(QtCore.QObject):
     plugin_id = 'ai_agent_assistant'
     display_name = 'AI Agent 助手'
-    version = '0.1.0'
+    version = '0.1.1'
     required_api_version = 1
 
     def __init__(self):
@@ -83,6 +84,7 @@ class AIAgentAssistantPlugin(QtCore.QObject):
         if self.handle is not None: raise ValueError('当前操作尚未结束。')
         jobs = self.store.jobs(ids)
         if not jobs: raise ValueError('请选择任务。')
+        if operation == 'submit': require_available(self.context)
         self.store.save_settings(target)
         account = GoogleAccountManager().snapshot()['bindings'].get('sheets')
         if not account or account == DISABLED:
@@ -94,7 +96,18 @@ class AIAgentAssistantPlugin(QtCore.QObject):
         self.handle.progressChanged.connect(self.progress)
         if self.dialog: self.dialog.busy(True); self.dialog.status.setText('已交由主程序后台执行，可关闭此窗口。')
 
+    def copy_tasks(self, ids):
+        if self.handle is not None: raise ValueError('当前操作尚未结束。')
+        require_available(self.context)
+        self.handle = self.context.submit_background_task(title='AI Agent · 外文10秒分段与复制',
+            runner=run_copy, payload={'ids': list(ids), 'root': str(self.context.storage.path)},
+            kind='cpu', execution='parallel', retryable=False)
+        self.handle.completed.connect(self.completed); self.handle.failed.connect(self.failed)
+        self.handle.finished.connect(self.finished); self.handle.progressChanged.connect(self.progress)
+        if self.dialog: self.dialog.busy(True); self.dialog.status.setText('后台分段中，完成后自动复制；不调用AI或音频模型。')
+
     def completed(self, result):
+        if 'clipboard' in result: QtWidgets.QApplication.clipboard().setText(result['clipboard'])
         message = result['message']
         self.context.log(message)
         if self.dialog: self.dialog.reload(); self.dialog.status.setText(message)

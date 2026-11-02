@@ -56,7 +56,7 @@ class AgentTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory(); self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name); self.store = Store(self.root/'private')
         self.payload = snapshot(target(self.root), 'sk')
-        self.run = SimpleNamespace(check_canceled=Mock(), report=Mock())
+        self.run = SimpleNamespace(check_canceled=Mock(), report=Mock(), is_canceled=Mock(return_value=False))
     def stage(self, payload=None):
         result = self.store.stage([payload or self.payload]); return (result['imported'] + result['unchanged'])[0]
     def export(self, api=None, ids=None, operation='submit'):
@@ -104,7 +104,7 @@ class AgentTests(unittest.TestCase):
         titles = [title for _key, title, _aliases in FIELDS][::-1] + ['客户额外字段']
         _row, mapping, count = headers([titles]); job = self.store.jobs([self.stage()])[0]
         row = row_values(job, mapping, count)
-        self.assertEqual(row[mapping['spoken']], self.payload['spoken']); self.assertEqual(row[-1], '')
+        self.assertTrue(row[mapping['spoken']].endswith(self.payload['spoken'])); self.assertEqual(row[-1], '')
     def test_missing_duplicate_or_multiple_headers_block(self):
         titles = [title for _key, title, _aliases in FIELDS]
         for rows in ([titles + ['作业ID']], [titles, titles], [['任务编号']]):
@@ -163,8 +163,9 @@ class AgentTests(unittest.TestCase):
         browser.assert_not_called(); self.assertEqual(self.store.jobs()[0]['state'], 'draft')
     def test_clipboard_formula_injection_guard_and_multiline(self):
         key = self.stage(); self.store.edit(key, 'spoken', '=HYPERLINK("bad")\nsecond line')
+        self.store.edit(key, 'chinese', '=不应作为公式')
         text = clipboard_tsv(self.store.jobs([key]))
-        self.assertIn("'=HYPERLINK", text); self.assertIn('second line', text)
+        self.assertIn("'=不应作为公式", text); self.assertIn('second line', text)
     def test_queue_connect_closes_native_database_handle(self):
         self.stage(); self.store.file.path.rename(self.store.file.path.with_suffix('.moved'))
     def test_invalid_job_does_not_block_valid_job(self):
@@ -199,7 +200,8 @@ class AgentUiTests(unittest.TestCase):
         self.main = QtWidgets.QWidget(); self.plugin = AIAgentAssistantPlugin()
         self.context = SimpleNamespace(storage=data_directory(self.temp.name), parent_widget=self.main,
             register_command=Mock(), register_main_widget=Mock(), task_language=lambda _task: 'sk',
-            task_targets=lambda _rows: [target(self.temp.name)], log=Mock())
+            task_targets=lambda _rows: [target(self.temp.name)], log=Mock(),
+            available_nodes=lambda: SimpleNamespace(definitions={'script_segmenter.split': object()}))
         self.plugin.register(self.context)
     def tearDown(self):
         self.main.deleteLater(); self.app.sendPostedEvents(None, QtCore.QEvent.Type.DeferredDelete); self.app.processEvents()

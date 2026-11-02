@@ -2,7 +2,6 @@
 from functools import wraps
 
 from qt_compat import QtCore, QtGui, QtWidgets
-from .sheets import clipboard_tsv
 from .tasks import spreadsheet_id, validate_payload
 
 STATES = {'draft': '待提交', 'failed': '未提交', 'sending': '待核对', 'uncertain': '待核对', 'submitted': '已提交'}
@@ -46,7 +45,7 @@ class AssistantDialog(QtWidgets.QDialog):
         self.chinese_source = QtWidgets.QCheckBox('无专门中文列时，我确认“完整任务名称”就是完整中文台词', oral)
         self.chinese_source.setToolTip('未勾选时，任务名称只作待核对草稿，不会当作完整中文正文直接提交。')
         body.addWidget(self.chinese_source)
-        note = QtWidgets.QLabel('勾选后点击“一键填入表格”。双击语言、台词或素材可校对待提交内容；已提交任务不覆盖。中文来源可悬停查看。', oral)
+        note = QtWidgets.QLabel('外文提交和复制时自动按约10秒分段，复用文案分段节点，不做精密对齐；此处保留原文供校对。双击语言、台词或素材可修改待提交内容。中文来源可悬停查看。', oral)
         note.setWordWrap(True); body.addWidget(note)
         self.table = QtWidgets.QTableWidget(0, 9, oral)
         self.table.setHorizontalHeaderLabels(['提交', '任务编号', '任务名称', '口播语言', '口播原文', '中文台词', '素材链接', '状态', '说明'])
@@ -151,9 +150,7 @@ class AssistantDialog(QtWidgets.QDialog):
 
     @guarded
     def copy_rows(self):
-        jobs = self.plugin.store.jobs(self.checked_ids())
-        QtWidgets.QApplication.clipboard().setText(clipboard_tsv(jobs))
-        self.status.setText('已复制含表头的任务数据。手动粘贴不会同步本地提交状态；程序再次提交前会按作业ID核对。')
+        self.plugin.copy_tasks(self.checked_ids())
 
     @guarded
     def remove_drafts(self):
