@@ -11,6 +11,7 @@ from model.BackgroundTasks import BackgroundTaskManager, BackgroundTaskCanceled,
 from .download import DownloadCanceled, download_facebook_video, is_facebook_video_url
 from .engine import AnalysisCanceled, Cut, add_overview_frames, detect_cuts, format_timestamp, render_contact_sheets
 from .task_cache import remember_sheets
+from .background import bind_reference_result
 
 
 logger = logging.getLogger(__name__)
@@ -138,6 +139,7 @@ class ContactSheetDialog(QtWidgets.QDialog):
         self.setMinimumSize(930, 730)
         self.resize(1080, 830)
         self.setModal(False)
+        self.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose, False)
         self._build_ui()
 
     def _build_ui(self):
@@ -209,10 +211,14 @@ class ContactSheetDialog(QtWidgets.QDialog):
         self.run_button = QtWidgets.QPushButton("读取视频并生成分镜图", self)
         self.run_button.clicked.connect(self._analyze)
         run_row.addWidget(self.run_button)
-        self.cancel_button = QtWidgets.QPushButton("取消", self)
+        self.cancel_button = QtWidgets.QPushButton("取消任务", self)
         self.cancel_button.setEnabled(False)
         self.cancel_button.clicked.connect(self.cancel_work)
         run_row.addWidget(self.cancel_button)
+        self.background_button = QtWidgets.QPushButton('转到后台', self)
+        self.background_button.setToolTip('只隐藏窗口，不取消任务；在主界面“后台任务”中查看进度和结果。')
+        self.background_button.clicked.connect(self.move_to_background)
+        run_row.addWidget(self.background_button)
         self.status = QtWidgets.QLabel("等待视频链接或本地视频。", self)
         run_row.addWidget(self.status, 1)
         layout.addLayout(run_row)
@@ -377,6 +383,7 @@ class ContactSheetDialog(QtWidgets.QDialog):
             QtWidgets.QMessageBox.information(self, "无法提交任务", str(error))
             return
         self._worker.progressChanged.connect(self._on_progress)
+        bind_reference_result(self._worker, self)
         self._worker.completed.connect(self._on_completed)
         self._worker.failed.connect(self._on_failed)
         self._worker.finished.connect(self._on_finished)
@@ -410,9 +417,8 @@ class ContactSheetDialog(QtWidgets.QDialog):
             if result.get("source") == url and all(
                 Path(path).parent.resolve() == folder.resolve() for path in result["paths"]
             ):
-                local = result["paths"][0] if len(result["paths"]) == 1 else str(folder)
                 if self.isVisible():
-                    QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(str(local)))
+                    self._worker.show_result()
 
     def _on_failed(self, message):
         self.status.setText(message)
@@ -482,6 +488,15 @@ class ContactSheetDialog(QtWidgets.QDialog):
         if self._result and self._result["paths"]:
             QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(str(Path(self._result["paths"][0]).parent)))
 
+    def move_to_background(self):
+        if self.is_busy() and self.isVisible():
+            self._log('FB 参考图窗口已隐藏，任务继续在后台生成；请到主界面“后台任务”查看进度和结果。')
+        self.hide()
+
+    def reject(self):
+        # Esc is closing a view, not the explicit Cancel Task action.
+        self.move_to_background()
+
     def closeEvent(self, event):
-        # Closing this view only hides it; the host keeps the worker/cache alive.
-        super().closeEvent(event)
+        self.move_to_background()
+        event.accept()

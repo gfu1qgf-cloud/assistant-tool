@@ -7,7 +7,7 @@ from .task_cache import cache_directory, cached_sheets, extract_facebook_referen
 class FacebookContactSheetPlugin:
     plugin_id = "facebook_contact_sheet"
     display_name = "Facebook 视频分镜速览"
-    version = "1.3"
+    version = "1.4"
     required_api_version = 1
 
     def __init__(self):
@@ -192,15 +192,17 @@ class FacebookContactSheetPlugin:
 
     def can_close(self):
         if self.dialog is not None and self.dialog.is_busy():
-            return False, "视频分镜仍在处理；请先取消并等待后台任务结束。"
+            return False, "视频分镜仍在后台处理；可在“后台任务”等待完成或主动取消。关闭生成窗口不会取消。"
         if self.batch_dialog is not None and self.batch_dialog.is_busy():
-            return False, "批量参考大图仍在处理；请先取消并等待后台任务结束。"
+            return False, "批量参考大图仍在后台处理；可在“后台任务”等待完成或主动取消。"
         return True, ""
 
     def stop(self):
+        if any(dialog is not None and dialog.is_busy() for dialog in (self.dialog, self.batch_dialog)):
+            return False  # Never silently cancel work when hiding/stopping plugin UI.
         if self.dialog is not None:
-            self.dialog.cancel_work()
-            if not self.dialog.is_busy():
-                self.dialog.dispose()
+            self.dialog.dispose()
+            self.dialog.hide()
         if self.batch_dialog is not None:
-            self.batch_dialog.cancel_work()
+            self.batch_dialog.hide()
+        return True

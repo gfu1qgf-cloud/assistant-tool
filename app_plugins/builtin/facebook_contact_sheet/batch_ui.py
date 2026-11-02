@@ -5,6 +5,7 @@ from qt_compat import QtCore, QtGui, QtWidgets
 from .batch import run_batch, run_reference_job
 from .task_cache import cached_sheets
 from model.BackgroundTasks import BackgroundTaskManager, directory_resource, ACTIVE
+from .background import bind_reference_result
 
 
 class BatchContactSheetDialog(QtWidgets.QDialog):
@@ -21,6 +22,7 @@ class BatchContactSheetDialog(QtWidgets.QDialog):
         self.setWindowTitle("批量生成 Facebook 参考大图")
         self.resize(850, 560)
         self.setModal(False)
+        self.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose, False)
         layout = QtWidgets.QVBoxLayout(self)
         tip = QtWidgets.QLabel("提交到主界面后台任务；可同时处理 2 个参考视频。关闭窗口后继续生成；已缓存的跳过下载。", self)
         tip.setWordWrap(True)
@@ -73,10 +75,14 @@ class BatchContactSheetDialog(QtWidgets.QDialog):
         self.start_button = QtWidgets.QPushButton("开始批量生成", self)
         self.start_button.clicked.connect(self._start)
         bottom.addWidget(self.start_button)
-        self.cancel_button = QtWidgets.QPushButton("取消", self)
+        self.cancel_button = QtWidgets.QPushButton("取消任务", self)
         self.cancel_button.setEnabled(False)
         self.cancel_button.clicked.connect(self.cancel_work)
         bottom.addWidget(self.cancel_button)
+        self.background_button = QtWidgets.QPushButton('转到后台', self)
+        self.background_button.setToolTip('只隐藏窗口，所有已提交的任务继续排队和生成。')
+        self.background_button.clicked.connect(self.move_to_background)
+        bottom.addWidget(self.background_button)
         layout.addLayout(bottom)
 
     def is_busy(self):
@@ -132,6 +138,7 @@ class BatchContactSheetDialog(QtWidgets.QDialog):
                     resources=[directory_resource(job.folder)], dedup_key="batch:" + directory_resource(job.folder),
                     retryable=True,
                 )
+                bind_reference_result(self._handles[index], self)
             except (RuntimeError, ValueError, TypeError) as error:
                 self._log(f"无法提交参考大图任务：{error}")
                 QtWidgets.QMessageBox.information(self, "无法提交任务", str(error))
@@ -173,12 +180,23 @@ class BatchContactSheetDialog(QtWidgets.QDialog):
             QtWidgets.QMessageBox.information(self, "尚未生成", "这条参考大图尚未生成成功。")
             return
         local = sheets[0] if len(sheets) == 1 else job.folder
-        QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(str(local)))
+        handle = self._handles.get(row)
+        if handle is not None and handle.has_result_handler(): handle.show_result()
+        else: QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(str(local)))
 
     def cancel_work(self):
         if self.is_busy():
             self._manager.cancel_many([handle.task_id for handle in self._handles.values() if handle.isRunning()])
             self.summary.setText("正在取消；当前步骤结束后停止…")
 
+    def move_to_background(self):
+        if self.is_busy() and self.isVisible():
+            self._log('FB 批量参考图窗口已隐藏；任务继续排队和生成，可在主界面“后台任务”中查看。')
+        self.hide()
+
+    def reject(self):
+        self.move_to_background()
+
     def closeEvent(self, event):
-        super().closeEvent(event)
+        self.move_to_background()
+        event.accept()
