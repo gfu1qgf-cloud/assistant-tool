@@ -9,7 +9,7 @@ from .segmentation import require_available
 class AIAgentAssistantPlugin(QtCore.QObject):
     plugin_id = 'ai_agent_assistant'
     display_name = 'AI Agent 助手'
-    version = '0.2.0'
+    version = '0.2.1'
     required_api_version = 2
 
     def __init__(self):

@@ -98,13 +98,67 @@ class AgentBulkUiTests(unittest.TestCase):
             self.dialog.remove_drafts()
         self.assertEqual({job['id'] for job in self.plugin.store.jobs()}, {jobs[0]['id'], jobs[1]['id']})
 
-    def test_missing_chinese_confirmation_is_not_auto_selected_or_submitted(self):
+    def test_missing_chinese_confirmation_is_selected_but_never_auto_approved(self):
         self.plugin.import_targets([target(self.temp.name, chinese=None)])
-        self.assertEqual(self.dialog._selected_ids(), [])
-        self.dialog.select_all()
-        with patch.object(self.plugin, 'submit') as submit:
+        self.assertEqual(len(self.dialog._selected_ids()), 1)
+        self.assertTrue(self.dialog.send.isEnabled())
+        with patch.object(self.plugin, 'submit') as submit, patch.object(QtWidgets.QMessageBox, 'question', return_value=QtWidgets.QMessageBox.StandardButton.No):
             self.dialog.submit(); submit.assert_not_called()
-        self.assertIn('没有可提交', self.dialog.status.text())
+        self.assertFalse(self.plugin.store.jobs()[0]['payload']['chinese_confirmed'])
+
+    def test_58_legacy_drafts_bulk_confirm_and_prepare_once(self):
+        values = [target(self.temp.name, identifier=str(index), chinese=None) for index in range(58)]
+        for item in values: item['task'].task_reference_link = '温暖自然光，素材 https://drive.google.com/file/d/synthetic/view'
+        self.plugin.import_targets(values)
+        ids = self.dialog.selected_ids()
+        self.assertEqual(len(ids), 58); self.assertIn('58', self.dialog.send.text())
+        self.assertTrue(self.dialog.send.isEnabled()); self.assertTrue(self.dialog.actions['submit'].isEnabled())
+        self.assertEqual(len(self.dialog._confirm), 58)
+        with patch.object(self.plugin, 'submit') as submit, patch.object(QtWidgets.QMessageBox, 'question', return_value=QtWidgets.QMessageBox.StandardButton.Yes) as question:
+            self.dialog.submit()
+            question.assert_called_once(); submit.assert_called_once()
+            self.assertEqual(submit.call_args.args[1], ids)
+            self.assertEqual(question.call_args.args[-1], QtWidgets.QMessageBox.StandardButton.No)
+        for job in self.plugin.store.jobs():
+            self.assertTrue(job['payload']['chinese_confirmed'])
+            self.assertEqual(job['payload']['reference'], 'https://drive.google.com/file/d/synthetic/view')
+            self.assertIn('温暖自然光，素材', job['payload']['requirements'])
+            self.assertEqual(job['state'], 'draft')
+        self.assertEqual(set(self.dialog.selected_ids()), set(ids))
+        self.assertEqual(len(self.dialog._ready), 58)
+
+    def test_invalid_selected_draft_explains_reason_instead_of_disabled_submit(self):
+        self.stage(1); key = self.dialog.selected_ids()[0]
+        self.plugin.store.edit(key, 'spoken', ''); self.dialog.reload()
+        self.assertTrue(self.dialog.send.isEnabled())
+        with patch.object(self.plugin, 'submit') as submit, patch.object(QtWidgets.QMessageBox, 'information') as info:
+            self.dialog.submit(); submit.assert_not_called(); info.assert_called_once()
+        self.assertIn('口播原文', self.dialog.status.text())
+
+    def test_canceled_bulk_copy_does_not_modify_data_or_copy(self):
+        self.plugin.import_targets([target(self.temp.name, chinese=None)])
+        before = self.plugin.store.jobs()
+        with patch.object(self.plugin, 'copy_tasks') as copy, patch.object(QtWidgets.QMessageBox, 'question', return_value=QtWidgets.QMessageBox.StandardButton.No):
+            self.dialog.copy_rows(); copy.assert_not_called()
+        self.assertEqual(self.plugin.store.jobs(), before)
+
+    def test_copy_also_prepares_legacy_chinese_and_references(self):
+        item = target(self.temp.name, chinese=None); item['task'].task_reference_link = '说明 https://drive.google.com/file/d/test/view'
+        self.plugin.import_targets([item]); ids = self.dialog.selected_ids()
+        with patch.object(self.plugin, 'copy_tasks') as copy, patch.object(QtWidgets.QMessageBox, 'question', return_value=QtWidgets.QMessageBox.StandardButton.Yes):
+            self.dialog.copy_rows(); copy.assert_called_once_with(ids)
+        self.assertTrue(self.plugin.store.jobs()[0]['payload']['chinese_confirmed'])
+
+    def test_concurrent_edit_during_confirmation_is_not_overwritten_or_sent(self):
+        self.plugin.import_targets([target(self.temp.name, chinese=None)]); ids = self.dialog.selected_ids()
+        def changed(*_args):
+            self.plugin.store.edit(ids[0], 'spoken', 'concurrent change')
+            return QtWidgets.QMessageBox.StandardButton.Yes
+        with patch.object(self.plugin, 'submit') as submit, patch.object(QtWidgets.QMessageBox, 'question', side_effect=changed):
+            self.dialog.submit(); submit.assert_not_called()
+        value = self.plugin.store.jobs()[0]['payload']
+        self.assertEqual(value['spoken'], 'concurrent change'); self.assertFalse(value['chinese_confirmed'])
+        self.assertIn('发生变化', self.dialog.status.text())
 
     def test_busy_has_visible_cancel_and_disables_mutating_actions(self):
         self.stage(); self.dialog.busy(True)

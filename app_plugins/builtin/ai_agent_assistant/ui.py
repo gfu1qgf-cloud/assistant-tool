@@ -2,7 +2,8 @@
 from functools import wraps
 
 from qt_compat import QtCore, QtGui, QtWidgets
-from .tasks import spreadsheet_id, validate_payload
+from .tasks import spreadsheet_id, validate_payload, fingerprint
+from .preparation import prepare_payload
 
 STATES = {'draft': '待提交', 'failed': '未提交', 'sending': '待核对', 'uncertain': '待核对', 'submitted': '已提交'}
 
@@ -19,6 +20,7 @@ class AssistantDialog(QtWidgets.QDialog):
     def __init__(self, plugin, parent=None):
         super().__init__(parent)
         self.plugin, self.jobs, self._jobs_by_id, self._ready = plugin, [], {}, set()
+        self._confirm, self._blocked, self._reference_fixes = set(), {}, set()
         self._loaded = self._active = False
         self.setWindowTitle('AI Agent 助手'); self.resize(1120, 730)
         layout = QtWidgets.QVBoxLayout(self)
@@ -66,7 +68,7 @@ class AssistantDialog(QtWidgets.QDialog):
         self.sheet = QtWidgets.QLineEdit(settings.get('sheet', '口播表格'), self.setup_panel)
         panel.addRow('目标 Google 表格', self.url); panel.addRow('口播分页名称', self.sheet)
         self.chinese_source = QtWidgets.QCheckBox('缺少中文列时，我确认“完整任务名称”就是完整中文台词', self.setup_panel)
-        self.chinese_source.setToolTip('只影响之后导入的任务；没有确认的任务仍需校对，不会自动提交。')
+        self.chinese_source.setToolTip('此开关用于之后导入的任务；已有草稿可点提交一次批量确认，无需重新导入。不会自动确认。')
         self.chinese_source.setChecked(settings.get('use_task_name_chinese', False)); panel.addRow(self.chinese_source)
         setup_actions = QtWidgets.QHBoxLayout()
         for key in ('open_sheet', 'account'):
@@ -160,37 +162,50 @@ class AssistantDialog(QtWidgets.QDialog):
         previous = set(self._selected_ids()) if self._loaded else None
         jobs = self.plugin.store.jobs()  # Read first: a lost volume must not clear the current view.
         self.jobs = jobs; self._jobs_by_id = {job['id']: job for job in jobs}; self._ready = set()
+        self._confirm, self._blocked, self._reference_fixes = set(), {}, set()
         blocker = QtCore.QSignalBlocker(self.table)
         self.table.setRowCount(len(jobs))
         for row, job in enumerate(jobs):
             payload = job['payload']
-            try: validate_payload(payload); problem = ''
+            candidate = prepare_payload(payload)
+            needs_confirm = not candidate.get('chinese_confirmed')
+            try: validate_payload(dict(candidate, chinese_confirmed=True)); problem = ''
             except ValueError as error: problem = str(error)
-            if job['state'] in {'draft', 'failed'} and not problem: self._ready.add(job['id'])
+            editable = job['state'] in {'draft', 'failed'}
+            if editable:
+                if problem: self._blocked[job['id']] = problem
+                elif needs_confirm: self._confirm.add(job['id'])
+                else: self._ready.add(job['id'])
+                if candidate['reference'] != payload['reference']: self._reference_fixes.add(job['id'])
+            notes = [problem or job['detail']]
+            if editable and needs_confirm: notes.append('中文来源待确认；点提交可一次确认所选任务，无需重新导入。')
+            if editable and job['id'] in self._reference_fixes: notes.append('提交时提取 Drive 链接，原素材说明完整保留到制作要求。')
+            state = '需处理' if editable and problem else '待确认中文' if editable and needs_confirm else STATES[job['state']]
             texts = [payload['task_id'], payload['title'], payload['language'], payload['spoken'], payload['chinese'],
-                     payload['reference'], STATES[job['state']], problem or job['detail']]
+                     payload['reference'], state, '\n'.join(note for note in notes if note)]
             for col, text in enumerate(texts):
                 item = QtWidgets.QTableWidgetItem(text); item.setToolTip(text)
                 item.setFlags(QtCore.Qt.ItemFlag.ItemIsEnabled | QtCore.Qt.ItemFlag.ItemIsSelectable)
                 if col == 0: item.setData(QtCore.Qt.ItemDataRole.UserRole, job['id'])
                 if col == 4: item.setToolTip(payload.get('chinese_source', '') + '\n\n' + text)
                 self.table.setItem(row, col, item)
-        if select_ids is not None: chosen = set(select_ids) & self._ready
-        elif previous is None: chosen = self._ready
+        if select_ids is not None: chosen = set(select_ids) & (self._ready | self._confirm)
+        elif previous is None: chosen = self._ready | self._confirm
         else: chosen = previous
         self._select_ids(chosen); self._loaded = True
         del blocker
         self.busy(self.plugin.handle is not None)
 
     def update_selection(self):
-        ids = self._selected_ids(); ready = len(set(ids) & self._ready)
-        self.selection_summary.setText(f'已选 {len(ids)} / 共 {len(self.jobs)} 条 · 可提交 {ready} 条')
-        self.send.setText(f'提交所选（{ready}）')
-        self.send.setToolTip('只提交所选行中资料完整的草稿；已提交、待核对和资料不全的行不重发。')
-        self.send.setEnabled(not self._active and ready > 0)
+        ids = self._selected_ids(); selected = set(ids); ready = len(selected & self._ready)
+        pending = len(selected & self._confirm); blocked = len(selected & self._blocked.keys())
+        self.selection_summary.setText(f'已选 {len(ids)} / 共 {len(self.jobs)} 条 · 可直接提交 {ready} · 待确认中文 {pending} · 需处理 {blocked}')
+        self.send.setText(f'提交所选（{len(ids)}）')
+        self.send.setToolTip('中文来源待确认的草稿可一次批量确认；资料不全会说明原因。已提交和待核对记录不会重发。')
+        self.send.setEnabled(not self._active and bool(ids))
         for key in ('submit', 'copy', 'check', 'remove', 'select_all', 'select_ready', 'select_uncertain', 'clear'):
             enabled = bool(ids) if key in {'copy', 'check', 'clear'} else bool(self.jobs)
-            if key == 'submit': enabled = ready > 0
+            if key == 'submit': enabled = bool(ids)
             if key == 'remove': enabled = any(self._jobs_by_id[key]['state'] in {'draft', 'failed'} for key in ids if key in self._jobs_by_id)
             self.actions[key].setEnabled(not self._active and enabled)
 
@@ -201,7 +216,7 @@ class AssistantDialog(QtWidgets.QDialog):
         self.cancel.setEnabled(active); self.cancel.setVisible(active); self.update_selection()
 
     def select_all(self): self.table.selectAll()
-    def select_ready(self): self._select_ids(self._ready)
+    def select_ready(self): self._select_ids(self._ready | self._confirm)
     def select_uncertain(self): self._select_ids(job['id'] for job in self.jobs if job['state'] in {'sending', 'uncertain'})
     def clear_selection(self): self.table.clearSelection()
 
@@ -237,15 +252,45 @@ class AssistantDialog(QtWidgets.QDialog):
 
     @guarded
     def submit(self):
-        ids = [key for key in self.selected_ids() if key in self._ready]
-        if not ids: raise ValueError('所选行没有可提交任务。请先校对资料；已提交或待核对记录可右键核对，不会自动重发。')
-        self.plugin.submit(self.target(), ids, 'submit')
+        target = self.target()
+        ids = self._prepare_selection(submitting=True)
+        if ids: self.plugin.submit(target, ids, 'submit')
+
+    def _prepare_selection(self, *, submitting=False):
+        selected = self.selected_ids()
+        ids = [key for key in selected if key in self._ready or key in self._confirm or
+               (not submitting and self._jobs_by_id[key]['state'] not in {'draft', 'failed'})]
+        if not ids:
+            reasons = list(dict.fromkeys(self._blocked[key] for key in selected if key in self._blocked))
+            message = '\n'.join(reasons) or '所选记录已提交或待核对，请用右键“核对所选提交结果”；不会重复发送。'
+            self.status.setText(message)
+            QtWidgets.QMessageBox.information(self, '需要处理的任务', message)
+            return []
+        confirm = set(ids) & self._confirm
+        if confirm:
+            text = f'所选任务中有 {len(confirm)} 条中文台词取自任务名称，尚未确认。\n\n确认这些现有中文内容就是完整中文台词，并继续本次操作？\n若不正确，请取消后双击中文台词修改。'
+            if set(ids) & self._reference_fixes:
+                text += '\n\n素材栏中的 Drive 链接会单独提取；原说明完整保留到制作要求，不删除原任务内容。'
+            answer = QtWidgets.QMessageBox.question(self, '批量确认中文台词', text,
+                QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No,
+                QtWidgets.QMessageBox.StandardButton.No)
+            if answer != QtWidgets.QMessageBox.StandardButton.Yes: return []
+        drafts = [key for key in ids if self._jobs_by_id[key]['state'] in {'draft', 'failed'}]
+        if drafts:
+            self.plugin.store.prepare_drafts(drafts, confirm_chinese=bool(confirm),
+                expected={key: fingerprint(self._jobs_by_id[key]['payload']) for key in drafts})
+            self.reload()
+        skipped = len(selected) - len(ids)
+        if skipped: self.status.setText(f'本次处理 {len(ids)} 条；略过 {skipped} 条资料不全、已提交或待核对记录，原因见说明列。')
+        return ids
 
     @guarded
     def check_result(self): self.plugin.submit(self.target(), self.selected_ids(), 'check')
 
     @guarded
-    def copy_rows(self): self.plugin.copy_tasks(self.selected_ids())
+    def copy_rows(self):
+        ids = self._prepare_selection()
+        if ids: self.plugin.copy_tasks(ids)
 
     @guarded
     def remove_drafts(self):

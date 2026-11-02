@@ -93,6 +93,21 @@ class Store:
         with self.connect() as db:
             db.executemany('DELETE FROM jobs WHERE id=? AND state IN ("draft","failed")', [(key,) for key in ids])
 
+    def prepare_drafts(self, ids, *, confirm_chinese=False, expected):
+        """Prepare exactly the reviewed snapshots, atomically; never rewrite history."""
+        from .preparation import prepare_payload
+        with self.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            for key in dict.fromkeys(ids):
+                row = db.execute('SELECT payload,digest,state FROM jobs WHERE id=?', (key,)).fetchone()
+                if not row or row[2] not in {'draft', 'failed'} or row[1] != expected.get(key):
+                    raise ValueError('任务在确认期间发生变化，请刷新后重新选择；未覆盖其他进程的修改。')
+                before = json.loads(row[0])
+                value = prepare_payload(before, confirm_chinese=confirm_chinese)
+                if value != before:
+                    db.execute('UPDATE jobs SET payload=?,digest=? WHERE id=?',
+                               (json.dumps(value, ensure_ascii=False), fingerprint(value), key))
+
     def edit(self, key, field, value):
         if field not in {'language', 'spoken', 'chinese', 'reference'}: raise ValueError('此字段不可编辑。')
         with self.connect() as db:

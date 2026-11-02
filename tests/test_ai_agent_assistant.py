@@ -239,7 +239,8 @@ class AgentUiTests(unittest.TestCase):
     def test_fallback_chinese_requires_confirmation_before_export(self):
         self.context.task_targets = lambda _rows: [target(self.temp.name, chinese=None)]
         dialog = self.plugin.open_dialog(); self.plugin.import_rows([0])
-        self.assertEqual(len(dialog.table.selectionModel().selectedRows()), 0)
+        self.assertEqual(len(dialog.table.selectionModel().selectedRows()), 1)
+        self.assertFalse(self.plugin.store.jobs()[0]['payload']['chinese_confirmed'])
         dialog.chinese_source.setChecked(True); self.plugin.import_rows([0])
         self.assertEqual(len(dialog.table.selectionModel().selectedRows()), 1)
     def test_real_host_worker_survives_dialog_close_and_finishes_cleanly(self):
