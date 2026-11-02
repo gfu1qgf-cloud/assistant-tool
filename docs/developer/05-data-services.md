@@ -41,6 +41,7 @@ API Key 状态可能由后台同步更新，保存事务会合并状态。重置
 | `log(message, level=...)` | 宿主日志；不输出密钥、完整 token、Cookie、私有文案 |
 | `notify(title, message, critical=False)` | 用户可理解的完成/异常通知，避免逐词/逐文件刷屏 |
 | `gemini_keys` / `open_gemini_key_manager()` | 复用现有 Key 管理，不另起一套明文 Key 文件 |
+| `open_google_account_manager()` | 打开宿主复用的 Google 账号管理页；服务通过 `model.GoogleAccounts.load_managed_service` 获取，插件不保存令牌 |
 | `ai_client` / `ai_workflows` / `prepare_ai_workflow(provider)` | 主线程准备服务，worker 使用已审核的纯服务快照，不能捕获窗口 |
 | `prepare_elevenlabs()` | 复用宿主 ELE 服务准备链，按能力路由，不承诺所有 Key 都有所有权限 |
 | `subtitle_generation_settings()` | 复用字幕设置；模型切换和原生库安全约束仍有效 |

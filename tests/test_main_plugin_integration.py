@@ -144,7 +144,9 @@ class MainPluginIntegrationTests(unittest.TestCase):
                 self.assertIsNotNone(window.task_audio_subtitle_plugin.quick_actions)
                 self.assertIsNotNone(window.chrome_plugin.quick_actions)
                 self.assertIsNotNone(window.music_ducker_plugin.quick_actions)
-                self.assertEqual(len(window.plugin_host.main_widget_order()), 5)
+                self.assertEqual(len(window.plugin_host.main_widget_order()), 6)
+                self.assertIn('ai_agent_assistant.quick', window.plugin_host.main_widget_order())
+                self.assertIn('AI Agent 助手…', plugin_titles)
                 self.assertIn("waste_reminder.tonight", window.plugin_host.main_widget_order())
                 self.assertTrue(all(
                     window.plugin_host.main_widget_frame(*full_id.split(".", 1))
@@ -155,7 +157,7 @@ class MainPluginIntegrationTests(unittest.TestCase):
                     window.plugin_host.main_widget_frame(*full_id.split(".", 1))
                     .card_colors()[0].name()
                     for full_id in window.plugin_host.main_widget_order()
-                }), 5)
+                }), 6)
                 self.assertIs(
                     window.gen_audio_btn,
                     window.task_audio_subtitle_plugin.quick_actions.audio_button,

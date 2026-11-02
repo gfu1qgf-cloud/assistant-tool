@@ -16,6 +16,7 @@ from qt_compat import QMessageBox, QHeaderView
 
 from app_plugins import PluginHost
 from app_plugins.builtin import (
+    AIAgentAssistantPlugin,
     AudioSplitterPlugin,
     AIModelClientPlugin,
     BatchTextVideoPlugin,
@@ -415,6 +416,7 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
         )
         self.script_segmenter_plugin = self.plugin_host.install(ScriptSegmenterPlugin())
         self.document_formatter_plugin = self.plugin_host.install(DocumentFormatterPlugin())
+        self.ai_agent_assistant_plugin = self.plugin_host.install(AIAgentAssistantPlugin())
         self.google_drive_browser_plugin = self.plugin_host.install(GoogleDriveBrowserPlugin())
         self.batch_text_video_plugin = self.plugin_host.install(BatchTextVideoPlugin())
         self.video_stitch_plugin = self.plugin_host.install(VideoStitchPlugin())

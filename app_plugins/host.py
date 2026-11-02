@@ -305,6 +305,11 @@ class PluginContext:
     def open_gemini_key_manager(self):
         return self._host.main_window.openGeminiKeyManager()
 
+    def open_google_account_manager(self):
+        """Host-owned core account UI; plugins never own or copy Google tokens."""
+        from PYUI.google_accounts_pyui import open_google_accounts
+        return open_google_accounts(self.parent_widget, self.background_tasks)
+
     @property
     def ai_client(self):
         """Shared plain service; workers pass immutable config snapshots."""

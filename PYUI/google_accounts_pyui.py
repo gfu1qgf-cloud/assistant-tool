@@ -10,6 +10,22 @@ from model.GoogleAccountAuth import authorize
 LABELS = {'sheets': 'Google 表格', 'drive': 'Google 网盘', 'docs': 'Google 文档'}
 
 
+def open_google_accounts(parent, tasks):
+    """Reuse the core settings page in a host-owned modeless account window."""
+    dialog = getattr(parent, '_google_accounts_dialog', None)
+    if dialog is None:
+        dialog = QtWidgets.QDialog(parent)
+        dialog.setWindowTitle('Google 账号 · 主程序管理')
+        dialog.resize(880, 700)
+        layout = QtWidgets.QVBoxLayout(dialog)
+        dialog.account_page = GoogleAccountsPage(dialog, tasks=tasks)
+        layout.addWidget(dialog.account_page)
+        parent._google_accounts_dialog = dialog
+    dialog.account_page.reload()
+    dialog.show(); dialog.raise_(); dialog.activateWindow()
+    return dialog
+
+
 def guarded(function):
     @wraps(function)
     def call(self, *_args):

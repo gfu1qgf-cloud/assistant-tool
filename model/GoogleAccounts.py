@@ -222,11 +222,13 @@ class GoogleAccountManager:
             self._write(state)
 
 
-def load_managed_service(feature, *, manager=None):
+def load_managed_service(feature, *, manager=None, expected_account_id=None):
     """None means unbound/legacy. A bound-but-failed account NEVER falls back."""
     from model.OfflineMode import require_online
     manager = manager or GoogleAccountManager()
     bound = manager.bound_account(feature)
+    if expected_account_id is not None and (bound is None or bound[0] != expected_account_id):
+        raise ValueError('Google 功能账号在提交后发生变化，请确认账号后重新操作；未自动换号。')
     if bound is None: return None
     require_online('Google 账号服务')
     from google_auth_httplib2 import AuthorizedHttp
