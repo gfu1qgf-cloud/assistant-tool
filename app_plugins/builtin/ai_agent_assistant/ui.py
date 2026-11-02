@@ -36,6 +36,9 @@ class AssistantDialog(QtWidgets.QDialog):
             ('submit', '提交所选可提交任务', self.submit),
             ('copy', '复制所选任务表格', self.copy_rows),
             ('check', '核对所选提交结果', self.check_result),
+            ('receive', '立即检查并收取成品', self.receive_results),
+            ('retry_download', '重试所选任务下载', self.retry_downloads),
+            ('open_result', '打开原任务成品目录', self.open_result),
             ('remove', '移除所选草稿…', self.remove_drafts),
             ('select_all', '全选任务\tCtrl+A', self.select_all),
             ('select_ready', '只选当前列表可提交任务', self.select_ready),
@@ -70,6 +73,8 @@ class AssistantDialog(QtWidgets.QDialog):
         self.chinese_source = QtWidgets.QCheckBox('缺少中文列时，我确认“完整任务名称”就是完整中文台词', self.setup_panel)
         self.chinese_source.setToolTip('此开关用于之后导入的任务；已有草稿可点提交一次批量确认，无需重新导入。不会自动确认。')
         self.chinese_source.setChecked(settings.get('use_task_name_chinese', False)); panel.addRow(self.chinese_source)
+        self.auto_download = QtWidgets.QCheckBox('自动检查并收取成品（每60秒，关闭助手窗口仍继续）', self.setup_panel)
+        self.auto_download.setChecked(settings.get('auto_download', True)); panel.addRow(self.auto_download)
         setup_actions = QtWidgets.QHBoxLayout()
         for key in ('open_sheet', 'account'):
             button = QtWidgets.QToolButton(self.setup_panel); button.setDefaultAction(self.actions[key]); setup_actions.addWidget(button)
@@ -81,6 +86,7 @@ class AssistantDialog(QtWidgets.QDialog):
         self.setup_panel.setVisible(self.setup_button.isChecked())
         self.url.editingFinished.connect(self.save_target); self.sheet.editingFinished.connect(self.save_target)
         self.chinese_source.toggled.connect(self.save_target)
+        self.auto_download.toggled.connect(self.save_auto_download)
         self.hint = QtWidgets.QLabel('Ctrl+A 全选 · Shift 连选 · Ctrl 多选 · 右键复制、核对或移除草稿 · 双击校对正文。外文提交时自动约10秒分段。', oral)
         self.hint.setWordWrap(True); body.addWidget(self.hint)
         self.table = QtWidgets.QTableWidget(0, 8, oral)
@@ -105,6 +111,9 @@ class AssistantDialog(QtWidgets.QDialog):
         bottom.addWidget(self.cancel); body.addLayout(bottom)
         self.status = QtWidgets.QLabel('先导入任务，再提交所选行；不需要逐条勾选。', oral)
         self.status.setTextFormat(QtCore.Qt.TextFormat.PlainText); self.status.setWordWrap(True); body.addWidget(self.status)
+        self.receipt_status = QtWidgets.QLabel(plugin.receipts.status, oral)
+        self.receipt_status.setTextFormat(QtCore.Qt.TextFormat.PlainText); self.receipt_status.setWordWrap(True)
+        body.addWidget(self.receipt_status)
         self.update_target_summary(); self.reload(); self.refresh_auth()
 
     def target(self):
@@ -112,7 +121,7 @@ class AssistantDialog(QtWidgets.QDialog):
         name = self.sheet.text().strip()
         if not name: raise ValueError('请填写口播分页名称。')
         return {'url': 'https://docs.google.com/spreadsheets/d/' + identifier + '/edit', 'sheet': name,
-                'use_task_name_chinese': self.chinese_source.isChecked()}
+                'use_task_name_chinese': self.chinese_source.isChecked(), 'auto_download': self.auto_download.isChecked()}
 
     def update_target_summary(self):
         self.target_summary.setText('目标：' + (self.sheet.text().strip() if self.url.text().strip() else '尚未设置'))
@@ -121,6 +130,18 @@ class AssistantDialog(QtWidgets.QDialog):
     def save_target(self):
         self.plugin.store.save_settings(self.target()); self.update_target_summary()
         self.status.setText('表格设置已保存。选择任务后可直接提交。')
+        if not self.auto_download.isChecked() and self.plugin.receipts.handle is not None:
+            self.plugin.receipts.handle.requestInterruption()
+
+    @guarded
+    def save_auto_download(self):
+        settings = self.plugin.store.settings()
+        settings['auto_download'] = self.auto_download.isChecked()
+        self.plugin.store.save_settings(settings)
+        if not self.auto_download.isChecked():
+            if self.plugin.receipts.handle is not None: self.plugin.receipts.handle.requestInterruption()
+            self.plugin.receipts.show_status('自动收取已关闭；正在执行的下载已请求安全停止。')
+        else: self.plugin.receipts.show_status('自动收取已开启，下次检查自动处理；也可右键立即收取。')
 
     @guarded
     def open_sheet(self):
@@ -136,6 +157,10 @@ class AssistantDialog(QtWidgets.QDialog):
             key = state['bindings'].get('ai_agent_assistant.sheets')
             item = next((item for item in state['accounts'] if item['id'] == key), None)
             self.auth.setText('本插件表格账号：' + (item.get('label') or item['email']) if item else '尚未分配 AI Agent 表格账号，请点“Google 账号”。也可先导入、校对和右键复制。')
+            download_key = state['bindings'].get('ai_agent_assistant.downloads')
+            download = next((entry for entry in state['accounts'] if entry['id'] == download_key), None)
+            label = (download.get('label') or download['email']) if download else '尚未单独分配；首次优先复用本插件已具有Drive权限的表格账号'
+            self.auth.setText(self.auth.text() + '\n成品下载账号：' + label)
         except Exception as error: self.auth.setText(str(error))
 
     def _selected_ids(self):
@@ -161,6 +186,7 @@ class AssistantDialog(QtWidgets.QDialog):
     def reload(self, select_ids=None):
         previous = set(self._selected_ids()) if self._loaded else None
         jobs = self.plugin.store.jobs()  # Read first: a lost volume must not clear the current view.
+        deliveries = self.plugin.store.delivery_statuses()
         self.jobs = jobs; self._jobs_by_id = {job['id']: job for job in jobs}; self._ready = set()
         self._confirm, self._blocked, self._reference_fixes = set(), {}, set()
         blocker = QtCore.QSignalBlocker(self.table)
@@ -181,6 +207,9 @@ class AssistantDialog(QtWidgets.QDialog):
             if editable and needs_confirm: notes.append('中文来源待确认；点提交可一次确认所选任务，无需重新导入。')
             if editable and job['id'] in self._reference_fixes: notes.append('提交时提取 Drive 链接，原素材说明完整保留到制作要求。')
             state = '需处理' if editable and problem else '待确认中文' if editable and needs_confirm else STATES[job['state']]
+            delivery = deliveries.get(job['id'])
+            if delivery:
+                state = delivery['status']; notes.append(delivery['detail'])
             texts = [payload['task_id'], payload['title'], payload['language'], payload['spoken'], payload['chinese'],
                      payload['reference'], state, '\n'.join(note for note in notes if note)]
             for col, text in enumerate(texts):
@@ -208,6 +237,9 @@ class AssistantDialog(QtWidgets.QDialog):
             if key == 'submit': enabled = bool(ids)
             if key == 'remove': enabled = any(self._jobs_by_id[key]['state'] in {'draft', 'failed'} for key in ids if key in self._jobs_by_id)
             self.actions[key].setEnabled(not self._active and enabled)
+        self.actions['receive'].setEnabled(not self._active)
+        self.actions['retry_download'].setEnabled(not self._active and bool(ids))
+        self.actions['open_result'].setEnabled(len(ids) == 1)
 
     def busy(self, active):
         self._active = active
@@ -224,6 +256,8 @@ class AssistantDialog(QtWidgets.QDialog):
         self.update_selection()
         menu = QtWidgets.QMenu(self)
         for key in ('submit', 'copy', 'check'): menu.addAction(self.actions[key])
+        menu.addSeparator()
+        for key in ('receive', 'retry_download', 'open_result'): menu.addAction(self.actions[key])
         menu.addSeparator()
         for key in ('select_all', 'select_ready', 'select_uncertain', 'clear'): menu.addAction(self.actions[key])
         menu.addSeparator(); menu.addAction(self.actions['remove'])
@@ -286,6 +320,24 @@ class AssistantDialog(QtWidgets.QDialog):
 
     @guarded
     def check_result(self): self.plugin.submit(self.target(), self.selected_ids(), 'check')
+
+    @guarded
+    def receive_results(self): self.plugin.receipts.check(manual=True)
+
+    @guarded
+    def retry_downloads(self):
+        ids = self.selected_ids()
+        self.plugin.store.retry_deliveries(ids)
+        self.plugin.receipts.check(manual=True, ids=ids)
+
+    @guarded
+    def open_result(self):
+        from pathlib import Path
+        ids = self.selected_ids()
+        if len(ids) != 1: raise ValueError('请只选择一条任务以打开原任务目录。')
+        directory = Path(self._jobs_by_id[ids[0]]['payload']['target_dir'])/'result'
+        if not directory.is_dir(): raise ValueError('原任务的 result 目录尚未创建，或磁盘暂不可用。')
+        if not QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(str(directory))): raise ValueError('无法打开成品目录。')
 
     @guarded
     def copy_rows(self):

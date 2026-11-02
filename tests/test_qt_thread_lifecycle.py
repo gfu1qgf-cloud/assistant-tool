@@ -312,6 +312,9 @@ class ThreadLifecycleTests(unittest.TestCase):
             # not plugin-owned QThreads; their native joins belong to the host.
             'PYUI/google_accounts_pyui.py': {'self.handle.finished.connect'},
             'app_plugins/builtin/ai_agent_assistant/plugin.py': {'self.handle.finished.connect'},
+            # Receipt scheduler likewise owns a BackgroundTaskHandle QObject,
+            # not a QThread; cancellation/close/identity cleanup have receipt tests.
+            'app_plugins/builtin/ai_agent_assistant/receipt_monitor.py': {'self.handle.finished.connect'},
             # Reviewed: all three execution fields are returned by the host's
             # BackgroundTaskManager.submit (not plugin-owned QThreads). The
             # host joins native workers before emitting their handle.finished.

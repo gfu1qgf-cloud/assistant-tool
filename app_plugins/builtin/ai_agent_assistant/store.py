@@ -1,5 +1,6 @@
 """Private local queue, stable IDs, and crash/timeout-aware submission journal."""
 import json
+import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from uuid import uuid4
@@ -25,6 +26,9 @@ class Store:
             if version not in (0, 1): raise ValueError('AI Agent 队列版本不兼容，未重置数据。')
             db.execute('CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY, source TEXT UNIQUE, payload TEXT NOT NULL, digest TEXT NOT NULL, state TEXT NOT NULL, destination TEXT NOT NULL DEFAULT "", detail TEXT NOT NULL DEFAULT "", created TEXT NOT NULL)')
             db.execute('CREATE TABLE IF NOT EXISTS preferences (key TEXT PRIMARY KEY, value TEXT NOT NULL)')
+            db.execute('CREATE TABLE IF NOT EXISTS delivery_jobs (job_id TEXT PRIMARY KEY, status TEXT NOT NULL, detail TEXT NOT NULL, updated REAL NOT NULL)')
+            db.execute('CREATE TABLE IF NOT EXISTS delivery_files (job_id TEXT NOT NULL, file_id TEXT NOT NULL, record TEXT NOT NULL, PRIMARY KEY(job_id,file_id))')
+            db.execute('CREATE TABLE IF NOT EXISTS delivery_lease (id INTEGER PRIMARY KEY CHECK(id=1), token TEXT NOT NULL, expires REAL NOT NULL)')
             if not version: db.execute('PRAGMA user_version=1')
             yield db
             db.commit()
@@ -41,6 +45,53 @@ class Store:
     def save_settings(self, value):
         with self.connect() as db:
             db.execute('INSERT OR REPLACE INTO preferences VALUES (?,?)', ('target', json.dumps(value)))
+
+    def delivery_statuses(self):
+        if not self.file.exists(): return {}
+        with self.connect() as db:
+            rows = db.execute('SELECT job_id,status,detail FROM delivery_jobs').fetchall()
+        return {key: {'status': status, 'detail': detail} for key, status, detail in rows}
+
+    def delivery_note(self, key, status, detail=''):
+        with self.connect() as db:
+            db.execute('INSERT OR REPLACE INTO delivery_jobs VALUES (?,?,?,?)', (key, status, str(detail)[:1500], time.time()))
+
+    def delivery_files(self, key):
+        with self.connect() as db:
+            rows = db.execute('SELECT file_id,record FROM delivery_files WHERE job_id=?', (key,)).fetchall()
+        return {file_id: json.loads(record) for file_id, record in rows}
+
+    def save_delivery(self, key, file_id, record):
+        with self.connect() as db:
+            db.execute('INSERT OR REPLACE INTO delivery_files VALUES (?,?,?)', (key, file_id, json.dumps(record, ensure_ascii=False)))
+
+    def retry_deliveries(self, ids):
+        with self.connect() as db:
+            for key in dict.fromkeys(ids):
+                for file_id, raw in db.execute('SELECT file_id,record FROM delivery_files WHERE job_id=?', (key,)).fetchall():
+                    record = json.loads(raw)
+                    if record.get('state') != 'downloaded':
+                        record['retry_at'] = 0
+                        db.execute('UPDATE delivery_files SET record=? WHERE job_id=? AND file_id=?', (json.dumps(record, ensure_ascii=False), key, file_id))
+
+    def claim_delivery_run(self, token, *, clock=None):
+        now = time.time() if clock is None else clock
+        with self.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            row = db.execute('SELECT token,expires FROM delivery_lease WHERE id=1').fetchone()
+            if row and row[1] > now: return False
+            db.execute('INSERT OR REPLACE INTO delivery_lease VALUES (1,?,?)', (token, now + 180))
+        return True
+
+    def renew_delivery_run(self, token, *, clock=None):
+        now = time.time() if clock is None else clock
+        with self.connect() as db:
+            changed = db.execute('UPDATE delivery_lease SET expires=? WHERE id=1 AND token=?', (now + 180, token)).rowcount
+            if changed != 1: raise RuntimeError('成品收取已由另一个进程接管，本次安全停止。')
+
+    def release_delivery_run(self, token):
+        with self.connect() as db:
+            db.execute('DELETE FROM delivery_lease WHERE id=1 AND token=?', (token,))
 
     def stage(self, payloads, *, new_version=False):
         imported, unchanged, blocked = [], [], []

@@ -9,13 +9,15 @@ from .segmentation import require_available
 class AIAgentAssistantPlugin(QtCore.QObject):
     plugin_id = 'ai_agent_assistant'
     display_name = 'AI Agent 助手'
-    version = '0.2.2'
+    version = '0.3.0'
     required_api_version = 2
 
     def __init__(self):
         super().__init__()
         self.context = self.dialog = self.handle = None
         self._store = None
+        from .receipt_monitor import ReceiptMonitor
+        self.receipts = ReceiptMonitor(self)
 
     @property
     def store(self):
@@ -24,8 +26,11 @@ class AIAgentAssistantPlugin(QtCore.QObject):
 
     def register(self, context):
         self.context = context
+        self.setParent(context.parent_widget)
         context.register_google_authorization(GoogleAuthorization('sheets', 'AI Agent 助手 · 口播表', 'sheets', 'v4',
             ('https://www.googleapis.com/auth/spreadsheets',), order=60, legacy_bindings=('sheets',)))
+        context.register_google_authorization(GoogleAuthorization('downloads', 'AI Agent · 成品下载', 'drive', 'v3',
+            ('https://www.googleapis.com/auth/drive',), order=61))
         context.register_command(PluginCommand('open', 'AI Agent 助手…', lambda _rows: self.open_ui(), frozenset({MAIN_MENU}), order=32))
         context.register_command(PluginCommand('oral', '添加到 AI Agent 口播任务…', self.open_tasks,
             frozenset({TASK_CONTEXT_MENU}), order=35, enabled=lambda rows: bool(rows)))
@@ -123,8 +128,10 @@ class AIAgentAssistantPlugin(QtCore.QObject):
         self.handle = None
         if self.dialog: self.dialog.reload()
 
-    def can_close(self): return (self.handle is None, 'AI Agent 填表操作仍在结束中，请先完成或取消。')
+    def can_close(self): return (self.handle is None and self.receipts.handle is None, 'AI Agent 后台操作仍在结束中，请先完成或取消。')
+    def start(self): self.receipts.start()
     def stop(self):
+        if not self.receipts.stop(): return False
         if self.handle is not None: return False
         if self.dialog: self.dialog.close()
         return True
