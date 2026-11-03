@@ -55,6 +55,10 @@ class DownloadError(RuntimeError):
     """A readable error that should be shown for one configured link."""
 
 
+class AuthenticationRequired(DownloadError):
+    """Anonymous access returned a login page, not file bytes."""
+
+
 def allowed_download_url(url):
     try:
         parsed = urlparse(url)
@@ -374,6 +378,10 @@ def open_download_response(opener: object, url: str, timeout: int) -> BinaryIO:
             raise DownloadError("网盘下载只允许 HTTPS Google 地址。")
         request = Request(current_url, headers={"User-Agent": USER_AGENT})
         response = opener.open(request, timeout=timeout)  # type: ignore[attr-defined]
+        final_url = getattr(response, 'url', '')
+        if isinstance(final_url, str) and urlparse(final_url).hostname == 'accounts.google.com':
+            response.close()
+            raise AuthenticationRequired('此Google Drive参考文件需要登录，匿名下载无法取得文件。')
         if filename_from_headers(response.headers):
             return response
 
@@ -385,10 +393,17 @@ def open_download_response(opener: object, url: str, timeout: int) -> BinaryIO:
         charset = response.headers.get_content_charset() or "utf-8"
         page = raw.decode(charset, errors="replace")
         response.close()
+        lower = page.lower()
+        if ('sign in to continue to google drive' in lower or
+                'accounts.google.com' in lower and ('email or phone' in lower or 'identifierid' in lower)):
+            raise AuthenticationRequired('此Google Drive参考文件需要登录，匿名下载无法取得文件。')
         parser = DownloadFormParser()
         parser.feed(page)
         if not parser.action:
-            raise DownloadError(error_from_html(page))
+            message = error_from_html(page)
+            if message.startswith(('没有访问权限', '文件不存在')):
+                raise AuthenticationRequired('匿名访问无法读取此参考文件：' + message)
+            raise DownloadError(message)
         action = urljoin(current_url, parser.action)
         separator = "&" if "?" in action else "?"
         current_url = action + (separator + urlencode(parser.inputs) if parser.inputs else "")

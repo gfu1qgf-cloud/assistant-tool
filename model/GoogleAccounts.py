@@ -332,6 +332,26 @@ class GoogleAccountManager:
             self._write(state)
 
 
+def load_drive_account_service(account_id, *, manager=None):
+    """Core reference fallback: explicit saved account, no binding changes/login."""
+    manager = manager or GoogleAccountManager()
+    from model.OfflineMode import require_online
+    require_online('Google参考文件授权读取')
+    account = manager.account(account_id)
+    scopes = token_scopes(account['credentials'])
+    scope = next((value for value in ('https://www.googleapis.com/auth/drive.readonly',
+        'https://www.googleapis.com/auth/drive', 'https://www.googleapis.com/auth/drive.file') if value in scopes), None)
+    if scope is None: raise ValueError('此Google凭据没有Drive读取权限。')
+    refresh_lock = config_file_lock(str(manager.file.path) + '.' + account_id + '.refresh')
+    if not refresh_lock.acquire(timeout=35): raise RuntimeError('Google账号正在续期，请稍后再试。')
+    try: credentials = _credentials(manager, account_id, required_scopes=(scope,))
+    finally: refresh_lock.release()
+    from google_auth_httplib2 import AuthorizedHttp
+    from googleapiclient.discovery import build
+    import httplib2
+    return build('drive', 'v3', http=AuthorizedHttp(credentials, http=httplib2.Http(timeout=30)), cache_discovery=False)
+
+
 def load_managed_service(feature, *, profile=None, manager=None, expected_account_id=None):
     """None means unbound/legacy. A bound-but-failed account NEVER falls back."""
     manager = manager or GoogleAccountManager()

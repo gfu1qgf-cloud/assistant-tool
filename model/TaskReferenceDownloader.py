@@ -15,6 +15,7 @@ from qt_compat import QtCore
 from app_paths import DATA_ROOT as APP_ROOT
 from model.GoogleDriveDownloader import (
     DownloadError,
+    AuthenticationRequired,
     download_one,
     parse_drive_link,
 )
@@ -229,6 +230,27 @@ class TaskReferenceDownloadThread(QtCore.QThread):
             task_id=getattr(task, 'task_id', ''), task_type=getattr(task, 'task_type', ''),
             task_reference_link=getattr(task, 'task_reference_link', '')) for task in tasks)
         self.root_dir = root_dir
+        self._reference_accounts = None
+        self._reference_auth_error = ''
+        self._reference_private_ids = set()
+
+    def download_reference_file(self, link, directory, *, authenticated=False):
+        if not authenticated and link.file_id not in self._reference_private_ids:
+            try:
+                return download_one(link, directory, overwrite=False, timeout=self.timeout, export_formats=DEFAULT_EXPORT_FORMATS)
+            except AuthenticationRequired: self._reference_private_ids.add(link.file_id)
+            except HTTPError as error:
+                if error.code not in {401, 403, 404}: raise
+                self._reference_private_ids.add(link.file_id)
+        from model.ReferenceDriveAuth import ReferenceAccountPool, ReferenceAccessError
+        if self._reference_auth_error: raise ReferenceAccessError(self._reference_auth_error)
+        if self._reference_accounts is None:
+            try: self._reference_accounts = ReferenceAccountPool(log=self.log.emit)
+            except Exception as error:
+                self._reference_auth_error = str(error)
+                raise ReferenceAccessError(self._reference_auth_error) from None
+            self.log.emit('参考文件遇到登录限制，将按需逐个尝试已有Drive凭据（含插件已分配账号）；不改绑定，不弹登录窗口。')
+        return self._reference_accounts.download(link, directory, canceled=self.isInterruptionRequested, export_formats=DEFAULT_EXPORT_FORMATS)
 
     def run(self):
         try:
@@ -287,13 +309,7 @@ class TaskReferenceDownloadThread(QtCore.QThread):
 
             for attempt in range(1, self.retries + 1):
                 try:
-                    status, target = download_one(
-                        drive_link,
-                        job.output_dir,
-                        overwrite=False,
-                        timeout=self.timeout,
-                        export_formats=DEFAULT_EXPORT_FORMATS,
-                    )
+                    status, target = self.download_reference_file(drive_link, job.output_dir)
                     if status == "skipped":
                         result["skipped"] += 1
                         self.log.emit(
@@ -325,6 +341,12 @@ class TaskReferenceDownloadThread(QtCore.QThread):
                         )
                     break
                 except (DownloadError, HTTPError, URLError, TimeoutError, OSError) as error:
+                    from model.ReferenceDriveAuth import ReferenceAccessError
+                    if self.isInterruptionRequested(): break
+                    if isinstance(error, ReferenceAccessError):
+                        result['failed'] += 1
+                        self.log.emit('任务 {} 参考文件暂不可用：{}'.format(job.task_id, error))
+                        break
                     if attempt < self.retries:
                         delay = min(2 ** (attempt - 1), 8)
                         self.log.emit(
