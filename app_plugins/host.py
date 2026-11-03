@@ -384,6 +384,17 @@ class PluginContext:
             return []
         return self.task_targets(range(len(window.task_list)))
 
+    def set_task_badges(self, mapping):
+        """GUI-only memory snapshot; never mutate task text, values or language colors."""
+        self._host.publish_task_badges(self.plugin_id, mapping)
+
+    def set_task_badge_filter(self, unread_only):
+        self._host.set_task_badge_filter(self.plugin_id, unread_only)
+
+    def task_badge_keys(self, rows):
+        controller = self._host.task_badge_controller()
+        return controller.keys(rows) if controller is not None else []
+
     def current_project_directory(self, *, require_loaded=True):
         """GUI-side project snapshot; workers receive an ordinary path instead."""
         root = getattr(self._host.main_window, 'loaded_project_dir', None)
@@ -516,6 +527,7 @@ class PluginHost:
         self._started = set()
         self._start_errors = {}
         self._manager_dialog = None
+        self._task_badge_controller = None
         from model.node_workflow.graph import NodeRegistry, register_core
         self.node_registry = NodeRegistry()
         register_core(self.node_registry)
@@ -525,12 +537,36 @@ class PluginHost:
 
     def notify_project_changed(self, project, *, validated=False):
         """GUI notification for enabled plugins; no core knowledge of consumers."""
+        if self._task_badge_controller is not None: self._task_badge_controller.bind_project(project)
         for plugin_id, plugin in self._plugins.items():
             if not self.is_enabled(plugin_id): continue
             callback = getattr(plugin, 'on_project_changed', None)
             if callback is None: continue
             try: callback(project, validated=validated)
             except Exception as error: self._report_error(plugin_id, '切换项目', error)
+
+    def task_badge_controller(self):
+        app = QtWidgets.QApplication.instance()
+        if app is None or QtCore.QThread.currentThread() != app.thread(): raise RuntimeError('任务标记只能在GUI主线程发布。')
+        if self._task_badge_controller is None and isinstance(getattr(self.main_window, 'task_table_widget', None), QtWidgets.QTableWidget):
+            from PYUI.task_badges import TaskBadgeController
+            self._task_badge_controller = TaskBadgeController(self.main_window, self.is_enabled)
+        return self._task_badge_controller
+
+    def publish_task_badges(self, owner, mapping):
+        if not self.is_enabled(owner): raise ValueError('插件已禁用，不能发布任务标记。')
+        controller = self.task_badge_controller()
+        if controller is not None: controller.publish(owner, mapping)
+
+    def refresh_task_badges(self):
+        if self._task_badge_controller is not None:
+            self._task_badge_controller.bind_project(getattr(self.main_window, 'loaded_project_dir', None))
+
+    def set_task_badge_filter(self, owner, unread_only):
+        if type(unread_only) is not bool: raise ValueError('任务标记筛选必须是布尔值。')
+        if not self.is_enabled(owner): raise ValueError('插件已禁用。')
+        controller = self.task_badge_controller()
+        if controller is not None: controller.set_filter(owner, unread_only)
 
     def workflow_runtime_context(self, plugin_id):
         """GUI-side provider snapshot; never persisted in the workflow graph."""
@@ -664,6 +700,7 @@ class PluginHost:
             plugin.register(context)
         except Exception:
             self.google_authorizations.unregister_owner(plugin_id)
+            if self._task_badge_controller is not None: self._task_badge_controller.clear(plugin_id)
             self._plugins.pop(plugin_id, None)
             self._contexts.pop(plugin_id, None)
             for command_id in set(self._commands) - existing_commands:
@@ -1005,10 +1042,15 @@ class PluginHost:
                 except Exception as error:
                     action.setEnabled(False)
                     self._report_error(plugin_id, command.title, error)
+            action.setCheckable(bool(command.checkable))
+            if command.checkable:
+                checked = command.checked() if callable(command.checked) else command.checked
+                action.setChecked(bool(checked))
             action.triggered.connect(
-                lambda _checked=False, fid=full_id, selected=context_rows: self.invoke(
+                lambda checked=False, fid=full_id, selected=context_rows: self.invoke(
                     fid,
                     selected,
+                    checked,
                 )
             )
             actions.append(action)

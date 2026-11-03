@@ -22,6 +22,15 @@ TASK_CONTEXT_MENU = "task_context_menu"
 
 
 @dataclass(frozen=True)
+class TaskBadge:
+    """Memory-only task decoration, keyed by the original task directory."""
+    text: str
+    tone: str = 'info'
+    tooltip: str = ''
+    unread: bool = False
+
+
+@dataclass(frozen=True)
 class PluginCommand:
     """A command exposed by a plugin at one or more host UI locations."""
 

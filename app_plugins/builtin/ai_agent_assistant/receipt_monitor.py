@@ -87,11 +87,14 @@ class ReceiptMonitor(QtCore.QObject):
 
     def completed(self, result):
         self.show_status(result['message'])
+        if result.get('task_badges') is not None: self.plugin.notices.apply_snapshot(result['task_badges'])
         if result.get('downloaded'):
             self.plugin.context.log(result['message'])
         if self.plugin.dialog: self.plugin.dialog.reload()
 
-    def failed(self, message): self.show_status('成品收取稍后自动重试：' + str(message))
+    def failed(self, message):
+        self.show_status('成品收取稍后自动重试：' + str(message))
+        self.plugin.notices.refresh()
     def progress(self, message, _percent): self.show_status(message)
     def finished(self):
         if self.sender() is not self.handle: return

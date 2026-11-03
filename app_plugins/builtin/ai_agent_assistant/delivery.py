@@ -131,8 +131,8 @@ def run_receipts(payload, run, *, sheets=None, drive=None, fetch=download_file, 
                     directory = output_directory(job)
                     if drive_error: raise ValueError('Drive授权暂不可用：' + drive_error)
                     files = collect_files(result_links(link_text), drive, leased)
-                    if discovery.get('state') != 'checked' or discovery.get('source') != signature:
-                        store.save_delivery(job['id'], '@discovery', {'state': 'checked', 'source': signature})
+                    if discovery.get('state') != 'checked' or discovery.get('source') != signature or discovery.get('total') != len(files):
+                        store.save_delivery(job['id'], '@discovery', {'state': 'checked', 'source': signature, 'total': len(files)})
                     completed, attempted = 0, 0
                     for item in files:
                         leased.check_canceled(); record = records.get(item['id'], {})
@@ -177,8 +177,10 @@ def run_receipts(payload, run, *, sheets=None, drive=None, fetch=download_file, 
                     leased.check_canceled(); failed += 1; pending = True
                     attempts = int(discovery.get('attempts', 0)) + 1 if discovery.get('source') == signature else 1
                     store.save_delivery(job['id'], '@discovery', {'state': 'retry', 'source': signature,
-                        'attempts': attempts, 'retry_at': clock() + min(3600, 60 * 2 ** min(attempts - 1, 6)), 'detail': error_message(error)})
+                        'attempts': attempts, 'retry_at': clock() + min(3600, 60 * 2 ** min(attempts - 1, 6)),
+                        'total': discovery.get('total'), 'detail': error_message(error)})
                     store.delivery_note(job['id'], '收取待重试', f'检查尝试累计 {attempts} 次；' + error_message(error))
+        from .notice_data import notice_snapshot
         return {'message': f'成品检查完成：本次下载 {downloaded} 个视频。' + ('仍有任务等待重试或继续收取。' if pending or failed else ''),
-                'downloaded': downloaded, 'pending': pending, 'failed': failed}
+                'downloaded': downloaded, 'pending': pending, 'failed': failed, 'task_badges': notice_snapshot(store)}
     finally: store.release_delivery_run(token)

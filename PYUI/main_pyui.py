@@ -1195,6 +1195,7 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
 
         # 加载完成后立即标记异常语言，不需要再手动点击检测按钮。
         self.markTaskLanguages(languages)
+        if hasattr(self, 'plugin_host'): self.plugin_host.refresh_task_badges()
 
     def openTaskDirectoryForRow(self, row, _column):
         if row < 0 or row >= len(self.task_list):

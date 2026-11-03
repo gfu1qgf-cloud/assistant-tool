@@ -9,7 +9,7 @@ from .segmentation import require_available
 class AIAgentAssistantPlugin(QtCore.QObject):
     plugin_id = 'ai_agent_assistant'
     display_name = 'AI Agent 助手'
-    version = '0.3.0'
+    version = '0.3.1'
     required_api_version = 2
 
     def __init__(self):
@@ -18,6 +18,8 @@ class AIAgentAssistantPlugin(QtCore.QObject):
         self._store = None
         from .receipt_monitor import ReceiptMonitor
         self.receipts = ReceiptMonitor(self)
+        from .notices import ReceiptNotices
+        self.notices = ReceiptNotices(self)
 
     @property
     def store(self):
@@ -35,6 +37,13 @@ class AIAgentAssistantPlugin(QtCore.QObject):
         context.register_command(PluginCommand('oral', '添加到 AI Agent 口播任务…', self.open_tasks,
             frozenset({TASK_CONTEXT_MENU}), order=35, enabled=lambda rows: bool(rows)))
         context.register_main_widget(PluginMainWidget('quick', self.quick, order=32, title=self.display_name))
+        context.register_command(PluginCommand('received_open', '打开 Agent 成品目录', self.notices.open_result,
+            frozenset({TASK_CONTEXT_MENU}), order=36, enabled=lambda rows: len(self.notices.selected(rows)) == 1))
+        context.register_command(PluginCommand('received_seen', '标记 Agent 成品已查看', self.notices.mark_seen,
+            frozenset({TASK_CONTEXT_MENU}), order=37, enabled=lambda rows: any(item['unread'] for item in self.notices.selected(rows))))
+        context.register_command(PluginCommand('received_filter', '只看新成品', self.notices.set_filter,
+            frozenset({MAIN_MENU, TASK_CONTEXT_MENU}), order=38, checkable=True, checked=lambda: self.notices.filtered,
+            submenu='Agent 成品', tooltip='仅显示有未查看成品的任务；再次点击恢复全部，空列表时也可从插件菜单取消。'))
 
     def quick(self, parent=None):
         widget = QtWidgets.QWidget(parent); layout = QtWidgets.QVBoxLayout(widget); layout.setContentsMargins(0, 0, 0, 0)
@@ -128,9 +137,10 @@ class AIAgentAssistantPlugin(QtCore.QObject):
         self.handle = None
         if self.dialog: self.dialog.reload()
 
-    def can_close(self): return (self.handle is None and self.receipts.handle is None, 'AI Agent 后台操作仍在结束中，请先完成或取消。')
-    def start(self): self.receipts.start()
+    def can_close(self): return (self.handle is None and self.receipts.handle is None and self.notices.handle is None, 'AI Agent 后台操作仍在结束中，请先完成或取消。')
+    def start(self): self.notices.refresh(); self.receipts.start()
     def stop(self):
+        if not self.notices.stop(): return False
         if not self.receipts.stop(): return False
         if self.handle is not None: return False
         if self.dialog: self.dialog.close()

@@ -29,6 +29,8 @@ class Store:
             db.execute('CREATE TABLE IF NOT EXISTS delivery_jobs (job_id TEXT PRIMARY KEY, status TEXT NOT NULL, detail TEXT NOT NULL, updated REAL NOT NULL)')
             db.execute('CREATE TABLE IF NOT EXISTS delivery_files (job_id TEXT NOT NULL, file_id TEXT NOT NULL, record TEXT NOT NULL, PRIMARY KEY(job_id,file_id))')
             db.execute('CREATE TABLE IF NOT EXISTS delivery_lease (id INTEGER PRIMARY KEY CHECK(id=1), token TEXT NOT NULL, expires REAL NOT NULL)')
+            db.execute('CREATE TABLE IF NOT EXISTS delivery_seen (job_id TEXT NOT NULL,file_id TEXT NOT NULL,checksum TEXT NOT NULL,PRIMARY KEY(job_id,file_id,checksum))')
+            db.execute('CREATE TABLE IF NOT EXISTS delivery_announced (job_id TEXT NOT NULL,file_id TEXT NOT NULL,checksum TEXT NOT NULL,PRIMARY KEY(job_id,file_id,checksum))')
             if not version: db.execute('PRAGMA user_version=1')
             yield db
             db.commit()

@@ -100,3 +100,23 @@ GUI 提交时使用 `context.current_project_directory()` 获取已加载项目�
 - 运行中禁用重复提交入口，但提供取消、失败原因及重新查看结果入口。
 - 关闭窗口是否继续执行必须明确。若任务继续，结果归宿主后台任务/队列，不归即将销毁的局部窗口。
 - `QMessageBox` 只在 GUI 线程使用；后台计算节点不得弹窗死等用户。
+
+## 任务成品／状态标记
+
+API 2新增可选的主界面任务标记服务，不要求插件直接访问QTableWidget。后台先读取私有状态，再在GUI完成回调发布内存快照：
+
+```python
+from app_plugins.api import TaskBadge
+
+context.set_task_badges({
+    absolute_task_directory: TaskBadge('新成品 · 3', 'success', '3个已校验视频，尚未查看', True),
+})
+context.set_task_badge_filter(True)   # 只显示本插件unread=True的任务
+keys = context.task_badge_keys(rows)  # 按原任务目录取身份，排序不串行
+context.set_task_badge_filter(False)
+context.set_task_badges({})          # 插件停止时移除自身图层，不清其他插件
+```
+
+目录必须是提交时确定的绝对任务目录，不能仅用任务编号匹配不同项目。允许success、warning、error、info、muted五种色调；短文字最多40字，tooltip按纯文本转义显示。发布和筛选仅可在GUI主线程调用；paint／筛选不得读取磁盘、数据库或网络。稳定任务目录键随表格条目排序，主程序加载成功后的项目通知重新绑定新列表。
+
+装饰保留原文字、语言底色和tooltip，不写回任务表。未读／已查看等持久状态仍由插件负责，建议按成品版本而非行号保存。多个插件的筛选采用并集；筛选恢复此前隐藏行，隐藏的所选行会取消选择，避免无意处理看不见的任务。不要只提供任务右键筛选开关，空结果时还应能从插件菜单取消筛选。

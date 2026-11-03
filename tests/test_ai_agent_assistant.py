@@ -209,7 +209,7 @@ class AgentUiTests(unittest.TestCase):
         self.main.deleteLater(); self.app.sendPostedEvents(None, QtCore.QEvent.Type.DeferredDelete); self.app.processEvents()
     def test_register_does_not_create_files_or_network(self):
         self.assertEqual(list(Path(self.temp.name).iterdir()), [])
-        self.assertEqual(self.context.register_command.call_count, 2)
+        self.assertEqual(self.context.register_command.call_count, 5)
         self.assertEqual(self.context.register_main_widget.call_count, 1)
     def test_corrupt_queue_is_visible_error_not_unhandled_qt_callback(self):
         self.plugin.store.file.write_bytes(b'not a database')
