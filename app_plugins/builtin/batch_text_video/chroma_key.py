@@ -84,6 +84,8 @@ def despill_filter(layer):
 
 
 def active_mask(layer):
+    from .matting_switch import enabled
+    if not enabled(layer): return ''
     return (layer.get("key_mask_path", "") if layer.get("key_mode", "none") != "none"
             and layer.get("key_method", "normal") == "enhanced" else "")
 

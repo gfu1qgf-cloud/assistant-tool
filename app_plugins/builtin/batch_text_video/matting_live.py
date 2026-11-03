@@ -19,7 +19,8 @@ BASE_LIMIT = 32*1024**2
 
 
 def dynamic(layer):
-    return layer.get('_matting_binding', {}).get('mode') == 'dynamic'
+    from .matting_switch import enabled
+    return enabled(layer) and layer.get('_matting_binding', {}).get('mode') == 'dynamic'
 
 
 def poster(binding, bounds, *, cancel=None, ffmpeg=''):

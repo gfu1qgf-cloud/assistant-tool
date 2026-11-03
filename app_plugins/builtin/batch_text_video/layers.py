@@ -267,6 +267,8 @@ def compose_layers(text_images, layers, width, height, darkness, cache=None,tint
                 continue  # Computed by the shared FFmpeg operation compiler.
             painter.setOpacity(layer["opacity"]/100)
             if layer["kind"] == "image":
+                from .matting_switch import original
+                layer = original(layer)
                 from .visual_animation import preview_transform
                 scale, dx, dy, opacity = preview_transform(layer, width, height, editor_timing)
                 if not opacity:

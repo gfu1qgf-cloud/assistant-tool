@@ -14,7 +14,7 @@ VISUAL_SUFFIXES = ANIMATED_SUFFIXES | {".png", ".jpg", ".jpeg", ".jfif", ".webp"
 VISUAL_FILTER = "图片 / 视频 / GIF (" + " ".join("*" + item for item in sorted(VISUAL_SUFFIXES)) + ")"
 DEFAULTS = {"blend_mode": "normal", "key_mode": "none", "key_similarity": .15,
             "key_softness": .08, "key_despill": False, "media_loop": True, "use_saved_matte": True,
-            "media_loop_transition": "none", "media_loop_fade": .3, "media_loop_regions": [],
+            "media_loop_transition": "none", "media_loop_fade": .3, "media_loop_regions": [], "matting_enabled": True,
             **MATTE_DEFAULTS, **ANIMATION_DEFAULTS, **KEY_DEFAULTS, **SHOW_DEFAULTS}
 
 def is_animated(path):
@@ -28,6 +28,7 @@ def normalize_visual(layer):
     for key, value in DEFAULTS.items():
         if key not in layer: layer[key] = copy.deepcopy(value)
     normalize_key(layer)
+    if type(layer['matting_enabled']) is not bool: raise ValueError('启用抠像总开关必须是开关值。')
     if type(layer['use_saved_matte']) is not bool: raise ValueError('素材已存抠像开关无效。')
     if layer["blend_mode"] not in {"normal", "add", "screen"}:
         raise ValueError("视觉元素的叠加／抠像模式无效。")
@@ -88,11 +89,15 @@ def import_visuals(paths, directory, cancel=None):
     return {"layers": layers, "errors": errors, "cancelled": bool(cancel and cancel.is_set())}
 
 def needs_plane(layer):
+    from .matting_switch import original
+    layer = original(layer)
     return layer["kind"] == "image" and (layer.get("_matting_binding", {}).get("mode") == "dynamic" or is_animated(layer.get("path", "")) or
         layer.get("blend_mode", "normal") != "normal" or layer.get("key_mode", "none") != "none" or
         layer.get("visual_animation", "none") != "none" or layer.get('visual_timing_enabled', False))
 
 def keyed_image(image, layer):
+    from .matting_switch import enabled
+    if not enabled(layer): return image
     if layer.get("key_mode", "none") == "none":
         return image
     # Vectorized RGB distance matches colorkey's similarity domain. This is a
@@ -176,6 +181,8 @@ def preview_planes(title, body, width, height, settings, cache):
 
 def add_plane(args, filters, layer, input_index, background, label, width, height, duration, fps, *, timing=None, ffmpeg=''):
     """Alpha-correct normal/add/screen, with transparent clipping at canvas edges."""
+    from .matting_switch import original
+    layer = original(layer)
     normalize_visual(layer)
     # An explicit timing node owns the window; never apply a native one twice.
     if timing is None:
@@ -314,6 +321,13 @@ class VisualProperties(QtWidgets.QWidget):
         animation = self._page("动画")
         self.controls = {}
         self._form_heading(form, '抠像遮罩（透明范围）')
+        master = QtWidgets.QCheckBox('启用抠像（颜色／AI／工作台）')
+        master.setToolTip('总开关。取消后不运行任何颜色或AI抠像、不套用工作台结果，也不去溢色／补洞／收边；直接保留原素材自带透明通道。原参数保留，重新勾选恢复。')
+        master.toggled.connect(self.edit)
+        self.controls['matting_enabled'] = master; form.addRow(master)
+        self.matting_status = QtWidgets.QLabel(); self.matting_status.setWordWrap(True)
+        self.matting_status.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored, QtWidgets.QSizePolicy.Policy.Preferred)
+        form.addRow(self.matting_status)
         self.matting_button = QtWidgets.QPushButton('AI抠像工作台…')
         self.matting_button.setToolTip('调整当前素材的AI遮罩；保存参数后用于预览和渲染，不生成透明视频缓存。')
         self.matting_button.clicked.connect(lambda: self.mattingRequested.emit(self.layer['id']) if self.layer else None)
@@ -325,7 +339,7 @@ class VisualProperties(QtWidgets.QWidget):
         self.saved_matte_note.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored, QtWidgets.QSizePolicy.Policy.Preferred)
         form.addRow(self.saved_matte_note)
         for key, label, choices in (("blend_mode", "叠加模式", (("普通", "normal"), ("添加", "add"), ("滤色", "screen"))),
-                                    ("key_mode", "抠像颜色", (("关闭", "none"), ("绿色预设", "green"), ("蓝色预设", "blue"), ("黑色预设", "black"), ("自定义颜色", "custom"))),
+                                    ("key_mode", "抠像颜色", (("不按颜色扣除（不关闭AI）", "none"), ("绿色预设", "green"), ("蓝色预设", "blue"), ("黑色预设", "black"), ("自定义颜色", "custom"))),
                                     ("key_method", "抠像算法", (("普通 · 颜色扣除", "normal"), ("增强 · 轮廓保护", "enhanced"), ("AI · 主体抠像", "ai")))):
             control = QtWidgets.QComboBox()
             for name, value in choices:
@@ -593,6 +607,18 @@ class VisualProperties(QtWidgets.QWidget):
             for key, control in self.controls.items():
                 if key.startswith('key_'): control.setEnabled(False)
             self.matte_levels.setEnabled(False); self.edge_preset.setEnabled(False)
+        master = self.controls['matting_enabled'].isChecked()
+        self.controls['use_saved_matte'].setEnabled(master)
+        self.matting_button.setEnabled(master)
+        if not master:
+            for key, control in self.controls.items():
+                if key.startswith('key_'): control.setEnabled(False)
+            self.key_details.setEnabled(False); self.matte_levels.setEnabled(False); self.edge_preset.setEnabled(False)
+            self.saved_matte_note.setText('抠像总开关已关闭：工作台设置和下方参数均不生效，原参数保留。')
+        self.matting_status.setText('抠像已禁用：直接使用原素材及自带透明通道；下方参数保留但不生效。' if not master else
+            '抠像已启用：使用工作台已保存的结果／参数。' if saved else
+            '抠像已启用：AI逐帧处理；颜色“不按颜色扣除”不会关闭AI。' if ai else
+            '抠像已启用：按下方颜色设置处理；未选择颜色时使用原素材。')
 
     def _apply_edge_preset(self):
         if not self.layer: return

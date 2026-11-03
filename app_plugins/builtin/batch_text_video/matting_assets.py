@@ -209,6 +209,8 @@ class Catalogue:
 
 
 def apply_saved(layer, catalogue=None):
+    from .matting_switch import enabled, original
+    if layer.get('kind') == 'image' and not enabled(layer): return original(layer)
     inline_ai = layer.get('key_method') == 'ai'
     use_saved = layer.get('use_saved_matte', True)
     if layer.get('kind') != 'image' or not (inline_ai or use_saved): return layer
@@ -305,6 +307,10 @@ def snapshot_layers(layers, catalogue=None):
     from .components import walk_components
     result = copy.deepcopy(layers); catalogue = catalogue or Catalogue()
     for layer in walk_components(result):
+        from .matting_switch import enabled
+        if not enabled(layer):
+            layer.pop('_matting_snapshot', None)
+            continue
         if layer.get('kind') != 'image' or not layer.get('use_saved_matte', True): continue
         if '_matting_snapshot' in layer: continue
         paths = [layer.get('source_file') or layer.get('path')]
