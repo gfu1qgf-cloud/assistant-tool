@@ -290,7 +290,7 @@ def _review_index(history=None):
 
 def collect_assignments(config, root, records=None, allowed_dates=None,
                         include_unapproved_reviews=False, inspection_records=None,
-                        ignored_file_ids=None, classification_overrides=None):
+                        ignored_file_ids=None, classification_overrides=None, review_overrides=None):
     """Return one first-delivery assignment per logical finished video."""
     root = Path(root).resolve()
     table_name = str(config.get("task_table_file_name") or "任务登记表格.ods").strip()
@@ -359,11 +359,12 @@ def collect_assignments(config, root, records=None, allowed_dates=None,
                                 or file_id in review_statuses),
             "review_status": review_statuses.get(file_id, "untracked"),
         }
+        candidate['review_required'] = _requires_review(candidate, review_overrides, review_statuses)
+        if file_id in (review_overrides or {}): candidate['review_required_override'] = review_overrides[file_id]
         if inspection_records is not None:
             inspection_records.append(candidate)
         if (not include_unapproved_reviews
-                and (_review_upload(record, config.get("review_folder_name"))
-                     or file_id in review_statuses)
+                and candidate['review_required']
                 and review_statuses.get(file_id) != "passed"):
             continue
         if ods not in tasks_by_ods:
@@ -586,12 +587,13 @@ def _sync_progress_summary(previous):
             "manual_refresh": dict(manual)}
 
 
-def _record_manual_refresh(next_state, manual_refresh, verified_cells):
+def _record_manual_refresh(next_state, manual_refresh, verified_cells, requested_dates=None):
     """Snapshot only this explicit refresh; automatic writes never advance it."""
     if not manual_refresh:
         return
     summary = _sync_progress_summary({**next_state, "cells": verified_cells})
     summary.pop("manual_refresh", None)
+    if requested_dates is not None: summary['requested_dates'] = sorted(requested_dates)
     next_state["last_manual_refresh"] = summary
 
 
@@ -665,10 +667,22 @@ def _included(item):
     return bool(item.get("included", True))
 
 
-def _with_review_status(items):
+def _requires_review(item, overrides=None, statuses=None, names=None):
+    file_id = str(item.get('drive_file_id') or '')
+    explicit = overrides.get(file_id) if overrides is not None else item.get('review_required_override')
+    if isinstance(explicit, bool): return explicit
+    return bool(item.get('review_path') or file_id in (statuses or {})
+                or normalize_video_identity(item.get('file_name')) in (names or {}))
+
+
+def _with_review_status(items, overrides=None):
     statuses = _review_index()
     for item in items:
-        if item.get("review_path"):
+        file_id = str(item.get('drive_file_id') or '')
+        if overrides is not None: item.pop('review_required_override', None)
+        if file_id in (overrides or {}): item['review_required_override'] = overrides[file_id]
+        item['review_required'] = _requires_review(item, overrides, statuses)
+        if item['review_required']:
             file_id = str(item.get("drive_file_id") or "")
             item["review_status"] = statuses.get(file_id, "untracked")
     return items
@@ -681,7 +695,7 @@ def external_video_records(config, root, state_path=None):
         return _with_review_status([dict(item, **_duration_fields(item, scope.get("duration_cache")),
                                         batch_slot=effective_batch_slot(item.get("batch_slot")),
                                         included=_included(item))
-                                    for item in scope.get("external_videos", [])])
+                                    for item in scope.get("external_videos", [])], scope.get('review_overrides'))
 
 
 def external_video_sources(config, root, state_path=None):
@@ -702,13 +716,14 @@ def inspect_daily_quantity(config, root, state_path=None, records=None):
         scope = copy.deepcopy(_load_state(state_path or STATE_FILE, strict=True).get(_scope_key(config, root), {}))
     records = all_video_upload_records(config, read_only=True) if records is None else records
     external = _with_review_status([dict(item, included=_included(item))
-                                   for item in scope.get("external_videos", [])])
+                                   for item in scope.get("external_videos", [])], scope.get('review_overrides'))
     candidates = []
     overrides = {str(item.get("drive_file_id") or ""): item for item in external
                  if item.get("upload_history")}
     _groups, warnings = collect_assignments(
         config, root, records, include_unapproved_reviews=True,
         inspection_records=candidates, classification_overrides=overrides,
+        review_overrides=scope.get('review_overrides'),
     )
     by_id = {str(item.get("drive_file_id") or ""): item for item in candidates
              if item.get("drive_file_id")}
@@ -798,10 +813,11 @@ def pending_review_quantity_records(config, root, state_path=None, records=None)
     with _LOCK:
         scope = _load_state(state_path or STATE_FILE).get(_scope_key(config, root), {})
         external = [dict(item) for item in scope.get("external_videos", [])]
+    overrides = scope.get('review_overrides', {})
     review_names = {
         normalize_video_identity(item.get("file_name")): statuses.get(
             str(item.get("drive_file_id") or ""), "untracked"
-        ) for item in external if item.get("review_path")
+        ) for item in external if _requires_review(item, overrides, statuses) and item.get('review_path')
     }
     ignored_ids = {str(item.get("drive_file_id") or "") for item in external
                    if item.get("quantity_ignored")}
@@ -811,8 +827,7 @@ def pending_review_quantity_records(config, root, state_path=None, records=None)
         if file_id in ignored_ids:
             continue
         name = str(item.get("file_name") or "")
-        if not file_id or not (item.get("review_path") or file_id in statuses
-                               or normalize_video_identity(name) in review_names):
+        if not file_id or not _requires_review(item, overrides, statuses, review_names):
             continue
         status = statuses.get(file_id, review_names.get(normalize_video_identity(name),
                                                         "untracked"))
@@ -832,8 +847,7 @@ def pending_review_quantity_records(config, root, state_path=None, records=None)
         file_id = str(record.get("drive_file_id") or "")
         if file_id in ignored_ids:
             continue
-        if not file_id or not (_review_upload(record, config.get("review_folder_name"))
-                               or file_id in statuses):
+        if not file_id or not _requires_review(dict(record, review_path=_review_upload(record, config.get('review_folder_name'))), overrides, statuses):
             continue
         status = statuses.get(file_id, "untracked")
         if status == "passed" or file_id in result:
@@ -849,6 +863,34 @@ def pending_review_quantity_records(config, root, state_path=None, records=None)
     return sorted(result.values(), key=lambda item: (
         item["batch_date"], item["batch_slot"], item["file_name"]
     ), reverse=True)
+
+
+def set_daily_quantity_review_required(config, root, file_ids, required, state_path=None):
+    """Explicit per-Drive-file counting gate, not a forged review approval."""
+    if required is not None and not isinstance(required, bool): raise ValueError('审核要求必须是需要、无需或恢复自动。')
+    ids = {str(value) for value in file_ids if str(value)}
+    if not ids: raise ValueError('请选择有Drive文件ID的视频。')
+    path = Path(state_path or STATE_FILE)
+    with _LOCK:
+        state = _load_state(path, strict=True); key = _scope_key(config, root)
+        scope = copy.deepcopy(state.get(key, {}))
+        videos = scope.setdefault('external_videos', [])
+        by_file = {str(item.get('drive_file_id') or ''): item for item in videos}
+        if ids - by_file.keys():
+            inspected = inspect_daily_quantity(config, root, state_path=path)
+            available = {str(item.get('drive_file_id') or ''): item for item in inspected['records']}
+            if ids - (by_file.keys() | available.keys()): raise ValueError('所选视频已变化，请重新检索；未修改审核要求。')
+            for file_id in ids - by_file.keys():
+                item = dict(available[file_id]); videos.append(item); by_file[file_id] = item
+        overrides = dict(scope.get('review_overrides', {}))
+        for file_id in ids:
+            if required is None: overrides.pop(file_id, None)
+            else: overrides[file_id] = required
+        scope['review_overrides'] = overrides
+        scope['review_override_updated_at'] = datetime.now().astimezone().isoformat(timespec='seconds')
+        state[key] = scope; _save_state(path, state)
+        return {'count': len(ids), 'dates': sorted({_date(item.get('batch_date')) for item in videos
+            if str(item.get('drive_file_id') or '') in ids and _date(item.get('batch_date'))})}
 
 
 def scan_daily_drive_date(
@@ -1033,7 +1075,7 @@ def scan_daily_drive_date(
                                       and not entry.get("missing_from_daily")
                                       and entry.get("possible_revision")),
             "records": _with_review_status([dict(entry, **_duration_fields(entry, scope.get("duration_cache"))) for entry in videos
-                                            if entry.get("batch_date") == day]),
+                                            if entry.get("batch_date") == day], scope.get('review_overrides')),
             "warnings": hint_warnings,
         }
 
@@ -1134,8 +1176,8 @@ def scan_external_video_folder(
         state[scope_key] = scope
         _save_state(state_path, state)
         return {"found": len(remote), "added": added, "replaced": replaced,
-                "records": [dict(item, **_duration_fields(item, scope.get("duration_cache")))
-                            for item in videos], "sources": folders}
+                "records": _with_review_status([dict(item, **_duration_fields(item, scope.get("duration_cache")))
+                            for item in videos], scope.get('review_overrides')), "sources": folders}
 
 
 def update_external_video_records(config, root, edits, state_path=None):
@@ -1215,17 +1257,18 @@ def _external_assignments(scope, creator, local_groups):
                    for item in scope.get("external_videos", []) if item.get("quantity_ignored")}
     scanned_days = set(scope.get("daily_scans", {}))
     review_statuses = _review_index()
+    overrides = scope.get('review_overrides')
     review_names = {
         normalize_video_identity(item.get("file_name")): review_statuses.get(
             str(item.get("drive_file_id") or ""), "untracked"
         )
-        for item in scope.get("external_videos", []) if item.get("review_path")
+        for item in scope.get("external_videos", []) if item.get("review_path") and _requires_review(item, overrides, review_statuses)
     }
 
     def review_passed(item):
         file_id = str(item.get("drive_file_id") or "")
         name = normalize_video_identity(item.get("file_name"))
-        if item.get("review_path") or file_id in review_statuses or name in review_names:
+        if _requires_review(item, overrides, review_statuses, review_names):
             return review_statuses.get(file_id, review_names.get(name)) == "passed"
         return True
 
@@ -1241,7 +1284,7 @@ def _external_assignments(scope, creator, local_groups):
 
     eligible_review_ids = {str(item.get("drive_file_id") or "")
                            for item in scope.get("external_videos", [])
-                           if item.get("review_path") and eligible(item)}
+                           if item.get('review_path') and eligible(item)}
     rework_original_by_id = {}
     for key, item in read_review_history().get("items", {}).items():
         rework_key = canonical_review_link(item.get("rework_link"))
@@ -1253,7 +1296,7 @@ def _external_assignments(scope, creator, local_groups):
     active_review_names = {
         normalize_video_identity(item.get("file_name"))
         for item in scope.get("external_videos", [])
-        if item.get("review_path") and eligible(item)
+        if item.get('review_path') and eligible(item)
     }
     for item in scope.get("external_videos", []):
         if str(item.get("drive_file_id") or "") in ignored_ids:
@@ -1265,7 +1308,7 @@ def _external_assignments(scope, creator, local_groups):
         if item.get("missing_from_daily") or item.get("outside_daily_scan"):
             continue
         file_id = str(item.get("drive_file_id") or "")
-        if (not item.get("review_path")
+        if (not item.get('review_path')
                 and (normalize_video_identity(item.get("file_name")) in active_review_names
                      or rework_original_by_id.get(file_id) in eligible_review_ids)):
             continue
@@ -1467,6 +1510,7 @@ def reconcile_daily_quantity(
         groups, warnings = collect_assignments(
             config, root, records, allowed_dates=allowed_dates,
             ignored_file_ids=ignored_ids, classification_overrides=overrides,
+            review_overrides=previous.get('review_overrides'),
         )
         scanned_days = set(previous.get("daily_scans", {}))
         scanned_ids = {
@@ -1524,7 +1568,7 @@ def reconcile_daily_quantity(
                           "updated_at": datetime.now().astimezone().isoformat(timespec="seconds")}
             if not dry_run:
                 if not retired_periods:
-                    _record_manual_refresh(next_state, manual_refresh, {})
+                    _record_manual_refresh(next_state, manual_refresh, {}, selected_dates)
                 state[scope] = next_state
                 _save_state(state_path, state)
             return {"updated": [], "warnings": warnings, "counted": 0,
@@ -1597,7 +1641,7 @@ def reconcile_daily_quantity(
                             "updated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
                             "cells": next_cells}
             if verified_cells or not retired_periods:
-                _record_manual_refresh(state[scope], manual_refresh, verified_cells)
+                _record_manual_refresh(state[scope], manual_refresh, verified_cells, selected_dates)
             _save_state(state_path, state)
         return {"updated": [{"range": a1, "count": number}
                             for _, _, a1, number in pending],

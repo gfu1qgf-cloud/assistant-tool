@@ -27,6 +27,7 @@ from model.DailyQuantityStats import (
     external_video_sources,
     pending_review_quantity_records,
     set_daily_quantity_ignored,
+    set_daily_quantity_review_required,
     update_external_video_records,
 )
 from model.TaskResultOrganizer import load_effective_config
@@ -338,6 +339,8 @@ class TaskDeliveryPlugin:
         if self.daily_quantity_dialog is None:
             dialog = DailyQuantityDialog(self.context.parent_widget)
             dialog.refresh_requested.connect(lambda: self.refresh_daily_quantity(manual=True))
+            dialog.refresh_dates_requested.connect(lambda dates: self.refresh_daily_quantity(manual=True, only_dates=dates))
+            dialog.review_requirement_requested.connect(self.set_daily_quantity_review_requirement)
             dialog.scan_requested.connect(self.scan_daily_quantity_folder)
             dialog.scan_date_requested.connect(self.scan_daily_quantity_date)
             dialog.view_date_requested.connect(self.view_daily_quantity_date)
@@ -521,7 +524,7 @@ class TaskDeliveryPlugin:
             return True
         return False
 
-    def refresh_daily_quantity(self, *, manual=False):
+    def refresh_daily_quantity(self, *, manual=False, only_dates=None):
         if self.daily_quantity_inspection_thread is not None:
             return False
         if self.daily_quantity_thread is not None and thread_is_active(self.daily_quantity_thread):
@@ -543,9 +546,21 @@ class TaskDeliveryPlugin:
                     "请先在程序设置 → 整理任务结果填写每日数量表格链接。"
                 )
             return False
-        if not self._save_daily_quantity_external_edits(config, root):
-            return False
-        thread = DailyQuantityThread(config, root, self.context.parent_widget, manual=manual)
+        if manual and only_dates is None and self.daily_quantity_dialog is not None:
+            only_dates = [self.daily_quantity_dialog.folder_day.date().toString('yyyy-MM-dd')]
+        if manual and self.daily_quantity_dialog is not None and only_dates is not None:
+            edited_dates = {edit['batch_date'] for edit in self.daily_quantity_dialog.changed_external_edits()}
+            extra = edited_dates - set(only_dates)
+            if extra:
+                answer = QtWidgets.QMessageBox.question(self.daily_quantity_dialog, '其他日期有未保存的修改',
+                    '还修改了这些日期：' + '、'.join(sorted(extra)) + '\n是否保存并一起刷新？',
+                    QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No,
+                    QtWidgets.QMessageBox.StandardButton.No)
+                if answer != QtWidgets.QMessageBox.StandardButton.Yes: return False
+                only_dates = sorted(set(only_dates) | edited_dates)
+        if not self._save_daily_quantity_external_edits(config, root): return False
+        options = {'only_dates': only_dates} if only_dates is not None else {}
+        thread = DailyQuantityThread(config, root, self.context.parent_widget, manual=manual, **options)
         self.daily_quantity_thread = thread
         thread.completed.connect(self._daily_quantity_completed)
         thread.failed.connect(self._daily_quantity_failed)
@@ -554,6 +569,25 @@ class TaskDeliveryPlugin:
             self.daily_quantity_dialog.set_busy(True)
         thread.start()
         return True
+
+    def set_daily_quantity_review_requirement(self, file_ids, required):
+        dialog = self.daily_quantity_dialog
+        if dialog is None: return False
+        threads = (self.daily_quantity_thread, self.daily_quantity_folder_thread,
+                   self.daily_quantity_date_thread, self.daily_quantity_inspection_thread)
+        if any(thread is not None and thread_is_active(thread) for thread in threads):
+            dialog.folder_status.setText('统计或扫描仍在进行，请结束本轮后修改审核要求。'); return False
+        config = self.context.load_config(); root = self.context.parent_widget.task_path_edit.text().strip()
+        if not self._save_daily_quantity_external_edits(config, root): return False
+        try:
+            result = set_daily_quantity_review_required(config, root, file_ids, required)
+            dialog.show_external_records(external_video_records(config, root),
+                day=dialog.folder_day.date().toString('yyyy-MM-dd'))
+        except (OSError, ValueError) as error:
+            dialog.show_error(str(error)); return False
+        self.refresh_daily_quantity_review_queue()
+        dialog.folder_status.setText(f'已保存 {result["count"]} 个视频的审核要求；正在核对相关日期数量。')
+        return self.refresh_daily_quantity(only_dates=result['dates'])
 
     def _save_daily_quantity_external_edits(self, config, root):
         dialog = self.daily_quantity_dialog

@@ -39,16 +39,18 @@ class DailyQuantityThread(QtCore.QThread):
     completed = QtCore.pyqtSignal(object)
     failed = QtCore.pyqtSignal(str)
 
-    def __init__(self, config, root, parent=None, *, manual=False):
+    def __init__(self, config, root, parent=None, *, manual=False, only_dates=None):
         super().__init__(parent)
         self.config = dict(config)
         self.root = str(root)
         self.manual = bool(manual)
+        self.only_dates = None if only_dates is None else tuple(only_dates)
 
     def run(self):
         try:
+            options = {'only_dates': self.only_dates} if self.only_dates is not None else {}
             self.completed.emit(reconcile_daily_quantity(self.config, self.root, verify_content=True,
-                                                         manual_refresh=self.manual))
+                                                         manual_refresh=self.manual, **options))
         except Exception as exc:
             self.failed.emit(f"{type(exc).__name__}: {exc}")
 
@@ -112,6 +114,8 @@ class DailyQuantityDialog(QtWidgets.QDialog):
     edit_sheet_requested = QtCore.pyqtSignal()
     edit_categories_requested = QtCore.pyqtSignal()
     refresh_requested = QtCore.pyqtSignal()
+    refresh_dates_requested = QtCore.pyqtSignal(object)
+    review_requirement_requested = QtCore.pyqtSignal(object, object)
     scan_requested = QtCore.pyqtSignal(str, str, str)
     scan_date_requested = QtCore.pyqtSignal(str)
     view_date_requested = QtCore.pyqtSignal(str)
@@ -161,7 +165,7 @@ class DailyQuantityDialog(QtWidgets.QDialog):
         toolbar.addWidget(self.scan_date_button)
         toolbar.addStretch(1)
         self.refresh_button = QtWidgets.QPushButton("保存并刷新数量")
-        self.refresh_button.setToolTip("保存清单里的修改，重新核对本地任务表并同步每日数量表格。")
+        self.refresh_button.setToolTip("只刷新上方所选交付日期，不把其他日期的历史记录冒充本次手动核对。")
         self.refresh_button.clicked.connect(self.refresh_requested.emit)
         toolbar.addWidget(self.refresh_button)
         layout.addLayout(toolbar)
@@ -410,7 +414,9 @@ class DailyQuantityDialog(QtWidgets.QDialog):
         bulk_row.addWidget(self.edit_categories_button)
         source_layout.addLayout(bulk_row)
         self.save_external_button = QtWidgets.QPushButton("保存分类并刷新数量")
-        self.save_external_button.clicked.connect(self.refresh_requested.emit)
+        self.save_external_button.clicked.connect(lambda: self.refresh_dates_requested.emit(
+            sorted({edit['batch_date'] for edit in self.changed_external_edits()} or
+                   {self.folder_day.date().toString('yyyy-MM-dd')})))
         self.copy_list_button = QtWidgets.QPushButton("复制当前清单")
         self.copy_list_button.clicked.connect(self._copy_current_list)
         self.ignore_button = QtWidgets.QPushButton("确定忽略所选")
@@ -686,7 +692,7 @@ class DailyQuantityDialog(QtWidgets.QDialog):
                 state += " · 已移出日期目录，停计"
             if record.get("outside_daily_scan"):
                 state += " · 不在日期目录，停计"
-            if record.get("review_path"):
+            if record.get('review_required', record.get("review_path")):
                 state += " · 审核暂存"
                 state += {
                     "passed": " · 已通过", "needs_changes": " · 需修改",
@@ -694,6 +700,10 @@ class DailyQuantityDialog(QtWidgets.QDialog):
                 }.get(record.get("review_status"), " · 待审核")
                 if record.get("review_status") != "passed":
                     state += " · 暂不计数"
+            if record.get('review_required_override') is False:
+                state += ' · 人工设为无需审核'
+            elif record.get('review_required_override') is True:
+                state += ' · 人工设为需要审核'
             if str(record.get("batch_slot") or "").strip() in {"", "00"}:
                 state += " · 默认时段 03"
             elif effective_batch_slot(record.get("batch_slot")) not in {"01", "02", "03"}:
@@ -782,7 +792,7 @@ class DailyQuantityDialog(QtWidgets.QDialog):
                   "untracked": "未找到审核记录"}
         changed = False
         for row, record in enumerate(self._visible_records):
-            if not record.get("review_path"):
+            if not record.get('review_required', record.get("review_path")):
                 continue
             key = "google:" + str(record.get("drive_file_id") or "")
             status = str(history.get(key, {}).get("status") or "untracked")
@@ -941,6 +951,12 @@ class DailyQuantityDialog(QtWidgets.QDialog):
         clear.triggered.connect(self.external_table.clearSelection)
         clear.setEnabled(bool(rows))
         select_all.setEnabled(bool(self.external_table.rowCount()))
+        review_menu = menu.addMenu('是否需要审核（选中视频）')
+        selected_ids = [str(self._visible_records[row].get('drive_file_id') or '') for row in rows]
+        for label, required in (('设为无需审核…', False), ('设为需要审核…', True), ('恢复自动判断…', None)):
+            action = review_menu.addAction(label)
+            action.setEnabled(any(selected_ids))
+            action.triggered.connect(lambda _checked=False, value=required, ids=selected_ids: self._request_review_requirement(rows, value, file_ids=ids))
         slot_menu = menu.addMenu("设置交付时段并计数（选中行）")
         for slot, label in (("01", "01 · 12点"), ("02", "02 · 18点"),
                             ("03", "03 · 24点")):
@@ -967,6 +983,19 @@ class DailyQuantityDialog(QtWidgets.QDialog):
             action.setEnabled(bool(rows))
             action.triggered.connect(lambda _checked=False, target=ignored: self._request_ignore(rows, target))
         return menu
+
+    def _request_review_requirement(self, rows, required, *, file_ids=None):
+        ids = list(dict.fromkeys(file_ids if file_ids is not None else
+            [str(self._visible_records[row].get('drive_file_id') or '') for row in rows]))
+        ids = [value for value in ids if value]
+        if not ids: return
+        label = '无需审核' if required is False else '需要审核' if required is True else '自动判断'
+        text = f'将所选 {len(ids)} 个视频设为“{label}”，保存并重新核对相关日期的数量？\n'
+        text += '无需审核的视频不再等待审核通过；分类、计数勾选、去重等其他规则仍然有效。\n不会伪造审核通过，也不修改审核表。'
+        answer = QtWidgets.QMessageBox.question(self, '修改审核要求', text,
+            QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No,
+            QtWidgets.QMessageBox.StandardButton.No)
+        if answer == QtWidgets.QMessageBox.StandardButton.Yes: self.review_requirement_requested.emit(ids, required)
 
     def _set_external_slot(self, rows, slot):
         changed = locked = 0
@@ -1202,8 +1231,14 @@ class DailyQuantityDialog(QtWidgets.QDialog):
         recorded = QtCore.QDate.fromString(latest, "yyyy-MM-dd")
         valid = recorded.isValid() and recorded <= self.folder_day.maximumDate()
         text = f"手动刷新至：{latest}" if valid else "手动刷新至：尚无手动刷新记录"
+        requested = manual.get('requested_dates')
+        if isinstance(requested, list) and requested:
+            text = '手动刷新日期：' + '、'.join(requested)
+            if not valid: text += '（未取得可确认的同步记录）'
+        elif valid:
+            text += '（全量刷新记录，非当前所选日期）'
         raw = str(manual.get("updated_at") or "")
-        if raw and not valid:
+        if raw and not valid and not requested:
             text = "手动刷新至：本次未取得可确认的统计日期"
         if raw:
             try:
