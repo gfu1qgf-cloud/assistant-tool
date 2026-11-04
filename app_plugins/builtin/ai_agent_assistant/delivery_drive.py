@@ -181,6 +181,13 @@ def download_file(job, item, directory, drive, run, *, verify=verify_video):
         if item.get('md5Checksum') and actual_md5 != item['md5Checksum']: raise ValueError('Drive成品校验失败，稍后重新下载。')
         verify(pending)
         sha256 = _digest(pending, run)
+        if not item.get('md5Checksum'):
+            # Public downloads cannot identify remote revisions in advance.
+            # Content identity lets a forced re-collection preserve both versions.
+            no_reparse(target, directory)
+            # Also reuse equal files published before content-based filenames.
+            if not target.is_file() or _digest(target, run) != sha256:
+                target = no_reparse(directory/(prefix + sha256[:16] + '_' + name), directory)
         run.check_canceled(); no_reparse(target, directory)
         try:
             if os.name == 'nt': data_io.rename(pending, target)

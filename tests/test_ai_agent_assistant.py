@@ -209,8 +209,35 @@ class AgentUiTests(unittest.TestCase):
         self.main.deleteLater(); self.app.sendPostedEvents(None, QtCore.QEvent.Type.DeferredDelete); self.app.processEvents()
     def test_register_does_not_create_files_or_network(self):
         self.assertEqual(list(Path(self.temp.name).iterdir()), [])
-        self.assertEqual(self.context.register_command.call_count, 5)
+        self.assertEqual(self.context.register_command.call_count, 7)
         self.assertEqual(self.context.register_main_widget.call_count, 1)
+    def test_main_menu_check_runs_without_opening_assistant_or_resubmitting(self):
+        from app_plugins.api import MAIN_MENU, TASK_CONTEXT_MENU
+        commands = {call.args[0].command_id: call.args[0] for call in self.context.register_command.call_args_list}
+        command = commands['received_check']
+        self.assertEqual(command.locations, frozenset({MAIN_MENU, TASK_CONTEXT_MENU}))
+        self.context.notify = Mock()
+        with patch.object(self.plugin.receipts, 'check') as check, patch.object(self.plugin, 'open_dialog') as opened:
+            command.callback((0, 1))
+        check.assert_called_once_with(manual=True); opened.assert_not_called()
+        self.assertIsNone(self.plugin.dialog); self.assertEqual(list(Path(self.temp.name).iterdir()), [])
+        self.context.notify.assert_called_once()
+    def test_main_recollect_uses_directory_identity_and_requires_confirmation(self):
+        self.context.task_badge_keys = Mock(return_value=['C:/example/task'])
+        commands = {call.args[0].command_id: call.args[0] for call in self.context.register_command.call_args_list}
+        with patch.object(QtWidgets.QMessageBox, 'question', return_value=QtWidgets.QMessageBox.StandardButton.No), patch.object(self.plugin.receipts, 'check') as check:
+            commands['received_again'].callback((3,))
+        self.context.task_badge_keys.assert_called_once_with((3,)); check.assert_not_called()
+        with patch.object(QtWidgets.QMessageBox, 'question', return_value=QtWidgets.QMessageBox.StandardButton.Yes), patch.object(self.plugin.receipts, 'check') as check:
+            commands['received_again'].callback((3,))
+        check.assert_called_once_with(manual=True, ids=None, directories=['C:/example/task'], force=True)
+        self.assertIsNone(self.plugin.dialog)
+    def test_recollect_while_busy_or_empty_never_resets_or_opens_confirmation(self):
+        with patch.object(QtWidgets.QMessageBox, 'question') as question:
+            with self.assertRaises(ValueError): self.plugin.request_recollect(ids=[])
+            self.plugin.receipts.handle = object()
+            with self.assertRaises(ValueError): self.plugin.request_recollect(ids=['synthetic'])
+        question.assert_not_called(); self.plugin.receipts.handle = None
     def test_corrupt_queue_is_visible_error_not_unhandled_qt_callback(self):
         self.plugin.store.file.write_bytes(b'not a database')
         with patch.object(QtWidgets.QMessageBox, 'warning') as warning:

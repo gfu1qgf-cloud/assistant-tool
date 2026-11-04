@@ -11,6 +11,7 @@ class ReceiptMonitor(QtCore.QObject):
         self.plugin = plugin
         self.handle = None
         self.running = False
+        self.manual_notice = False
         self.status = '自动收取将在程序启动后运行'
         self.timer = QtCore.QTimer(self)
         self.timer.setInterval(60000)
@@ -50,7 +51,7 @@ class ReceiptMonitor(QtCore.QObject):
                 manager.bind('ai_agent_assistant.downloads', selected[0])
         return self.plugin.context.prepare_google_account('downloads')
 
-    def check(self, *, manual=False, ids=None):
+    def check(self, *, manual=False, ids=None, directories=None, force=False):
         if self.handle is not None:
             if manual: self.show_status('正在收取成品，进度可在主程序后台任务中查看。')
             return
@@ -72,10 +73,12 @@ class ReceiptMonitor(QtCore.QObject):
             sheets = self.plugin.context.prepare_google_account('sheets')
             try: drive = self.download_authorization()
             except ValueError: drive = None  # Public single-file downloads need no login.
+            self.manual_notice = bool(manual)
             self.handle = self.plugin.context.submit_background_task(title='AI Agent · 检查并收取成品',
                 runner=run_receipts, payload={'root': str(self.plugin.context.storage.path),
                     'sheets_authorization': sheets, 'drive_authorization': drive,
-                    'ids': list(ids) if ids is not None else None},
+                    'ids': list(ids) if ids is not None else None,
+                    'directories': list(directories) if directories is not None else None, 'force': bool(force)},
                 kind='network', execution='parallel', retryable=False,
                 resources=['agent-receipts:' + str(store.root.path).casefold(),
                            *['agent-sheet:' + value.split(':', 1)[0] for value in sorted(destinations)]])
@@ -88,15 +91,24 @@ class ReceiptMonitor(QtCore.QObject):
     def completed(self, result):
         self.show_status(result['message'])
         if result.get('task_badges') is not None: self.plugin.notices.apply_snapshot(result['task_badges'])
-        if result.get('downloaded'):
+        if result.get('downloaded') or self.manual_notice:
             self.plugin.context.log(result['message'])
+        if not result.get('task_badges', {}).get('notify_files'): self.notify_manual(result['message'])
         if self.plugin.dialog: self.plugin.dialog.reload()
 
     def failed(self, message):
         self.show_status('成品收取稍后自动重试：' + str(message))
+        self.notify_manual(self.status)
         self.plugin.notices.refresh()
+    def notify_manual(self, message):
+        dialog = self.plugin.dialog
+        notify = getattr(self.plugin.context, 'notify', None)
+        if self.manual_notice and notify and not (dialog and dialog.isVisible()):
+            try: notify('AI Agent 成品', message)
+            except Exception as error: self.plugin.context.log('成品检查通知失败：' + str(error))
     def progress(self, message, _percent): self.show_status(message)
     def finished(self):
         if self.sender() is not self.handle: return
         self.handle = None
+        self.manual_notice = False
         if self.plugin.dialog: self.plugin.dialog.reload()

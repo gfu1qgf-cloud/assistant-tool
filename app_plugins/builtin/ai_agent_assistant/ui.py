@@ -38,6 +38,7 @@ class AssistantDialog(QtWidgets.QDialog):
             ('check', '核对所选提交结果', self.check_result),
             ('receive', '立即检查并收取成品', self.receive_results),
             ('retry_download', '重试所选任务下载', self.retry_downloads),
+            ('recollect_download', '重新收取所选成品…', self.recollect_downloads),
             ('open_result', '打开原任务成品目录', self.open_result),
             ('remove', '移除所选草稿…', self.remove_drafts),
             ('select_all', '全选任务\tCtrl+A', self.select_all),
@@ -239,6 +240,7 @@ class AssistantDialog(QtWidgets.QDialog):
             self.actions[key].setEnabled(not self._active and enabled)
         self.actions['receive'].setEnabled(not self._active)
         self.actions['retry_download'].setEnabled(not self._active and bool(ids))
+        self.actions['recollect_download'].setEnabled(not self._active and bool(ids))
         self.actions['open_result'].setEnabled(len(ids) == 1)
 
     def busy(self, active):
@@ -257,7 +259,7 @@ class AssistantDialog(QtWidgets.QDialog):
         menu = QtWidgets.QMenu(self)
         for key in ('submit', 'copy', 'check'): menu.addAction(self.actions[key])
         menu.addSeparator()
-        for key in ('receive', 'retry_download', 'open_result'): menu.addAction(self.actions[key])
+        for key in ('receive', 'retry_download', 'recollect_download', 'open_result'): menu.addAction(self.actions[key])
         menu.addSeparator()
         for key in ('select_all', 'select_ready', 'select_uncertain', 'clear'): menu.addAction(self.actions[key])
         menu.addSeparator(); menu.addAction(self.actions['remove'])
@@ -329,6 +331,9 @@ class AssistantDialog(QtWidgets.QDialog):
         ids = self.selected_ids()
         self.plugin.store.retry_deliveries(ids)
         self.plugin.receipts.check(manual=True, ids=ids)
+
+    @guarded
+    def recollect_downloads(self): self.plugin.request_recollect(ids=self.selected_ids())
 
     @guarded
     def open_result(self):

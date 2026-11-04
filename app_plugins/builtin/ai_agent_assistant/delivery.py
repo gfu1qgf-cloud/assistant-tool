@@ -10,6 +10,7 @@ from .delivery_drive import result_links, collect_files, output_directory, downl
 from .sheets import inspect, a1, column, _execute
 from .store import Store
 from .tasks import spreadsheet_id
+from .notice_data import directory_key
 
 DONE = {'已完成', '完成', '制作完成', '生成完成', 'completed', 'complete', 'done'}
 
@@ -73,6 +74,8 @@ def acknowledge(api, identifier, name, info, job, expected_link, run):
 
 
 def run_receipts(payload, run, *, sheets=None, drive=None, fetch=download_file, clock=time.time):
+    if payload.get('force') and not (payload.get('ids') or payload.get('directories')):
+        raise ValueError('重新收取必须明确选择任务；未重置任何下载记录。')
     store = Store(payload['root']); token = uuid4().hex
     if not store.claim_delivery_run(token): return {'message': '另一进程正在收取成品。', 'downloaded': 0, 'pending': False}
     leased = LeasedRun(run, store, token)
@@ -88,7 +91,19 @@ def run_receipts(payload, run, *, sheets=None, drive=None, fetch=download_file, 
         default = ''
         if settings.get('url') and settings.get('sheet'):
             default = spreadsheet_id(settings['url']) + ':' + settings['sheet']
-        for job in store.jobs(payload.get('ids'), limit=100000):
+        jobs = store.jobs(payload.get('ids'), limit=100000)
+        if payload.get('directories') is not None:
+            selected = {directory_key(path) for path in payload['directories']}
+            matched = set(); chosen = []
+            # Latest submitted job per original directory; never let an old
+            # version or a new local draft re-download an unrelated result.
+            for job in jobs:
+                directory = directory_key(job['payload'].get('target_dir') or '')
+                if directory in selected and directory not in matched and job['state'] in {'submitted', 'sending', 'uncertain'}:
+                    chosen.append(job); matched.add(directory)
+            jobs = chosen
+        if payload.get('force'): store.retry_deliveries([job['id'] for job in jobs], force=True)
+        for job in jobs:
             destination = job['destination'] or default
             if destination: groups[destination].append(job)
         downloaded, failed, pending, budget, ack_budget = 0, 0, False, 8, 8
@@ -136,7 +151,7 @@ def run_receipts(payload, run, *, sheets=None, drive=None, fetch=download_file, 
                     completed, attempted = 0, 0
                     for item in files:
                         leased.check_canceled(); record = records.get(item['id'], {})
-                        if cached_file(record, directory) and (not item.get('md5Checksum') or record.get('md5') == item['md5Checksum']):
+                        if not record.get('force_download') and cached_file(record, directory) and (not item.get('md5Checksum') or record.get('md5') == item['md5Checksum']):
                             completed += 1; continue
                         if record.get('retry_at', 0) > clock(): pending = True; continue
                         if budget <= 0 or attempted >= 8: pending = True; continue
@@ -150,7 +165,7 @@ def run_receipts(payload, run, *, sheets=None, drive=None, fetch=download_file, 
                         except Exception as error:
                             leased.check_canceled()
                             attempts = int(record.get('attempts', 0)) + 1
-                            store.save_delivery(job['id'], item['id'], {'state': 'retry', 'attempts': attempts,
+                            store.save_delivery(job['id'], item['id'], {**record, 'state': 'retry', 'attempts': attempts,
                                 'retry_at': clock() + min(3600, 60 * 2 ** min(attempts - 1, 6)), 'detail': error_message(error)})
                             failed += 1; pending = True
                     if completed == len(files):
@@ -181,6 +196,6 @@ def run_receipts(payload, run, *, sheets=None, drive=None, fetch=download_file, 
                         'total': discovery.get('total'), 'detail': error_message(error)})
                     store.delivery_note(job['id'], '收取待重试', f'检查尝试累计 {attempts} 次；' + error_message(error))
         from .notice_data import notice_snapshot
-        return {'message': f'成品检查完成：本次下载 {downloaded} 个视频。' + ('仍有任务等待重试或继续收取。' if pending or failed else ''),
+        return {'message': ('所选任务没有匹配的已提交 Agent 作业。' if not groups else f'成品检查完成：本次下载 {downloaded} 个视频。') + ('仍有任务等待重试或继续收取。' if pending or failed else ''),
                 'downloaded': downloaded, 'pending': pending, 'failed': failed, 'task_badges': notice_snapshot(store)}
     finally: store.release_delivery_run(token)

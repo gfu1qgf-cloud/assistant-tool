@@ -9,7 +9,7 @@ from .segmentation import require_available
 class AIAgentAssistantPlugin(QtCore.QObject):
     plugin_id = 'ai_agent_assistant'
     display_name = 'AI Agent 助手'
-    version = '0.3.1'
+    version = '0.3.2'
     required_api_version = 2
 
     def __init__(self):
@@ -37,13 +37,44 @@ class AIAgentAssistantPlugin(QtCore.QObject):
         context.register_command(PluginCommand('oral', '添加到 AI Agent 口播任务…', self.open_tasks,
             frozenset({TASK_CONTEXT_MENU}), order=35, enabled=lambda rows: bool(rows)))
         context.register_main_widget(PluginMainWidget('quick', self.quick, order=32, title=self.display_name))
+        context.register_command(PluginCommand('received_check', '检查并收取 Agent 成品', self.check_received,
+            frozenset({MAIN_MENU, TASK_CONTEXT_MENU}), order=36,
+            tooltip='立即后台检查所有已有 Agent 任务的最新成品；不打开助手，不重新提交制作。'))
+        context.register_command(PluginCommand('received_again', '重新收取所选 Agent 成品…', self.recollect_received,
+            frozenset({TASK_CONTEXT_MENU}), order=37, enabled=lambda rows: bool(rows),
+            tooltip='重新下载校验所选任务最近已提交作业的当前成品，保留旧文件；不重新生成。'))
         context.register_command(PluginCommand('received_open', '打开 Agent 成品目录', self.notices.open_result,
-            frozenset({TASK_CONTEXT_MENU}), order=36, enabled=lambda rows: len(self.notices.selected(rows)) == 1))
+            frozenset({TASK_CONTEXT_MENU}), order=38, enabled=lambda rows: len(self.notices.selected(rows)) == 1))
         context.register_command(PluginCommand('received_seen', '标记 Agent 成品已查看', self.notices.mark_seen,
-            frozenset({TASK_CONTEXT_MENU}), order=37, enabled=lambda rows: any(item['unread'] for item in self.notices.selected(rows))))
+            frozenset({TASK_CONTEXT_MENU}), order=39, enabled=lambda rows: any(item['unread'] for item in self.notices.selected(rows))))
         context.register_command(PluginCommand('received_filter', '只看新成品', self.notices.set_filter,
-            frozenset({MAIN_MENU, TASK_CONTEXT_MENU}), order=38, checkable=True, checked=lambda: self.notices.filtered,
+            frozenset({MAIN_MENU, TASK_CONTEXT_MENU}), order=40, checkable=True, checked=lambda: self.notices.filtered,
             submenu='Agent 成品', tooltip='仅显示有未查看成品的任务；再次点击恢复全部，空列表时也可从插件菜单取消。'))
+
+    def check_received(self, _rows=()):
+        self.receipts.check(manual=True)
+        self.report_receipt_status()
+
+    def report_receipt_status(self):
+        self.context.log(self.receipts.status)
+        notify = getattr(self.context, 'notify', None)
+        if notify: notify('AI Agent 成品', self.receipts.status)
+
+    def recollect_received(self, rows):
+        directories = self.context.task_badge_keys(rows)
+        return self.request_recollect(directories=directories)
+
+    def request_recollect(self, *, ids=None, directories=None):
+        if not ids and not directories: raise ValueError('请先选择要重新收取的任务。')
+        if self.receipts.handle is not None or self.handle is not None:
+            raise ValueError('当前 Agent 操作尚未结束，请完成后再重新收取；未重置下载记录。')
+        answer = QtWidgets.QMessageBox.question(self.context.parent_widget, '重新收取 Agent 成品',
+            '重新读取所选任务的当前成品链接并下载校验？\n已收取的文件也会重新检查，旧文件保留；内容相同不额外留副本。\n不会重新提交制作或消耗生成积分。',
+            QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No,
+            QtWidgets.QMessageBox.StandardButton.No)
+        if answer != QtWidgets.QMessageBox.StandardButton.Yes: return
+        self.receipts.check(manual=True, ids=ids, directories=directories, force=True)
+        self.report_receipt_status()
 
     def quick(self, parent=None):
         widget = QtWidgets.QWidget(parent); layout = QtWidgets.QVBoxLayout(widget); layout.setContentsMargins(0, 0, 0, 0)

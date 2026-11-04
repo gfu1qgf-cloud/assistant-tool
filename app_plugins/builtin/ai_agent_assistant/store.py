@@ -67,13 +67,14 @@ class Store:
         with self.connect() as db:
             db.execute('INSERT OR REPLACE INTO delivery_files VALUES (?,?,?)', (key, file_id, json.dumps(record, ensure_ascii=False)))
 
-    def retry_deliveries(self, ids):
+    def retry_deliveries(self, ids, *, force=False):
         with self.connect() as db:
             for key in dict.fromkeys(ids):
                 for file_id, raw in db.execute('SELECT file_id,record FROM delivery_files WHERE job_id=?', (key,)).fetchall():
                     record = json.loads(raw)
-                    if record.get('state') != 'downloaded':
+                    if record.get('state') != 'downloaded' or force:
                         record['retry_at'] = 0
+                        if force and not file_id.startswith('@'): record['force_download'] = True
                         db.execute('UPDATE delivery_files SET record=? WHERE job_id=? AND file_id=?', (json.dumps(record, ensure_ascii=False), key, file_id))
 
     def claim_delivery_run(self, token, *, clock=None):
