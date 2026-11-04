@@ -31,6 +31,7 @@ class Store:
             db.execute('CREATE TABLE IF NOT EXISTS delivery_lease (id INTEGER PRIMARY KEY CHECK(id=1), token TEXT NOT NULL, expires REAL NOT NULL)')
             db.execute('CREATE TABLE IF NOT EXISTS delivery_seen (job_id TEXT NOT NULL,file_id TEXT NOT NULL,checksum TEXT NOT NULL,PRIMARY KEY(job_id,file_id,checksum))')
             db.execute('CREATE TABLE IF NOT EXISTS delivery_announced (job_id TEXT NOT NULL,file_id TEXT NOT NULL,checksum TEXT NOT NULL,PRIMARY KEY(job_id,file_id,checksum))')
+            db.execute('CREATE TABLE IF NOT EXISTS reference_uploads (account TEXT NOT NULL,folder TEXT NOT NULL,sha256 TEXT NOT NULL,file_id TEXT NOT NULL,PRIMARY KEY(account,folder,sha256))')
             if not version: db.execute('PRAGMA user_version=1')
             yield db
             db.commit()
@@ -122,7 +123,7 @@ class Store:
     def jobs(self, ids=None, limit=1000):
         if not self.file.exists(): return []
         with self.connect() as db:
-            rows = db.execute('SELECT id,payload,state,destination,detail,created FROM jobs ORDER BY rowid DESC LIMIT ?', (limit,)).fetchall() if ids is None else [
+            rows = db.execute('SELECT id,payload,state,destination,detail,created FROM jobs ORDER BY rowid ASC LIMIT ?', (limit,)).fetchall() if ids is None else [
                 db.execute('SELECT id,payload,state,destination,detail,created FROM jobs WHERE id=?', (key,)).fetchone() for key in dict.fromkeys(ids)]
         return [{'id': row[0], 'payload': json.loads(row[1]), 'state': row[2], 'destination': row[3],
                  'detail': row[4], 'created': row[5]} for row in rows if row]
@@ -146,6 +147,41 @@ class Store:
     def remove_drafts(self, ids):
         with self.connect() as db:
             db.executemany('DELETE FROM jobs WHERE id=? AND state IN ("draft","failed")', [(key,) for key in ids])
+
+    def remove_records(self, expected):
+        """Explicit local-only removal; no cloud or media deletion."""
+        with self.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            lease = db.execute('SELECT expires FROM delivery_lease WHERE id=1').fetchone()
+            if lease and lease[0] > time.time(): raise ValueError('成品收取仍在运行，请结束本轮后再移除；未删除记录。')
+            for key, reviewed in expected.items():
+                row = db.execute('SELECT state,digest FROM jobs WHERE id=?', (key,)).fetchone()
+                if not row or tuple(row) != tuple(reviewed): raise ValueError('记录在确认期间已改变，请刷新后重试；未删除记录。')
+            for key in expected:
+                db.execute('DELETE FROM jobs WHERE id=?', (key,))
+                for table in ('delivery_jobs', 'delivery_files', 'delivery_seen', 'delivery_announced'):
+                    db.execute(f'DELETE FROM {table} WHERE job_id=?', (key,))
+
+    def upload_id(self, account, folder, sha256, candidate=None):
+        with self.connect() as db:
+            if candidate:
+                db.execute('INSERT OR IGNORE INTO reference_uploads VALUES (?,?,?,?)', (account, folder, sha256, candidate))
+            row = db.execute('SELECT file_id FROM reference_uploads WHERE account=? AND folder=? AND sha256=?', (account, folder, sha256)).fetchone()
+        return row[0] if row else None
+
+    def replace_reference(self, key, expected, reference):
+        with self.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            row = db.execute('SELECT payload,digest,state FROM jobs WHERE id=?', (key,)).fetchone()
+            if not row or row[1] != expected or row[2] not in {'draft', 'failed'}:
+                raise ValueError('任务在上传期间已改变，上传记录保留，但未覆盖新任务内容。')
+            value = json.loads(row[0]); value['reference'] = reference
+            db.execute('UPDATE jobs SET payload=?,digest=? WHERE id=?', (json.dumps(value, ensure_ascii=False), fingerprint(value), key))
+
+    def fail_draft(self, job, detail):
+        with self.connect() as db:
+            db.execute('UPDATE jobs SET state="failed",detail=? WHERE id=? AND digest=? AND state IN ("draft","failed")',
+                (str(detail)[:1500], job['id'], fingerprint(job['payload'])))
 
     def prepare_drafts(self, ids, *, confirm_chinese=False, expected):
         """Prepare exactly the reviewed snapshots, atomically; never rewrite history."""

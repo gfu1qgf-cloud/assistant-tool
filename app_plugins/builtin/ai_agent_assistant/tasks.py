@@ -57,7 +57,7 @@ def snapshot(target, language=''):
     return value
 
 
-def validate_payload(value):
+def validate_payload(value, *, allow_local_references=False):
     missing = [label for key, label in [('task_id', '任务编号'), ('spoken', '口播原文'),
                                       ('chinese', '中文台词'), ('language', '口播语言')]
                if not str(value.get(key) or '').strip()]
@@ -65,6 +65,10 @@ def validate_payload(value):
     if not value.get('chinese_confirmed'):
         raise ValueError('中文暂取自任务名称，请双击中文台词核对保存；也可确认来源后重新导入。')
     reference = str(value.get('reference') or '').strip()
+    if reference and allow_local_references:
+        from .references import reference_sources
+        reference_sources(value)
+        reference = ''
     if reference:
         for link in reference.splitlines():
             parts = urlsplit(link.strip())

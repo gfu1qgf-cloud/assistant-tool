@@ -97,7 +97,7 @@ def run_receipts(payload, run, *, sheets=None, drive=None, fetch=download_file, 
             matched = set(); chosen = []
             # Latest submitted job per original directory; never let an old
             # version or a new local draft re-download an unrelated result.
-            for job in jobs:
+            for job in reversed(jobs):
                 directory = directory_key(job['payload'].get('target_dir') or '')
                 if directory in selected and directory not in matched and job['state'] in {'submitted', 'sending', 'uncertain'}:
                     chosen.append(job); matched.add(directory)

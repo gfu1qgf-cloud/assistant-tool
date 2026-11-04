@@ -9,13 +9,14 @@ from .segmentation import require_available
 class AIAgentAssistantPlugin(QtCore.QObject):
     plugin_id = 'ai_agent_assistant'
     display_name = 'AI Agent 助手'
-    version = '0.3.2'
+    version = '0.4.0'
     required_api_version = 2
 
     def __init__(self):
         super().__init__()
         self.context = self.dialog = self.handle = None
         self._store = None
+        self._pending_reference_plan = None
         from .receipt_monitor import ReceiptMonitor
         self.receipts = ReceiptMonitor(self)
         from .notices import ReceiptNotices
@@ -33,6 +34,8 @@ class AIAgentAssistantPlugin(QtCore.QObject):
             ('https://www.googleapis.com/auth/spreadsheets',), order=60, legacy_bindings=('sheets',)))
         context.register_google_authorization(GoogleAuthorization('downloads', 'AI Agent · 成品下载', 'drive', 'v3',
             ('https://www.googleapis.com/auth/drive',), order=61))
+        context.register_google_authorization(GoogleAuthorization('uploads', 'AI Agent · 素材上传', 'drive', 'v3',
+            ('https://www.googleapis.com/auth/drive',), order=62))
         context.register_command(PluginCommand('open', 'AI Agent 助手…', lambda _rows: self.open_ui(), frozenset({MAIN_MENU}), order=32))
         context.register_command(PluginCommand('oral', '添加到 AI Agent 口播任务…', self.open_tasks,
             frozenset({TASK_CONTEXT_MENU}), order=35, enabled=lambda rows: bool(rows)))
@@ -126,16 +129,18 @@ class AIAgentAssistantPlugin(QtCore.QObject):
             self.dialog.status.setText(f'已导入 {len(result["imported"])} 条，已存在 {len(result["unchanged"])} 条，未覆盖 {len(result["blocked"])} 条，跳过无台词 {skipped} 条。' + '；'.join(errors[:3]))
         return result
 
-    def submit(self, target, ids, operation):
+    def submit(self, target, ids, operation, *, reference_approval=None):
         if self.handle is not None: raise ValueError('当前操作尚未结束。')
         jobs = self.store.jobs(ids)
         if not jobs: raise ValueError('请选择任务。')
         if operation == 'submit': require_available(self.context)
+        if operation == 'submit' and reference_approval is None and self.plan_local_references(target, jobs): return
         self.store.save_settings(target)
         authorization = self.context.prepare_google_account('sheets')
         self.handle = self.context.submit_background_task(title='AI Agent · 口播' + ('提交' if operation == 'submit' else '核对'),
             runner=run_export, payload={**target, 'ids': list(ids), 'root': str(self.context.storage.path), 'operation': operation,
-                                        'account_id': authorization['account_id'], 'google_authorization': authorization},
+                                        'account_id': authorization['account_id'], 'google_authorization': authorization,
+                                        'reference_approval': reference_approval},
             kind='network', execution='parallel', resources=['agent-sheet:' + spreadsheet_id(target['url'])], retryable=False)
         self.handle.completed.connect(self.completed); self.handle.failed.connect(self.failed); self.handle.finished.connect(self.finished)
         self.handle.progressChanged.connect(self.progress)
@@ -144,6 +149,9 @@ class AIAgentAssistantPlugin(QtCore.QObject):
     def copy_tasks(self, ids):
         if self.handle is not None: raise ValueError('当前操作尚未结束。')
         require_available(self.context)
+        from .references import reference_sources
+        if any(source['kind'] == 'local' for job in self.store.jobs(ids) for source in reference_sources(job['payload'])):
+            raise ValueError('复制表格不会自动上传本地图片，请先提交并确认素材上传，或改为Drive链接。')
         self.handle = self.context.submit_background_task(title='AI Agent · 外文10秒分段与复制',
             runner=run_copy, payload={'ids': list(ids), 'root': str(self.context.storage.path)},
             kind='cpu', execution='parallel', retryable=False)
@@ -152,6 +160,9 @@ class AIAgentAssistantPlugin(QtCore.QObject):
         if self.dialog: self.dialog.busy(True); self.dialog.status.setText('后台分段中，完成后自动复制；不调用AI或音频模型。')
 
     def completed(self, result):
+        if 'upload_plan' in result:
+            self._pending_reference_plan = result
+            return
         if 'clipboard' in result: QtWidgets.QApplication.clipboard().setText(result['clipboard'])
         message = result['message']
         self.context.log(message)
@@ -167,6 +178,46 @@ class AIAgentAssistantPlugin(QtCore.QObject):
         if self.sender() is not self.handle: return
         self.handle = None
         if self.dialog: self.dialog.reload()
+        if self._pending_reference_plan is not None:
+            result, self._pending_reference_plan = self._pending_reference_plan, None
+            self.confirm_local_references(result)
+
+    def plan_local_references(self, target, jobs):
+        from .references import reference_sources, run_reference_plan
+        if not any(source['kind'] == 'local' for job in jobs if job['state'] in {'draft', 'failed'} for source in reference_sources(job['payload'])):
+            return False
+        self.handle = self.context.submit_background_task(title='AI Agent · 预览待上传图片', runner=run_reference_plan,
+            payload={'root': str(self.context.storage.path), 'ids': [job['id'] for job in jobs], 'next': dict(target)},
+            kind='cpu', execution='parallel', retryable=False)
+        self.handle.completed.connect(self.completed); self.handle.failed.connect(self.failed); self.handle.finished.connect(self.finished)
+        if self.dialog: self.dialog.busy(True); self.dialog.status.setText('后台检查图片并生成预览；确认前不会上传或提交。')
+        return True
+
+    def confirm_local_references(self, result):
+        try:
+            if not result['upload_plan']: raise ValueError('本地图片任务已改变，请刷新后重新提交。')
+            from .reference_ui import ReferenceUploadDialog
+            dialog = ReferenceUploadDialog(self, result['upload_plan'])
+            accepted = dialog.exec() == QtWidgets.QDialog.DialogCode.Accepted
+            if not accepted:
+                if self.dialog: self.dialog.status.setText('已取消图片上传；任务未提交。')
+                dialog.deleteLater(); return
+            account = dialog.accounts.currentData(); parent = dialog.parent_id
+            dialog.manager.bind('ai_agent_assistant.uploads', account)
+            authorization = self.context.prepare_google_account('uploads')
+            if authorization['account_id'] != account: raise ValueError('上传账号已改变，请重新确认。')
+            settings = self.store.settings(); settings['upload_folder'] = parent; self.store.save_settings(settings)
+            plan = [{**job, 'files': [{key: value for key, value in image.items() if key != 'thumbnail'}
+                for image in job['files']]} for job in result['upload_plan']]
+            approval = {'confirmed': True, 'authorization': authorization, 'folder': parent, 'plan': plan}
+            dialog.deleteLater()
+            ids = [item['id'] for item in result['upload_plan']]
+            # Include Drive-only tasks from the same reviewed selection as well.
+            ids = result.get('ids', ids)
+            self.submit({**result['next'], 'upload_folder': parent}, ids, 'submit', reference_approval=approval)
+        except Exception as error:
+            if self.dialog: self.dialog.status.setText('素材上传未启动：' + str(error))
+            else: self.context.log('素材上传未启动：' + str(error))
 
     def can_close(self): return (self.handle is None and self.receipts.handle is None and self.notices.handle is None, 'AI Agent 后台操作仍在结束中，请先完成或取消。')
     def start(self): self.notices.refresh(); self.receipts.start()

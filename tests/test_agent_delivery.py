@@ -402,7 +402,7 @@ class ReceiptMonitorTests(unittest.TestCase):
         self.plugin.store.stage([snapshot(target(self.temp.name), 'sk')])
     def test_register_has_independent_drive_purpose_and_no_network(self):
         purposes = [call.args[0].purpose_id for call in self.context.register_google_authorization.call_args_list]
-        self.assertEqual(purposes, ['sheets', 'downloads'])
+        self.assertEqual(purposes, ['sheets', 'downloads', 'uploads'])
         self.context.submit_background_task.assert_not_called()
         self.assertEqual(list(Path(self.temp.name).iterdir()), [])
     def test_no_jobs_or_disabled_auto_mode_does_not_submit_background_work(self):

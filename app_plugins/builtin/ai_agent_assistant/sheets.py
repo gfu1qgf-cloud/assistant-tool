@@ -163,7 +163,7 @@ def validate_options(service, identifier, name, info, run):
                         raise ValueError('状态列使用了范围型下拉验证；请先改为包含程序状态的直接选项列表，未写入。')
 
 
-def run_export(payload, run, *, service=None):
+def run_export(payload, run, *, service=None, upload_service=None):
     if payload.get('operation') not in {'submit', 'check'}: raise ValueError('未知的口播表格操作。')
     identifier = spreadsheet_id(payload['url'])
     name = str(payload.get('sheet') or '').strip()
@@ -196,24 +196,31 @@ def run_export(payload, run, *, service=None):
     if payload.get('operation') == 'check':
         return {'confirmed': len(confirmed), 'added': 0, 'blocked': blocked,
                 'message': f'已核对 {len(confirmed)} 条。未找到的历史提交保持待核对，不自动重发。'}
+    if remaining: validate_options(service, identifier, name, info, run)
     valid, invalid = [], []
     for job in remaining:
-        try: validate_payload(job['payload'])
-        except ValueError as error:
+        try:
+            validate_payload(job['payload'], allow_local_references=True)
+            if job['payload'].get('reference') and 'reference' not in info['mapping']:
+                raise ValueError('表格缺少“素材Drive链接”列，未上传或提交有素材的任务。')
+            from .references import prepare_job_references
+            job = prepare_job_references(job, payload.get('reference_approval'), store, run, api=upload_service)
+            validate_payload(job['payload'])
+        except Exception as error:
+            run.check_canceled()
             invalid.append(job['payload']['task_id'])
-            store.mark([job['id']], 'failed', '', str(error))
+            store.fail_draft(job, str(error))
         else: valid.append(job)
     remaining = valid
     # A fresh complete payload is recorded before the only write attempt.
     if remaining:
-        validate_options(service, identifier, name, info, run)
         prepared, rows = [], []
         for job in remaining:
             run.check_canceled()
             try: row = row_values(job, info['mapping'], info['count'], run)
             except ValueError as error:
                 invalid.append(job['payload']['task_id'])
-                store.mark([job['id']], 'failed', '', str(error))
+                store.fail_draft(job, str(error))
             else: prepared.append(job); rows.append(row)
         remaining = prepared
     if remaining:

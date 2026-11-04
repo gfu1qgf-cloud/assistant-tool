@@ -189,7 +189,7 @@ class HostRegistryTests(unittest.TestCase):
         for cls in (TaskDeliveryPlugin, DocumentFormatterPlugin, AIAgentAssistantPlugin, SheetMonitorPlugin): self.host.install(cls())
         keys = {entry.key for entry in self.host.google_authorizations.entries()}
         self.assertEqual(keys, {'sheet_monitor.sheets', 'task_delivery.drive', 'task_delivery.review_sheet',
-            'task_delivery.task_submission_sheet', 'document_formatter.docs', 'ai_agent_assistant.sheets', 'ai_agent_assistant.downloads'})
+            'task_delivery.task_submission_sheet', 'document_formatter.docs', 'ai_agent_assistant.sheets', 'ai_agent_assistant.downloads', 'ai_agent_assistant.uploads'})
 
     def test_context_cannot_prepare_unregistered_purpose(self):
         from app_plugins.host import PluginContext

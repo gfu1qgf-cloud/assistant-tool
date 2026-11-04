@@ -40,7 +40,8 @@ class AssistantDialog(QtWidgets.QDialog):
             ('retry_download', '重试所选任务下载', self.retry_downloads),
             ('recollect_download', '重新收取所选成品…', self.recollect_downloads),
             ('open_result', '打开原任务成品目录', self.open_result),
-            ('remove', '移除所选草稿…', self.remove_drafts),
+            ('remove', '移除所选本地记录…', self.remove_drafts),
+            ('clone', '复制所选任务为新草稿…', self.clone_drafts),
             ('select_all', '全选任务\tCtrl+A', self.select_all),
             ('select_ready', '只选当前列表可提交任务', self.select_ready),
             ('select_uncertain', '只选待核对任务', self.select_uncertain),
@@ -88,10 +89,10 @@ class AssistantDialog(QtWidgets.QDialog):
         self.url.editingFinished.connect(self.save_target); self.sheet.editingFinished.connect(self.save_target)
         self.chinese_source.toggled.connect(self.save_target)
         self.auto_download.toggled.connect(self.save_auto_download)
-        self.hint = QtWidgets.QLabel('Ctrl+A 全选 · Shift 连选 · Ctrl 多选 · 右键复制、核对或移除草稿 · 双击校对正文。外文提交时自动约10秒分段。', oral)
+        self.hint = QtWidgets.QLabel('Ctrl+A 全选 · Shift 连选 · Ctrl 多选 · 右键复制、核对或管理记录 · 双击校对。外文约10秒分段，本地图片上传前须确认。', oral)
         self.hint.setWordWrap(True); body.addWidget(self.hint)
         self.table = QtWidgets.QTableWidget(0, 8, oral)
-        self.table.setHorizontalHeaderLabels(['任务编号', '任务名称', '语言', '口播原文', '中文台词', '素材链接', '状态', '说明'])
+        self.table.setHorizontalHeaderLabels(['任务编号', '任务名称', '语言', '口播原文', '中文台词', '素材（链接／本地图片）', '状态', '说明'])
         self.table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.ExtendedSelection)
         self.table.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -122,7 +123,8 @@ class AssistantDialog(QtWidgets.QDialog):
         name = self.sheet.text().strip()
         if not name: raise ValueError('请填写口播分页名称。')
         return {'url': 'https://docs.google.com/spreadsheets/d/' + identifier + '/edit', 'sheet': name,
-                'use_task_name_chinese': self.chinese_source.isChecked(), 'auto_download': self.auto_download.isChecked()}
+                'use_task_name_chinese': self.chinese_source.isChecked(), 'auto_download': self.auto_download.isChecked(),
+                'upload_folder': self.plugin.store.settings().get('upload_folder', '')}
 
     def update_target_summary(self):
         self.target_summary.setText('目标：' + (self.sheet.text().strip() if self.url.text().strip() else '尚未设置'))
@@ -186,7 +188,7 @@ class AssistantDialog(QtWidgets.QDialog):
     @guarded
     def reload(self, select_ids=None):
         previous = set(self._selected_ids()) if self._loaded else None
-        jobs = self.plugin.store.jobs()  # Read first: a lost volume must not clear the current view.
+        jobs = self.plugin.store.jobs(limit=100000)  # Preserve source/import order, including history.
         deliveries = self.plugin.store.delivery_statuses()
         self.jobs = jobs; self._jobs_by_id = {job['id']: job for job in jobs}; self._ready = set()
         self._confirm, self._blocked, self._reference_fixes = set(), {}, set()
@@ -196,7 +198,7 @@ class AssistantDialog(QtWidgets.QDialog):
             payload = job['payload']
             candidate = prepare_payload(payload)
             needs_confirm = not candidate.get('chinese_confirmed')
-            try: validate_payload(dict(candidate, chinese_confirmed=True)); problem = ''
+            try: validate_payload(dict(candidate, chinese_confirmed=True), allow_local_references=True); problem = ''
             except ValueError as error: problem = str(error)
             editable = job['state'] in {'draft', 'failed'}
             if editable:
@@ -233,10 +235,10 @@ class AssistantDialog(QtWidgets.QDialog):
         self.send.setText(f'提交所选（{len(ids)}）')
         self.send.setToolTip('中文来源待确认的草稿可一次批量确认；资料不全会说明原因。已提交和待核对记录不会重发。')
         self.send.setEnabled(not self._active and bool(ids))
-        for key in ('submit', 'copy', 'check', 'remove', 'select_all', 'select_ready', 'select_uncertain', 'clear'):
+        for key in ('submit', 'copy', 'check', 'remove', 'clone', 'select_all', 'select_ready', 'select_uncertain', 'clear'):
             enabled = bool(ids) if key in {'copy', 'check', 'clear'} else bool(self.jobs)
             if key == 'submit': enabled = bool(ids)
-            if key == 'remove': enabled = any(self._jobs_by_id[key]['state'] in {'draft', 'failed'} for key in ids if key in self._jobs_by_id)
+            if key in {'remove', 'clone'}: enabled = bool(ids)
             self.actions[key].setEnabled(not self._active and enabled)
         self.actions['receive'].setEnabled(not self._active)
         self.actions['retry_download'].setEnabled(not self._active and bool(ids))
@@ -262,7 +264,7 @@ class AssistantDialog(QtWidgets.QDialog):
         for key in ('receive', 'retry_download', 'recollect_download', 'open_result'): menu.addAction(self.actions[key])
         menu.addSeparator()
         for key in ('select_all', 'select_ready', 'select_uncertain', 'clear'): menu.addAction(self.actions[key])
-        menu.addSeparator(); menu.addAction(self.actions['remove'])
+        menu.addSeparator(); menu.addAction(self.actions['clone']); menu.addAction(self.actions['remove'])
         settings = menu.addMenu('表格与账号')
         for key in ('open_sheet', 'account', 'save_target'): settings.addAction(self.actions[key])
         return menu
@@ -352,12 +354,27 @@ class AssistantDialog(QtWidgets.QDialog):
     @guarded
     def remove_drafts(self):
         ids = self.selected_ids()
-        removable = [key for key in ids if self._jobs_by_id[key]['state'] in {'draft', 'failed'}]
-        if not removable: raise ValueError('所选行没有可移除的草稿。已提交和待核对记录保留。')
-        answer = QtWidgets.QMessageBox.question(self, '移除本地草稿', f'移除所选的 {len(removable)} 条本地草稿？已提交和待核对记录保留，不删除云端数据。')
+        if self.plugin.handle is not None or self.plugin.receipts.handle is not None:
+            raise ValueError('Agent操作仍在运行，请结束本轮后再移除；未删除记录。')
+        expected = {key: (self._jobs_by_id[key]['state'], fingerprint(self._jobs_by_id[key]['payload'])) for key in ids}
+        answer = QtWidgets.QMessageBox.question(self, '移除本地记录',
+            f'移除所选 {len(ids)} 条本地记录并停止后续成品监视？\n包含已提交和待核对记录。\n不删除云端表格、网盘文件或本地成品，也不会取消外部Agent任务。\n重新导入后将使用新作业ID；请先核对旧云端任务，避免重复派单。',
+            QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No,
+            QtWidgets.QMessageBox.StandardButton.No)
         if answer != QtWidgets.QMessageBox.StandardButton.Yes: return
-        self.plugin.store.remove_drafts(removable); self.reload()
-        self.status.setText(f'已移除 {len(removable)} 条本地草稿，云端数据未删除。')
+        self.plugin.store.remove_records(expected); self.reload(); self.plugin.notices.refresh()
+        self.status.setText(f'已移除 {len(ids)} 条本地记录；云端任务和所有文件保留。')
+
+    @guarded
+    def clone_drafts(self):
+        ids = self.selected_ids()
+        answer = QtWidgets.QMessageBox.question(self, '复制为新草稿',
+            '复制所选任务为新草稿，以便修改素材链接或正文后再次提交？\n旧云端任务不会自动取消，请先确认旧任务不会重复执行。',
+            QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No,
+            QtWidgets.QMessageBox.StandardButton.No)
+        if answer != QtWidgets.QMessageBox.StandardButton.Yes: return
+        result = self.plugin.store.stage([self._jobs_by_id[key]['payload'] for key in ids], new_version=True)
+        self.reload(select_ids=result['imported']); self.status.setText('新草稿已创建，可双击修改素材链接，再提交。旧任务保留。')
 
     @guarded
     def cancel_job(self):
@@ -369,7 +386,7 @@ class AssistantDialog(QtWidgets.QDialog):
             if not key: return
             identifier = self.table.item(row, 0).data(QtCore.Qt.ItemDataRole.UserRole)
             job = self._jobs_by_id[identifier]
-            if job['state'] not in {'draft', 'failed'}: raise ValueError('已提交或待核对任务不可改写；请明确导入新版本。')
+            if job['state'] not in {'draft', 'failed'}: raise ValueError('已提交或待核对记录请右键“复制所选任务为新草稿”后修改；旧云端任务不会自动取消。')
             text, accepted = QtWidgets.QInputDialog.getMultiLineText(self, '校对待提交内容', self.table.horizontalHeaderItem(col).text(), job['payload'][key])
             if accepted: self.plugin.store.edit(job['id'], key, text); self.reload()
         except Exception as error: self.status.setText(str(error))

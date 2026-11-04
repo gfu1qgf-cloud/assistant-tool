@@ -87,7 +87,7 @@ class AgentBulkUiTests(unittest.TestCase):
             self.dialog.select_uncertain(); self.dialog.check_result()
             self.assertEqual(send.call_args.args[1:], ([jobs[1]['id']], 'check'))
 
-    def test_remove_confirmed_batch_preserves_submitted_and_uncertain_records(self):
+    def test_force_remove_confirmed_batch_includes_submitted_and_uncertain_local_records(self):
         self.stage(4); jobs = self.plugin.store.jobs()
         self.plugin.store.mark([jobs[0]['id']], 'submitted', '', 'done')
         self.plugin.store.mark([jobs[1]['id']], 'uncertain', '', 'check')
@@ -96,7 +96,7 @@ class AgentBulkUiTests(unittest.TestCase):
             self.dialog.remove_drafts(); self.assertEqual(len(self.plugin.store.jobs()), 4)
         with patch.object(QtWidgets.QMessageBox, 'question', return_value=QtWidgets.QMessageBox.StandardButton.Yes):
             self.dialog.remove_drafts()
-        self.assertEqual({job['id'] for job in self.plugin.store.jobs()}, {jobs[0]['id'], jobs[1]['id']})
+        self.assertEqual(self.plugin.store.jobs(), [])
 
     def test_missing_chinese_confirmation_is_selected_but_never_auto_approved(self):
         self.plugin.import_targets([target(self.temp.name, chinese=None)])
