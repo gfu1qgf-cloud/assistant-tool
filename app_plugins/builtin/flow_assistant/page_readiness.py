@@ -168,6 +168,7 @@ def watch_preparation(service):
 
 
 def retry_initial_credits(service, client):
+    if client.get('credit_scan'):return False
     page_available = client.get('page_loaded') if client.get('credits_waiting_account') else client.get('page_ready')
     if (not client.get('authorized') or not page_available or account_hold(client, service.preferences)
             or credit_hold(client, service.preferences) and not client.get('credits_retry_manual')

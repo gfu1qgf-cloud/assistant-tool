@@ -87,7 +87,7 @@ def watch(service):
     from .credit_cooldown import credit_hold
     changed=False
     for client in service.clients.values():
-        if not client.get('browser_recheck_pending') or not client.get('authorized'):continue
+        if not client.get('browser_recheck_pending') or not client.get('authorized') or client.get('credit_scan'):continue
         if account_hold(client,service.preferences) or credit_hold(client,service.preferences):
             client.pop('browser_recheck_pending',None);continue
         if occupied(service,client) or client.get('native_busy'):continue

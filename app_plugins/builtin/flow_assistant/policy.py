@@ -37,6 +37,7 @@ def estimated_cost(job, observed):
 
 
 def block_for(client, preferences):
+    if client.get('credit_scan'):return '正在全面刷新此账号积分；检测结束后恢复调度'
     blocks = preferences.get('browser_blocks', {})
     from .exhausted_browser import reason as exhausted_reason
     protected = hold_reason(client, preferences) or credit_reason(client, preferences) or client.get('setup_blocked') or exhausted_reason(client, preferences)

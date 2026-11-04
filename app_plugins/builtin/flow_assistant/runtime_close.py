@@ -21,7 +21,10 @@ def occupied(service, client):
              client.get('runtime_close',{}).get('state') in {'checking','closing','closed'}))
 
 
-def request_close(service, client, *, automatic_reason=''):
+SCAN_CLOSING='积分检测窗口关闭待确认；仅暂停此账号接单，其他账号继续'
+
+
+def request_close(service, client, *, automatic_reason='', temporary=False):
     if not client.get('authorized') or CAPABILITY not in client.get('capabilities', []):
         client['runtime_note'] = '关闭未执行：保护其他标签页需要已连接的桥接扩展 1.1.39。'
         return False
@@ -43,9 +46,11 @@ def request_close(service, client, *, automatic_reason=''):
     # Profile-only pause remains fully resettable after its socket disappears;
     # an offline table row cannot know the old stable browser ID.
     added = ['profile:' + profile] if not automatic_reason and not blocks.get('profile:' + profile) else []
-    blocks.update({key: PAUSED for key in added})
+    added_reason=SCAN_CLOSING if temporary else PAUSED
+    blocks.update({key: added_reason for key in added})
     service.commit_preferences({**service.preferences, 'browser_blocks': blocks})
-    client['runtime_close'] = {'state': 'checking', 'added_blocks': added, 'automatic_reason': automatic_reason}
+    client['runtime_close'] = {'state': 'checking', 'added_blocks': added, 'added_reason':added_reason,
+        'temporary':temporary, 'automatic_reason': automatic_reason}
     client['runtime_note'] = '正在核对标签页、空闲及下载；存在非本项目标签页时保留整个浏览器。'
     automatic = {}
     if automatic_reason == 'low_credit':
@@ -70,7 +75,12 @@ def response(service, client, message):
     state = client.setdefault('runtime_close', {})
     if message.get('success') and data.get('closed'):
         state['state'] = 'closed'
-        client['runtime_note'] = PAUSED
+        client['runtime_note'] = '积分检测完成，已确认临时窗口退出' if state.get('temporary') else PAUSED
+        if state.get('temporary'):
+            blocks=dict(service.preferences.get('browser_blocks',{}))
+            for key in state.get('added_blocks',[]):
+                if blocks.get(key)==SCAN_CLOSING:blocks.pop(key)
+            service.commit_preferences({**service.preferences,'browser_blocks':blocks})
         if state.get('automatic_reason'):
             from .browser_lifecycle import finish
             finish(service, client, True)
@@ -89,7 +99,7 @@ def response(service, client, message):
             finish(service, client, False, reason=str(message.get('error') or '扩展未确认关闭'))
         blocks = dict(service.preferences.get('browser_blocks', {}))
         for key in state.get('added_blocks', []):
-            if blocks.get(key) == PAUSED: blocks.pop(key)
+            if blocks.get(key) == state.get('added_reason',PAUSED): blocks.pop(key)
         service.commit_preferences({**service.preferences, 'browser_blocks': blocks})
         client['runtime_note'] = '关闭未完成：' + str(message.get('error') or '扩展未确认关闭')[:500]
     update_batch(service, client)

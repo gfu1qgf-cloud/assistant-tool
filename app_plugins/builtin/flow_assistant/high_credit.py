@@ -112,6 +112,8 @@ def candidates(service):
 
 def potential(service, client, queued):
     """Busy is not exhausted. Failed/unsupported/unaffordable accounts are."""
+    from .credit_scan import holds
+    if holds(service,client.get('profile')):return False
     from .account_policy import account_hold
     from .credit_cooldown import credit_hold, MIN_CREDITS
     from .policy import block_for, estimated_cost

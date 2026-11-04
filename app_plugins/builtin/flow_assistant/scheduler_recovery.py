@@ -13,6 +13,7 @@ def retryable_upload(row):
 
 
 def eligible(service,client):
+    if client.get('credit_scan'):return False
     from .account_policy import account_hold
     from .credit_cooldown import credit_hold
     from .connection_status import browser_keys

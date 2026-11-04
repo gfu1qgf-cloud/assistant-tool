@@ -30,6 +30,7 @@ def occupied(service, client):
 
 
 def repair_idle(service, client):
+    if client.get('credit_scan'):return False
     from .browser_reuse import stopped
     if stopped(service,client):return False
     if client.get('credit_observation_only'):

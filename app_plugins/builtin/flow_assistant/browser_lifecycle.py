@@ -157,6 +157,7 @@ def watch(service):
     cost=estimated_cost(head,service.observed_costs) if head else None
     candidates=[];idle=[]
     for client in clients:
+        if client.get('credit_scan'):continue
         if client.get('credit_observation_only'):continue
         if (not client.get('authorized') or CAPABILITY not in client.get('capabilities', []) or
                 CLOSE_CAPABILITY not in client.get('capabilities', [])): continue

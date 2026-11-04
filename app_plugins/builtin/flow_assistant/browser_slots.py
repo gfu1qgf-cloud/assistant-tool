@@ -106,6 +106,7 @@ def live_starting_profiles(service):
     def recent(at):
         return type(at) in (int,float) and math.isfinite(at) and at>0 and now-at<maximum
     slots={profile for profile,entry in records.items() if entry.get('state')=='opening' and profile not in online
+        and entry.get('purpose')!='credit_scan'
         and recent(entry.get('opened_at',entry.get('at',0)))}
     for profile,at in service.launching.items():
         client=online.get(profile)

@@ -14,13 +14,14 @@ class FlowAssistantPlugin(QtCore.QObject):
     command = QtCore.pyqtSignal(object)
     plugin_id = 'flow_assistant'
     display_name = 'Chrome 与 Flow 助手'
-    version = '0.6.35'
+    version = '0.6.36'
     upstream_version = '1.1.6'
     ui_api_version = 4
     manual_credit_check_api = 1
     account_state_api = 1
     high_credit_api = 1
     high_credit_permission_api = 1
+    high_credit_scan_api = 1
     video_catalog_api = 1
     force_browser_reset_api = 1
     timing_settings_api = 1
@@ -129,6 +130,7 @@ class FlowAssistantPlugin(QtCore.QObject):
         self.service.scheduler_attention.connect(self._scheduler_attention)
         self.service.launch_requested.connect(self._launch)
         self.service.manual_launch_requested.connect(lambda data:self.launch_browser(data['profile'],[data['project']],manual=True))
+        self.service.credit_scan_launch_requested.connect(self._launch_credit_scan)
         self.service.project_open_requested.connect(self._open_missing_project)
         self.service.high_credit_confirmation_requested.connect(self._confirm_high_credit)
         self.service.running_changed.connect(self._running)
@@ -285,6 +287,14 @@ class FlowAssistantPlugin(QtCore.QObject):
             self.pending_browser_launches[key] = entry
             return True, None
         return self._perform_browser_launch(entry)
+
+    def _launch_credit_scan(self, data):
+        def allowed():
+            report=self.snapshot.get('credit_scan',{})
+            return (not self.stopping and report.get('id')==data['scan_id'] and report.get('running') and
+                not report.get('cancelled') and any(e['profile']==data['profile'] and e['phase']=='starting' for e in report.get('entries',[])))
+        self.launch_browser(data['profile'],[data['project']],guard=allowed,
+            completed=lambda ok,error:self.command.emit({'action':'credit_scan_launch_result',**data,'opened':ok,'error':error}))
 
     def _perform_browser_launch(self, entry):
         if self.launch_ui.enabled():return self.launch_ui.request(entry)

@@ -1,5 +1,6 @@
 """Worker-thread coordinator for authenticated extension sessions and saved jobs."""
 from concurrent.futures import ThreadPoolExecutor
+import copy
 import hmac
 import json
 import math
@@ -87,6 +88,7 @@ class FlowService(QtCore.QObject, FlowOperations):
     preferences_saved = QtCore.pyqtSignal(object)
     video_catalog_result = QtCore.pyqtSignal(object)
     manual_launch_requested = QtCore.pyqtSignal(object)
+    credit_scan_launch_requested = QtCore.pyqtSignal(object)
     tab_reused = QtCore.pyqtSignal(object)
     stopped = QtCore.pyqtSignal()
     archive_result = QtCore.pyqtSignal(object)
@@ -222,6 +224,9 @@ class FlowService(QtCore.QObject, FlowOperations):
             self._disconnected(socket)
 
     def request(self, client, action, params=None, job=None, *, manual_credit=False, manual_close=False):
+        from .credit_scan import attach,holds
+        attach(self,client)
+        if action=='get_points' and not manual_credit and holds(self,client.get('profile')):return False
         from .browser_reuse import stopped, reset_recovery
         if manual_credit: reset_recovery(self,client)
         elif not job and action in {'get_points','repair_project'} and stopped(self,client): return False
@@ -445,6 +450,8 @@ class FlowService(QtCore.QObject, FlowOperations):
                 cached = restore_balance(client, self.preferences)
                 from .passive_credits import flow_interest
                 client['credit_observation_only']=not (setup_request or flow_interest(self,client))
+                from .credit_scan import attach as attach_credit_scan
+                attach_credit_scan(self,client)
                 if credit_record(client, self.preferences): cached = False
                 if not self.send(client, {'type': 'welcome', 'protocol': PROTOCOL, 'timing': timing_snapshot(self.preferences),
                         'browser_options': browser_options_snapshot(self.preferences)}):
@@ -1501,6 +1508,11 @@ class FlowService(QtCore.QObject, FlowOperations):
                     if command.get('manual'):
                         client['credit_check']['hold_dispatch'] = True
                     self.request(client, 'snapshot')
+            elif action in {'start_credit_scan','stop_credit_scan','credit_scan_launch_result'}:
+                from .credit_scan import start,cancel,launch_result
+                if action=='start_credit_scan':start(self)
+                elif action=='stop_credit_scan':cancel(self)
+                else:launch_result(self,command)
             elif action == 'cancel':
                 for row in self.store.rows():
                     if row['id'] in command['ids'] and row['status'] in {'collected', 'queued', 'failed'}:
@@ -1695,6 +1707,8 @@ class FlowService(QtCore.QObject, FlowOperations):
                             self.request(client, 'snapshot')
                         self.publish()
             self.refresh_reset_holds()
+            from .credit_scan import watch as watch_credit_scan
+            if watch_credit_scan(self):self.publish()
             from .startup_state import watch as watch_browser_rechecks
             if watch_browser_rechecks(self):self.publish()
             from .failure_release import watch as release_failures
@@ -1915,6 +1929,7 @@ class FlowService(QtCore.QObject, FlowOperations):
                 row['wait_reason'] = '按提交顺序等待前序任务派发；'+row['wait_reason']
         from .runtime_close import batch_summary
         self.changed.emit({'jobs': rows, 'clients': clients, 'paused': self.paused,
+                           'credit_scan':copy.deepcopy(getattr(self,'credit_scan',{})),
                            'ui_lock_monitor':mutex_snapshot(self),
                            'runtime_close_batch': batch_summary(self),
                            'browser_error_reset': getattr(self,'browser_error_reset',{}),

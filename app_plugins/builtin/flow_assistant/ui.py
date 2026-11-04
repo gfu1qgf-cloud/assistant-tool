@@ -225,6 +225,9 @@ class FlowDialog(QtWidgets.QDialog):
         supported=getattr(self.plugin,'force_browser_reset_api',0)>=1
         self.reset_browser_errors_button.setEnabled(supported)
         self.reset_browser_errors_button.setToolTip('清除浏览器异常与恢复次数并重新检测；保留用户标记和未到期的积分刷新限制。正常任务继续，忙碌账号在空闲后重新检测。' if supported else '正常重启主程序后可使用强制重置。')
+        self.credit_scan_button=self.button('全面刷新千分账号积分…',self.open_credit_scan,row)
+        self.credit_scan_button.setEnabled(getattr(self.plugin,'high_credit_scan_api',0)>=1)
+        self.credit_scan_button.setToolTip('逐个检查当前与历史千分账号；支持离线配置，显示新积分及失败原因，不改变使用权限。')
         row.addStretch()
         layout.addLayout(row)
         hint = QtWidgets.QLabel('默认自动安排时长：按队首任务将空闲的自动配置切到所需时长；固定分档仅接相匹配的任务。\n'
@@ -259,6 +262,12 @@ class FlowDialog(QtWidgets.QDialog):
         legend = QtWidgets.QLabel('整行颜色：黄色＝积分耗尽　红色＝异常／需处理　绿色＝正常可用／执行中　蓝色＝高积分账号。右键“运行时操作”可测试激活与 F5；未连接时禁用。',page)
         legend.setWordWrap(True); layout.addWidget(legend)
         self.tabs.addTab(page, '浏览器与时长分档')
+
+    def open_credit_scan(self):
+        from .credit_scan_ui import CreditScanDialog
+        if not getattr(self,'credit_scan_dialog',None):self.credit_scan_dialog=CreditScanDialog(self)
+        self.credit_scan_dialog.apply(self.state.get('credit_scan',{}))
+        self.credit_scan_dialog.show();self.credit_scan_dialog.raise_()
 
     def _settings_page(self):
         page = QtWidgets.QWidget(self)
@@ -795,6 +804,8 @@ class FlowDialog(QtWidgets.QDialog):
 
     def update_state(self, state):
         self.state = state
+        if getattr(self,'credit_scan_dialog',None):self.credit_scan_dialog.apply(state.get('credit_scan',{}))
+        self.credit_scan_button.setText('查看千分积分刷新进度…' if state.get('credit_scan',{}).get('running') else '全面刷新千分账号积分…')
         self.ui_lock_monitor.apply(state.get('ui_lock_monitor',{}))
         collected = sum(r['status']=='collected' for r in state.get('jobs', []))
         self.start_button.setText('统一提交／继续等待项' if collected else '开始／继续等待项')
@@ -864,6 +875,7 @@ class FlowDialog(QtWidgets.QDialog):
         self.update_estimate()
 
     def closeEvent(self, event):
+        if getattr(self,'credit_scan_dialog',None):self.credit_scan_dialog.close()
         if self.ui_lock_monitor.details:self.ui_lock_monitor.details.close()
         self.setup.cancel_auto_retry()
         self.setup.waiting_profile = ''; self.setup.capture_timer.stop()
