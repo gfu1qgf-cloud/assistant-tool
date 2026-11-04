@@ -9,6 +9,7 @@ from app_plugins.api import load_google_service
 from .tasks import normalize, spreadsheet_id, validate_payload
 from .store import Store
 from .segmentation import split_spoken
+from .sheet_profiles import IMAGE_FIELDS, IMAGE_REQUIRED, task_kind
 
 FIELDS = [
     ('job_id', '作业ID', ('作业编号',)), ('task_id', '所属任务编号', ('任务编号',)),
@@ -23,12 +24,14 @@ FIELDS = [
     ('claimed', '领取时间', ()), ('updated', '最后更新时间', ('更新时间',)),
     ('attempt', '执行批次ID', ()), ('lease', '领取令牌', ()), ('heartbeat', '心跳时间', ()),
     ('expires', '租约到期时间', ()), ('checksum', '成品校验信息', ()),
+    ('user_requirements', '用户需求', ()),
 ]
 REQUIRED = {'job_id', 'task_id', 'title', 'spoken', 'chinese', 'language', 'status'}
 # Only producer-owned fields are written. JSON null skips other cells in the
 # values API, preserving template defaults/formulas and customer-added columns.
 SUBMISSION_FIELDS = {'job_id', 'task_id', 'title', 'task_type', 'priority', 'status', 'language',
-                     'spoken', 'chinese', 'requirements', 'reference', 'archive', 'notes', 'created', 'updated'}
+                     'spoken', 'chinese', 'requirements', 'reference', 'archive', 'notes', 'created', 'updated', 'agent', 'user_requirements'}
+IMAGE_SUBMISSION_FIELDS = {'job_id', 'task_id', 'reference', 'requirements', 'notes', 'status', 'subcategory', 'user_requirements', 'archive'}
 
 
 def column(index):
@@ -41,45 +44,56 @@ def column(index):
 def a1(sheet, cells): return "'" + sheet.replace("'", "''") + "'!" + cells
 
 
-def headers(rows):
+def headers(rows, kind=None):
     candidates = []
     for number, row in enumerate(rows, 1):
-        mapping, duplicates = {}, []
-        for key, title, aliases in FIELDS:
-            hits = [index for index, value in enumerate(row) if normalize(value) in {normalize(item) for item in (title, *aliases)}]
-            if len(hits) > 1: duplicates.append(title)
-            if hits: mapping[key] = hits[0]
-        if REQUIRED.issubset(mapping):
-            if duplicates: raise ValueError('表头存在重复列名：' + '、'.join(duplicates))
-            candidates.append((number, mapping, len(row)))
+        for profile, fields, required in (('oral', FIELDS, REQUIRED), ('image', IMAGE_FIELDS, IMAGE_REQUIRED)):
+            if kind is not None and profile != kind: continue
+            mapping, duplicates = {}, []
+            for key, title, aliases in fields:
+                hits = [index for index, value in enumerate(row) if normalize(value) in {normalize(item) for item in (title, *aliases)}]
+                if len(hits) > 1: duplicates.append(title)
+                if hits: mapping[key] = hits[0]
+            if required.issubset(mapping):
+                if duplicates: raise ValueError('表头存在重复列名：' + '、'.join(duplicates))
+                candidates.append((number, mapping, len(row)))
     if len(candidates) != 1:
-        raise ValueError('未找到唯一的完整表头。需要：作业ID、所属任务编号、任务名称、口播语言、口播台词（原文）、中文台词、执行状态。未写入。')
+        raise ValueError('未找到唯一的完整口播或图片转动画表头。口播需作业ID、所属任务编号、任务名称、口播语言、口播台词（原文）、中文台词、执行状态；图片需任务ID、任务编号、文件名、结果、视频链接、下载状态。未写入。')
     return candidates[0]
 
 
 def row_values(job, mapping, count, run=None):
     payload = job['payload']
     validate_payload(payload)
+    kind = task_kind(payload)
     values = {**payload, 'job_id': job['id'], 'status': '待领取', 'priority': '普通',
               'archive': '未下载', 'created': job['created'], 'updated': job['created']}
-    segmented = split_spoken(payload['spoken'], run)
-    values['spoken'] = segmented['text']
-    note = f'外文分为{segmented["count"]}段，每段约10秒；按语速与标点估算，不是精密音频对齐。段号和秒数标签仅用于分组，不朗读。'
-    values['notes'] = '\n'.join(item for item in (payload.get('notes', ''), note, segmented['warnings']) if item)
+    if kind == 'image': values['status'] = '待生成'
+    else:
+        segmented = split_spoken(payload['spoken'], run)
+        values['spoken'] = segmented['text']
+        note = (f'外文沿用用户现成的{segmented["count"]}段；段号、秒数、正文与分段边界原样保留。' if segmented.get('preserved') else
+            f'外文分为{segmented["count"]}段，每段约10秒；按语速与标点估算，不是精密音频对齐。段号和秒数标签仅用于分组，不朗读。')
+        values['notes'] = '\n'.join(item for item in (payload.get('notes', ''), note, segmented['warnings']) if item)
     row = [None] * count
     for key, index in mapping.items():
-        if key in SUBMISSION_FIELDS: row[index] = str(values.get(key) or '')
+        if key in (IMAGE_SUBMISSION_FIELDS if kind == 'image' else SUBMISSION_FIELDS):
+            if key in {'agent', 'user_requirements'} and not values.get(key): continue
+            row[index] = str(values.get(key) or '')
     return row
 
 
 def clipboard_tsv(jobs, run=None):
-    mapping = {key: index for index, (key, _title, _aliases) in enumerate(FIELDS)}
+    kinds = {task_kind(job['payload']) for job in jobs}
+    if len(kinds) > 1: raise ValueError('口播和图片转动画不能混在一次表格复制中。')
+    fields = IMAGE_FIELDS if kinds == {'image'} else FIELDS
+    mapping = {key: index for index, (key, _title, _aliases) in enumerate(fields)}
     stream = io.StringIO(newline='')
     writer = csv.writer(stream, delimiter='\t', lineterminator='\n')
-    writer.writerow([title for _key, title, _aliases in FIELDS])
+    writer.writerow([title for _key, title, _aliases in fields])
     for job in jobs:
         if run is not None: run.check_canceled()
-        row = row_values(job, mapping, len(FIELDS), run)
+        row = row_values(job, mapping, len(fields), run)
         # Browser paste parses leading '=' as a formula even though API RAW does not.
         writer.writerow(["'" + value if value and value.startswith(('=', '+', '-', '@')) else value for value in row])
     return stream.getvalue()
@@ -119,7 +133,7 @@ def inspect(service, identifier, name, run):
         range=a1(name, f'A1:{column(width)}{min(height, 10)}'), valueRenderOption='FORMULA')).get('values', [])
     header, mapping, count = headers(values)
     return {'url': metadata.get('spreadsheetUrl', ''), 'id': props['sheetId'], 'height': height,
-            'header': header, 'mapping': mapping, 'count': count}
+            'header': header, 'mapping': mapping, 'count': count, 'kind': 'oral' if 'spoken' in mapping else 'image'}
 
 
 def remote_ids(service, identifier, name, info, run):
@@ -147,7 +161,7 @@ def validate_options(service, identifier, name, info, run):
     result = _execute(service.spreadsheets().get(spreadsheetId=identifier,
         ranges=[a1(name, f'A{info["header"] + 1}:{column(info["count"])}{info["header"] + 1}')],
         includeGridData=True, fields='sheets(data(startColumn,rowData(values(dataValidation))))'))
-    defaults = {'status': '待领取', 'priority': '普通', 'archive': '未下载'}
+    defaults = {'status': '待生成' if info.get('kind') == 'image' else '待领取', 'priority': '普通', 'archive': '未下载'}
     for sheet in result.get('sheets', []):
         for data in sheet.get('data', []):
             for row in data.get('rowData', []):
@@ -182,6 +196,8 @@ def run_export(payload, run, *, service=None, upload_service=None):
         raise ValueError('请在“程序设置 → Google账号”登录并分配 Google 表格账号。浏览器登录不等于程序API授权；本地待提交任务已保留，也可先复制表格。')
     run.report('检查口播分页与列名', 10)
     info = inspect(service, identifier, name, run)
+    if any(task_kind(job['payload']) != info['kind'] for job in jobs):
+        raise ValueError('任务类型与目标分页表头不匹配，未上传或写入；请分别使用口播和图片转动画分页。')
     found = remote_ids(service, identifier, name, info, run)
     confirmed, remaining, blocked = [], [], []
     for job in jobs:
@@ -203,6 +219,10 @@ def run_export(payload, run, *, service=None, upload_service=None):
             validate_payload(job['payload'], allow_local_references=True)
             if job['payload'].get('reference') and 'reference' not in info['mapping']:
                 raise ValueError('表格缺少“素材Drive链接”列，未上传或提交有素材的任务。')
+            if job['payload'].get('user_requirements') and 'user_requirements' not in info['mapping']:
+                raise ValueError('表格缺少“用户需求”列，未静默丢弃额外要求。')
+            if task_kind(job['payload']) == 'oral' and job['payload'].get('agent') and 'agent' not in info['mapping']:
+                raise ValueError('表格缺少“执行Agent”列，未静默丢弃账号分配。')
             from .references import prepare_job_references
             job = prepare_job_references(job, payload.get('reference_approval'), store, run, api=upload_service)
             validate_payload(job['payload'])
@@ -243,8 +263,10 @@ def run_export(payload, run, *, service=None, upload_service=None):
             raise RuntimeError('提交结果尚未确认，任务已保留。请核对提交结果；不自动重发，不影响其他任务。') from None
         store.mark(ids, 'submitted', destination, 'Google已确认新增')
     run.report('口播任务提交完成', 100)
+    unassigned = sum(task_kind(job['payload']) == 'oral' and not job['payload'].get('agent') for job in remaining)
     return {'added': len(remaining), 'confirmed': len(confirmed), 'blocked': blocked, 'invalid': invalid,
-            'message': f'新增 {len(remaining)} 条，已存在 {len(confirmed)} 条，待核对 {len(blocked)} 条，资料不全跳过 {len(invalid)} 条。'}
+            'message': f'新增 {len(remaining)} 条，已存在 {len(confirmed)} 条，待核对 {len(blocked)} 条，资料不全跳过 {len(invalid)} 条。' +
+                (f'其中{unassigned}条口播未分配执行Agent，需管理员分配后才会被领取。' if unassigned else '')}
 
 
 def run_copy(payload, run):

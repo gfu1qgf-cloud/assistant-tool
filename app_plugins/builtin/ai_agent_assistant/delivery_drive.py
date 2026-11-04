@@ -46,7 +46,7 @@ def _id(link):
     return (match.group(1), True) if match else (parse_drive_link(link).file_id, False)
 
 
-def collect_files(links, drive, run):
+def collect_files(links, drive, run, *, root_only=False):
     files, visited = {}, set()
     def visit(file_id, link, depth=0, known=None):
         run.check_canceled()
@@ -57,7 +57,7 @@ def collect_files(links, drive, run):
             if _id(link)[1]: raise ValueError('文件夹成品需要 Drive 读取授权，请在 Google账号中分配“AI Agent · 成品下载”。')
             parsed = parse_drive_link(link)
             if parsed.google_type: raise ValueError('成品必须是视频文件，不是 Google 文档。')
-            files[file_id] = {'id': file_id, 'url': link, 'name': '', 'size': None}
+            files[file_id] = {'id': file_id, 'url': link, 'name': '', 'size': None, '_depth': max(0, depth - 1)}
             return
         if known is None:
             request = drive.files().get(fileId=file_id, supportsAllDrives=True,
@@ -69,6 +69,7 @@ def collect_files(links, drive, run):
         else: metadata = known
         if metadata.get('id') != file_id or metadata.get('trashed'): raise ValueError('成品文件身份无效或已经删除。')
         if metadata.get('mimeType') == FOLDER:
+            if root_only and depth > 0: return
             token, pages = None, set()
             while True:
                 run.check_canceled()
@@ -88,7 +89,7 @@ def collect_files(links, drive, run):
             raise ValueError('成品文件夹包含Drive快捷方式，请提供实际视频文件或其直接链接，未静默漏掉该项。')
         elif str(metadata.get('mimeType', '')).startswith('video/') or Path(metadata.get('name', '')).suffix.lower() in VIDEO:
             if metadata.get('capabilities', {}).get('canDownload') is False: raise ValueError('成品禁止下载，请调整文件共享／下载权限。')
-            files[file_id] = {**metadata, 'url': link}
+            files[file_id] = {**metadata, 'url': link, '_depth': max(0, depth - 1)}
         if len(files) > 500: raise ValueError('单任务超过500个视频，请拆分成品文件夹。')
     for link in links:
         file_id, folder = _id(link)

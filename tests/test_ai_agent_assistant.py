@@ -19,7 +19,7 @@ URL = 'https://docs.google.com/spreadsheets/d/' + 'synthetic_sheet_1234567890' +
 
 def target(root, identifier='001', chinese='完整中文台词：保留所有内容和标点。'):
     task = SimpleNamespace(task_id=identifier, task_name='被截断标题', _full_task_name='完整中文台词：保留所有内容和标点。',
-        task_type='FL口播', task_audio_text='Pane, prosím, požehnaj tento deň.', task_reference_link='',
+        task_type='FL口播', task_agent='Fixture Agent', task_audio_text='Pane, prosím, požehnaj tento deň.', task_reference_link='',
         task_requirements='9:16，按原文制作', task_video_prompt='画面提示词', task_notes='',
         raw={'中文台词': chinese} if chinese is not None else {})
     return {'task': task, 'target_dir': str(Path(root)/identifier), 'row': 0}
@@ -251,7 +251,7 @@ class AgentUiTests(unittest.TestCase):
     def test_dialog_single_oral_tab_and_import_uses_full_scripts(self):
         dialog = self.plugin.open_dialog(); self.plugin.import_rows([0])
         tabs = dialog.findChild(QtWidgets.QTabWidget)
-        self.assertEqual(tabs.count(), 1); self.assertEqual(tabs.tabText(0), '口播')
+        self.assertEqual(tabs.count(), 2); self.assertEqual(tabs.tabText(0), '口播'); self.assertEqual(tabs.tabText(1), '图片转动画')
         self.assertEqual(dialog.table.rowCount(), 1)
         self.assertEqual(dialog.table.item(0, 4).text(), '完整中文台词：保留所有内容和标点。')
         self.assertIs(self.plugin.open_dialog(), dialog)

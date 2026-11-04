@@ -34,7 +34,7 @@ class AgentBulkUiTests(unittest.TestCase):
     def test_import_auto_selects_all_new_ready_rows_without_checkboxes(self):
         self.stage(100)
         self.assertEqual(len(self.dialog.selected_ids()), 100)
-        self.assertEqual(self.dialog.table.columnCount(), 8)
+        self.assertEqual(self.dialog.table.columnCount(), 10)
         self.assertIn('100', self.dialog.send.text())
         self.assertFalse(self.dialog.setup_panel.isVisible())
         for row in range(100):

@@ -53,11 +53,25 @@ def snapshot(target, language=''):
              str(getattr(task, 'task_video_prompt', '') or '').strip()] if text),
         'reference': str(getattr(task, 'task_reference_link', '') or '').strip(),
         'notes': str(getattr(task, 'task_notes', '') or '').strip(),
+        'agent': str(getattr(task, 'task_agent', '') or raw.get('执行Agent') or raw.get('执行AI') or '').strip(),
+        'user_requirements': str(getattr(task, 'user_requirements', '') or raw.get('用户需求') or '').strip(),
     }
     return value
 
 
 def validate_payload(value, *, allow_local_references=False):
+    if value.get('task_kind') == 'image':
+        if not str(value.get('task_id') or '').strip() or not str(value.get('reference') or '').strip():
+            raise ValueError('图片任务缺少任务编号或原图素材。')
+        from .references import reference_sources
+        sources = reference_sources(value)
+        if len(sources) != 1: raise ValueError('每条图片转动画任务必须且只能对应一张原图。')
+        if sources[0]['kind'] == 'link' and ('/folders/' in sources[0]['value'] or 'docs.google.com/' in sources[0]['value']):
+            raise ValueError('图片任务需要单张原图文件链接，不是文件夹或Google文档。')
+        if sources[0]['kind'] == 'local' and not allow_local_references: raise ValueError('本地图片需先确认上传。')
+        if any(len(str(value.get(key) or '')) > 45000 for key in ('requirements', 'reference', 'user_requirements')):
+            raise ValueError('图片任务内容超过单元格安全长度。')
+        return
     missing = [label for key, label in [('task_id', '任务编号'), ('spoken', '口播原文'),
                                       ('chinese', '中文台词'), ('language', '口播语言')]
                if not str(value.get(key) or '').strip()]
@@ -74,7 +88,7 @@ def validate_payload(value, *, allow_local_references=False):
             parts = urlsplit(link.strip())
             if parts.scheme != 'https' or parts.netloc not in {'drive.google.com', 'docs.google.com'}:
                 raise ValueError('素材不是 Google Drive 链接，请修正；不会把本地路径上传到共享表。')
-    for key in ('title', 'spoken', 'chinese', 'requirements', 'notes', 'reference'):
+    for key in ('title', 'spoken', 'chinese', 'requirements', 'notes', 'reference', 'agent', 'user_requirements'):
         if len(str(value.get(key) or '')) > 45000: raise ValueError('任务内容过长，请先拆分，未截断台词。')
 
 

@@ -42,6 +42,7 @@ class AgentSheetFormatTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory(); self.addCleanup(self.temp.cleanup)
         self.store = Store(Path(self.temp.name)/'private')
         self.value = snapshot(target(self.temp.name), 'sk')
+        self.value['agent'] = ''  # Unassigned drafts must preserve a template's assignment.
         self.ids = self.store.stage([self.value])['imported']
         self.run = SimpleNamespace(check_canceled=Mock(), report=Mock(), is_canceled=Mock(return_value=False))
 
@@ -67,7 +68,7 @@ class AgentSheetFormatTests(unittest.TestCase):
         job = self.store.jobs(self.ids)[0]
         row = row_values(job, mapping, len(FIELDS) + 1, self.run)
         for key, index in mapping.items():
-            if key in SUBMISSION_FIELDS: self.assertIsInstance(row[index], str)
+            if key in SUBMISSION_FIELDS and key not in {'agent', 'user_requirements'}: self.assertIsInstance(row[index], str)
             else: self.assertIsNone(row[index], key)
         self.assertIsNone(row[-1])
 

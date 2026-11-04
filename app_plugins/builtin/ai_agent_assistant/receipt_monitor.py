@@ -20,7 +20,9 @@ class ReceiptMonitor(QtCore.QObject):
     def show_status(self, text):
         self.status = text
         dialog = self.plugin.dialog
-        if dialog is not None: dialog.receipt_status.setText(text)
+        if dialog is not None:
+            dialog.receipt_status.setText(text)
+            if hasattr(dialog, 'image_page'): dialog.image_page.status.setText(text)
 
     def start(self):
         self.running = True
@@ -69,6 +71,8 @@ class ReceiptMonitor(QtCore.QObject):
             destinations = {job['destination'] for job in jobs if job['destination']}
             if settings.get('url') and settings.get('sheet'):
                 destinations.add(spreadsheet_id(settings['url']) + ':' + settings['sheet'])
+            if settings.get('image_url'):
+                destinations.add(spreadsheet_id(settings['image_url']) + ':' + settings.get('image_sheet', '图片转动画'))
             if not destinations: self.show_status('请先设置并保存目标表格。'); return
             sheets = self.plugin.context.prepare_google_account('sheets')
             try: drive = self.download_authorization()

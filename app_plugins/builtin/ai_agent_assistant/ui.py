@@ -4,6 +4,7 @@ from functools import wraps
 from qt_compat import QtCore, QtGui, QtWidgets
 from .tasks import spreadsheet_id, validate_payload, fingerprint
 from .preparation import prepare_payload
+from .sheet_profiles import task_kind
 
 STATES = {'draft': '待提交', 'failed': '未提交', 'sending': '待核对', 'uncertain': '待核对', 'submitted': '已提交'}
 
@@ -49,6 +50,8 @@ class AssistantDialog(QtWidgets.QDialog):
             ('save_target', '保存表格设置', self.save_target),
             ('open_sheet', '打开目标表格', self.open_sheet),
             ('account', 'Google 账号…', self.open_accounts),
+            ('assign', '批量设置执行 Agent…', self.assign_agent),
+            ('user_requirements', '批量设置用户需求…', self.edit_requirements),
         ):
             action = QtGui.QAction(title, self); action.setObjectName('agent_' + key)
             action.triggered.connect(slot); self.actions[key] = action
@@ -72,6 +75,10 @@ class AssistantDialog(QtWidgets.QDialog):
         self.url.setPlaceholderText('首次粘贴目标 Google 表格链接；失去焦点后保存')
         self.sheet = QtWidgets.QLineEdit(settings.get('sheet', '口播表格'), self.setup_panel)
         panel.addRow('目标 Google 表格', self.url); panel.addRow('口播分页名称', self.sheet)
+        self.default_agent = QtWidgets.QLineEdit(settings.get('default_agent', ''), self.setup_panel)
+        self.default_agent.setPlaceholderText('与表格中 Agent 名称完全一致；只填充未指定的草稿')
+        panel.addRow('默认执行 Agent', self.default_agent)
+        self.default_agent.editingFinished.connect(self.save_target)
         self.chinese_source = QtWidgets.QCheckBox('缺少中文列时，我确认“完整任务名称”就是完整中文台词', self.setup_panel)
         self.chinese_source.setToolTip('此开关用于之后导入的任务；已有草稿可点提交一次批量确认，无需重新导入。不会自动确认。')
         self.chinese_source.setChecked(settings.get('use_task_name_chinese', False)); panel.addRow(self.chinese_source)
@@ -91,13 +98,16 @@ class AssistantDialog(QtWidgets.QDialog):
         self.auto_download.toggled.connect(self.save_auto_download)
         self.hint = QtWidgets.QLabel('Ctrl+A 全选 · Shift 连选 · Ctrl 多选 · 右键复制、核对或管理记录 · 双击校对。外文约10秒分段，本地图片上传前须确认。', oral)
         self.hint.setWordWrap(True); body.addWidget(self.hint)
-        self.table = QtWidgets.QTableWidget(0, 8, oral)
-        self.table.setHorizontalHeaderLabels(['任务编号', '任务名称', '语言', '口播原文', '中文台词', '素材（链接／本地图片）', '状态', '说明'])
+        self.table = QtWidgets.QTableWidget(0, 10, oral)
+        self.table.setHorizontalHeaderLabels(['任务编号', '任务名称', '语言', '口播原文', '中文台词', '素材（链接／本地图片）', '状态', '说明', '执行 Agent', '用户需求'])
         self.table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.ExtendedSelection)
         self.table.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.setWordWrap(False)
         for col, width in enumerate((85, 150, 60, 200, 200, 110, 75, 160)): self.table.setColumnWidth(col, width)
+        self.table.setColumnWidth(8, 110); self.table.setColumnWidth(9, 180)
+        self.table.horizontalHeader().moveSection(8, 2)
+        self.table.horizontalHeader().moveSection(9, 3)
         self.table.horizontalHeader().setSectionResizeMode(7, QtWidgets.QHeaderView.ResizeMode.Stretch)
         self.table.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self.show_context_menu)
@@ -116,6 +126,8 @@ class AssistantDialog(QtWidgets.QDialog):
         self.receipt_status = QtWidgets.QLabel(plugin.receipts.status, oral)
         self.receipt_status.setTextFormat(QtCore.Qt.TextFormat.PlainText); self.receipt_status.setWordWrap(True)
         body.addWidget(self.receipt_status)
+        from .image_ui import ImageJobsPage
+        self.image_page = ImageJobsPage(plugin, tabs); tabs.addTab(self.image_page, '图片转动画')
         self.update_target_summary(); self.reload(); self.refresh_auth()
 
     def target(self):
@@ -124,6 +136,7 @@ class AssistantDialog(QtWidgets.QDialog):
         if not name: raise ValueError('请填写口播分页名称。')
         return {'url': 'https://docs.google.com/spreadsheets/d/' + identifier + '/edit', 'sheet': name,
                 'use_task_name_chinese': self.chinese_source.isChecked(), 'auto_download': self.auto_download.isChecked(),
+                'default_agent': self.default_agent.text().strip(),
                 'upload_folder': self.plugin.store.settings().get('upload_folder', '')}
 
     def update_target_summary(self):
@@ -188,7 +201,7 @@ class AssistantDialog(QtWidgets.QDialog):
     @guarded
     def reload(self, select_ids=None):
         previous = set(self._selected_ids()) if self._loaded else None
-        jobs = self.plugin.store.jobs(limit=100000)  # Preserve source/import order, including history.
+        jobs = [job for job in self.plugin.store.jobs(limit=100000) if task_kind(job['payload']) == 'oral']
         deliveries = self.plugin.store.delivery_statuses()
         self.jobs = jobs; self._jobs_by_id = {job['id']: job for job in jobs}; self._ready = set()
         self._confirm, self._blocked, self._reference_fixes = set(), {}, set()
@@ -208,13 +221,14 @@ class AssistantDialog(QtWidgets.QDialog):
                 if candidate['reference'] != payload['reference']: self._reference_fixes.add(job['id'])
             notes = [problem or job['detail']]
             if editable and needs_confirm: notes.append('中文来源待确认；点提交可一次确认所选任务，无需重新导入。')
+            if editable and not payload.get('agent'): notes.append('未分配 Agent：右键批量指定，或在设置中填写默认 Agent。')
             if editable and job['id'] in self._reference_fixes: notes.append('提交时提取 Drive 链接，原素材说明完整保留到制作要求。')
             state = '需处理' if editable and problem else '待确认中文' if editable and needs_confirm else STATES[job['state']]
             delivery = deliveries.get(job['id'])
             if delivery:
                 state = delivery['status']; notes.append(delivery['detail'])
             texts = [payload['task_id'], payload['title'], payload['language'], payload['spoken'], payload['chinese'],
-                     payload['reference'], state, '\n'.join(note for note in notes if note)]
+                     payload['reference'], state, '\n'.join(note for note in notes if note), payload.get('agent', ''), payload.get('user_requirements', '')]
             for col, text in enumerate(texts):
                 item = QtWidgets.QTableWidgetItem(text); item.setToolTip(text)
                 item.setFlags(QtCore.Qt.ItemFlag.ItemIsEnabled | QtCore.Qt.ItemFlag.ItemIsSelectable)
@@ -227,6 +241,7 @@ class AssistantDialog(QtWidgets.QDialog):
         self._select_ids(chosen); self._loaded = True
         del blocker
         self.busy(self.plugin.handle is not None)
+        if hasattr(self, 'image_page'): self.image_page.reload()
 
     def update_selection(self):
         ids = self._selected_ids(); selected = set(ids); ready = len(selected & self._ready)
@@ -244,12 +259,15 @@ class AssistantDialog(QtWidgets.QDialog):
         self.actions['retry_download'].setEnabled(not self._active and bool(ids))
         self.actions['recollect_download'].setEnabled(not self._active and bool(ids))
         self.actions['open_result'].setEnabled(len(ids) == 1)
+        for key in ('assign', 'user_requirements'): self.actions[key].setEnabled(not self._active and bool(ids))
 
     def busy(self, active):
         self._active = active
         for widget in (self.import_button, self.table, self.setup_panel, self.setup_button): widget.setEnabled(not active)
         for key in ('import_selected', 'import_all', 'import_version', 'save_target', 'account'): self.actions[key].setEnabled(not active)
         self.cancel.setEnabled(active); self.cancel.setVisible(active); self.update_selection()
+        for key in ('assign', 'user_requirements'): self.actions[key].setEnabled(not active and bool(self._selected_ids()))
+        if hasattr(self, 'image_page'): self.image_page.busy(active)
 
     def select_all(self): self.table.selectAll()
     def select_ready(self): self._select_ids(self._ready | self._confirm)
@@ -260,6 +278,7 @@ class AssistantDialog(QtWidgets.QDialog):
         self.update_selection()
         menu = QtWidgets.QMenu(self)
         for key in ('submit', 'copy', 'check'): menu.addAction(self.actions[key])
+        for key in ('assign', 'user_requirements'): menu.addAction(self.actions[key])
         menu.addSeparator()
         for key in ('receive', 'retry_download', 'recollect_download', 'open_result'): menu.addAction(self.actions[key])
         menu.addSeparator()
@@ -293,6 +312,21 @@ class AssistantDialog(QtWidgets.QDialog):
         target = self.target()
         ids = self._prepare_selection(submitting=True)
         if ids: self.plugin.submit(target, ids, 'submit')
+
+    def edit_batch(self, field, label):
+        ids = [key for key in self.selected_ids() if self._jobs_by_id[key]['state'] in {'draft', 'failed'}]
+        if not ids: raise ValueError('仅可修改未提交草稿；已提交云端内容不会被覆盖。')
+        text, accepted = QtWidgets.QInputDialog.getMultiLineText(self, label, label,
+            self._jobs_by_id[ids[0]]['payload'].get(field, ''))
+        if accepted:
+            self.plugin.store.edit_batch(ids, field, text, expected={key: fingerprint(self._jobs_by_id[key]['payload']) for key in ids})
+            self.reload(select_ids=ids)
+
+    @guarded
+    def assign_agent(self): self.edit_batch('agent', '执行 Agent（名称须与表格一致）')
+
+    @guarded
+    def edit_requirements(self): self.edit_batch('user_requirements', '用户需求（仅修改所选草稿）')
 
     def _prepare_selection(self, *, submitting=False):
         selected = self.selected_ids()
@@ -382,11 +416,11 @@ class AssistantDialog(QtWidgets.QDialog):
 
     def edit_cell(self, row, col):
         try:
-            key = {2: 'language', 3: 'spoken', 4: 'chinese', 5: 'reference'}.get(col)
+            key = {2: 'language', 3: 'spoken', 4: 'chinese', 5: 'reference', 8: 'agent', 9: 'user_requirements'}.get(col)
             if not key: return
             identifier = self.table.item(row, 0).data(QtCore.Qt.ItemDataRole.UserRole)
             job = self._jobs_by_id[identifier]
             if job['state'] not in {'draft', 'failed'}: raise ValueError('已提交或待核对记录请右键“复制所选任务为新草稿”后修改；旧云端任务不会自动取消。')
-            text, accepted = QtWidgets.QInputDialog.getMultiLineText(self, '校对待提交内容', self.table.horizontalHeaderItem(col).text(), job['payload'][key])
+            text, accepted = QtWidgets.QInputDialog.getMultiLineText(self, '校对待提交内容', self.table.horizontalHeaderItem(col).text(), job['payload'].get(key, ''))
             if accepted: self.plugin.store.edit(job['id'], key, text); self.reload()
         except Exception as error: self.status.setText(str(error))

@@ -1,15 +1,16 @@
 from qt_compat import QtCore, QtWidgets
 from app_plugins.api import MAIN_MENU, TASK_CONTEXT_MENU, PluginCommand, PluginMainWidget, GoogleAuthorization
 from .store import Store
-from .tasks import snapshot, spreadsheet_id
+from .tasks import snapshot, spreadsheet_id, fingerprint
 from .sheets import run_export, run_copy
-from .segmentation import require_available
+from .segmentation import require_available, existing_segments
+from .sheet_profiles import task_kind
 
 
 class AIAgentAssistantPlugin(QtCore.QObject):
     plugin_id = 'ai_agent_assistant'
     display_name = 'AI Agent 助手'
-    version = '0.4.0'
+    version = '0.5.0'
     required_api_version = 2
 
     def __init__(self):
@@ -17,6 +18,7 @@ class AIAgentAssistantPlugin(QtCore.QObject):
         self.context = self.dialog = self.handle = None
         self._store = None
         self._pending_reference_plan = None
+        self._pending_image_bind = None
         from .receipt_monitor import ReceiptMonitor
         self.receipts = ReceiptMonitor(self)
         from .notices import ReceiptNotices
@@ -81,7 +83,7 @@ class AIAgentAssistantPlugin(QtCore.QObject):
 
     def quick(self, parent=None):
         widget = QtWidgets.QWidget(parent); layout = QtWidgets.QVBoxLayout(widget); layout.setContentsMargins(0, 0, 0, 0)
-        button = QtWidgets.QPushButton('口播任务 · 导入与填表', widget)
+        button = QtWidgets.QPushButton('Agent 任务 · 导入与成品', widget)
         button.clicked.connect(self.open_ui); layout.addWidget(button)
         return widget
 
@@ -117,6 +119,7 @@ class AIAgentAssistantPlugin(QtCore.QObject):
             if task is None or not str(getattr(task, 'task_audio_text', '') or '').strip(): skipped += 1; continue
             try:
                 value = snapshot(target, self.context.task_language(task))
+                if not value.get('agent'): value['agent'] = self.store.settings().get('default_agent', '')
                 if self.dialog and self.dialog.chinese_source.isChecked() and not value['chinese_confirmed']:
                     value['chinese_confirmed'] = True
                     value['chinese_source'] = '用户确认：完整任务名称即中文台词'
@@ -133,22 +136,37 @@ class AIAgentAssistantPlugin(QtCore.QObject):
         if self.handle is not None: raise ValueError('当前操作尚未结束。')
         jobs = self.store.jobs(ids)
         if not jobs: raise ValueError('请选择任务。')
-        if operation == 'submit': require_available(self.context)
+        if operation == 'submit':
+            oral = [job for job in jobs if task_kind(job['payload']) == 'oral' and job['state'] in {'draft', 'failed'}]
+            if any(existing_segments(job['payload'].get('spoken', '')) is None for job in oral): require_available(self.context)
+            missing = [job for job in oral if not job['payload'].get('agent', '').strip()]
+            default = str(target.get('default_agent') or self.store.settings().get('default_agent') or '').strip()
+            if missing and default:
+                self.store.edit_batch([job['id'] for job in missing], 'agent', default,
+                    expected={job['id']: fingerprint(job['payload']) for job in missing})
+                jobs = self.store.jobs(ids); missing = []
+            if missing:
+                answer = QtWidgets.QMessageBox.question(self.dialog or self.context.parent_widget, '尚未分配执行 Agent',
+                    f'有{len(missing)}条任务没有执行 Agent，外部AI可能无法领取。\n仍提交为待管理员分配的任务？\n取消后可右键批量分配，或填写默认 Agent。',
+                    QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No,
+                    QtWidgets.QMessageBox.StandardButton.No)
+                if answer != QtWidgets.QMessageBox.StandardButton.Yes: return
         if operation == 'submit' and reference_approval is None and self.plan_local_references(target, jobs): return
         self.store.save_settings(target)
         authorization = self.context.prepare_google_account('sheets')
-        self.handle = self.context.submit_background_task(title='AI Agent · 口播' + ('提交' if operation == 'submit' else '核对'),
+        self.handle = self.context.submit_background_task(title='AI Agent · ' + ('提交' if operation == 'submit' else '核对'),
             runner=run_export, payload={**target, 'ids': list(ids), 'root': str(self.context.storage.path), 'operation': operation,
                                         'account_id': authorization['account_id'], 'google_authorization': authorization,
                                         'reference_approval': reference_approval},
             kind='network', execution='parallel', resources=['agent-sheet:' + spreadsheet_id(target['url'])], retryable=False)
         self.handle.completed.connect(self.completed); self.handle.failed.connect(self.failed); self.handle.finished.connect(self.finished)
         self.handle.progressChanged.connect(self.progress)
-        if self.dialog: self.dialog.busy(True); self.dialog.status.setText('已交由主程序后台执行，可关闭此窗口。')
+        if self.dialog: self.dialog.busy(True); self.show_status('已交由主程序后台执行，可关闭此窗口。')
 
     def copy_tasks(self, ids):
         if self.handle is not None: raise ValueError('当前操作尚未结束。')
-        require_available(self.context)
+        if any(task_kind(job['payload']) == 'oral' and existing_segments(job['payload'].get('spoken', '')) is None for job in self.store.jobs(ids)):
+            require_available(self.context)
         from .references import reference_sources
         if any(source['kind'] == 'local' for job in self.store.jobs(ids) for source in reference_sources(job['payload'])):
             raise ValueError('复制表格不会自动上传本地图片，请先提交并确认素材上传，或改为Drive链接。')
@@ -160,19 +178,26 @@ class AIAgentAssistantPlugin(QtCore.QObject):
         if self.dialog: self.dialog.busy(True); self.dialog.status.setText('后台分段中，完成后自动复制；不调用AI或音频模型。')
 
     def completed(self, result):
+        if 'image_bind_choices' in result:
+            self._pending_image_bind = result; return
         if 'upload_plan' in result:
             self._pending_reference_plan = result
             return
         if 'clipboard' in result: QtWidgets.QApplication.clipboard().setText(result['clipboard'])
         message = result['message']
         self.context.log(message)
-        if self.dialog: self.dialog.reload(); self.dialog.status.setText(message)
+        if self.dialog: self.dialog.reload(); self.show_status(message)
 
     def failed(self, message):
-        if self.dialog: self.dialog.reload(); self.dialog.status.setText(message)
+        if self.dialog: self.dialog.reload(); self.show_status(message)
+
+    def show_status(self, message):
+        if self.dialog:
+            self.dialog.status.setText(message)
+            self.dialog.image_page.status.setText(message)
 
     def progress(self, message, _percent):
-        if self.dialog: self.dialog.status.setText(message)
+        self.show_status(message)
 
     def finished(self):
         if self.sender() is not self.handle: return
@@ -181,6 +206,35 @@ class AIAgentAssistantPlugin(QtCore.QObject):
         if self._pending_reference_plan is not None:
             result, self._pending_reference_plan = self._pending_reference_plan, None
             self.confirm_local_references(result)
+        if self._pending_image_bind is not None:
+            result, self._pending_image_bind = self._pending_image_bind, None
+            try:
+                from .image_ui import confirm_image_bind
+                confirm_image_bind(self, result)
+            except Exception as error: self.show_status(str(error))
+
+    def query_existing_images(self, target, main_target):
+        if self.handle is not None: raise ValueError('请先结束当前操作。')
+        from .image_tasks import run_image_bind_list
+        local = snapshot(main_target, '')
+        authorization = self.context.prepare_google_account('sheets')
+        self.store.save_settings(target)
+        self.handle = self.context.submit_background_task(title='AI Agent · 读取已有图片任务', runner=run_image_bind_list,
+            payload={**target, 'target_dir': local['target_dir'], 'parent_task_id': local['task_id'], 'authorization': authorization},
+            kind='network', execution='parallel', retryable=False)
+        self.handle.completed.connect(self.completed); self.handle.failed.connect(self.failed); self.handle.finished.connect(self.finished)
+        if self.dialog: self.dialog.busy(True); self.show_status('只读获取已有图片任务，下一步由你确认接收目录。')
+
+    def remove_job_records(self, ids, parent=None):
+        if self.handle is not None or self.receipts.handle is not None: raise ValueError('Agent操作仍在运行，请结束后再移除。')
+        jobs = self.store.jobs(ids)
+        answer = QtWidgets.QMessageBox.question(parent or self.dialog or self.context.parent_widget, '移除本地记录',
+            f'移除{len(jobs)}条本地记录并停止监视？云端任务、网盘文件和本地成品全部保留。\n重新导入会另建作业，请先核对旧任务避免重复派单。',
+            QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No, QtWidgets.QMessageBox.StandardButton.No)
+        if answer != QtWidgets.QMessageBox.StandardButton.Yes: return
+        self.store.remove_records({job['id']: (job['state'], fingerprint(job['payload'])) for job in jobs})
+        if self.dialog: self.dialog.reload()
+        self.notices.refresh(); self.show_status(f'已移除{len(jobs)}条本地记录，云端任务和全部文件保留。')
 
     def plan_local_references(self, target, jobs):
         from .references import reference_sources, run_reference_plan
@@ -190,7 +244,7 @@ class AIAgentAssistantPlugin(QtCore.QObject):
             payload={'root': str(self.context.storage.path), 'ids': [job['id'] for job in jobs], 'next': dict(target)},
             kind='cpu', execution='parallel', retryable=False)
         self.handle.completed.connect(self.completed); self.handle.failed.connect(self.failed); self.handle.finished.connect(self.finished)
-        if self.dialog: self.dialog.busy(True); self.dialog.status.setText('后台检查图片并生成预览；确认前不会上传或提交。')
+        if self.dialog: self.dialog.busy(True); self.show_status('后台检查图片并生成预览；确认前不会上传或提交。')
         return True
 
     def confirm_local_references(self, result):
@@ -200,7 +254,7 @@ class AIAgentAssistantPlugin(QtCore.QObject):
             dialog = ReferenceUploadDialog(self, result['upload_plan'])
             accepted = dialog.exec() == QtWidgets.QDialog.DialogCode.Accepted
             if not accepted:
-                if self.dialog: self.dialog.status.setText('已取消图片上传；任务未提交。')
+                if self.dialog: self.show_status('已取消图片上传；任务未提交。')
                 dialog.deleteLater(); return
             account = dialog.accounts.currentData(); parent = dialog.parent_id
             dialog.manager.bind('ai_agent_assistant.uploads', account)
@@ -216,7 +270,7 @@ class AIAgentAssistantPlugin(QtCore.QObject):
             ids = result.get('ids', ids)
             self.submit({**result['next'], 'upload_folder': parent}, ids, 'submit', reference_approval=approval)
         except Exception as error:
-            if self.dialog: self.dialog.status.setText('素材上传未启动：' + str(error))
+            if self.dialog: self.show_status('素材上传未启动：' + str(error))
             else: self.context.log('素材上传未启动：' + str(error))
 
     def can_close(self): return (self.handle is None and self.receipts.handle is None and self.notices.handle is None, 'AI Agent 后台操作仍在结束中，请先完成或取消。')

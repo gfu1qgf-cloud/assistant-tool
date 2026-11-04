@@ -46,8 +46,14 @@ class Store:
         return json.loads(row[0]) if row else {'url': '', 'sheet': '口播表格'}
 
     def save_settings(self, value):
+        current = self.settings()
+        if value.get('kind') == 'image':
+            current.update(image_url=value['url'], image_sheet=value['sheet'])
+            for key in ('upload_folder',):
+                if key in value: current[key] = value[key]
+        else: current.update({key: item for key, item in value.items() if key != 'kind'})
         with self.connect() as db:
-            db.execute('INSERT OR REPLACE INTO preferences VALUES (?,?)', ('target', json.dumps(value)))
+            db.execute('INSERT OR REPLACE INTO preferences VALUES (?,?)', ('target', json.dumps(current)))
 
     def delivery_statuses(self):
         if not self.file.exists(): return {}
@@ -199,7 +205,7 @@ class Store:
                                (json.dumps(value, ensure_ascii=False), fingerprint(value), key))
 
     def edit(self, key, field, value):
-        if field not in {'language', 'spoken', 'chinese', 'reference'}: raise ValueError('此字段不可编辑。')
+        if field not in {'language', 'spoken', 'chinese', 'reference', 'agent', 'user_requirements', 'subcategory', 'requirements'}: raise ValueError('此字段不可编辑。')
         with self.connect() as db:
             db.execute('BEGIN IMMEDIATE')
             row = db.execute('SELECT payload,state FROM jobs WHERE id=?', (key,)).fetchone()
@@ -209,3 +215,14 @@ class Store:
                 payload['chinese_source'] = '插件内手动校对'; payload['chinese_confirmed'] = True
             db.execute('UPDATE jobs SET payload=?,digest=? WHERE id=?',
                        (json.dumps(payload, ensure_ascii=False), fingerprint(payload), key))
+
+    def edit_batch(self, ids, field, value, *, expected):
+        if field not in {'agent', 'user_requirements'}: raise ValueError('此字段不支持批量设置。')
+        with self.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            for key in dict.fromkeys(ids):
+                row = db.execute('SELECT payload,digest,state FROM jobs WHERE id=?', (key,)).fetchone()
+                if not row or row[1] != expected.get(key) or row[2] not in {'draft', 'failed'}:
+                    raise ValueError('所选任务已改变或已提交，请刷新；未部分覆盖。')
+                payload = json.loads(row[0]); payload[field] = str(value).strip()
+                db.execute('UPDATE jobs SET payload=?,digest=? WHERE id=?', (json.dumps(payload, ensure_ascii=False), fingerprint(payload), key))
