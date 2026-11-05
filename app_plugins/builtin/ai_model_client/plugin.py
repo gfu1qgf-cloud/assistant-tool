@@ -7,7 +7,7 @@ from model.QtThreadLifecycle import thread_is_active
 class AIModelClientPlugin:
     plugin_id = "ai_model_client"
     display_name = "AI 模型试用台"
-    version = "1.4"
+    version = "1.5"
     required_api_version = 1
 
     def __init__(self):
@@ -38,6 +38,8 @@ class AIModelClientPlugin:
         pass
 
     def apply_settings(self, _config):
+        if self.dialog is not None:
+            self.dialog.settings_changed()
         return True
 
     def can_close(self):

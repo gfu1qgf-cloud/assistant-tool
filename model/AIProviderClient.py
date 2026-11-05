@@ -419,5 +419,6 @@ class AIProviderClient:
         if on_delta and (accumulator is None or not accumulator.parts):
             on_delta(text)
         return {"text": text, "provider": provider, "model": str(data.get("model") or model),
+                "requested_model": model, "reported_model": str(data.get('reported_model', data.get('model')) or ''),
                 "usage": tokens, "elapsed": round(time.monotonic() - started, 2),
                 "warning": "回答达到输出上限，可能未完。" if reason in {"MAX_TOKENS", "length"} else ""}

@@ -62,6 +62,8 @@ class OpenAIChatTests(unittest.TestCase):
         self.assertEqual(payload['input'][1]['content'][0]['type'], 'output_text')
         self.assertEqual(result['text'], '你好')
         self.assertEqual(result['usage'], {'input': 12, 'output': 34})
+        self.assertEqual(result['requested_model'],'gpt-6-luna')
+        self.assertEqual(result['reported_model'],'gpt-6-luna')
 
     def test_stream_deltas_no_duplicate_final_and_terminal_without_done(self):
         result, _ = self.chat(SSEResponse([
@@ -71,6 +73,15 @@ class OpenAIChatTests(unittest.TestCase):
         ]), stream=True)
         self.assertEqual(result['text'], '你好')
         self.assertEqual(result['usage']['output'], 34)
+        self.assertEqual(result['reported_model'],'gpt-6-luna')
+
+    def test_missing_reported_model_is_not_faked_from_requested_model(self):
+        for streaming in (False, True):
+            data = reply(); data.pop('model')
+            response = SSEResponse([{'type':'response.completed','response':data}]) if streaming else Response(data)
+            result, _ = self.chat(response, stream=streaming)
+            self.assertEqual(result['requested_model'],'gpt-6-luna')
+            self.assertEqual(result['reported_model'],'')
 
     def test_complete_only_stream_and_incomplete_warning(self):
         for stream in (False, True):

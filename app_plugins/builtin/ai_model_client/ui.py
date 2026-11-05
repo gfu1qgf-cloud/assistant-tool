@@ -18,6 +18,7 @@ from model.BackgroundTasks import TaskRunContext, BackgroundTaskCanceled
 from model.QtThreadLifecycle import connect_thread_finished
 from .settings import CONFIG_KEY, ClientSettingsPage, default_options
 from .rendering import message_html, is_web_link
+from .catalog import openai_identity
 
 
 def safe_ui(function):
@@ -169,6 +170,10 @@ class AIClientDialog(QtWidgets.QDialog):
         self.stream_displayed = 0
         self.stream_start_pos = None
         self.catalogs = {}
+        self.catalog_identities = {}
+        self.catalog_attempts = set()
+        self.catalog_errors = {}
+        self.catalog_active_identity = None
         self.loading = False
         self.consent = False
         self.setWindowTitle("AI 模型试用台 · LZX")
@@ -224,6 +229,10 @@ class AIClientDialog(QtWidgets.QDialog):
         selectors.addWidget(self.refresh_button)
         selectors.addWidget(self.options_button)
         right_layout.addLayout(selectors)
+        self.catalog_hint = QtWidgets.QLabel(right)
+        self.catalog_hint.setWordWrap(True)
+        self.catalog_hint.setTextFormat(QtCore.Qt.TextFormat.PlainText)
+        right_layout.addWidget(self.catalog_hint)
         self.options_panel = QtWidgets.QWidget(right)
         options_layout = QtWidgets.QFormLayout(self.options_panel)
         options_layout.setContentsMargins(0, 2, 0, 4)
@@ -351,12 +360,42 @@ class AIClientDialog(QtWidgets.QDialog):
         self.input.imagesAdded.connect(self.add_images)
         self.input.inputError.connect(self.status.setText)
         self.retry_button.clicked.connect(self.retry_request)
+        self.catalog_timer = QtCore.QTimer(self)
+        self.catalog_timer.setSingleShot(True)
+        self.catalog_timer.timeout.connect(self.ensure_openai_catalog)
         existing = store.conversations()
         self.reload_history(existing[0]["id"] if existing else None)
         if not existing:
             self.new_conversation()
         self.set_busy(False)
         self.status.setText("离线模式：可以查看历史，不能请求模型。" if is_offline() else "从“连接 → 连接设置”添加服务密钥，再刷新并选择模型。")
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self.catalog_timer.start(0)
+
+    def settings_changed(self):
+        # Also called when credentials were saved from the main settings page.
+        self.catalog_timer.start(0)
+
+    def sync_openai_identity(self, config):
+        identity = openai_identity(config)
+        if identity != self.catalog_active_identity:
+            self.catalog_active_identity = identity
+            self.catalogs.pop('openai', None)
+            self.catalog_errors.pop('openai', None)
+            self.catalog_attempts.discard(identity)
+            if self.provider.currentData() == 'openai':
+                self.fill_models(self.model_id())
+        return identity
+
+    @safe_ui
+    def ensure_openai_catalog(self):
+        if not self.isVisible() or self.handle or is_offline() or self.provider.currentData() != 'openai':
+            return
+        identity = self.sync_openai_identity(self.connection_snapshot())
+        if identity and identity not in self.catalog_attempts:
+            self.refresh_models()
 
     def options(self):
         return {"system": self.system.toPlainText(), "rounds": self.rounds.value(),
@@ -438,6 +477,7 @@ class AIClientDialog(QtWidgets.QDialog):
             self.render_transcript()
         finally:
             self.loading = False
+        self.catalog_timer.start(0)
 
     def schedule_draft(self, *_args):
         if not self.loading and self.current_id:
@@ -461,6 +501,7 @@ class AIClientDialog(QtWidgets.QDialog):
         if not self.loading:
             self.fill_models("")
             self.schedule_draft()
+            self.catalog_timer.start(0)
 
     @safe_ui
     def filter_changed(self, *_args):
@@ -478,6 +519,17 @@ class AIClientDialog(QtWidgets.QDialog):
         }
         self.billing_hint.setText(billing_notes.get(provider, ""))
         self.billing_hint.setVisible(provider in billing_notes)
+        if provider == 'openai':
+            if provider in self.catalogs:
+                note = f'已读取账号的 {len(rows)} 个聊天模型候选；是否可调用以实际权限为准。' if rows else '账号模型列表未返回可选聊天模型；可手动填写具体模型 ID。'
+            else:
+                note = '尚未读取账号模型列表。当前填写的默认模型不是全部模型；配置 Key 后会自动读取，也可手动刷新。'
+            if self.catalog_errors.get(provider):
+                note += '\n模型列表读取失败：' + self.catalog_errors[provider] + ' 可手动刷新或直接填写模型聊天。'
+            self.catalog_hint.setText(note)
+        else:
+            self.catalog_hint.setText('')
+        self.catalog_hint.setVisible(provider == 'openai')
         self.model.blockSignals(True)
         self.model.clear()
         for row in rows:
@@ -496,17 +548,24 @@ class AIClientDialog(QtWidgets.QDialog):
                                        "groq": "openai/gpt-oss-120b"}.get(provider, ""))
         self.model.blockSignals(False)
         self.model.lineEdit().setCursorPosition(0)
-        self.model.setToolTip(self.model_id())
+        self.model.setToolTip(self.model_id() + '\n切换仅影响下一条请求；已有对话内容保留，不能用模型自我介绍判断真实模型。')
 
     @safe_ui
     def refresh_models(self, _checked=False):
         if self.handle:
             return
         provider, config = self.provider.currentData(), self.connection_snapshot()
+        identity = self.sync_openai_identity(config) if provider == 'openai' else None
+        if provider == 'openai':
+            if not identity:
+                raise ValueError('请先在程序设置 → AI 模型试用台中保存 OpenAI Key。')
+            self.catalog_attempts.add(identity)
+            self.catalog_errors.pop(provider, None)
         # Capture a plain service, not this dialog, in the worker closure.
         client = self.client
         runner = lambda payload, job: {"provider": payload["provider"], "models": client.list_models(payload["provider"], payload["config"], job, force=True)}
-        self.submit("读取 " + PROVIDERS[provider] + " 模型", runner, {"provider": provider, "config": config}, {"type": "models"})
+        self.submit("读取 " + PROVIDERS[provider] + " 模型", runner, {"provider": provider, "config": config},
+                    {"type": "models", "provider": provider, "identity": identity})
 
     def submit(self, title, runner, payload, operation):
         handle = ClientWorker(runner, payload, self)
@@ -607,7 +666,8 @@ class AIClientDialog(QtWidgets.QDialog):
         try:
             self.submit("AI 对话 · " + PROVIDERS[provider] + " / " + model,
                         functools.partial(run_chat, store=self.store, client=self.client, stream=self.stream), payload,
-                        {"type": "chat", "conversation": identifier, "prompt_id": prompt_id})
+                        {"type": "chat", "conversation": identifier, "prompt_id": prompt_id,
+                         "provider": provider, "model": model})
             if self.stream:
                 self.stream_timer.start()
         except Exception as error:
@@ -657,7 +717,12 @@ class AIClientDialog(QtWidgets.QDialog):
         self.stream = None
         if self.operation["type"] == "models":
             provider = output["provider"]
+            if provider == 'openai' and self.operation.get('identity') != openai_identity(self.connection_snapshot()):
+                self.last_status = '连接设置已更改，已忽略旧密钥的模型列表；即将读取新配置。'
+                return
             self.catalogs[provider] = output["models"]
+            self.catalog_identities[provider] = self.operation.get('identity')
+            self.catalog_errors.pop(provider, None)
             if self.provider.currentData() == provider:
                 self.fill_models(self.model_id())
             self.last_status = f"已读取 {len(output['models'])} 个模型。列表标注图片/免费信息；可用性仍以实际调用为准。"
@@ -675,7 +740,9 @@ class AIClientDialog(QtWidgets.QDialog):
         else:
             result = output["result"]
             usage = result["usage"]
-            self.last_status = f"{result['model']} · {result['elapsed']:.2f}秒 · 输入 {usage['input']} / 输出 {usage['output']} tokens。" + result["warning"]
+            identity = (f"请求：{result.get('requested_model') or self.operation.get('model') or result['model']} · "
+                        f"接口返回：{result.get('reported_model') or '未提供模型 ID'}")
+            self.last_status = f"{identity} · {result['elapsed']:.2f}秒 · 输入 {usage['input']} / 输出 {usage['output']} tokens。" + result["warning"]
             if output["conversation"] == self.current_id:
                 self.render_transcript()
         self.reload_history()
@@ -692,6 +759,11 @@ class AIClientDialog(QtWidgets.QDialog):
             self.store.fail_request(self.operation["conversation"], self.operation["prompt_id"], message,
                                     "取消" in message)
             self.render_transcript()
+        elif self.operation['type'] == 'models' and self.operation.get('provider') == 'openai':
+            if self.operation.get('identity') == openai_identity(self.connection_snapshot()):
+                self.catalog_errors['openai'] = message
+                if self.provider.currentData() == 'openai':
+                    self.fill_models(self.model_id())
 
     @safe_ui
     def finished(self, handle):
@@ -701,6 +773,7 @@ class AIClientDialog(QtWidgets.QDialog):
             self.handle = self.operation = None
             self.set_busy(False)
             self.status.setText(getattr(self, "last_status", "操作结束。"))
+            self.catalog_timer.start(0)
 
     def render_attachments(self):
         self.attachments.clear()
@@ -757,6 +830,9 @@ class AIClientDialog(QtWidgets.QDialog):
                              + message_html(partial["text"], self.markdown.isChecked()))
             if row["role"] == "assistant":
                 meta = row["metadata"]
+                if 'requested_model' in meta:
+                    parts.append('<p><small>' + html.escape('请求模型：' + meta['requested_model'] +
+                        '；接口返回：' + (meta.get('reported_model') or '未提供模型 ID')) + '</small></p>')
                 parts.append("<p><small>" + html.escape(str(meta.get("elapsed", "")) + "秒 · " + str(meta.get("usage", {})) + " " + meta.get("warning", "")) + "</small></p>")
             parts.append("<hr>")
         self.transcript.allowed_images = self.allowed_images.copy()
@@ -819,6 +895,7 @@ class AIClientDialog(QtWidgets.QDialog):
         layout.addWidget(buttons)
         if dialog.exec() == QtWidgets.QDialog.DialogCode.Accepted:
             self.status.setText("连接设置已保存；Gemini 原有密钥未改动。刷新模型即可测试。")
+            self.settings_changed()
 
     @safe_ui
     def rename_conversation(self, _checked=False):
@@ -882,5 +959,6 @@ class AIClientDialog(QtWidgets.QDialog):
         menu.exec(self.history.mapToGlobal(position))
 
     def closeEvent(self, event):
+        self.catalog_timer.stop()
         self.save_draft()
         event.accept()

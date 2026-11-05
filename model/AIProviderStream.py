@@ -50,6 +50,7 @@ class ChatStream:
         self.provider, self.model, self.on_delta = provider, model, on_delta
         self.parts, self.usage, self.reason = [], {}, ""
         self.terminal = False
+        self.reported_model = ''
 
     def feed(self, data):
         if not isinstance(data, dict):
@@ -65,6 +66,7 @@ class ChatStream:
             elif kind in {'response.completed', 'response.incomplete'}:
                 result = normalize_response(data.get('response') or {})
                 self.model = str(result.get('model') or self.model)
+                self.reported_model = result.get('reported_model') or ''
                 self.usage = result['usage']
                 self.reason = result['choices'][0]['finish_reason']
                 if not self.parts:
@@ -104,5 +106,6 @@ class ChatStream:
         if self.provider == "gemini":
             return {"model": self.model, "candidates": [{"content": {"parts": [{"text": text}]},
                     "finishReason": self.reason}], "usageMetadata": self.usage}
-        return {"model": self.model, "choices": [{"message": {"content": text},
+        return {"model": self.model, "reported_model": self.reported_model if self.provider == 'openai' else self.model,
+                "choices": [{"message": {"content": text},
                 "finish_reason": self.reason}], "usage": self.usage}

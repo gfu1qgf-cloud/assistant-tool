@@ -126,7 +126,8 @@ class ChatStore:
             db.execute("UPDATE messages SET status='done',error='',metadata='{}' WHERE id=?", (prompt_id,))
             db.execute("INSERT INTO messages(conversation,role,text,provider,model,status,metadata,created) VALUES(?,'assistant',?,?,?,'done',?,?)",
                        (identifier, result["text"], result["provider"], result["model"],
-                        json.dumps({key: result[key] for key in ("usage", "elapsed", "warning")}, ensure_ascii=False), time.time()))
+                        json.dumps({key: result[key] for key in ("usage", "elapsed", "warning", "requested_model", "reported_model")
+                                    if key in result}, ensure_ascii=False), time.time()))
             db.execute("UPDATE conversations SET updated=? WHERE id=?", (time.time(), identifier))
         return True
 

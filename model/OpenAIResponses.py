@@ -48,7 +48,7 @@ def normalize_response(data):
     reason = (data.get('incomplete_details') or {}).get('reason') if status == 'incomplete' else 'stop'
     if status == 'incomplete' and reason != 'max_output_tokens':
         raise ValueError('OpenAI 回答未完成（' + str(reason or '未知原因') + '）；未自动重发。')
-    return {'model': data.get('model'), 'choices': [{'message': {'content': ''.join(parts)},
+    return {'model': data.get('model'), 'reported_model': data.get('model') or '', 'choices': [{'message': {'content': ''.join(parts)},
             'finish_reason': 'length' if status == 'incomplete' else 'stop'}],
             'usage': {'prompt_tokens': usage.get('input_tokens', 0),
                       'completion_tokens': usage.get('output_tokens', 0)}}
