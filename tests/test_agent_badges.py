@@ -42,23 +42,42 @@ class NoticeDataTests(unittest.TestCase):
         self.assertEqual(first['notify_files'], 1); self.assertEqual(second['notify_files'], 0)
         self.assertEqual(second['items'][0]['unread'], 1)
 
-    def test_received_labels_stay_short_across_status_and_review_combinations(self):
-        version=self.file(); self.done(3)
-        for status in ('已下载', '已收取部分', '已下载·待回写', '收取待核对',
-                       '收取待重试', '正在下载', '已收取·任务未完成'):
+    def test_completed_labels_stay_short_and_manual_seen_is_explicit(self):
+        version=self.file(); self.done(1)
+        for status in ('已下载','已下载·待回写','收取待核对','已收取·任务未完成'):
             for review in ('', 'AI预审不通过｜第2段漏读'):
                 self.store.delivery_note(self.key,status,'待补第2段')
                 self.store.save_delivery(self.key,'@ai_review',{'text':review})
                 with self.subTest(status=status,review=review):
                     item=notice_snapshot(self.store,announce=False)['items'][0]
                     self.assertEqual(item['text'],'已收取')
-                    self.assertIn('1/3',item['tooltip']); self.assertIn('待补第2段',item['tooltip'])
+                    self.assertIn('1/1',item['tooltip']); self.assertIn('待补第2段',item['tooltip'])
                     if review: self.assertEqual(item['tone'],'error')
                     mark_versions_seen(self.store,[version])
                     viewed=notice_snapshot(self.store,announce=False)['items'][0]
                     self.assertEqual(viewed['text'],'已查看')
                     if review: self.assertEqual(viewed['tone'],'error')
                     unmark_versions_seen(self.store,[version])
+    def test_incomplete_downloads_are_not_overwritten_by_received_label(self):
+        version=self.file(); self.done(3)
+        cases={'正在下载':'收取中','等待继续下载':'收取中','下载待重试':'收取待重试',
+               '收取待重试':'收取待重试','已下载':'收取待核对','已下载·待回写':'收取待核对',
+               '已收取部分':'收取待核对','已收取·任务未完成':'收取待核对'}
+        for status,expected in cases.items():
+            for review in ('','AI预审不通过｜第2段漏读'):
+                with self.subTest(status=status,review=review):
+                    self.store.delivery_note(self.key,status,'正在收取1/3')
+                    self.store.save_delivery(self.key,'@ai_review',{'text':review})
+                    item=notice_snapshot(self.store,announce=False)['items'][0]
+                    self.assertEqual(item['text'],expected); self.assertEqual(item['unread'],1)
+                    self.assertIn('1/3',item['tooltip'])
+                    if review:self.assertEqual(item['tone'],'error')
+                    with self.store.connect() as db:
+                        self.assertEqual(db.execute('SELECT COUNT(*) FROM delivery_seen').fetchone()[0],0)
+                    if status in {'正在下载','等待继续下载','下载待重试'}:
+                        mark_versions_seen(self.store,[version])
+                        self.assertEqual(notice_snapshot(self.store,announce=False)['items'][0]['text'],expected)
+                        unmark_versions_seen(self.store,[version])
     def test_seen_marker_preserves_permanent_received_badge_and_file(self):
         version = self.file(); self.done(); mark_versions_seen(self.store, [version])
         value = notice_snapshot(self.store)
@@ -96,7 +115,7 @@ class NoticeDataTests(unittest.TestCase):
         self.file(); self.store.save_delivery(self.key, '@discovery', {'state': 'checked', 'total': 5})
         self.store.delivery_note(self.key, '下载待重试', '第二段暂时失败')
         item = notice_snapshot(self.store)['items'][0]
-        self.assertEqual(item['text'], '已收取'); self.assertIn('1/5',item['tooltip']); self.assertEqual(item['tone'], 'warning'); self.assertEqual(item['unread'], 1)
+        self.assertEqual(item['text'], '收取待重试'); self.assertIn('1/5',item['tooltip']); self.assertEqual(item['tone'], 'warning'); self.assertEqual(item['unread'], 1)
     def test_failed_download_without_file_is_error_and_never_notifies_success(self):
         self.store.delivery_note(self.key, '收取待重试', '无访问权限')
         value = notice_snapshot(self.store)
@@ -120,7 +139,7 @@ class NoticeDataTests(unittest.TestCase):
         self.store.save_delivery(self.key,'@discovery',{'state':'checked','total':2,'file_ids':['new','not_yet_downloaded']})
         self.store.delivery_note(self.key,'正在下载','')
         item=notice_snapshot(self.store)['items'][0]
-        self.assertEqual(item['text'],'已收取'); self.assertIn('1/2',item['tooltip']); self.assertEqual(item['received'],2)
+        self.assertEqual(item['text'],'收取中'); self.assertIn('1/2',item['tooltip']); self.assertEqual(item['received'],2)
     def test_missing_local_file_does_not_show_success_or_unread(self):
         self.file(); self.done()
         next((self.directory/'result').glob('*.mp4')).unlink()

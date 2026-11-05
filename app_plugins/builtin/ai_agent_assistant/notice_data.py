@@ -33,6 +33,54 @@ def same_partial_scope(files):
         partial.get('total')==discovery.get('total') and set(versions)==set(discovery.get('file_ids') or []))
 
 
+def verified_partial_receipt(files, valid_versions):
+    partial=files.get('@partial',{})
+    return bool(partial.get('source') and same_partial_scope(files) and
+        all(valid_versions.get(key)==checksum and bool(checksum)
+            for key,checksum in partial['versions'].items()))
+
+
+def receipt_badge(current, *, unread, seen_versions):
+    """Keep lifecycle, local receipt and explicit human review separate."""
+    status=current['status']; received,total=current['received'],current['total']
+    pending=status in {'正在下载','等待继续下载','下载待重试'}
+    full_local=(received>0 and total>0 and received>=total and not current['missing'] and current['view_scope_ok'])
+    complete=current['verified_received'] or full_local
+    partial=current.get('verified_partial',False)
+    normal='success' if unread else 'muted'
+    if status in {'正在下载','等待继续下载'}:
+        text,tone='收取中','warning'
+    elif status=='下载待重试':
+        text,tone='收取待重试','warning' if received else 'error'
+    elif current['missing']:
+        text,tone='成品缺失','warning'
+    elif status=='收取待重试':
+        if current['verified_received']:
+            text,tone='已收取',normal if current['receipt_archived'] else 'warning'
+        elif partial: text,tone='已收取','warning'
+        else: text,tone='收取待重试','warning' if received else 'error'
+    elif status in {'已下载','已下载·待回写','收取待核对'}:
+        if complete or partial:
+            text,tone='已收取',normal if status=='已下载' else 'warning'
+        else: text,tone='收取待核对','warning'
+    elif status in {'已收取部分','已收取·任务未完成'}:
+        # Missing cloud segments are allowed only after every available file
+        # has actually been downloaded and the exact partial set is recorded.
+        text,tone=('已收取' if partial or complete else '收取待核对'),'warning'
+    elif status in {'需核对质检','任务类型不符','任务编号不符','需核对重复ID','未找到云端记录'}:
+        text,tone='收取待核对','warning'
+    elif status in {'等待制作完成','等待成品链接'}:
+        text,tone=status,'warning'
+    elif received:
+        text,tone='收取中','warning'
+    else: text,tone='收取需处理','error'
+    manually_seen=received>0 and unread==0 and bool(seen_versions) and current['view_scope_ok']
+    if manually_seen and not pending:
+        text='已查看'
+        if not current['missing'] and received>=total and status=='收取待重试': tone='muted'
+    return text,tone,manually_seen
+
+
 def notice_snapshot(store, *, announce=True):
     if not store.file.exists(): return {'items': [], 'notify_files': 0, 'notify_tasks': 0}
     with store.connect() as db:
@@ -78,6 +126,7 @@ def notice_snapshot(store, *, announce=True):
             group['current'] = {'status': status, 'detail': detail, 'received': valid, 'total': expected, 'missing': missing,
                 'ai_review':files.get('@ai_review',{}).get('text','')}
             group['current']['verified_received']=verified_receipt(files,valid_versions)
+            group['current']['verified_partial']=verified_partial_receipt(files,valid_versions)
             group['current']['receipt_archived']=bool(files.get('@received',{}).get('archived'))
             group['current']['view_scope_ok']='@received' not in files or same_receipt_scope(files) or same_partial_scope(files)
     items = []
@@ -86,45 +135,11 @@ def notice_snapshot(store, *, announce=True):
         if not current: continue
         total_files = len(group.pop('files')); unread = len(group['versions'])
         status = current['status']; received, total = current['received'], current['total']
-        if current['verified_received'] and status=='收取待重试':
-            if not current['receipt_archived']: text,tone='已收取·待回写','warning'
-            else: text, tone = (f'新成品 · {unread}','success') if unread else (f'已收取 · {total_files}','muted')
-        elif current['missing']:
-            text, tone = f'成品缺失 {received}/{max(total, received + current["missing"])}', 'warning'
-        elif status == '已收取部分':
-            text,tone=f'已收取 {received}/{max(total,received)}·缺段','warning'
-        elif status == '已收取·任务未完成':
-            text,tone='已收取·任务未完成','warning'
-        elif status == '已下载·待回写':
-            text, tone = '已收取·待回写', 'warning'
-        elif status in {'收取待核对', '需核对质检', '任务类型不符', '任务编号不符', '需核对重复ID', '未找到云端记录'}:
-            text, tone = ('已收取·待核对' if received and received >= total else f'收取待核对 {received}/{total or "?"}'), 'warning'
-        elif status == '收取待重试':
-            text, tone = '收取待重试', 'warning' if received else 'error'
-        elif status in {'等待制作完成', '等待成品链接'}:
-            text, tone = status, 'warning'
-        elif status == '已下载' or received and received >= total and not status:
-            text, tone = (f'新成品 · {unread}', 'success') if unread else (f'已收取 · {total_files}', 'muted')
-        elif received:
-            text, tone = f'收取中 {received}/{max(total, received)}', 'warning'
-        elif status in {'正在下载', '等待继续下载'}:
-            text, tone = f'收取中 {received}/{total or "?"}', 'warning'
-        else: text, tone = '收取需处理', 'error'
+        text,tone,manually_seen=receipt_badge(current,unread=unread,seen_versions=group['seen_versions'])
         review=review_state(current['ai_review'])
         if review['problem'] and total_files:
             tone = 'error'
-        manually_seen=received>0 and unread==0 and bool(group['seen_versions']) and current['view_scope_ok']
-        if manually_seen:
-            text='已查看'
-            # For legacy queues the explicit human marker plus intact complete
-            # local set survives a later cloud inspection failure too.
-            if not review['problem'] and not current['missing'] and received>=total and status=='收取待重试': tone='muted'
-        # Receipt labels describe only the human-facing receipt/view state.
-        # Counts, partial delivery and AI findings belong in color + tooltip,
-        # not ever-growing suffixes. Never claim receipt with no local files.
-        if received and current['view_scope_ok'] or current['verified_received']:
-            text='已查看' if manually_seen else '已收取'
-        human='\n手动状态：已查看。' if manually_seen else ''
+        human=('\n手动状态：已有片段已查看；仍有下载待完成。' if text in {'收取中','收取待重试'} else '\n手动状态：已查看。') if manually_seen else ''
         retained='\n本地已校验收取完成；后续云端检查异常未撤销收取事实。' if current['verified_received'] and status=='收取待重试' else ''
         tooltip=review_tooltip(f'Agent成品：本地可用 {total_files} 个，未查看 {unread} 个。{human}{retained}\n当前批次收取进度：{received}/{max(total,received)}。\n{status}\n{current["detail"]}',review['text'])
         group.update(text=text, tone=tone, unread=unread, received=total_files,tooltip=tooltip)

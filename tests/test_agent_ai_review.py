@@ -60,7 +60,7 @@ class ReviewNoticeTests(unittest.TestCase):
         self.file(); self.store.save_delivery(self.key,'@discovery',{'state':'checked','total':3})
         self.store.delivery_note(self.key,'正在下载','待继续'); self.review('部分通过｜第2段未核')
         item=notice_snapshot(self.store,announce=False)['items'][0]
-        self.assertEqual(item['text'],'已收取'); self.assertIn('1/3',item['tooltip']); self.assertEqual(item['tone'],'error')
+        self.assertEqual(item['text'],'收取中'); self.assertIn('1/3',item['tooltip']); self.assertEqual(item['tone'],'error')
     def test_clearing_or_passing_latest_review_restores_normal_badge_not_false_user_approval(self):
         self.file(); self.done(); self.review('AI预审不通过｜缺陷')
         self.assertEqual(notice_snapshot(self.store,announce=False)['items'][0]['tone'],'error')
