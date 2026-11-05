@@ -9,7 +9,9 @@ CONFIG_KEY = "ai_model_client"
 
 def default_options():
     return {"system": "", "rounds": 20, "max_tokens": 4096,
-            "temperature": None, "free_only": True, "foreign_only": True, "cf_free_only": True}
+            "temperature": None, "free_only": True, "foreign_only": True, "cf_free_only": True,
+            'reasoning_effort':'default','reasoning_mode':'default','verbosity':'default',
+            'thinking_budget':None,'top_p':None,'web_search':False,'search_mode':'auto','search_limit':3}
 
 
 class ClientSettingsPage:

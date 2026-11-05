@@ -14,6 +14,8 @@ from model.OfflineMode import require_online
 from model.SensitiveData import redact_sensitive_text, register_sensitive_values
 from model.AIProviderStream import ChatStream, sse_events
 from model.OpenAIResponses import is_chat_model, request_payload, normalize_response
+from model.AIChatCapabilities import apply_options
+from model.AIChatSources import response_metadata
 
 PROVIDERS = {"gemini": "Gemini", "mistral": "Mistral", "openrouter": "OpenRouter",
              "cloudflare": "Cloudflare Workers AI", "groq": "Groq", "openai": "OpenAI / GPT"}
@@ -292,7 +294,8 @@ class AIProviderClient:
                     free = is_free_model(row)
                 model = row.get("id", "")
                 if MODEL_ID.fullmatch(model) and not model.startswith("openrouter/"):
-                    rows.append({"id": model, "name": row.get("name", model), "vision": vision, "free": free})
+                    rows.append({"id": model, "name": row.get("name", model), "vision": vision, "free": free,
+                                 'supported_parameters':row.get('supported_parameters') or []})
         rows.sort(key=lambda row: row["id"])
         with self._lock:
             self._catalogs[marker] = (time.time(), copy.deepcopy(rows))
@@ -331,7 +334,7 @@ class AIProviderClient:
             if sum(len(item.get("images", [])) for item in messages) > 3:
                 raise AIProviderError("Groq 当前图片模型每次请求最多三张图片，请减少上下文图片。")
         context.report("正在请求 " + PROVIDERS[provider] + " / " + model + "…", 25)
-        maximum = max(128, min(32768, int(options.get("max_tokens", 4096))))
+        maximum = max(128, min(128000, int(options.get("max_tokens", 4096))))
         system = str(options.get("system", ""))
         if len(system) > 16000:
             raise ValueError("系统提示超过16000字符，请缩短；没有截断或改写原文。")
@@ -381,9 +384,7 @@ class AIProviderClient:
                 url = {"mistral": "https://api.mistral.ai/v1/chat/completions",
                        "openrouter": "https://openrouter.ai/api/v1/chat/completions",
                        "groq": "https://api.groq.com/openai/v1/chat/completions"}[provider]
-        if options.get("temperature") is not None:
-            target = payload["generationConfig"] if provider == "gemini" else payload
-            target["temperature"] = max(0.0, min(2.0, float(options["temperature"])))
+        apply_options(provider,model,payload,options,selected)
         started = time.monotonic()
         accumulator = ChatStream(provider, model, on_delta) if streaming else None
         data = self._request(provider, key, model, url, context, payload=payload, params=params, chat_stream=accumulator)
@@ -418,7 +419,9 @@ class AIProviderClient:
             raise AIProviderError("模型未返回可显示的文字，可能被拦截、只返回了思考或不支持该输入；可换模型/增大输出上限重试。")
         if on_delta and (accumulator is None or not accumulator.parts):
             on_delta(text)
+        metadata=response_metadata(provider,data)
         return {"text": text, "provider": provider, "model": str(data.get("model") or model),
                 "requested_model": model, "reported_model": str(data.get('reported_model', data.get('model')) or ''),
+                **metadata, 'web_enabled':bool(options.get('web_search')),
                 "usage": tokens, "elapsed": round(time.monotonic() - started, 2),
                 "warning": "回答达到输出上限，可能未完。" if reason in {"MAX_TOKENS", "length"} else ""}

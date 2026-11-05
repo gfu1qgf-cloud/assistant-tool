@@ -51,6 +51,9 @@ class ChatStream:
         self.parts, self.usage, self.reason = [], {}, ""
         self.terminal = False
         self.reported_model = ''
+        self.metadata = {}
+        self.grounding = {}
+        self.annotations = []
 
     def feed(self, data):
         if not isinstance(data, dict):
@@ -68,6 +71,7 @@ class ChatStream:
                 self.model = str(result.get('model') or self.model)
                 self.reported_model = result.get('reported_model') or ''
                 self.usage = result['usage']
+                self.metadata = {key:result[key] for key in ('sources','search_calls')}
                 self.reason = result['choices'][0]['finish_reason']
                 if not self.parts:
                     text = result['choices'][0]['message']['content']
@@ -79,6 +83,7 @@ class ChatStream:
                            (candidate.get("content") or {}).get("parts", [])
                            if isinstance(part, dict) and not part.get("thought"))
             self.reason = candidate.get("finishReason") or self.reason
+            self.grounding.update(candidate.get('groundingMetadata') or {})
             self.usage.update(data.get("usageMetadata") or {})
         elif "response" in data:
             text = text_content(data.get("response"))
@@ -87,6 +92,7 @@ class ChatStream:
         else:
             choice = next((row for row in data.get("choices", []) if row.get("index", 0) == 0), {})
             text = text_content((choice.get("delta") or {}).get("content"))
+            self.annotations.extend(((choice.get('delta') or {}).get('annotations') or [])[:200])
             self.reason = choice.get("finish_reason") or self.reason
             self.usage.update(data.get("usage") or {})
         if self.reason == "error":
@@ -105,7 +111,7 @@ class ChatStream:
         text = "".join(self.parts)
         if self.provider == "gemini":
             return {"model": self.model, "candidates": [{"content": {"parts": [{"text": text}]},
-                    "finishReason": self.reason}], "usageMetadata": self.usage}
+                    "finishReason": self.reason, 'groundingMetadata':self.grounding}], "usageMetadata": self.usage}
         return {"model": self.model, "reported_model": self.reported_model if self.provider == 'openai' else self.model,
-                "choices": [{"message": {"content": text},
-                "finish_reason": self.reason}], "usage": self.usage}
+                "choices": [{"message": {"content": text,'annotations':self.annotations},
+                "finish_reason": self.reason}], "usage": self.usage, **self.metadata}

@@ -12,6 +12,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from model.AIImages import normalize_image, MAX_SOURCE_BYTES
+from model.AIChatSources import text_with_sources
 
 from model.SensitiveData import redact_sensitive_text
 from model.AppDataStorage import data_file, data_directory
@@ -126,7 +127,8 @@ class ChatStore:
             db.execute("UPDATE messages SET status='done',error='',metadata='{}' WHERE id=?", (prompt_id,))
             db.execute("INSERT INTO messages(conversation,role,text,provider,model,status,metadata,created) VALUES(?,'assistant',?,?,?,'done',?,?)",
                        (identifier, result["text"], result["provider"], result["model"],
-                        json.dumps({key: result[key] for key in ("usage", "elapsed", "warning", "requested_model", "reported_model")
+                        json.dumps({key: result[key] for key in ("usage", "elapsed", "warning", "requested_model", "reported_model",
+                                    'sources','search_calls','reasoning_tokens','web_enabled','search_queries')
                                     if key in result}, ensure_ascii=False), time.time()))
             db.execute("UPDATE conversations SET updated=? WHERE id=?", (time.time(), identifier))
         return True
@@ -145,7 +147,7 @@ class ChatStore:
             raise ValueError("找不到当前待发送消息。")
         history = [row for row in rows if row["id"] < prompt_id and row["status"] == "done"]
         history = history[-2 * max(1, min(50, int(rounds))):]
-        return [{"role": row["role"], "text": row["text"], "images": [self.encoded_image(image) for image in row["images"]]}
+        return [{"role": row["role"], "text": text_with_sources(row["text"],row['metadata']), "images": [self.encoded_image(image) for image in row["images"]]}
                 for row in [*history, prompt]]
 
     def asset_path(self, image):
@@ -201,7 +203,7 @@ class ChatStore:
         lines = [conversation["title"], ""]
         for row in self.messages(identifier):
             lines.append(("你" if row["role"] == "user" else "AI") + " · " + row["provider"] + " / " + row["model"])
-            lines.append(row["text"])
+            lines.append(text_with_sources(row["text"],row['metadata']))
             if row["images"]:
                 lines.append("[图片：" + "、".join(image["name"] for image in row["images"]) + "]")
             if row["error"]:

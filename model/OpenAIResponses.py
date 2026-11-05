@@ -1,4 +1,5 @@
-"""Text/image chat through the fixed official Responses endpoint, without tools."""
+"""Text/image chat through the fixed official Responses endpoint."""
+from model.AIChatSources import annotations
 
 
 def is_chat_model(model):
@@ -35,20 +36,26 @@ def normalize_response(data):
     status = data.get('status')
     if status not in {'completed', 'incomplete'}:
         raise ValueError('OpenAI 回答未完成；未自动重发，避免重复计费。')
-    parts = []
+    parts, sources, search_calls = [], [], 0
+    offset=0
     for item in data.get('output') or []:
+        if item.get('type')=='web_search_call' and (item.get('action') or {}).get('type')=='search':
+            search_calls+=1
         if item.get('type') != 'message':
             continue
         for part in item.get('content') or []:
             if part.get('type') == 'output_text':
-                parts.append(str(part.get('text') or ''))
+                text=str(part.get('text') or '')
+                sources.extend(annotations(part.get('annotations'),offset)); parts.append(text); offset+=len(text)
             elif part.get('type') == 'refusal':
                 raise ValueError('OpenAI 拒绝了本次请求；没有自动重试。')
     usage = data.get('usage') or {}
     reason = (data.get('incomplete_details') or {}).get('reason') if status == 'incomplete' else 'stop'
     if status == 'incomplete' and reason != 'max_output_tokens':
         raise ValueError('OpenAI 回答未完成（' + str(reason or '未知原因') + '）；未自动重发。')
-    return {'model': data.get('model'), 'reported_model': data.get('model') or '', 'choices': [{'message': {'content': ''.join(parts)},
+    return {'model': data.get('model'), 'reported_model': data.get('model') or '',
+            'sources':sources, 'search_calls':search_calls, 'choices': [{'message': {'content': ''.join(parts)},
             'finish_reason': 'length' if status == 'incomplete' else 'stop'}],
             'usage': {'prompt_tokens': usage.get('input_tokens', 0),
-                      'completion_tokens': usage.get('output_tokens', 0)}}
+                      'completion_tokens': usage.get('output_tokens', 0),
+                      'reasoning_tokens': (usage.get('output_tokens_details') or {}).get('reasoning_tokens',0)}}

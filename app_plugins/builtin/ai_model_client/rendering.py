@@ -1,6 +1,8 @@
 """Native Qt Markdown presentation; rendering never fetches external resources."""
 import html
 import re
+import hashlib
+from model.AIChatSources import source
 
 from qt_compat import QtGui
 
@@ -90,3 +92,38 @@ def message_html(text, markdown=True):
 def is_web_link(url):
     return (url.isValid() and url.scheme().lower() in {"http", "https"}
             and bool(url.host()) and not url.userInfo())
+
+
+def cited_message_html(text, metadata, markdown=True):
+    """Insert clickable inline citations with inert placeholders, not raw HTML."""
+    safe=[]
+    for value in (metadata.get('sources') or [])[:1000]:
+        item=source(value.get('url'),value.get('title'),value.get('start'),value.get('end'))
+        if item: safe.append(item)
+    if not safe: return message_html(text,markdown)
+    prefix='LZXREF'+hashlib.sha256(text.encode()).hexdigest()[:16]
+    while prefix in text: prefix+='X'
+    replacements, spans, links = {}, [], {}
+    for item in safe:
+        number=links.setdefault(item['url'],(len(links)+1,item['title']))[0]
+        start,end=item.get('start'),item.get('end')
+        if type(start) is int and type(end) is int and 0<=start<=end<=len(text):
+            # Gemini support segments contain real words: append to the segment;
+            # replace only OpenAI-style citation markers, never factual prose.
+            original=text[start:end]
+            marker=prefix+str(len(replacements))+'END'
+            anchor='<a href="'+html.escape(item['url'],quote=True)+'">['+str(number)+']</a>'
+            replacements[marker]=anchor
+            if '' in original or original.startswith('【'):
+                spans.append((start,end,' '+marker+' '))
+            else: spans.append((end,end,' '+marker+' '))
+    rendered=text; boundary=len(text)+1
+    for start,end,value in sorted(spans,key=lambda item:(item[0],item[1]),reverse=True):
+        if end>boundary: continue
+        rendered=rendered[:start]+value+rendered[end:]; boundary=start
+    fragment=message_html(rendered,markdown)
+    for marker,anchor in replacements.items(): fragment=fragment.replace(marker,anchor)
+    fragment+='<p><b>联网来源</b><br>'
+    fragment+='<br>'.join('<a href="'+html.escape(url,quote=True)+'">['+str(number)+'] '+html.escape(title)+'</a>'
+                        for url,(number,title) in links.items())
+    return fragment+'</p>'

@@ -11,14 +11,16 @@ from pathlib import Path
 from qt_compat import QtCore, QtGui, QtWidgets
 from model.AIProviderClient import PROVIDERS, validate_model, AIProviderError
 from model.AIProviderKeys import KEYS_CONFIG_KEY
+from model.AIChatSources import text_with_sources
 from model.ClipboardHelper import set_internal_clipboard_text
 from model.OfflineMode import is_offline, require_online
 from model.SensitiveData import redact_sensitive_text
 from model.BackgroundTasks import TaskRunContext, BackgroundTaskCanceled
 from model.QtThreadLifecycle import connect_thread_finished
 from .settings import CONFIG_KEY, ClientSettingsPage, default_options
-from .rendering import message_html, is_web_link
+from .rendering import message_html, is_web_link, cited_message_html
 from .catalog import openai_identity
+from .advanced_options import AdvancedOptions
 
 
 def safe_ui(function):
@@ -223,7 +225,7 @@ class AIClientDialog(QtWidgets.QDialog):
         self.model.setMinimumWidth(220)
         self.refresh_button = QtWidgets.QPushButton("刷新模型", right)
         self.options_button = QtWidgets.QToolButton(right)
-        self.options_button.setText("参数 ▾")
+        self.options_button.setText("参数 / 联网 ▾")
         selectors.addWidget(self.provider)
         selectors.addWidget(self.model, 1)
         selectors.addWidget(self.refresh_button)
@@ -245,7 +247,7 @@ class AIClientDialog(QtWidgets.QDialog):
         self.rounds.setRange(1, 50)
         self.rounds.setSuffix(" 轮")
         self.maximum = QtWidgets.QSpinBox(self.options_panel)
-        self.maximum.setRange(128, 32768)
+        self.maximum.setRange(128, 128000)
         self.maximum.setSingleStep(512)
         self.temperature_enabled = QtWidgets.QCheckBox("自定温度", self.options_panel)
         self.temperature = QtWidgets.QDoubleSpinBox(self.options_panel)
@@ -262,6 +264,8 @@ class AIClientDialog(QtWidgets.QDialog):
         temp_row.addWidget(self.temperature)
         temp_row.addStretch(1)
         options_layout.addRow(temp_row)
+        self.advanced = AdvancedOptions(self.options_panel)
+        options_layout.addRow(self.advanced)
         self.free_only = QtWidgets.QCheckBox("OpenRouter 只用免费模型", self.options_panel)
         self.foreign_only = QtWidgets.QCheckBox("筛选国外厂商", self.options_panel)
         self.cf_free_only = QtWidgets.QCheckBox("Cloudflare 仅用已核实免费额度适用款", self.options_panel)
@@ -279,9 +283,14 @@ class AIClientDialog(QtWidgets.QDialog):
         self.markdown.setChecked(True)
         self.markdown.setToolTip("仅改变显示；复制最新回答和导出文本仍保留原文。链接需点击才打开，远程图片不会自动加载。")
         options_layout.addRow(self.markdown)
-        self.options_panel.hide()
-        self.options_button.clicked.connect(lambda: self.options_panel.setVisible(not self.options_panel.isVisible()))
-        right_layout.addWidget(self.options_panel)
+        self.options_scroll = QtWidgets.QScrollArea(right)
+        self.options_scroll.setWidgetResizable(True)
+        self.options_scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+        self.options_scroll.setMaximumHeight(360)
+        self.options_scroll.setWidget(self.options_panel)
+        self.options_scroll.hide()
+        self.options_button.clicked.connect(lambda: self.options_scroll.setVisible(not self.options_scroll.isVisible()))
+        right_layout.addWidget(self.options_scroll)
         hint = QtWidgets.QLabel("聊天记录保存在本机；点击发送会把上下文和图片发给所选云服务。图片会保存静态副本（长边不超过2048），原文件不变。", right)
         hint.setWordWrap(True)
         right_layout.addWidget(hint)
@@ -352,6 +361,10 @@ class AIClientDialog(QtWidgets.QDialog):
         self.streaming.toggled.connect(self.schedule_draft)
         self.markdown.toggled.connect(self.presentation_changed)
         self.temperature_enabled.toggled.connect(self.temperature.setEnabled)
+        self.advanced.changed.connect(self.capability_changed)
+        self.model.currentTextChanged.connect(self.capability_changed)
+        self.maximum.valueChanged.connect(self.capability_changed)
+        self.temperature_enabled.toggled.connect(self.capability_changed)
         self.refresh_button.clicked.connect(self.refresh_models)
         self.send_button.clicked.connect(self.send)
         self.input.sendRequested.connect(self.send)
@@ -403,7 +416,36 @@ class AIClientDialog(QtWidgets.QDialog):
                 "temperature": self.temperature.value() if self.temperature_enabled.isChecked() else None,
                 "free_only": self.free_only.isChecked(), "foreign_only": self.foreign_only.isChecked(),
                 "cf_free_only": self.cf_free_only.isChecked(), "stream": self.streaming.isChecked(),
-                "render_markdown": self.markdown.isChecked()}
+                "render_markdown": self.markdown.isChecked(), **self.advanced.values()}
+
+    def selected_model_row(self):
+        return next((row for row in self.catalogs.get(self.provider.currentData(),[])
+                     if row['id']==self.model_id()),None)
+
+    @safe_ui
+    def capability_changed(self, *_args):
+        if self.loading: return
+        self.sync_capabilities()
+        self.schedule_draft()
+
+    def sync_capabilities(self):
+        options={**self.options(),**self.advanced.values()}
+        caps=self.advanced.sync(self.provider.currentData(),self.model_id(),self.selected_model_row(),options)
+        self.temperature_enabled.setEnabled(caps['sampling'])
+        self.temperature.setEnabled(caps['sampling'] and self.temperature_enabled.isChecked())
+        self.temperature_enabled.setToolTip('模型／思考等级不支持时保留原值，但不发送温度。')
+        provider=self.provider.currentData()
+        self.free_only.setEnabled(provider=='openrouter')
+        self.cf_free_only.setEnabled(provider=='cloudflare')
+        self.foreign_only.setEnabled(provider in {'openrouter','cloudflare','mistral','groq'})
+        return caps
+
+    def request_options(self):
+        options=self.options()
+        options.update(self.advanced.effective(self.provider.currentData(),self.model_id(),self.selected_model_row(),options))
+        caps=self.sync_capabilities()
+        if not caps['sampling']: options['temperature']=None
+        return options
 
     def model_id(self):
         row = self.model.currentData()
@@ -470,6 +512,7 @@ class AIClientDialog(QtWidgets.QDialog):
             self.cf_free_only.setChecked(options["cf_free_only"])
             self.streaming.setChecked(options.get("stream", True))
             self.markdown.setChecked(options.get("render_markdown", True))
+            self.advanced.load(options)
             self.fill_models(row["model"])
             self.input.setPlainText(row["draft"])
             self.pending_images = row["images"]
@@ -495,6 +538,16 @@ class AIClientDialog(QtWidgets.QDialog):
             self.draft_timer.stop()
             self.store.update(self.current_id, provider=self.provider.currentData(), model=self.model_id(),
                               options=self.options(), draft=self.input.toPlainText(), images=self.pending_images)
+            # Refresh this item's provider label in place; do not reset scroll,
+            # rebuild all conversations or make a changed GPT chat say Gemini.
+            row=self.store.get(self.current_id)
+            for index in range(self.history.count()):
+                item=self.history.item(index)
+                if item.data(QtCore.Qt.ItemDataRole.UserRole)==self.current_id:
+                    item.setText(row['title']+'\n'+time.strftime('%m-%d %H:%M',time.localtime(row['updated']))+
+                                 ' · '+PROVIDERS.get(row['provider'],row['provider']))
+                    item.setToolTip(row['title']+'\n'+row['model'])
+                    break
 
     @safe_ui
     def provider_changed(self, *_args):
@@ -549,6 +602,7 @@ class AIClientDialog(QtWidgets.QDialog):
         self.model.blockSignals(False)
         self.model.lineEdit().setCursorPosition(0)
         self.model.setToolTip(self.model_id() + '\n切换仅影响下一条请求；已有对话内容保留，不能用模型自我介绍判断真实模型。')
+        self.sync_capabilities()
 
     @safe_ui
     def refresh_models(self, _checked=False):
@@ -660,7 +714,7 @@ class AIClientDialog(QtWidgets.QDialog):
             self.render_attachments()
             self.loading = False
         payload = {"conversation": identifier, "prompt_id": prompt_id, "provider": provider,
-                   "model": model, "options": self.options(), "config": self.connection_snapshot()}
+                   "model": model, "options": self.request_options(), "config": self.connection_snapshot()}
         self.stream = StreamBuffer() if payload["options"]["stream"] else None
         self.stream_displayed = 0
         try:
@@ -743,6 +797,11 @@ class AIClientDialog(QtWidgets.QDialog):
             identity = (f"请求：{result.get('requested_model') or self.operation.get('model') or result['model']} · "
                         f"接口返回：{result.get('reported_model') or '未提供模型 ID'}")
             self.last_status = f"{identity} · {result['elapsed']:.2f}秒 · 输入 {usage['input']} / 输出 {usage['output']} tokens。" + result["warning"]
+            if result.get('reasoning_tokens'):
+                self.last_status+=f" 思考 Token：{result['reasoning_tokens']}（已包含在输出中）。"
+            if result.get('web_enabled'):
+                count=result.get('search_calls')
+                self.last_status+=f" 联网搜索：{count}次。" if count is not None else ' 已允许联网；接口未提供调用次数。'
             if output["conversation"] == self.current_id:
                 self.render_transcript()
         self.reload_history()
@@ -810,7 +869,7 @@ class AIClientDialog(QtWidgets.QDialog):
         for row in rows:
             title = "你" if row["role"] == "user" else "AI"
             parts.append("<p><b>" + html.escape(title + " · " + row["provider"] + " / " + row["model"]) + "</b></p>"
-                         + message_html(row["text"], self.markdown.isChecked()))
+                         + cited_message_html(row["text"], row['metadata'], self.markdown.isChecked()))
             for image in row["images"]:
                 try:
                     path = self.store.asset_path(image)
@@ -940,7 +999,7 @@ class AIClientDialog(QtWidgets.QDialog):
             self.status.setText("最新未完成回答已复制。")
             return
         if answers:
-            set_internal_clipboard_text(answers[-1]["text"])
+            set_internal_clipboard_text(text_with_sources(answers[-1]["text"],answers[-1]['metadata']))
             self.status.setText("最新回答已复制。")
 
     @safe_ui
