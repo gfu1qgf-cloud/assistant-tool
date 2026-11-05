@@ -4,6 +4,17 @@ from model.OfflineMode import is_offline
 from .delivery import run_receipts
 from .tasks import spreadsheet_id
 
+DEFAULT_POLL_MINUTES = 30
+
+
+def poll_minutes(settings):
+    if not isinstance(settings, dict): return DEFAULT_POLL_MINUTES
+    value = settings.get('poll_minutes', DEFAULT_POLL_MINUTES)
+    try:
+        if isinstance(value, bool): return DEFAULT_POLL_MINUTES
+        return max(1, min(1440, int(value)))
+    except (ValueError, TypeError, OverflowError): return DEFAULT_POLL_MINUTES
+
 
 class ReceiptMonitor(QtCore.QObject):
     def __init__(self, plugin):
@@ -12,9 +23,11 @@ class ReceiptMonitor(QtCore.QObject):
         self.handle = None
         self.running = False
         self.manual_notice = False
+        self._continue_ids, self._continue_manual = [], False
         self.status = '自动收取将在程序启动后运行'
         self.timer = QtCore.QTimer(self)
-        self.timer.setInterval(60000)
+        self.timer.setSingleShot(True)
+        self.timer.setInterval(DEFAULT_POLL_MINUTES * 60000)
         self.timer.timeout.connect(self.tick)
 
     def show_status(self, text):
@@ -26,19 +39,32 @@ class ReceiptMonitor(QtCore.QObject):
 
     def start(self):
         self.running = True
-        self.timer.start(1500)
+        self._continue_ids, self._continue_manual = [], False
+        self.configure()
+
+    def configure(self):
+        self.timer.stop()
+        if not self.running or self.handle is not None: return
+        try: settings = self.plugin.store.settings()
+        except Exception: settings = {}  # Retry unavailable storage slowly, not every second.
+        if not isinstance(settings, dict): settings = {}
+        if self._continue_ids and (settings.get('auto_download', True) or self._continue_manual):
+            self.timer.start(2000)
+        elif settings.get('auto_download', True): self.timer.start(poll_minutes(settings) * 60000)
 
     def stop(self):
         self.running = False; self.timer.stop()
+        self._continue_ids, self._continue_manual = [], False
         if self.handle is not None:
             self.handle.requestInterruption()
             return False
         return True
 
     def tick(self):
-        self.timer.setInterval(60000)
         if not self.running: return
-        self.check()
+        ids, manual = self._continue_ids, self._continue_manual
+        self._continue_ids, self._continue_manual = [], False
+        self.check(manual=manual, ids=ids or None)
 
     def download_authorization(self):
         # A new purpose never borrows another plugin's account. On first use,
@@ -57,8 +83,18 @@ class ReceiptMonitor(QtCore.QObject):
         if self.handle is not None:
             if manual: self.show_status('正在收取成品，进度可在主程序后台任务中查看。')
             return
+        self.timer.stop()
+        self._continue_ids, self._continue_manual = [], False
+        try: return self._check(manual=manual, ids=ids, directories=directories, force=force)
+        finally:
+            if self.handle is None: self.configure()
+
+    def _check(self, *, manual=False, ids=None, directories=None, force=False):
+        if self.handle is not None:
+            if manual: self.show_status('正在收取成品，进度可在主程序后台任务中查看。')
+            return
         if self.plugin.handle is not None:
-            self.show_status('等待当前填表操作结束，下次自动收取。'); return
+            self.show_status('当前填表操作尚未结束，请结束后再次手动检查。' if manual else '等待当前填表操作结束，下次巡查再检查。'); return
         if is_offline(): self.show_status('离线模式：成品收取已暂停。'); return
         try:
             store = self.plugin.store
@@ -93,15 +129,20 @@ class ReceiptMonitor(QtCore.QObject):
             self.show_status('成品收取待处理：' + str(error))
 
     def completed(self, result):
+        self._continue_ids = list(dict.fromkeys(result.get('continue_ids') or [])) if self.running else []
+        self._continue_manual = bool(self._continue_ids and self.manual_notice)
         self.show_status(result['message'])
         if result.get('task_badges') is not None: self.plugin.notices.apply_snapshot(result['task_badges'])
         if result.get('downloaded') or self.manual_notice:
             self.plugin.context.log(result['message'])
-        if not result.get('task_badges', {}).get('notify_files'): self.notify_manual(result['message'])
+        if not self._continue_ids and not result.get('task_badges', {}).get('notify_files'): self.notify_manual(result['message'])
         if self.plugin.dialog: self.plugin.dialog.reload()
 
     def failed(self, message):
-        self.show_status('成品收取稍后自动重试：' + str(message))
+        try: automatic = self.running and self.plugin.store.settings().get('auto_download',True)
+        except Exception: automatic = False
+        hint = '下次巡查会再检查，也可手动重试。' if automatic else '可右键手动检查或重试下载。'
+        self.show_status('成品收取失败：' + str(message) + '\n' + hint)
         self.notify_manual(self.status)
         self.plugin.notices.refresh()
     def notify_manual(self, message):
@@ -116,3 +157,4 @@ class ReceiptMonitor(QtCore.QObject):
         self.handle = None
         self.manual_notice = False
         if self.plugin.dialog: self.plugin.dialog.reload()
+        self.configure()

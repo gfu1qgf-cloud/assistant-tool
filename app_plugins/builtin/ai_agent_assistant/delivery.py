@@ -120,6 +120,7 @@ def run_receipts(payload, run, *, sheets=None, drive=None, fetch=download_file, 
             destination = job['destination'] or (image_default if task_kind(job['payload']) == 'image' else default)
             if destination: groups[destination].append(job)
         downloaded, failed, pending, budget, ack_budget = 0, 0, False, 8, 8
+        continue_ids = []
         for destination, jobs in groups.items():
             leased.check_canceled()
             identifier, name = destination.split(':', 1)
@@ -212,7 +213,7 @@ def run_receipts(payload, run, *, sheets=None, drive=None, fetch=download_file, 
                             if _cell(row, mapping, 'archive') not in ARCHIVED or attempted:
                                 if ack_budget <= 0:
                                     store.delivery_note(job['id'], '已下载·待回写', '本轮回写额度已用完，下轮继续；不会重新下载。')
-                                    pending = True; continue
+                                    pending = True; continue_ids.append(job['id']); continue
                                 ack_budget -= 1
                                 acknowledge(sheets, identifier, name, info, job, link_text, leased, expected_plan=plan, review_store=store)
                             cloud_note = _cell(row, mapping, 'notes')
@@ -229,6 +230,14 @@ def run_receipts(payload, run, *, sheets=None, drive=None, fetch=download_file, 
                             error = errors[-1]
                             detail += f'下载尝试累计 {error.get("attempts", 0)} 次，稍后自动重试；' + error.get('detail', '')
                         store.delivery_note(job['id'], '下载待重试' if errors else '等待继续下载', detail)
+                        # Continue only known, eligible transfers held by this
+                        # pass's budget. Failures/reviews wait for the next poll
+                        # or an explicit manual retry, never a tight poll loop.
+                        if any((current.get(item['id'], {}).get('force_download') or
+                                not cached_file(current.get(item['id'], {}), directory) or
+                                item.get('md5Checksum') and item['md5Checksum'] != current.get(item['id'], {}).get('md5')) and
+                               current.get(item['id'], {}).get('retry_at', 0) <= clock() for item in files):
+                            continue_ids.append(job['id'])
                 except Exception as error:
                     leased.check_canceled(); failed += 1; pending = True
                     attempts = int(discovery.get('attempts', 0)) + 1 if discovery.get('source') == signature else 1
@@ -238,5 +247,6 @@ def run_receipts(payload, run, *, sheets=None, drive=None, fetch=download_file, 
                     store.delivery_note(job['id'], '收取待重试', f'检查尝试累计 {attempts} 次；' + error_message(error))
         from .notice_data import notice_snapshot
         return {'message': ('所选任务没有匹配的已提交 Agent 作业。' if not groups else f'成品检查完成：本次下载 {downloaded} 个视频。') + ('仍有任务等待重试或继续收取。' if pending or failed else ''),
-                'downloaded': downloaded, 'pending': pending, 'failed': failed, 'task_badges': notice_snapshot(store)}
+                'downloaded': downloaded, 'pending': pending, 'failed': failed, 'continue_ids': continue_ids,
+                'task_badges': notice_snapshot(store)}
     finally: store.release_delivery_run(token)

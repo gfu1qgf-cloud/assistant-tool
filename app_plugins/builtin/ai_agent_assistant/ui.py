@@ -7,6 +7,7 @@ from .tasks import spreadsheet_id, validate_payload, fingerprint
 from .preparation import prepare_payload
 from .sheet_profiles import task_kind
 from .review import review_state
+from .receipt_monitor import poll_minutes
 
 STATES = {'draft': '待提交', 'failed': '未提交', 'sending': '待核对', 'uncertain': '待核对', 'submitted': '已提交'}
 
@@ -84,8 +85,15 @@ class AssistantDialog(QtWidgets.QDialog):
         self.chinese_source = QtWidgets.QCheckBox('缺少中文列时，我确认“完整任务名称”就是完整中文台词', self.setup_panel)
         self.chinese_source.setToolTip('此开关用于之后导入的任务；已有草稿可点提交一次批量确认，无需重新导入。不会自动确认。')
         self.chinese_source.setChecked(settings.get('use_task_name_chinese', False)); panel.addRow(self.chinese_source)
-        self.auto_download = QtWidgets.QCheckBox('自动检查并收取成品（每60秒，关闭助手窗口仍继续）', self.setup_panel)
-        self.auto_download.setChecked(settings.get('auto_download', True)); panel.addRow(self.auto_download)
+        polling = QtWidgets.QHBoxLayout()
+        self.auto_download = QtWidgets.QCheckBox('自动巡查并收取（关闭助手仍继续）', self.setup_panel)
+        self.auto_download.setChecked(settings.get('auto_download', True)); polling.addWidget(self.auto_download)
+        polling.addWidget(QtWidgets.QLabel('间隔', self.setup_panel))
+        self.poll_interval = QtWidgets.QSpinBox(self.setup_panel); self.poll_interval.setRange(1,1440)
+        self.poll_interval.setKeyboardTracking(False)
+        self.poll_interval.setSuffix(' 分钟'); self.poll_interval.setValue(poll_minutes(settings))
+        self.poll_interval.setToolTip('默认30分钟。关闭自动巡查后仍可右键“检查并收取 Agent 成品”。已在收取的文件分批接续，不等待下次巡查。')
+        polling.addWidget(self.poll_interval); polling.addStretch(1); panel.addRow(polling)
         setup_actions = QtWidgets.QHBoxLayout()
         for key in ('open_sheet', 'account'):
             button = QtWidgets.QToolButton(self.setup_panel); button.setDefaultAction(self.actions[key]); setup_actions.addWidget(button)
@@ -98,6 +106,7 @@ class AssistantDialog(QtWidgets.QDialog):
         self.url.editingFinished.connect(self.save_target); self.sheet.editingFinished.connect(self.save_target)
         self.chinese_source.toggled.connect(self.save_target)
         self.auto_download.toggled.connect(self.save_auto_download)
+        self.poll_interval.valueChanged.connect(self.save_poll_interval)
         self.hint = QtWidgets.QLabel('Ctrl+A 全选 · Shift 连选 · Ctrl 多选 · 右键复制、核对或管理记录 · 双击校对。外文约10秒分段，本地图片上传前须确认。', oral)
         self.hint.setWordWrap(True); body.addWidget(self.hint)
         self.table = QtWidgets.QTableWidget(0, 10, oral)
@@ -139,6 +148,7 @@ class AssistantDialog(QtWidgets.QDialog):
         return {'url': 'https://docs.google.com/spreadsheets/d/' + identifier + '/edit', 'sheet': name,
                 'use_task_name_chinese': self.chinese_source.isChecked(), 'auto_download': self.auto_download.isChecked(),
                 'default_agent': self.default_agent.text().strip(),
+                'poll_minutes': self.poll_interval.value(),
                 'upload_folder': self.plugin.store.settings().get('upload_folder', '')}
 
     def update_target_summary(self):
@@ -147,8 +157,9 @@ class AssistantDialog(QtWidgets.QDialog):
     @guarded
     def save_target(self):
         self.plugin.store.save_settings(self.target()); self.update_target_summary()
+        self.plugin.receipts.configure()
         self.status.setText('表格设置已保存。选择任务后可直接提交。')
-        if not self.auto_download.isChecked() and self.plugin.receipts.handle is not None:
+        if not self.auto_download.isChecked() and self.plugin.receipts.handle is not None and not self.plugin.receipts.manual_notice:
             self.plugin.receipts.handle.requestInterruption()
 
     @guarded
@@ -156,10 +167,17 @@ class AssistantDialog(QtWidgets.QDialog):
         settings = self.plugin.store.settings()
         settings['auto_download'] = self.auto_download.isChecked()
         self.plugin.store.save_settings(settings)
+        self.plugin.receipts.configure()
         if not self.auto_download.isChecked():
-            if self.plugin.receipts.handle is not None: self.plugin.receipts.handle.requestInterruption()
-            self.plugin.receipts.show_status('自动收取已关闭；正在执行的下载已请求安全停止。')
+            if self.plugin.receipts.handle is not None and not self.plugin.receipts.manual_notice: self.plugin.receipts.handle.requestInterruption()
+            self.plugin.receipts.show_status('自动巡查已关闭；手动检查仍可用，手动收取不会因此取消。')
         else: self.plugin.receipts.show_status('自动收取已开启，下次检查自动处理；也可右键立即收取。')
+
+    @guarded
+    def save_poll_interval(self):
+        settings=self.plugin.store.settings(); settings['poll_minutes']=self.poll_interval.value()
+        self.plugin.store.save_settings(settings); self.plugin.receipts.configure()
+        self.plugin.receipts.show_status(f'巡查间隔已设为{self.poll_interval.value()}分钟；需要时可右键立即检查。')
 
     @guarded
     def open_sheet(self):
