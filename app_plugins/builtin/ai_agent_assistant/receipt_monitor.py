@@ -24,6 +24,7 @@ class ReceiptMonitor(QtCore.QObject):
         self.running = False
         self.manual_notice = False
         self._continue_ids, self._continue_manual = [], False
+        self._allow_incomplete=self._continue_incomplete=False
         self.status = '自动收取将在程序启动后运行'
         self.timer = QtCore.QTimer(self)
         self.timer.setSingleShot(True)
@@ -43,6 +44,7 @@ class ReceiptMonitor(QtCore.QObject):
     def start(self):
         self.running = True
         self._continue_ids, self._continue_manual = [], False
+        self._allow_incomplete=self._continue_incomplete=False
         self.configure()
 
     def configure(self):
@@ -59,6 +61,7 @@ class ReceiptMonitor(QtCore.QObject):
         self.running = False; self.timer.stop()
         self.badge_timer.stop()
         self._continue_ids, self._continue_manual = [], False
+        self._allow_incomplete=self._continue_incomplete=False
         if self.handle is not None:
             self.handle.requestInterruption()
             return False
@@ -66,9 +69,10 @@ class ReceiptMonitor(QtCore.QObject):
 
     def tick(self):
         if not self.running: return
-        ids, manual = self._continue_ids, self._continue_manual
+        ids, manual, incomplete = self._continue_ids, self._continue_manual, self._continue_incomplete
         self._continue_ids, self._continue_manual = [], False
-        self.check(manual=manual, ids=ids or None)
+        self._continue_incomplete=False
+        self.check(manual=manual, ids=ids or None, allow_incomplete=incomplete)
 
     def download_authorization(self):
         # A new purpose never borrows another plugin's account. On first use,
@@ -83,17 +87,20 @@ class ReceiptMonitor(QtCore.QObject):
                 manager.bind('ai_agent_assistant.downloads', selected[0])
         return self.plugin.context.prepare_google_account('downloads')
 
-    def check(self, *, manual=False, ids=None, directories=None, force=False):
+    def check(self, *, manual=False, ids=None, directories=None, force=False, allow_incomplete=False):
+        if allow_incomplete and not (manual and (ids or directories)):
+            raise ValueError('提前收取必须手动选择具体任务并确认，普通检查不会收取执行中任务。')
         if self.handle is not None:
             if manual: self.show_status('正在收取成品，进度可在主程序后台任务中查看。')
             return
         self.timer.stop()
         self._continue_ids, self._continue_manual = [], False
-        try: return self._check(manual=manual, ids=ids, directories=directories, force=force)
+        self._continue_incomplete=False
+        try: return self._check(manual=manual, ids=ids, directories=directories, force=force, allow_incomplete=allow_incomplete)
         finally:
             if self.handle is None: self.configure()
 
-    def _check(self, *, manual=False, ids=None, directories=None, force=False):
+    def _check(self, *, manual=False, ids=None, directories=None, force=False, allow_incomplete=False):
         if self.handle is not None:
             if manual: self.show_status('正在收取成品，进度可在主程序后台任务中查看。')
             return
@@ -118,10 +125,11 @@ class ReceiptMonitor(QtCore.QObject):
             try: drive = self.download_authorization()
             except ValueError: drive = None  # Public single-file downloads need no login.
             self.manual_notice = bool(manual)
+            self._allow_incomplete=bool(allow_incomplete)
             self.handle = self.plugin.context.submit_background_task(title='AI Agent · 检查并收取成品',
                 runner=run_receipts, payload={'root': str(self.plugin.context.storage.path),
                     'ui_generation': self.plugin.notices.generation,
-                    'allow_incomplete': bool(manual),
+                    'allow_incomplete': bool(allow_incomplete),
                     'sheets_authorization': sheets, 'drive_authorization': drive,
                     'ids': list(ids) if ids is not None else None,
                     'directories': list(directories) if directories is not None else None, 'force': bool(force)},
@@ -138,6 +146,7 @@ class ReceiptMonitor(QtCore.QObject):
         self.badge_timer.stop()
         self._continue_ids = list(dict.fromkeys(result.get('continue_ids') or [])) if self.running else []
         self._continue_manual = bool(self._continue_ids and self.manual_notice)
+        self._continue_incomplete=bool(self._continue_ids and self._allow_incomplete)
         self.show_status(result['message'])
         if result.get('task_badges') is not None:
             self.plugin.notices.apply_snapshot(result['task_badges'])
@@ -170,6 +179,7 @@ class ReceiptMonitor(QtCore.QObject):
         if self.sender() is not self.handle: return
         self.badge_timer.stop()
         self.handle = None
+        self._allow_incomplete=False
         self.manual_notice = False
         if self.plugin.dialog: self.plugin.dialog.reload()
         self.configure()

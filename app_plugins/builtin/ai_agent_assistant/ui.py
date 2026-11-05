@@ -41,6 +41,7 @@ class AssistantDialog(QtWidgets.QDialog):
             ('copy', '复制所选任务表格', self.copy_rows),
             ('check', '核对所选提交结果', self.check_result),
             ('receive', '立即检查并收取成品', self.receive_results),
+            ('receive_partial', '提前收取所选任务已有片段…', self.receive_partial_results),
             ('retry_download', '重试所选任务下载', self.retry_downloads),
             ('recollect_download', '重新收取所选成品…', self.recollect_downloads),
             ('open_result', '打开原任务成品目录', self.open_result),
@@ -248,6 +249,8 @@ class AssistantDialog(QtWidgets.QDialog):
             delivery = deliveries.get(job['id'])
             if delivery:
                 state = delivery['status']; notes.append(delivery['detail'])
+                state=self.plugin.notices.summaries.get(job['id'],{}).get('text',
+                    {'已收取部分':'待补齐','已收取·任务未完成':'等待制作完成'}.get(state,state))
             review=review_state(reviews.get(job['id'],{}).get('text',''))
             if review['text']: notes.append('AI审核结果（只读）：\n'+review['text'])
             texts = [payload['task_id'], payload['title'], payload['language'], payload['spoken'], payload['chinese'],
@@ -271,6 +274,16 @@ class AssistantDialog(QtWidgets.QDialog):
         self.busy(self.plugin.handle is not None)
         if hasattr(self, 'image_page'): self.image_page.reload()
 
+    def apply_receipt_summaries(self,summaries):
+        """Update status cells only; never reload selection or editable drafts."""
+        for row in range(self.table.rowCount()):
+            identity=self.table.item(row,0);item=self.table.item(row,6)
+            summary=summaries.get(identity.data(QtCore.Qt.ItemDataRole.UserRole)) if identity is not None else None
+            if summary and item is not None:
+                item.setText(summary['text']);item.setToolTip(summary['tooltip'])
+                item.setBackground(QtGui.QColor('#FCE2E2') if summary['tone']=='error' else QtGui.QBrush())
+                item.setForeground(QtGui.QColor('#A22020') if summary['tone']=='error' else QtGui.QBrush())
+
     def update_selection(self):
         ids = self._selected_ids(); selected = set(ids); ready = len(selected & self._ready)
         pending = len(selected & self._confirm); blocked = len(selected & self._blocked.keys())
@@ -284,6 +297,7 @@ class AssistantDialog(QtWidgets.QDialog):
             if key in {'remove', 'clone'}: enabled = bool(ids)
             self.actions[key].setEnabled(not self._active and enabled)
         self.actions['receive'].setEnabled(not self._active)
+        self.actions['receive_partial'].setEnabled(not self._active and bool(ids))
         self.actions['retry_download'].setEnabled(not self._active and bool(ids))
         self.actions['recollect_download'].setEnabled(not self._active and bool(ids))
         self.actions['open_result'].setEnabled(len(ids) == 1)
@@ -308,7 +322,7 @@ class AssistantDialog(QtWidgets.QDialog):
         for key in ('submit', 'copy', 'check'): menu.addAction(self.actions[key])
         for key in ('assign', 'user_requirements'): menu.addAction(self.actions[key])
         menu.addSeparator()
-        for key in ('receive', 'retry_download', 'recollect_download', 'open_result'): menu.addAction(self.actions[key])
+        for key in ('receive', 'receive_partial', 'retry_download', 'recollect_download', 'open_result'): menu.addAction(self.actions[key])
         menu.addSeparator()
         for key in ('select_all', 'select_ready', 'select_uncertain', 'clear'): menu.addAction(self.actions[key])
         menu.addSeparator(); menu.addAction(self.actions['clone']); menu.addAction(self.actions['remove'])
@@ -389,6 +403,9 @@ class AssistantDialog(QtWidgets.QDialog):
 
     @guarded
     def receive_results(self): self.plugin.receipts.check(manual=True)
+
+    @guarded
+    def receive_partial_results(self):self.plugin.request_partial_receipt(ids=self.selected_ids())
 
     @guarded
     def retry_downloads(self):

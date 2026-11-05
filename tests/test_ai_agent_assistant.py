@@ -209,7 +209,7 @@ class AgentUiTests(unittest.TestCase):
         self.main.deleteLater(); self.app.sendPostedEvents(None, QtCore.QEvent.Type.DeferredDelete); self.app.processEvents()
     def test_register_does_not_create_files_or_network(self):
         self.assertEqual(list(Path(self.temp.name).iterdir()), [])
-        self.assertEqual(self.context.register_command.call_count, 8)
+        self.assertEqual(self.context.register_command.call_count, 9)
         self.assertEqual(self.context.register_main_widget.call_count, 1)
     def test_main_menu_check_runs_without_opening_assistant_or_resubmitting(self):
         from app_plugins.api import MAIN_MENU, TASK_CONTEXT_MENU

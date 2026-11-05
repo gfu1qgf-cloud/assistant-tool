@@ -92,6 +92,8 @@ def acknowledge(api, identifier, name, info, job, expected_link, run, expected_p
 
 
 def run_receipts(payload, run, *, sheets=None, drive=None, fetch=download_file, clock=time.time):
+    if payload.get('allow_incomplete') and not (payload.get('ids') or payload.get('directories')):
+        raise ValueError('提前收取必须明确选择任务；未下载任何未完成成品。')
     if payload.get('force') and not (payload.get('ids') or payload.get('directories')):
         raise ValueError('重新收取必须明确选择任务；未重置任何下载记录。')
     store = Store(payload['root']); token = uuid4().hex
@@ -161,6 +163,13 @@ def run_receipts(payload, run, *, sheets=None, drive=None, fetch=download_file, 
                 if job['state'] != 'submitted': store.mark([job['id']], 'submitted', destination, '成品监视已按作业ID核实云端记录')
                 cloud_status=_cell(row,mapping,'status')
                 cloud_done=status_completed(kind,cloud_status)
+                cloud_plan=delivery_plan(kind,_cell(row,mapping,'spoken'))
+                cloud_link=_cell(row,mapping,'result')
+                cloud={'status':cloud_status,'completed':cloud_done,
+                    'source':hashlib.sha256(cloud_link.encode()).hexdigest() if cloud_link else '',
+                    'expected':cloud_plan['count'] if cloud_plan else None}
+                if records.get('@cloud')!=cloud:store.save_delivery(job['id'],'@cloud',cloud)
+                records['@cloud']=cloud
                 manual_partial=bool(payload.get('allow_incomplete')) and kind=='oral' and cloud_status in {'执行中','已领取','待确认','失败'}
                 if not cloud_done and not manual_partial:
                     previous=records.get('@partial',{}); previous_link=_cell(row,mapping,'result')
@@ -286,7 +295,7 @@ def run_receipts(payload, run, *, sheets=None, drive=None, fetch=download_file, 
                     attempts = int(discovery.get('attempts', 0)) + 1 if same_scope else 1
                     store.save_delivery(job['id'], '@discovery', {**(discovery if same_scope else {}), 'state': 'retry', 'source': signature, 'scope': DISCOVERY_SCOPE,
                         'attempts': attempts, 'retry_at': clock() + min(3600, 60 * 2 ** min(attempts - 1, 6)),
-                        'total': discovery.get('total'), 'detail': error_message(error)})
+                        'total': discovery.get('total') if same_scope else None, 'detail': error_message(error)})
                     store.delivery_note(job['id'], '收取待重试', f'检查尝试累计 {attempts} 次；' + error_message(error))
         from .notice_data import notice_snapshot
         badges=notice_snapshot(store)

@@ -10,7 +10,7 @@ from .sheet_profiles import task_kind
 class AIAgentAssistantPlugin(QtCore.QObject):
     plugin_id = 'ai_agent_assistant'
     display_name = 'AI Agent 助手'
-    version = '0.5.9'
+    version = '0.5.10'
     required_api_version = 2
 
     def __init__(self):
@@ -44,7 +44,10 @@ class AIAgentAssistantPlugin(QtCore.QObject):
         context.register_main_widget(PluginMainWidget('quick', self.quick, order=32, title=self.display_name))
         context.register_command(PluginCommand('received_check', '检查并收取 Agent 成品', self.check_received,
             frozenset({MAIN_MENU, TASK_CONTEXT_MENU}), order=36,
-            tooltip='立即收取已有成品，口播执行中／待确认有成品链接时也可先收片段；缺段不标整项归档，不重新提交制作。'))
+            tooltip='检查并收取制作已完成的成品；执行中／已领取／待确认任务继续等待，不提前下载。'))
+        context.register_command(PluginCommand('received_partial', '提前收取所选任务已有片段…', self.collect_partial_received,
+            frozenset({TASK_CONTEXT_MENU}), order=42, enabled=lambda rows: bool(rows), submenu='Agent 成品',
+            tooltip='仅在明确确认后收取所选未完成口播的现有片段；显示实际数量，不冒充收齐，不回写整项归档。'))
         context.register_command(PluginCommand('received_again', '重新收取所选 Agent 成品…', self.recollect_received,
             frozenset({TASK_CONTEXT_MENU}), order=37, enabled=lambda rows: bool(rows),
             tooltip='重新下载校验所选任务最近已提交作业的当前成品，保留旧文件；不重新生成。'))
@@ -67,6 +70,21 @@ class AIAgentAssistantPlugin(QtCore.QObject):
         self.context.log(self.receipts.status)
         notify = getattr(self.context, 'notify', None)
         if notify: notify('AI Agent 成品', self.receipts.status)
+
+    def collect_partial_received(self, rows):
+        return self.request_partial_receipt(directories=self.context.task_badge_keys(rows))
+
+    def request_partial_receipt(self, *, ids=None, directories=None):
+        if not ids and not directories:raise ValueError('请先选择要提前收取的任务。')
+        if self.receipts.handle is not None or self.handle is not None:
+            raise ValueError('当前 Agent 操作尚未结束，请完成后再提前收取。')
+        answer=QtWidgets.QMessageBox.question(self.context.parent_widget,'提前收取已有片段',
+            '所选任务可能仍在制作，只收取当前已有的视频？\n这不是收齐：会保留实际数量和待补状态，不回写整项归档。\n普通检查会继续等待制作完成。',
+            QtWidgets.QMessageBox.StandardButton.Yes|QtWidgets.QMessageBox.StandardButton.No,
+            QtWidgets.QMessageBox.StandardButton.No)
+        if answer!=QtWidgets.QMessageBox.StandardButton.Yes:return
+        self.receipts.check(manual=True,ids=ids,directories=directories,allow_incomplete=True)
+        self.report_receipt_status()
 
     def recollect_received(self, rows):
         directories = self.context.task_badge_keys(rows)

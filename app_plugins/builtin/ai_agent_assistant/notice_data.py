@@ -44,8 +44,8 @@ def receipt_badge(current, *, unread, seen_versions):
     """Keep lifecycle, local receipt and explicit human review separate."""
     status=current['status']; received,total=current['received'],current['total']
     pending=status in {'正在下载','等待继续下载','下载待重试'}
-    full_local=(received>0 and total>0 and received>=total and not current['missing'] and current['view_scope_ok'])
-    complete=current['verified_received'] or full_local
+    full_local=(received>0 and total>0 and received==total and not current['missing'] and current['view_scope_ok'])
+    complete=full_local and current.get('total_known',True)
     partial=current.get('verified_partial',False)
     normal='success' if unread else 'muted'
     if status in {'正在下载','等待继续下载'}:
@@ -54,19 +54,23 @@ def receipt_badge(current, *, unread, seen_versions):
         text,tone='收取待重试','warning' if received else 'error'
     elif current['missing']:
         text,tone='成品缺失','warning'
+    elif current.get('cloud_complete') is False:
+        text,tone=('待补齐' if received and total>received else '等待制作完成'),'warning'
     elif status=='收取待重试':
-        if current['verified_received']:
+        if current['verified_received'] and complete:
             text,tone='已收取',normal if current['receipt_archived'] else 'warning'
-        elif partial: text,tone='已收取','warning'
+        elif partial: text,tone='待补齐','warning'
         else: text,tone='收取待重试','warning' if received else 'error'
-    elif status in {'已下载','已下载·待回写','收取待核对'}:
-        if complete or partial:
+    elif status in {'已下载','已下载·待回写'}:
+        if complete:
             text,tone='已收取',normal if status=='已下载' else 'warning'
         else: text,tone='收取待核对','warning'
+    elif status=='收取待核对':
+        text,tone='收取待核对','warning'
     elif status in {'已收取部分','已收取·任务未完成'}:
-        # Missing cloud segments are allowed only after every available file
-        # has actually been downloaded and the exact partial set is recorded.
-        text,tone=('已收取' if partial or complete else '收取待核对'),'warning'
+        # Having all currently available files is NOT having every expected
+        # segment. A partial receipt proves those bytes, never completion.
+        text,tone=('待补齐' if received<total else '等待制作完成' if status=='已收取·任务未完成' else '收取待核对'),'warning'
     elif status in {'需核对质检','任务类型不符','任务编号不符','需核对重复ID','未找到云端记录'}:
         text,tone='收取待核对','warning'
     elif status in {'等待制作完成','等待成品链接'}:
@@ -79,7 +83,7 @@ def receipt_badge(current, *, unread, seen_versions):
         text='已查看'
         if not current['missing'] and received>=total and status=='收取待重试': tone='muted'
     if text not in {'已收取','已查看'} and (pending or received or total):
-        target=str(max(total,received)) if total>0 else '?'
+        target=str(total) if total>0 and current.get('total_known',True) else '?'
         text+=f' {received}/{target}'
     return text,tone,manually_seen
 
@@ -93,17 +97,24 @@ def notice_snapshot(store, *, announce=True):
         seen = set(db.execute('SELECT job_id,file_id,checksum FROM delivery_seen').fetchall())
     by_job = defaultdict(dict)
     for key, file_id, raw in records: by_job[key][file_id] = json.loads(raw)
-    groups, available_versions = {}, []
+    groups, available_versions, summaries = {}, [], {}
     for key, raw in jobs:
         payload = json.loads(raw); directory = str(payload.get('target_dir') or '')
         if not os.path.isabs(directory): continue
         canonical = directory_key(directory)
         group = groups.setdefault(canonical, {'directory': directory, 'task_id': str(payload.get('task_id') or ''),
             'files': {}, 'versions': [], 'seen_versions': [], 'current': None})
-        files = by_job[key]; valid, missing = 0, 0; valid_versions={}
+        files = by_job[key]; valid, missing = 0, 0; valid_versions={}; job_seen=[]; job_unread=0
+        cloud=files.get('@cloud',{});discovery=files.get('@discovery',{})
         active_ids = files.get('@discovery', {}).get('file_ids')
         if not isinstance(active_ids, list) or any(not isinstance(item, str) for item in active_ids): active_ids = None
         active_ids = set(active_ids) if active_ids is not None else None
+        source=cloud.get('source') or discovery.get('source')
+        if source and discovery.get('source')!=source:
+            active_ids=set()  # Old-link files are historical, not new receipt progress.
+        elif source and active_ids is None and any(proof.get('source') and proof['source']!=source
+                for proof in (files.get('@received',{}),files.get('@partial',{}))):
+            active_ids=set()
         for file_id, record in files.items():
             if record.get('state') != 'downloaded': continue
             try: exists = cached_file(record, Path(directory)/'result')
@@ -120,18 +131,34 @@ def notice_snapshot(store, *, announce=True):
             if version not in seen:
                 group['versions'].append(list(version)); available_versions.append((canonical, version))
             else: group['seen_versions'].append(list(version))
+            if active_ids is None or file_id in active_ids:
+                if version in seen:job_seen.append(list(version))
+                else:job_unread+=1
         status, detail = statuses.get(key, ('', ''))
-        expected = files.get('@discovery', {}).get('total')
+        expected = cloud.get('expected')
+        total_known=isinstance(expected,int) and expected>0
+        if not total_known:
+            expected=discovery.get('total') if not source or discovery.get('source')==source else None
+            total_known=isinstance(expected,int) and expected>0 and cloud.get('completed') is not False
         if not isinstance(expected, int) or expected < 0:
-            expected = sum(record.get('state') in {'downloaded', 'retry'} for file_id, record in files.items() if file_id != '@discovery')
-        meaningful = valid or missing or status and status not in {'等待制作完成', '等待成品链接'}
+            expected = sum(record.get('state') in {'downloaded', 'retry'} for file_id, record in files.items()
+                if active_ids is None or file_id in active_ids)
+        current = {'status': status, 'detail': detail, 'received': valid, 'total': expected, 'missing': missing,
+            'ai_review':files.get('@ai_review',{}).get('text',''), 'cloud_complete':cloud.get('completed'),
+            'total_known':total_known or not cloud and expected>0,
+            'verified_received':verified_receipt(files,valid_versions),
+            'verified_partial':verified_partial_receipt(files,valid_versions),
+            'receipt_archived':bool(files.get('@received',{}).get('archived')),
+            'view_scope_ok':'@received' not in files or same_receipt_scope(files) or same_partial_scope(files)}
+        label,tone,_manual=receipt_badge(current,unread=job_unread,seen_versions=job_seen)
+        review=review_state(current['ai_review'])
+        if review['problem'] and valid:tone='error'
+        meaningful = valid or missing or bool(status)
+        if meaningful:
+            summaries[key]={'text':label,'tone':tone,'tooltip':review_tooltip(
+                f'当前收取数量：{valid}/{expected if current["total_known"] else "?"}。\n'+status+'\n'+detail,review['text'])}
         if group['current'] is None and meaningful:
-            group['current'] = {'status': status, 'detail': detail, 'received': valid, 'total': expected, 'missing': missing,
-                'ai_review':files.get('@ai_review',{}).get('text','')}
-            group['current']['verified_received']=verified_receipt(files,valid_versions)
-            group['current']['verified_partial']=verified_partial_receipt(files,valid_versions)
-            group['current']['receipt_archived']=bool(files.get('@received',{}).get('archived'))
-            group['current']['view_scope_ok']='@received' not in files or same_receipt_scope(files) or same_partial_scope(files)
+            group['current'] = current
     items = []
     for group in groups.values():
         current = group['current']
@@ -144,7 +171,8 @@ def notice_snapshot(store, *, announce=True):
             tone = 'error'
         human=('\n手动状态：已有片段已查看；仍有下载待完成。' if text.startswith(('收取中','收取待重试')) else '\n手动状态：已查看。') if manually_seen else ''
         retained='\n本地已校验收取完成；后续云端检查异常未撤销收取事实。' if current['verified_received'] and status=='收取待重试' else ''
-        tooltip=review_tooltip(f'Agent成品：本地可用 {total_files} 个，未查看 {unread} 个。{human}{retained}\n当前批次收取进度：{received}/{max(total,received)}。\n{status}\n{current["detail"]}',review['text'])
+        target=str(total) if current['total_known'] and total>0 else '?'
+        tooltip=review_tooltip(f'Agent成品：本地可用 {total_files} 个，未查看 {unread} 个。{human}{retained}\n当前批次收取进度：{received}/{target}。\n{status}\n{current["detail"]}',review['text'])
         group.update(text=text, tone=tone, unread=unread, received=total_files,tooltip=tooltip)
         group.pop('current'); items.append(group)
     claimed, claimed_tasks = 0, set()
@@ -155,7 +183,7 @@ def notice_snapshot(store, *, announce=True):
                 if db.execute('SELECT 1 FROM delivery_seen WHERE job_id=? AND file_id=? AND checksum=?', version).fetchone(): continue
                 if db.execute('INSERT OR IGNORE INTO delivery_announced VALUES (?,?,?)', version).rowcount:
                     claimed += 1; claimed_tasks.add(key)
-    return {'items': items, 'notify_files': claimed, 'notify_tasks': len(claimed_tasks)}
+    return {'items': items, 'notify_files': claimed, 'notify_tasks': len(claimed_tasks),'job_summaries':summaries}
 
 
 def mark_versions_seen(store, versions):

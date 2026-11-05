@@ -10,6 +10,7 @@ class ReceiptNotices(QtCore.QObject):
     def __init__(self, plugin):
         super().__init__(plugin)
         self.plugin, self.handle, self.items = plugin, None, {}
+        self.summaries={}
         self.filtered = self.pending = False
         self.pending_announce = False
         self.generation = 0
@@ -34,6 +35,10 @@ class ReceiptNotices(QtCore.QObject):
             self.pending = True; self.pending_announce = True; return
         if not snapshot.get('transient'):self.generation += 1
         self.items = {directory_key(item['directory']): item for item in snapshot.get('items', [])}
+        self.summaries=snapshot.get('job_summaries',{})
+        dialog=getattr(self.plugin,'dialog',None)
+        if dialog is not None and hasattr(dialog,'apply_receipt_summaries'):
+            dialog.apply_receipt_summaries(self.summaries)
         try: self.publish()
         except Exception as error: self.failed(error)
         if snapshot.get('notify_files'):

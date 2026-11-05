@@ -9,7 +9,9 @@ class PartialReceiptTests(unittest.TestCase):
     stage=fixture.AgentReceiptTests.stage
     cloud=fixture.AgentReceiptTests.cloud
     download=fixture.AgentReceiptTests.download
-    receipt=fixture.AgentReceiptTests.receipt
+    def receipt(self,**options):
+        if options.get('allow_incomplete'):options.setdefault('ids',[self.job['id']])
+        return fixture.AgentReceiptTests.receipt(self,**options)
     def prepare(self,total,missing):
         self.api.rows[0][fixture.COLS['spoken']]='\n\n'.join(f'【第{i}段｜约10秒】\nExact segment {i}.' for i in range(1,total+1))
         self.items=[{'id':f'video_{i}','name':f'任务001_第{i:02}段.mp4','url':fixture.LINK} for i in range(1,total+1) if i not in missing]
@@ -23,7 +25,7 @@ class PartialReceiptTests(unittest.TestCase):
         self.prepare(18,{9}); result=self.drain()
         self.assertEqual(self.fetch.call_count,17); self.assertEqual(self.api.writes,[])
         item=result['task_badges']['items'][0]
-        self.assertEqual(item['text'],'已收取'); self.assertEqual(item['tone'],'warning'); self.assertIn('尚未核实段号：9',item['tooltip'])
+        self.assertEqual(item['text'],'待补齐 17/18'); self.assertEqual(item['tone'],'warning'); self.assertIn('尚未核实段号：9',item['tooltip'])
         self.assertNotIn('@received',self.store.delivery_files(self.job['id']))
         self.receipt(); self.assertEqual(self.fetch.call_count,17)
     def test_later_missing_segment_only_downloads_new_one_then_can_archive(self):
@@ -48,7 +50,7 @@ class PartialReceiptTests(unittest.TestCase):
         self.prepare(2,{2}); self.api.rows[0][fixture.COLS['status']]='执行中'
         self.drain(allow_incomplete=True); self.fetch.reset_mock()
         item=self.receipt()['task_badges']['items'][0]
-        self.fetch.assert_not_called(); self.assertEqual(item['text'],'已收取'); self.assertIn('1/2',item['tooltip'])
+        self.fetch.assert_not_called(); self.assertEqual(item['text'],'待补齐 1/2'); self.assertIn('1/2',item['tooltip'])
         self.assertIn('尚未核实段号：2',item['tooltip']); self.assertEqual(self.api.writes,[])
     def test_full_file_count_while_executing_is_downloaded_not_archived(self):
         self.prepare(2,set()); self.api.rows[0][fixture.COLS['status']]='执行中'
@@ -74,12 +76,12 @@ class PartialMonitorTests(unittest.TestCase):
     setUp=fixture.ReceiptMonitorTests.setUp
     tearDown=fixture.ReceiptMonitorTests.tearDown
     stage=fixture.ReceiptMonitorTests.stage
-    def test_manual_passes_explicit_partial_permission_but_automatic_does_not(self):
+    def test_generic_manual_check_and_automatic_both_wait_for_completion(self):
         from unittest.mock import patch
         self.stage()
         with patch.object(self.plugin.receipts,'download_authorization',return_value=None):
             self.plugin.receipts.check(manual=True)
-            self.assertTrue(self.context.submit_background_task.call_args.kwargs['payload']['allow_incomplete'])
+            self.assertFalse(self.context.submit_background_task.call_args.kwargs['payload']['allow_incomplete'])
             self.handle.finished.emit()
             self.plugin.receipts.check()
             self.assertFalse(self.context.submit_background_task.call_args.kwargs['payload']['allow_incomplete'])

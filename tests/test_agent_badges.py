@@ -44,7 +44,7 @@ class NoticeDataTests(unittest.TestCase):
 
     def test_completed_labels_stay_short_and_manual_seen_is_explicit(self):
         version=self.file(); self.done(1)
-        for status in ('已下载','已下载·待回写','收取待核对','已收取·任务未完成'):
+        for status in ('已下载','已下载·待回写'):
             for review in ('', 'AI预审不通过｜第2段漏读'):
                 self.store.delivery_note(self.key,status,'待补第2段')
                 self.store.save_delivery(self.key,'@ai_review',{'text':review})
@@ -62,7 +62,7 @@ class NoticeDataTests(unittest.TestCase):
         version=self.file(); self.done(3)
         cases={'正在下载':'收取中','等待继续下载':'收取中','下载待重试':'收取待重试',
                '收取待重试':'收取待重试','已下载':'收取待核对','已下载·待回写':'收取待核对',
-               '已收取部分':'收取待核对','已收取·任务未完成':'收取待核对'}
+               '已收取部分':'待补齐','已收取·任务未完成':'待补齐'}
         for status,expected in cases.items():
             for review in ('','AI预审不通过｜第2段漏读'):
                 with self.subTest(status=status,review=review):
@@ -125,7 +125,7 @@ class NoticeDataTests(unittest.TestCase):
         self.file(); self.store.save_delivery(self.key, '@discovery', {'state':'checked', 'total':1})
         self.store.delivery_note(self.key, '收取待核对', '段号需核对')
         item=notice_snapshot(self.store)['items'][0]
-        self.assertEqual(item['text'],'已收取'); self.assertEqual(item['tone'],'warning')
+        self.assertEqual(item['text'],'收取待核对 1/1'); self.assertEqual(item['tone'],'warning')
         self.assertIn('段号需核对', item['tooltip'])
 
     def test_archive_write_failure_is_separate_from_download_and_success(self):

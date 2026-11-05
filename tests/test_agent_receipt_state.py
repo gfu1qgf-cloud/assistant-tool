@@ -52,7 +52,7 @@ class ReceiptLifecycleTests(unittest.TestCase):
         result=self.receipt()
         self.assertEqual(self.fetch.call_count,17);self.assertEqual(self.api.writes,[])
         item=result['task_badges']['items'][0]
-        self.assertEqual(item['text'],'已收取');self.assertEqual(item['tone'],'warning')
+        self.assertEqual(item['text'],'待补齐 17/18');self.assertEqual(item['tone'],'warning')
         self.assertIn('尚未核实段号：9',item['tooltip'])
         self.assertNotIn('@received',self.store.delivery_files(self.job['id']))
 
