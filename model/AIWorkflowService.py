@@ -13,7 +13,7 @@ import time
 from uuid import uuid4
 
 from model.AIProviderClient import AIProviderError, PROVIDERS
-from model.AIProviderKeys import _dpapi, KEYS_CONFIG_KEY, cloudflare_account
+from model.AIProviderKeys import _dpapi, KEYS_CONFIG_KEY, cloudflare_account, pin_provider_config
 from model.OfflineMode import require_online
 from model.node_workflow.python_values import validate_data
 
@@ -37,13 +37,7 @@ class AIWorkflowService:
         """GUI submission step; copy ONLY this provider's connection settings."""
         if provider not in PROVIDERS:
             raise ValueError('未知的 AI 服务。')
-        restricted = {}
-        if provider != 'gemini':
-            stored = config.get(KEYS_CONFIG_KEY) or {}
-            if isinstance(stored, dict) and stored.get(provider):
-                restricted[KEYS_CONFIG_KEY] = {provider: copy.deepcopy(stored[provider])}
-        if provider == 'cloudflare':
-            restricted['ai_model_client'] = {'cloudflare_account_id': cloudflare_account(config)}
+        restricted = pin_provider_config(config,provider)
         signature = hashlib.sha256(serialized([provider, restricted])).hexdigest()
         now = time.monotonic()
         with self._lock:

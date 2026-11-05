@@ -147,10 +147,10 @@ class OpenAIChatTests(unittest.TestCase):
         context = FakeContext(BackgroundTaskManager())
         page = ClientSettingsPage(context)
         config = {'ai_provider_keys': {'mistral': 'existing-encrypted-value'}}
-        page.edits['openai'].setText('synthetic-only-key')
+        page.editors['openai'].add_key('synthetic-only-key','测试Key')
         page.update_config(config)
         self.assertEqual(config['ai_provider_keys']['mistral'], 'existing-encrypted-value')
-        self.assertTrue(config['ai_provider_keys']['openai'].startswith('dpapi:'))
+        self.assertTrue(config['ai_provider_keys']['openai']['items'][0]['encrypted'].startswith('dpapi:'))
         page.widget.close()
 
     def test_dialog_openai_selector_default_and_history_preserved(self):

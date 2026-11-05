@@ -1,8 +1,8 @@
 from copy import deepcopy
-import os
 
 from qt_compat import QtWidgets
-from model.AIProviderKeys import KEYS_CONFIG_KEY, ENV_KEYS, protect_key
+from model.AIProviderKeys import KEYS_CONFIG_KEY, ENV_KEYS
+from .key_list import ProviderKeysEditor
 
 CONFIG_KEY = "ai_model_client"
 
@@ -25,10 +25,12 @@ class ClientSettingsPage:
         self.service = QtWidgets.QComboBox(self.widget)
         self.pages = QtWidgets.QStackedWidget(self.widget)
         self.provider_pages = {}
-        self.edits, self.clear_checks, self.key_status = {}, {}, {}
+        self.editors = {}
         selector = QtWidgets.QFormLayout()
         selector.addRow("服务商", self.service)
         layout.addLayout(selector)
+        self.total_keys=QtWidgets.QLabel(self.widget)
+        self.total_keys.setWordWrap(True); layout.addWidget(self.total_keys)
         layout.addWidget(self.pages)
         notes = {
             'openai': '填写赠送额度所属 API 组织／项目的 Key，仅连接 api.openai.com。保存后打开聊天并选择 OpenAI / GPT，会自动读取账号模型列表；按 API 用量计费，余额以官方账单为准。',
@@ -55,19 +57,15 @@ class ClientSettingsPage:
                 self.gemini_button.clicked.connect(self.open_gemini)
                 body.addWidget(self.gemini_button)
             else:
-                status = QtWidgets.QLabel(page); body.addWidget(status)
-                self.key_status[provider] = status
+                editor=ProviderKeysEditor(provider,page,account_provider=lambda:self.account.text())
+                self.editors[provider]=editor
+                editor.changed.connect(self.update_counts)
+                body.addWidget(editor)
                 form = QtWidgets.QFormLayout()
-                edit = QtWidgets.QLineEdit(page)
-                edit.setEchoMode(QtWidgets.QLineEdit.EchoMode.Password)
-                form.addRow('API Token' if provider == 'cloudflare' else 'API Key', edit)
-                clear = QtWidgets.QCheckBox('移除已保存的密钥（保存后生效）', page)
-                form.addRow('', clear)
-                self.edits[provider], self.clear_checks[provider] = edit, clear
                 if provider == 'cloudflare':
                     self.account = QtWidgets.QLineEdit(page)
-                    self.account.setPlaceholderText('32位十六进制，不是 API Token')
-                    form.addRow('Account ID', self.account)
+                    self.account.setPlaceholderText('旧密钥的兼容值；新Key可分别填写 Account ID')
+                    form.addRow('兼容 Account ID', self.account)
                 body.addLayout(form)
                 env = QtWidgets.QLabel('也可使用环境变量 ' + ENV_KEYS[provider] +
                     (' / CLOUDFLARE_ACCOUNT_ID' if provider == 'cloudflare' else '') + '。', page)
@@ -86,7 +84,7 @@ class ClientSettingsPage:
         self.foreign_only = QtWidgets.QCheckBox("默认筛选国外厂商模型", common)
         self.foreign_only.setToolTip("按已知发布者筛选，不代表推理服务器所在国家；未知发布者默认不列出，可手动关闭筛选。")
         common_layout.addWidget(self.foreign_only)
-        security = QtWidgets.QLabel('密钥使用 Windows 当前用户加密，不写入对话或日志。留空不改动；换电脑／Windows 用户后需重新填写。', common)
+        security = QtWidgets.QLabel('列表只显示脱敏标识；密钥使用 Windows 当前用户加密，不写入对话或日志。换电脑／Windows 用户后需重新填写。', common)
         security.setWordWrap(True); common_layout.addWidget(security)
         layout.addWidget(common)
         layout.addStretch(1)
@@ -95,18 +93,23 @@ class ClientSettingsPage:
     def load_config(self, config):
         keys = config.get(KEYS_CONFIG_KEY, {})
         keys = keys if isinstance(keys, dict) else {}
-        for provider, edit in self.edits.items():
-            edit.clear()
-            edit.setPlaceholderText("已保存加密 Key；留空不修改" if keys.get(provider) else "未保存；可填写 Key 或使用 " + ENV_KEYS[provider])
-            self.clear_checks[provider].setChecked(False)
-            self.key_status[provider].setText('已保存加密密钥' if keys.get(provider) else
-                '已检测到环境变量密钥' if os.environ.get(ENV_KEYS[provider], '').strip() else '尚未配置密钥')
+        for provider, editor in self.editors.items():
+            editor.load(keys.get(provider))
         settings = config.get(CONFIG_KEY) or {}
         settings = settings if isinstance(settings, dict) else {}
         self.free_only.setChecked(settings.get("free_only", True))
         self.foreign_only.setChecked(settings.get("foreign_only", True))
         self.cf_free_only.setChecked(settings.get("cf_free_only", True))
         self.account.setText(str(settings.get("cloudflare_account_id") or ""))
+        self.update_counts()
+
+    def update_counts(self):
+        total=sum(len(editor.pool['items']) for editor in self.editors.values())
+        self.total_keys.setText(f'共保存 {total} 个 Key（不含环境变量；Gemini 仍由主程序密钥库管理）。')
+        names={'openai':'OpenAI / GPT','mistral':'Mistral','openrouter':'OpenRouter','cloudflare':'Cloudflare','groq':'Groq'}
+        for provider,editor in self.editors.items():
+            index=self.service.findData(provider)
+            self.service.setItemText(index,names[provider]+f'（{len(editor.pool["items"])} 个 Key）')
 
     def open_gemini(self):
         try:
@@ -119,20 +122,21 @@ class ClientSettingsPage:
         import re
         if self.account.text().strip() and not re.fullmatch(r"[0-9a-fA-F]{32}", self.account.text().strip()):
             raise ValueError("Cloudflare Account ID 应为32位十六进制，请不要把 API Token 填到这里。")
-        for edit in self.edits.values():
-            key = edit.text().strip()
-            if key and (len(key) > 4096 or any(c.isspace() for c in key)):
-                raise ValueError("API Key 不能含空白，且长度不能超过4096字符。")
 
     def update_config(self, config):
         self.validate()
         source = config.get(KEYS_CONFIG_KEY, {})
         keys = deepcopy(source) if isinstance(source, dict) else {}
-        for provider, edit in self.edits.items():
-            if edit.text().strip():
-                keys[provider] = protect_key(edit.text())
-            elif self.clear_checks[provider].isChecked():
+        for provider, editor in self.editors.items():
+            if not editor.dirty: continue
+            value=editor.value()
+            if (keys.get(provider)!=editor.original and keys.get(provider)!=editor.exported_value
+                    and keys.get(provider)!=value):
+                raise ValueError('该服务商的密钥列表已被其他窗口修改，请重新打开设置后再操作。')
+            if value is not None: keys[provider]=value
+            else:
                 keys.pop(provider, None)
+            editor.exported_value=deepcopy(value)
         if keys or KEYS_CONFIG_KEY in config:
             config[KEYS_CONFIG_KEY] = keys
         previous = config.get(CONFIG_KEY) or {}

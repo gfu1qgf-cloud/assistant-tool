@@ -10,7 +10,7 @@ from pathlib import Path
 
 from qt_compat import QtCore, QtGui, QtWidgets
 from model.AIProviderClient import PROVIDERS, validate_model, AIProviderError
-from model.AIProviderKeys import KEYS_CONFIG_KEY
+from model.AIProviderKeys import KEYS_CONFIG_KEY, pin_provider_config, selected_credential
 from model.AIChatSources import text_with_sources
 from model.ClipboardHelper import set_internal_clipboard_text
 from model.OfflineMode import is_offline, require_online
@@ -406,7 +406,14 @@ class AIClientDialog(QtWidgets.QDialog):
     def ensure_openai_catalog(self):
         if not self.isVisible() or self.handle or is_offline() or self.provider.currentData() != 'openai':
             return
-        identity = self.sync_openai_identity(self.connection_snapshot())
+        config=self.connection_snapshot()
+        try: selected_credential(config,'openai')
+        except ValueError as error:
+            self.catalogs.pop('openai',None)
+            self.catalog_errors['openai']=redact_sensitive_text(str(error))
+            self.fill_models(self.model_id())
+            return
+        identity = self.sync_openai_identity(config)
         if identity and identity not in self.catalog_attempts:
             self.refresh_models()
 
@@ -618,7 +625,7 @@ class AIClientDialog(QtWidgets.QDialog):
         # Capture a plain service, not this dialog, in the worker closure.
         client = self.client
         runner = lambda payload, job: {"provider": payload["provider"], "models": client.list_models(payload["provider"], payload["config"], job, force=True)}
-        self.submit("读取 " + PROVIDERS[provider] + " 模型", runner, {"provider": provider, "config": config},
+        self.submit("读取 " + PROVIDERS[provider] + " 模型", runner, {"provider": provider, "config": pin_provider_config(config,provider)},
                     {"type": "models", "provider": provider, "identity": identity})
 
     def submit(self, title, runner, payload, operation):
@@ -704,6 +711,10 @@ class AIClientDialog(QtWidgets.QDialog):
             if answer != QtWidgets.QMessageBox.StandardButton.Yes:
                 return
             self.consent = True
+        # Validate and pin the chosen Key before creating a pending message.
+        # An unselected/deleted active key must not strand a fake running turn.
+        request_config=pin_provider_config(self.connection_snapshot(),provider)
+        request_options=self.request_options()
         self.save_draft()
         identifier = self.current_id
         prompt_id = self.store.begin_request(identifier, text, images, provider, model, retry_id)
@@ -714,7 +725,7 @@ class AIClientDialog(QtWidgets.QDialog):
             self.render_attachments()
             self.loading = False
         payload = {"conversation": identifier, "prompt_id": prompt_id, "provider": provider,
-                   "model": model, "options": self.request_options(), "config": self.connection_snapshot()}
+                   "model": model, "options": request_options, "config": request_config}
         self.stream = StreamBuffer() if payload["options"]["stream"] else None
         self.stream_displayed = 0
         try:

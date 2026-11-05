@@ -7,7 +7,7 @@ from model.QtThreadLifecycle import thread_is_active
 class AIModelClientPlugin:
     plugin_id = "ai_model_client"
     display_name = "AI 模型试用台"
-    version = "1.6"
+    version = "1.7"
     required_api_version = 1
 
     def __init__(self):
