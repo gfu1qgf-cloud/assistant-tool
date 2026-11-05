@@ -1,10 +1,12 @@
 """Bulk-first oral task queue: row selection, contextual actions, compact setup."""
 from functools import wraps
+import html
 
 from qt_compat import QtCore, QtGui, QtWidgets
 from .tasks import spreadsheet_id, validate_payload, fingerprint
 from .preparation import prepare_payload
 from .sheet_profiles import task_kind
+from .review import review_state
 
 STATES = {'draft': '待提交', 'failed': '未提交', 'sending': '待核对', 'uncertain': '待核对', 'submitted': '已提交'}
 
@@ -203,6 +205,7 @@ class AssistantDialog(QtWidgets.QDialog):
         previous = set(self._selected_ids()) if self._loaded else None
         jobs = [job for job in self.plugin.store.jobs(limit=100000) if task_kind(job['payload']) == 'oral']
         deliveries = self.plugin.store.delivery_statuses()
+        reviews = self.plugin.store.ai_reviews()
         self.jobs = jobs; self._jobs_by_id = {job['id']: job for job in jobs}; self._ready = set()
         self._confirm, self._blocked, self._reference_fixes = set(), {}, set()
         blocker = QtCore.QSignalBlocker(self.table)
@@ -227,6 +230,8 @@ class AssistantDialog(QtWidgets.QDialog):
             delivery = deliveries.get(job['id'])
             if delivery:
                 state = delivery['status']; notes.append(delivery['detail'])
+            review=review_state(reviews.get(job['id'],{}).get('text',''))
+            if review['text']: notes.append('AI审核结果（只读）：\n'+review['text'])
             texts = [payload['task_id'], payload['title'], payload['language'], payload['spoken'], payload['chinese'],
                      payload['reference'], state, '\n'.join(note for note in notes if note), payload.get('agent', ''), payload.get('user_requirements', '')]
             for col, text in enumerate(texts):
@@ -234,6 +239,11 @@ class AssistantDialog(QtWidgets.QDialog):
                 item.setFlags(QtCore.Qt.ItemFlag.ItemIsEnabled | QtCore.Qt.ItemFlag.ItemIsSelectable)
                 if col == 0: item.setData(QtCore.Qt.ItemDataRole.UserRole, job['id'])
                 if col == 4: item.setToolTip(payload.get('chinese_source', '') + '\n\n' + text)
+                if col == 6 and review['problem']:
+                    item.setBackground(QtGui.QColor('#FCE2E2')); item.setForeground(QtGui.QColor('#A22020'))
+                    item.setToolTip(text+'\nAI审核结果（只读）：\n'+review['text'])
+                if col in {6,7} and review['text']:
+                    item.setToolTip('<qt>'+html.escape(item.toolTip()).replace('\n','<br>')+'</qt>')
                 self.table.setItem(row, col, item)
         if select_ids is not None: chosen = set(select_ids) & (self._ready | self._confirm)
         elif previous is None: chosen = self._ready | self._confirm

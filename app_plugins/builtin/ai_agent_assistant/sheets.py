@@ -25,6 +25,7 @@ FIELDS = [
     ('attempt', '执行批次ID', ()), ('lease', '领取令牌', ()), ('heartbeat', '心跳时间', ()),
     ('expires', '租约到期时间', ()), ('checksum', '成品校验信息', ()),
     ('user_requirements', '用户需求', ()),
+    ('ai_review', 'AI审核结果', ('AI审核',)),
 ]
 REQUIRED = {'job_id', 'task_id', 'title', 'spoken', 'chinese', 'language', 'status'}
 # Only producer-owned fields are written. JSON null skips other cells in the

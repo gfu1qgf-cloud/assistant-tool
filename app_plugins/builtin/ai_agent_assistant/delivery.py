@@ -13,6 +13,7 @@ from .tasks import spreadsheet_id
 from .notice_data import directory_key
 from .sheet_profiles import task_kind, completed as status_completed, archive_value, ARCHIVED
 from .receipt_plan import delivery_plan, check_parts
+from .review import cache_review
 
 DONE = {'已完成', '完成', '制作完成', '生成完成', 'completed', 'complete', 'done'}
 
@@ -46,7 +47,7 @@ def read_rows(api, identifier, name, info, run):
     return rows
 
 
-def acknowledge(api, identifier, name, info, job, expected_link, run, expected_plan=None):
+def acknowledge(api, identifier, name, info, job, expected_link, run, expected_plan=None, review_store=None):
     # A user/Agent may have sorted rows or changed the result while downloading.
     # Re-locate the exact ID; do not write to a stale row number.
     rows = read_rows(api, identifier, name, info, run).get(job['id'], [])
@@ -60,6 +61,9 @@ def acknowledge(api, identifier, name, info, job, expected_link, run, expected_p
         raise ValueError('成品已在本地，但云端分段计划已改变，未给新计划误标归档。')
     if info.get('kind') == 'image' and _cell(row, mapping, 'quality') not in {'通过', '轻微损失已披露'}:
         raise ValueError('成品已在本地，但云端质检状态已改变，未回写下载完成。')
+    if review_store is not None:
+        cache_review(review_store, job['id'], _cell(row, mapping, 'ai_review'), available='ai_review' in mapping,
+            records=review_store.delivery_files(job['id']))
     if _cell(row, mapping, 'archive') in ARCHIVED: return
     target = a1(name, column(mapping['archive'] + 1) + str(number))
     rule = _execute(api.spreadsheets().get(spreadsheetId=identifier, ranges=[target], includeGridData=True,
@@ -143,6 +147,8 @@ def run_receipts(payload, run, *, sheets=None, drive=None, fetch=download_file, 
                     store.delivery_note(job['id'], '任务类型不符', '原提交任务与云端表头类型不同，未下载或回写。'); continue
                 if _cell(row, mapping, 'task_id') != job['payload']['task_id']:
                     store.delivery_note(job['id'], '任务编号不符', '作业ID对应的任务编号与提交快照不同，未下载。'); continue
+                records = store.delivery_files(job['id'])
+                cache_review(store, job['id'], _cell(row, mapping, 'ai_review'), available='ai_review' in mapping, records=records)
                 if job['state'] != 'submitted': store.mark([job['id']], 'submitted', destination, '成品监视已按作业ID核实云端记录')
                 if not status_completed(kind, _cell(row, mapping, 'status')):
                     store.delivery_note(job['id'], '等待制作完成', '云端状态：' + _cell(row, mapping, 'status')); continue
@@ -152,7 +158,6 @@ def run_receipts(payload, run, *, sheets=None, drive=None, fetch=download_file, 
                 if not link_text:
                     store.delivery_note(job['id'], '等待成品链接', '已完成但成品Drive链接为空，稍后自动检查。'); continue
                 signature = hashlib.sha256(link_text.encode()).hexdigest()
-                records = store.delivery_files(job['id'])
                 discovery = records.get('@discovery', {})
                 if discovery.get('source') == signature and discovery.get('retry_at', 0) > clock():
                     pending = True; continue
@@ -209,7 +214,7 @@ def run_receipts(payload, run, *, sheets=None, drive=None, fetch=download_file, 
                                     store.delivery_note(job['id'], '已下载·待回写', '本轮回写额度已用完，下轮继续；不会重新下载。')
                                     pending = True; continue
                                 ack_budget -= 1
-                                acknowledge(sheets, identifier, name, info, job, link_text, leased, expected_plan=plan)
+                                acknowledge(sheets, identifier, name, info, job, link_text, leased, expected_plan=plan, review_store=store)
                             cloud_note = _cell(row, mapping, 'notes')
                             store.delivery_note(job['id'], '已下载', f'{completed} 个视频已校验归档到原任务的 result 目录。' +
                                 ('\n云端交付备注（不代表已通过用户终审）：' + cloud_note if cloud_note else ''))

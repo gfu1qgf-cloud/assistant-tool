@@ -61,6 +61,12 @@ class Store:
             rows = db.execute('SELECT job_id,status,detail FROM delivery_jobs').fetchall()
         return {key: {'status': status, 'detail': detail} for key, status, detail in rows}
 
+    def ai_reviews(self):
+        if not self.file.exists(): return {}
+        with self.connect() as db:
+            rows = db.execute('SELECT job_id,record FROM delivery_files WHERE file_id=?', ('@ai_review',)).fetchall()
+        return {key: json.loads(raw) for key, raw in rows}
+
     def delivery_note(self, key, status, detail=''):
         with self.connect() as db:
             db.execute('INSERT OR REPLACE INTO delivery_jobs VALUES (?,?,?,?)', (key, status, str(detail)[:1500], time.time()))

@@ -6,6 +6,7 @@ from pathlib import Path
 
 from .store import Store
 from .delivery_drive import cached_file
+from .review import review_state, review_tooltip
 
 
 def directory_key(path): return os.path.normcase(os.path.abspath(str(path)))
@@ -52,7 +53,8 @@ def notice_snapshot(store, *, announce=True):
             expected = sum(record.get('state') in {'downloaded', 'retry'} for file_id, record in files.items() if file_id != '@discovery')
         meaningful = valid or missing or status and status not in {'等待制作完成', '等待成品链接'}
         if group['current'] is None and meaningful:
-            group['current'] = {'status': status, 'detail': detail, 'received': valid, 'total': expected, 'missing': missing}
+            group['current'] = {'status': status, 'detail': detail, 'received': valid, 'total': expected, 'missing': missing,
+                'ai_review':files.get('@ai_review',{}).get('text','')}
     items = []
     for group in groups.values():
         current = group['current']
@@ -76,8 +78,12 @@ def notice_snapshot(store, *, announce=True):
         elif status in {'正在下载', '等待继续下载'}:
             text, tone = f'收取中 {received}/{total or "?"}', 'warning'
         else: text, tone = '收取需处理', 'error'
-        group.update(text=text, tone=tone, unread=unread, received=total_files,
-            tooltip=f'Agent成品：本地可用 {total_files} 个，未查看 {unread} 个。\n{status}\n{current["detail"]}')
+        review=review_state(current['ai_review'])
+        if review['problem'] and total_files:
+            text = '已收取·AI需复核' if status in {'已下载','已下载·待回写'} and not current['missing'] else text+'·AI需复核'
+            tone = 'error'
+        tooltip=review_tooltip(f'Agent成品：本地可用 {total_files} 个，未查看 {unread} 个。\n{status}\n{current["detail"]}',review['text'])
+        group.update(text=text, tone=tone, unread=unread, received=total_files,tooltip=tooltip)
         group.pop('current'); items.append(group)
     claimed, claimed_tasks = 0, set()
     if announce and available_versions:
