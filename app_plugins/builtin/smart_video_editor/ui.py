@@ -1634,6 +1634,7 @@ class SmartVideoReviewDialog(QtWidgets.QDialog):
     def _set_missing_decision_for_task(
         self, task_index, decision, select_advanced=False
     ):
+        self.timeline_review.pause_for_review()
         try:
             task_index = int(task_index)
         except (TypeError, ValueError):

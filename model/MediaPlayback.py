@@ -61,6 +61,8 @@ class _QtMediaReviewSurface(QtWidgets.QFrame):
         self._seek_pending = [False] * decoder_count
         self._setting_media = [False] * decoder_count
         self._last_frames = [None] * decoder_count
+        self._source_generations = [0] * decoder_count
+        self._play_queued = [None] * decoder_count
         self._stopped = True
 
         self.setFrameShape(QtWidgets.QFrame.StyledPanel)
@@ -137,6 +139,30 @@ class _QtMediaReviewSurface(QtWidgets.QFrame):
     def configure_ffplay(self, _ffmpeg_path=""):
         return None
 
+    def _discard_frames(self, slot):
+        # A hidden widget still owns its last frame. Release the view, cache
+        # AND sink before asking Qt to tear down a native decoder.
+        self.video_widgets[slot].set_frame(None)
+        self._last_frames[slot] = None
+        blocker = QtCore.QSignalBlocker(self.video_probes[slot])
+        self.video_probes[slot].setVideoFrame(self._multimedia.QVideoFrame())
+        del blocker
+
+    def _request_play(self, slot):
+        """Never call native play recursively from a frame/status callback."""
+        if self.players[slot].playbackState()==self._multimedia.QMediaPlayer.PlaybackState.PlayingState:return
+        generation=self._display_generation
+        if self._play_queued[slot]==generation:return
+        self._play_queued[slot]=generation
+        def play_ready():
+            if self._play_queued[slot]!=generation:return
+            self._play_queued[slot]=None
+            if (generation==self._display_generation and slot==self._active
+                    and self._play_requested and not self._finishing_range
+                    and not self._seek_pending[slot] and not self._setting_media[slot]):
+                self.players[slot].play()
+        QtCore.QTimer.singleShot(0,play_ready)
+
     def _set_media(self, slot, source, position_seconds):
         player = self.players[slot]
         source = str(source or "")
@@ -146,10 +172,12 @@ class _QtMediaReviewSurface(QtWidgets.QFrame):
         self._setting_media[slot] = True
         try:
             if self._sources[slot] != source:
-                self._last_frames[slot] = None
+                self._source_generations[slot] += 1
+                self._discard_frames(slot)
                 self._sources[slot] = source
                 self._pending_positions[slot] = position_ms
-                player.stop()
+                # setSource already stops the previous media. A redundant
+                # synchronous stop here was the captured GUI hang site.
                 player.setSource(QtCore.QUrl.fromLocalFile(source))
             elif self._pending_positions[slot] is not None:
                 self._pending_positions[slot] = position_ms
@@ -160,7 +188,11 @@ class _QtMediaReviewSurface(QtWidgets.QFrame):
             self._setting_media[slot] = False
         # A paused/preloaded player at exactly this target need not decode
         # again. Only reuse a frame stamped on the current source/clock.
-        frame = self._last_frames[slot]
+        # Some backends publish the requested paused frame synchronously
+        # during setPosition. It was intentionally ignored while changing
+        # media; consume the sink's current frame after leaving that guard.
+        frame = self.video_probes[slot].videoFrame()
+        if not frame.isValid():frame=self._last_frames[slot]
         if frame is not None:
             self._frame_probed(slot, frame)
 
@@ -236,12 +268,17 @@ class _QtMediaReviewSurface(QtWidgets.QFrame):
             self.errorOccurred.emit(f"视频文件不存在：{self.source}")
             return False
         if self._stopped or self.position >= self.range_end - self.range_start - 0.02:
+            self._display_generation += 1
             self.position = 0.0
             self._stopped = False
             self._set_media(self._active, self.source, self.range_start)
         self._play_requested = True
         self._finishing_range = False
-        if not self._seek_pending[self._active] and self._pending_positions[self._active] is None:
+        if self._pending_positions[self._active] is None:
+            # A paused decoder can need play() to produce a newly sought frame
+            # (notably replay at the range start). Mute until the matching PTS
+            # is accepted, rather than waiting forever for paused preroll.
+            self.audio_outputs[self._active].setMuted(self._seek_pending[self._active])
             self.players[self._active].play()
         self.playingChanged.emit(True)
         return True
@@ -262,8 +299,12 @@ class _QtMediaReviewSurface(QtWidgets.QFrame):
         self._display_generation += 1
         self._play_requested = False
         self.position = 0.0
-        for player in self.players:
-            player.stop()
+        for slot,player in enumerate(self.players):
+            self._setting_media[slot]=True
+            try:
+                self._discard_frames(slot)
+                player.stop()
+            finally:self._setting_media[slot]=False
         for video in self.video_widgets:
             video.hide()
         self.stack.setCurrentWidget(self.placeholder)
@@ -278,13 +319,13 @@ class _QtMediaReviewSurface(QtWidgets.QFrame):
         self._queued = None
         for index, player in enumerate(self.players):
             self._setting_media[index] = True
-            player.stop()
-            player.setSource(QtCore.QUrl())
+            self._source_generations[index] += 1
+            self._discard_frames(index)
             self._sources[index] = ""
             self._pending_positions[index] = None
             self._seek_pending[index] = False
-            self._last_frames[index] = None
-            self._setting_media[index] = False
+            try:player.setSource(QtCore.QUrl())
+            finally:self._setting_media[index] = False
             self.video_widgets[index].hide()
             self.video_widgets[index].set_frame(None)
         self.stack.setCurrentWidget(self.placeholder)
@@ -314,15 +355,25 @@ class _QtMediaReviewSurface(QtWidgets.QFrame):
         if slot == self._active and self._play_requested and milliseconds >= self.range_end * 1000:
             self._finish_current_range(slot)
             return
-        self._last_frames[slot] = self._multimedia.QVideoFrame(frame)
+        # Keep a detached CPU preview, not a reference to the decoder's
+        # hardware frame pool. Paused/preloaded panes can otherwise retain
+        # native buffers while stop/setSource waits for their release.
+        image=frame.toImage().copy()
+        if image.isNull():return
+        preview=self._multimedia.QVideoFrame(image)
+        preview.setStartTime(frame.startTime());preview.setEndTime(frame.endTime())
+        preview.setRotation(frame.rotation());preview.setMirrored(frame.mirrored())
+        self._last_frames[slot] = preview
         self.video_widgets[slot].set_frame(self._last_frames[slot])
         self._seek_pending[slot] = False
         if slot != self._active:
+            self.audio_outputs[slot].setMuted(True)
             return
+        self.audio_outputs[slot].setMuted(not self._play_requested)
         self._reveal(slot)
         self._publish_position(slot, milliseconds)
         if self._play_requested and not self._finishing_range:
-            self.players[slot].play()
+            self._request_play(slot)
 
     def _media_status_changed(self, slot, status):
         ready_states = {
@@ -330,18 +381,8 @@ class _QtMediaReviewSurface(QtWidgets.QFrame):
             self._multimedia.QMediaPlayer.MediaStatus.BufferedMedia,
         }
         if status in ready_states:
-            pending = self._pending_positions[slot]
-            if pending is not None:
-                self._pending_positions[slot] = None
-                self.players[slot].setPosition(pending)
-            if self._seek_pending[slot]:
-                # Loading leaves QMediaPlayer stopped. Enter paused decoding
-                # explicitly so a seek can deliver its still frame silently.
-                self.players[slot].pause()
-            if self.players[slot].hasAudio() and not self.players[slot].hasVideo():
-                self._seek_pending[slot] = False
-            if slot == self._active and self._play_requested and not self._seek_pending[slot]:
-                self.players[slot].play()
+            generation=self._source_generations[slot]
+            QtCore.QTimer.singleShot(0,lambda:self._apply_ready_state(slot,generation))
         elif (
             status == self._multimedia.QMediaPlayer.MediaStatus.InvalidMedia
             and slot == self._active
@@ -355,6 +396,31 @@ class _QtMediaReviewSurface(QtWidgets.QFrame):
             and not self._finishing_range
         ):
             self._finish_current_range(slot)
+
+    def _apply_ready_state(self,slot,generation):
+        if generation!=self._source_generations[slot] or not self._sources[slot]:return
+        if self._setting_media[slot]:
+            QtCore.QTimer.singleShot(0,lambda:self._apply_ready_state(slot,generation))
+            return
+        if self.players[slot].mediaStatus() in {
+                self._multimedia.QMediaPlayer.MediaStatus.LoadedMedia,
+                self._multimedia.QMediaPlayer.MediaStatus.BufferedMedia}:
+            pending = self._pending_positions[slot]
+            if pending is not None:
+                self._pending_positions[slot] = None
+                self.players[slot].setPosition(pending)
+            if self._seek_pending[slot]:
+                # Loading leaves QMediaPlayer stopped. Enter paused decoding
+                # explicitly so a seek can deliver its still frame silently.
+                if slot==self._active and self._play_requested:
+                    self.audio_outputs[slot].setMuted(True)
+                    self.players[slot].play()
+                else:self.players[slot].pause()
+            if self.players[slot].hasAudio() and not self.players[slot].hasVideo():
+                self._seek_pending[slot] = False
+                self.audio_outputs[slot].setMuted(slot!=self._active)
+            if slot == self._active and self._play_requested and not self._seek_pending[slot]:
+                self._request_play(slot)
 
     def _position_changed(self, slot, milliseconds):
         # Video progress follows presented frame timestamps. This event can
@@ -383,12 +449,12 @@ class _QtMediaReviewSurface(QtWidgets.QFrame):
             return
         self._finishing_range = True
         self._play_requested = False
-        self.players[slot].pause()
         self.position = self.range_end - self.range_start
         self.positionChanged.emit(self.position)
         generation = self._display_generation
         def finished():
             if generation == self._display_generation and self._finishing_range and slot == self._active:
+                self.players[slot].pause()
                 self.rangeFinished.emit()
         QtCore.QTimer.singleShot(0, finished)
 

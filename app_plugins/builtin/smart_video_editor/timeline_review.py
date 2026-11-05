@@ -81,6 +81,7 @@ class SmartVideoTimelineReview(QtWidgets.QWidget):
         self._manual_delete_anchor = None
         self._waveform_generation = 0
         self._media_generation = 0
+        self._review_suspended=False
         self._media_aspect_cache = {}
 
         root = QtWidgets.QVBoxLayout(self)
@@ -2312,6 +2313,7 @@ class SmartVideoTimelineReview(QtWidgets.QWidget):
             return
         if not self.segments:
             return
+        self._review_suspended=False
         location = source_location_for_output(self.segments, self.output_position)
         if location is None:
             return
@@ -2339,6 +2341,7 @@ class SmartVideoTimelineReview(QtWidgets.QWidget):
         self._queue_following_range(segment)
 
     def _play_next_range(self):
+        if self._review_suspended:return
         self._preview_removed_once = False
         if self.current_segment is None:
             return
@@ -2444,7 +2447,15 @@ class SmartVideoTimelineReview(QtWidgets.QWidget):
         self.select_clip(self.task_index, current)
 
     def _request_task_decision(self, decision):
+        self.pause_for_review()
         self.taskDecisionRequested.emit(self.task_index, str(decision or ""))
+
+    def pause_for_review(self):
+        """Modal review must not race queued seeks or automatic range changes."""
+        self._review_suspended=True
+        self._media_generation+=1
+        self.player.pause()
+        self.player.clear_queue()
 
     def _update_task_decision_controls(self, task):
         has_missing = bool(self._task_missing_counts.get(self.task_index, 0))
@@ -2583,6 +2594,7 @@ class SmartVideoTimelineReview(QtWidgets.QWidget):
         # singleShot callbacks retain Python references after widget deletion;
         # invalidate them before releasing the Qt controls they would access.
         self._media_generation += 1
+        self._review_suspended=True
         self._waveform_generation += 1
         self.player.release()
         self.waveform_loader.cancel()
