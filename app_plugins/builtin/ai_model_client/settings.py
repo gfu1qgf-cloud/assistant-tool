@@ -24,7 +24,7 @@ class ClientSettingsPage:
         layout.addWidget(self.gemini_button)
         self.edits, self.clear_checks = {}, {}
         form = QtWidgets.QFormLayout()
-        for provider, title in (("mistral", "Mistral"), ("openrouter", "OpenRouter"),
+        for provider, title in (("openai", "OpenAI / GPT"), ("mistral", "Mistral"), ("openrouter", "OpenRouter"),
                                 ("cloudflare", "Cloudflare"), ("groq", "Groq")):
             row = QtWidgets.QWidget(self.widget)
             row_layout = QtWidgets.QHBoxLayout(row)
@@ -38,6 +38,9 @@ class ClientSettingsPage:
             form.addRow(title + " Key", row)
             self.edits[provider], self.clear_checks[provider] = edit, clear
         layout.addLayout(form)
+        openai_tip = QtWidgets.QLabel("OpenAI：填写额度所属 API 组织的项目 Key，仅连接 api.openai.com。保存后在聊天中选择 OpenAI / GPT，刷新模型或填写具体模型 ID。API 按量计费；赠送额度以平台账单为准，不等于无限免费。", self.widget)
+        openai_tip.setWordWrap(True)
+        layout.addWidget(openai_tip)
         self.account = QtWidgets.QLineEdit(self.widget)
         self.account.setPlaceholderText("Account ID（32位十六进制）；不是 Token")
         form.addRow("Cloudflare Account ID", self.account)
@@ -47,7 +50,7 @@ class ClientSettingsPage:
         groq_tip = QtWidgets.QLabel("Groq：在 GroqCloud 控制台创建 API Key。Free 账号有组织级速率/每日限额；Developer 账号可能计费，实际限制与消费以控制台为准。图片模型可能被“国外厂商”筛选隐藏。", self.widget)
         groq_tip.setWordWrap(True)
         layout.addWidget(groq_tip)
-        env = QtWidgets.QLabel("也支持 MISTRAL_API_KEY / OPENROUTER_API_KEY / CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID / GROQ_API_KEY 环境变量。组员配置不要包含本机加密密钥；换电脑或 Windows 用户后需重新填写。", self.widget)
+        env = QtWidgets.QLabel("也支持 OPENAI_API_KEY / MISTRAL_API_KEY / OPENROUTER_API_KEY / CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID / GROQ_API_KEY 环境变量。组员配置不要包含本机加密密钥；换电脑或 Windows 用户后需重新填写。", self.widget)
         env.setWordWrap(True)
         layout.addWidget(env)
         self.free_only = QtWidgets.QCheckBox("OpenRouter 默认只用免费模型（不自动换收费款）", self.widget)

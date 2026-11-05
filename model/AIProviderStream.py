@@ -1,6 +1,8 @@
 """Bounded SSE parsing and text-only chat accumulation; no Qt objects."""
 import time
 
+from model.OpenAIResponses import normalize_response
+
 
 def sse_events(response, context, deadline, maximum):
     fields, pending, size = [], bytearray(), 0
@@ -56,7 +58,20 @@ class ChatStream:
             data = data["result"]
         self.model = str(data.get("model") or self.model)
         text = ""
-        if self.provider == "gemini":
+        if self.provider == "openai":
+            kind = data.get('type')
+            if kind == 'response.output_text.delta':
+                text = str(data.get('delta') or '')
+            elif kind in {'response.completed', 'response.incomplete'}:
+                result = normalize_response(data.get('response') or {})
+                self.model = str(result.get('model') or self.model)
+                self.usage = result['usage']
+                self.reason = result['choices'][0]['finish_reason']
+                if not self.parts:
+                    text = result['choices'][0]['message']['content']
+            elif kind in {'response.failed', 'error', 'response.refusal.done'}:
+                raise ValueError('OpenAI 流式请求失败或被拒绝；未自动重发，已收到的文字保留供查看。')
+        elif self.provider == "gemini":
             candidate = next((row for row in data.get("candidates", []) if row.get("index", 0) == 0), {})
             text = "".join(str(part.get("text") or "") for part in
                            (candidate.get("content") or {}).get("parts", [])
@@ -81,6 +96,8 @@ class ChatStream:
                 self.on_delta(text)
 
     def result(self, done):
+        if self.provider == "openai" and not self.terminal:
+            raise ValueError("OpenAI 流式回答未收到完成确认；已收到的文字保留供查看，不自动重发。")
         if not done and not self.terminal:
             raise ValueError("流式连接提前结束，回答未完成；已收到的文字保留供查看，不作为后续上下文。")
         text = "".join(self.parts)

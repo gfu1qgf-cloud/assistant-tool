@@ -472,6 +472,7 @@ class AIClientDialog(QtWidgets.QDialog):
         provider = self.provider.currentData()
         rows = self.client.filter_models(provider, self.catalogs.get(provider, []), free_only=self.free_only.isChecked(), foreign_only=self.foreign_only.isChecked(), cf_free_only=self.cf_free_only.isChecked())
         billing_notes = {
+            "openai": "OpenAI 官方 API：按用量计费，赠送额度以 API 平台账单为准。默认不自动重试或切换模型；输出上限包含推理 token，空回答可适当提高上限。",
             "cloudflare": "Cloudflare：每天10000 Neurons（00:00 UTC重置），不是tokens。Free账户超额停止；Paid账户超额可能计费。此处不显示/猜测剩余额度。",
             "groq": "Groq：Free 账号有组织级速率及每日限额；Developer 账号可能计费。此处不猜测剩余额度；图片模型若未列出，可关闭“国外厂商”筛选。",
         }
@@ -491,7 +492,7 @@ class AIClientDialog(QtWidgets.QDialog):
         elif rows:
             self.model.setCurrentIndex(0)
         else:
-            self.model.setCurrentText({"mistral": "mistral-small-latest",
+            self.model.setCurrentText({"openai": "gpt-6-luna", "mistral": "mistral-small-latest",
                                        "groq": "openai/gpt-oss-120b"}.get(provider, ""))
         self.model.blockSignals(False)
         self.model.lineEdit().setCursorPosition(0)

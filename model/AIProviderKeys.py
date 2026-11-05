@@ -11,7 +11,8 @@ from model.SensitiveData import register_sensitive_values
 
 KEYS_CONFIG_KEY = "ai_provider_keys"
 ENV_KEYS = {"mistral": "MISTRAL_API_KEY", "openrouter": "OPENROUTER_API_KEY",
-            "cloudflare": "CLOUDFLARE_API_TOKEN", "groq": "GROQ_API_KEY"}
+            "cloudflare": "CLOUDFLARE_API_TOKEN", "groq": "GROQ_API_KEY",
+            "openai": "OPENAI_API_KEY"}
 
 
 def cloudflare_account(config):

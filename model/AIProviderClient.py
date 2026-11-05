@@ -13,9 +13,10 @@ from model.AIProviderKeys import read_provider_key, cloudflare_account
 from model.OfflineMode import require_online
 from model.SensitiveData import redact_sensitive_text, register_sensitive_values
 from model.AIProviderStream import ChatStream, sse_events
+from model.OpenAIResponses import is_chat_model, request_payload, normalize_response
 
 PROVIDERS = {"gemini": "Gemini", "mistral": "Mistral", "openrouter": "OpenRouter",
-             "cloudflare": "Cloudflare Workers AI", "groq": "Groq"}
+             "cloudflare": "Cloudflare Workers AI", "groq": "Groq", "openai": "OpenAI / GPT"}
 OR_PUBLISHERS = {"google", "mistralai", "openai", "anthropic", "meta-llama", "microsoft",
                  "nvidia", "arcee-ai", "allenai", "cohere", "perplexity", "x-ai", "amazon",
                  "ai21labs", "ibm-granite"}
@@ -55,6 +56,8 @@ def validate_model(provider, model):
         raise ValueError("请选择具体的 Cloudflare 托管模型（@cf/厂商/模型），不使用随机路由。")
     if ".." in model or "//" in model:
         raise ValueError("模型 ID 格式不正确。")
+    if provider == "openai" and not is_chat_model(model):
+        raise ValueError("请选择 OpenAI 文字聊天模型；此入口不调用 Codex、语音或生图模型。")
     return model
 
 
@@ -137,7 +140,7 @@ class AIProviderClient:
         endpoint = urlsplit(url)
         expected_host = {"gemini": "generativelanguage.googleapis.com", "mistral": "api.mistral.ai",
                          "openrouter": "openrouter.ai", "cloudflare": "api.cloudflare.com",
-                         "groq": "api.groq.com"}.get(provider)
+                         "groq": "api.groq.com", "openai": "api.openai.com"}.get(provider)
         if endpoint.scheme != "https" or endpoint.hostname != expected_host or endpoint.port not in (None, 443) or endpoint.username or endpoint.password:
             raise ValueError("拒绝把 AI 密钥发送到非官方接口。")
         context.check_canceled()
@@ -173,6 +176,9 @@ class AIProviderClient:
                             code = error.get("code", 500) if isinstance(error, dict) else 500
                             self._raise_api_error(provider, key, model, code, data, response.headers)
                         chat_stream.feed(data)
+                        if provider == "openai" and chat_stream.terminal:
+                            done = True
+                            break
                     data = chat_stream.result(done)
                 except (ValueError, UnicodeError) as error:
                     raise AIProviderError(redact_sensitive_text(str(error))) from None
@@ -260,10 +266,16 @@ class AIProviderClient:
         else:
             origin = {"mistral": "https://api.mistral.ai/v1/models",
                       "openrouter": "https://openrouter.ai/api/v1/models",
-                      "groq": "https://api.groq.com/openai/v1/models"}[provider]
+                      "groq": "https://api.groq.com/openai/v1/models",
+                      "openai": "https://api.openai.com/v1/models"}[provider]
             data = self._request(provider, key, "", origin, context)
             for row in data if isinstance(data, list) else data.get("data", []):
-                if provider == "mistral":
+                if provider == "openai":
+                    if not is_chat_model(row.get("id")):
+                        continue
+                    # The Models endpoint does not publish modality/price metadata.
+                    vision, free = None, None
+                elif provider == "mistral":
                     capabilities = row.get("capabilities") or {}
                     if capabilities.get("completion_chat") is False or row.get("archived"):
                         continue
@@ -300,7 +312,9 @@ class AIProviderClient:
         require_online("AI 聊天请求")
         model = validate_model(provider, model)
         key = self._key(provider, model, config)
-        rows = self.list_models(provider, config, context)
+        # A restricted OpenAI project key may allow Responses but not Models.
+        # A manually selected model must not depend on an unrelated catalog call.
+        rows = [] if provider == "openai" else self.list_models(provider, config, context)
         selected = next((row for row in rows if row["id"] == model), None)
         if provider == "openrouter" and options.get("free_only", True) and (not selected or not selected["free"]):
             raise AIProviderError("免费模式下只能调用已确认零价格的具体模型；请刷新模型列表后选择。")
@@ -323,7 +337,10 @@ class AIProviderClient:
             raise ValueError("系统提示超过16000字符，请缩短；没有截断或改写原文。")
         streaming = bool(options.get("stream", False))
         params = None
-        if provider == "gemini":
+        if provider == "openai":
+            payload = request_payload(model, messages, system, maximum, streaming)
+            url = "https://api.openai.com/v1/responses"
+        elif provider == "gemini":
             contents = []
             for item in messages:
                 parts = [{"text": item["text"]}] if item.get("text") else []
@@ -374,6 +391,11 @@ class AIProviderClient:
             raise AIProviderError("模型返回的数据结构无效，请换模型或稍后重试。")
         if provider == "cloudflare" and isinstance(data.get("result"), dict):
             data = data["result"]
+        if provider == "openai" and "choices" not in data:
+            try:
+                data = normalize_response(data)
+            except ValueError as error:
+                raise AIProviderError(str(error)) from None
         if provider == "gemini":
             candidate = (data.get("candidates") or [{}])[0]
             text = "".join(str(part.get("text") or "") for part in (candidate.get("content") or {}).get("parts", []) if isinstance(part, dict) and not part.get("thought"))

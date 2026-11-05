@@ -7,7 +7,7 @@ from model.QtThreadLifecycle import thread_is_active
 class AIModelClientPlugin:
     plugin_id = "ai_model_client"
     display_name = "AI 模型试用台"
-    version = "1.3"
+    version = "1.4"
     required_api_version = 1
 
     def __init__(self):
@@ -18,7 +18,7 @@ class AIModelClientPlugin:
         from .nodes import register_nodes
         register_nodes(context)
         context.register_command(PluginCommand("open", "AI 模型试用台…", lambda _rows: self.open_dialog(),
-            frozenset({MAIN_MENU}), order=21, tooltip="测试 Gemini / Mistral / OpenRouter / Cloudflare / Groq，保留本地对话，支持图片"))
+            frozenset({MAIN_MENU}), order=21, tooltip="测试 OpenAI / GPT、Gemini / Mistral / OpenRouter / Cloudflare / Groq，保留本地对话，支持图片"))
         context.register_settings_page(PluginSettingsPage("settings", "AI 模型试用台",
             lambda parent=None: ClientSettingsPage(context, parent), order=221))
 
