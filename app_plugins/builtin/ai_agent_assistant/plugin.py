@@ -10,7 +10,7 @@ from .sheet_profiles import task_kind
 class AIAgentAssistantPlugin(QtCore.QObject):
     plugin_id = 'ai_agent_assistant'
     display_name = 'AI Agent 助手'
-    version = '0.5.4'
+    version = '0.5.5'
     required_api_version = 2
 
     def __init__(self):
@@ -44,7 +44,7 @@ class AIAgentAssistantPlugin(QtCore.QObject):
         context.register_main_widget(PluginMainWidget('quick', self.quick, order=32, title=self.display_name))
         context.register_command(PluginCommand('received_check', '检查并收取 Agent 成品', self.check_received,
             frozenset({MAIN_MENU, TASK_CONTEXT_MENU}), order=36,
-            tooltip='立即后台检查所有已有 Agent 任务的最新成品；不打开助手，不重新提交制作。'))
+            tooltip='立即收取已有成品，口播执行中／待确认有成品链接时也可先收片段；缺段不标整项归档，不重新提交制作。'))
         context.register_command(PluginCommand('received_again', '重新收取所选 Agent 成品…', self.recollect_received,
             frozenset({TASK_CONTEXT_MENU}), order=37, enabled=lambda rows: bool(rows),
             tooltip='重新下载校验所选任务最近已提交作业的当前成品，保留旧文件；不重新生成。'))

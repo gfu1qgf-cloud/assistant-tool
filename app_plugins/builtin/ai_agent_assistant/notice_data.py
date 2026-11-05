@@ -27,6 +27,12 @@ def verified_receipt(files, valid_versions):
         for key,checksum in files['@received']['versions'].items())
 
 
+def same_partial_scope(files):
+    partial=files.get('@partial',{}); discovery=files.get('@discovery',{}); versions=partial.get('versions')
+    return bool(isinstance(versions,dict) and versions and partial.get('source')==discovery.get('source') and
+        partial.get('total')==discovery.get('total') and set(versions)==set(discovery.get('file_ids') or []))
+
+
 def notice_snapshot(store, *, announce=True):
     if not store.file.exists(): return {'items': [], 'notify_files': 0, 'notify_tasks': 0}
     with store.connect() as db:
@@ -73,7 +79,7 @@ def notice_snapshot(store, *, announce=True):
                 'ai_review':files.get('@ai_review',{}).get('text','')}
             group['current']['verified_received']=verified_receipt(files,valid_versions)
             group['current']['receipt_archived']=bool(files.get('@received',{}).get('archived'))
-            group['current']['view_scope_ok']='@received' not in files or same_receipt_scope(files)
+            group['current']['view_scope_ok']='@received' not in files or same_receipt_scope(files) or same_partial_scope(files)
     items = []
     for group in groups.values():
         current = group['current']
@@ -85,6 +91,10 @@ def notice_snapshot(store, *, announce=True):
             else: text, tone = (f'新成品 · {unread}','success') if unread else (f'已收取 · {total_files}','muted')
         elif current['missing']:
             text, tone = f'成品缺失 {received}/{max(total, received + current["missing"])}', 'warning'
+        elif status == '已收取部分':
+            text,tone=f'已收取 {received}/{max(total,received)}·缺段','warning'
+        elif status == '已收取·任务未完成':
+            text,tone='已收取·任务未完成','warning'
         elif status == '已下载·待回写':
             text, tone = '已收取·待回写', 'warning'
         elif status in {'收取待核对', '需核对质检', '任务类型不符', '任务编号不符', '需核对重复ID', '未找到云端记录'}:

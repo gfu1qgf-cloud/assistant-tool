@@ -132,7 +132,7 @@ class SchemaV2Tests(unittest.TestCase):
             with self.assertRaises(ValueError): check_parts([{'id':str(i),'name':name} for i,name in enumerate(names)],plan,'001')
         self.assertEqual(check_parts([{'id':'a','name':'任务001_第01段.mp4'},{'id':'b','name':'任务001_第02段.mp4'}],plan,'001'),'')
         self.assertEqual(check_parts([{'id':'a','name':'任务OTHER_第99段.mp4'}],delivery_plan('image',''),'001'),'')
-    def test_incomplete_declared_delivery_waits_without_new_downloads_until_complete(self):
+    def test_incomplete_declared_delivery_downloads_available_without_archiving_until_complete(self):
         job=self.job(); self.store.mark([job['id']],'submitted',spreadsheet_id(URL)+':口播表格')
         cloud={'job_id':job['id'],'task_id':'001','status':'已完成','spoken':TEXT,'result':VIDEO_LINK,'archive':'未下载'}
         api=ReceiptSheets([[cloud.get(key,'') for key,_,_ in sheets.FIELDS]])
@@ -143,7 +143,7 @@ class SchemaV2Tests(unittest.TestCase):
         download=Mock(side_effect=fetch)
         with patch('app_plugins.builtin.ai_agent_assistant.delivery.collect_files',side_effect=lambda *_,**__:items):
             run_receipts({'root':str(self.store.root.path)},self.run,sheets=api,drive=object(),fetch=download)
-            download.assert_not_called()
+            self.assertEqual(download.call_count,1)
             self.assertEqual(api.writes,[]); self.assertEqual(self.store.delivery_files(job['id'])['@discovery']['total'],2)
             items.append({'id':'two','name':'任务001_第02段.mp4','url':VIDEO_LINK})
             run_receipts({'root':str(self.store.root.path)},self.run,sheets=api,drive=object(),fetch=download)

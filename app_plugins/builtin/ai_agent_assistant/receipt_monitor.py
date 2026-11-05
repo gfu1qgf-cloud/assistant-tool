@@ -117,6 +117,7 @@ class ReceiptMonitor(QtCore.QObject):
             self.handle = self.plugin.context.submit_background_task(title='AI Agent · 检查并收取成品',
                 runner=run_receipts, payload={'root': str(self.plugin.context.storage.path),
                     'ui_generation': self.plugin.notices.generation,
+                    'allow_incomplete': bool(manual),
                     'sheets_authorization': sheets, 'drive_authorization': drive,
                     'ids': list(ids) if ids is not None else None,
                     'directories': list(directories) if directories is not None else None, 'force': bool(force)},

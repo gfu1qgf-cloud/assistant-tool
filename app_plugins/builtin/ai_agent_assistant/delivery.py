@@ -120,6 +120,7 @@ def run_receipts(payload, run, *, sheets=None, drive=None, fetch=download_file, 
             destination = job['destination'] or (image_default if task_kind(job['payload']) == 'image' else default)
             if destination: groups[destination].append(job)
         downloaded, failed, pending, budget, ack_budget = 0, 0, False, 8, 8
+        partial_count=0
         continue_ids = []
         for destination, jobs in groups.items():
             leased.check_canceled()
@@ -151,13 +152,25 @@ def run_receipts(payload, run, *, sheets=None, drive=None, fetch=download_file, 
                 records = store.delivery_files(job['id'])
                 cache_review(store, job['id'], _cell(row, mapping, 'ai_review'), available='ai_review' in mapping, records=records)
                 if job['state'] != 'submitted': store.mark([job['id']], 'submitted', destination, '成品监视已按作业ID核实云端记录')
-                if not status_completed(kind, _cell(row, mapping, 'status')):
+                cloud_status=_cell(row,mapping,'status')
+                cloud_done=status_completed(kind,cloud_status)
+                manual_partial=bool(payload.get('allow_incomplete')) and kind=='oral' and cloud_status in {'执行中','已领取','待确认','失败'}
+                if not cloud_done and not manual_partial:
+                    previous=records.get('@partial',{}); previous_link=_cell(row,mapping,'result')
+                    if (kind=='oral' and previous_link and previous.get('source')==hashlib.sha256(previous_link.encode()).hexdigest()
+                            and previous.get('versions')):
+                        amount=len(previous['versions']); expected=previous.get('total',amount)
+                        state='已收取部分' if amount<expected else '已收取·任务未完成'
+                        store.delivery_note(job['id'],state,f'已有 {amount}/{expected} 个视频已收取。\n'+previous.get('detail','')+
+                            '\n云端执行状态：'+cloud_status+'；可手动检查后续片段，未自动回写整项归档。'+
+                            ('\n云端备注：'+_cell(row,mapping,'notes') if _cell(row,mapping,'notes') else ''))
+                        continue
                     store.delivery_note(job['id'], '等待制作完成', '云端状态：' + _cell(row, mapping, 'status')); continue
                 if kind == 'image' and _cell(row, mapping, 'quality') not in {'通过', '轻微损失已披露'}:
                     store.delivery_note(job['id'], '需核对质检', '已交付但未明确通过画面质检，未自动收取。'); continue
                 link_text = _cell(row, mapping, 'result')
                 if not link_text:
-                    store.delivery_note(job['id'], '等待成品链接', '已完成但成品Drive链接为空，稍后自动检查。'); continue
+                    store.delivery_note(job['id'], '等待成品链接', '成品Drive链接为空；需提供该作业正确的成品链接，不会猜测其他目录或改用素材链接。'); continue
                 signature = hashlib.sha256(link_text.encode()).hexdigest()
                 discovery = records.get('@discovery', {})
                 if discovery.get('source') == signature and discovery.get('retry_at', 0) > clock():
@@ -179,12 +192,9 @@ def run_receipts(payload, run, *, sheets=None, drive=None, fetch=download_file, 
                             discovery.get('total') != expected_total or discovery.get('file_ids') != active_ids):
                         store.save_delivery(job['id'], '@discovery', {'state': 'checked', 'source': signature,
                             'total': expected_total, 'file_ids': active_ids})
-                    # Public direct links may reveal their filename only in the
-                    # download response. Exact-count unknowns are checked again
-                    # after transfer; known missing segments never start transfer.
-                    unknown_names = any(not item.get('name') and not records.get(item['id'], {}).get('path') for item in files)
-                    if plan_problem and (not unknown_names or (plan and len(files) < plan['count'])):
-                        pending = True; store.delivery_note(job['id'], '收取待核对', plan_problem); continue
+                    # Missing segments are a delivery warning, not a download
+                    # embargo. Wrong task IDs/duplicate/out-of-range ordinals
+                    # still raise above; every transferred file stays verified.
                     completed, attempted = 0, 0
                     for item in files:
                         leased.check_canceled(); record = records.get(item['id'], {})
@@ -207,8 +217,19 @@ def run_receipts(payload, run, *, sheets=None, drive=None, fetch=download_file, 
                             failed += 1; pending = True
                     if completed == len(files):
                         plan_problem = check_parts(files, plan, job['payload']['task_id'], store.delivery_files(job['id']))
-                        if plan_problem:
-                            pending = True; store.delivery_note(job['id'], '收取待核对', plan_problem); continue
+                        if plan_problem or not cloud_done:
+                            verified=store.delivery_files(job['id'])
+                            store.save_delivery(job['id'],'@partial',{'state':'partial','source':signature,'total':expected_total,
+                                'versions':{item['id']:verified[item['id']]['sha256'] for item in files},
+                                'detail':plan_problem or '现有片段已收取，等待云端确认制作完成。'})
+                            detail=f'已收取现有 {completed}/{expected_total} 个视频到原任务result目录。\n'
+                            detail+=plan_problem or '当前已有视频已收取；云端任务尚未确认完成，不回写整项归档。'
+                            detail+='\n云端执行状态：'+cloud_status
+                            cloud_note=_cell(row,mapping,'notes')
+                            if cloud_note: detail+='\n云端备注：'+cloud_note
+                            pending=True; partial_count+=1
+                            state='已收取部分' if plan and len(files)<plan['count'] else '收取待核对' if plan_problem else '已收取·任务未完成'
+                            store.delivery_note(job['id'],state,detail); continue
                         verified=store.delivery_files(job['id'])
                         proof={'state':'received','source':signature,'total':len(files),
                             'versions':{item['id']:verified[item['id']]['sha256'] for item in files},
@@ -254,7 +275,9 @@ def run_receipts(payload, run, *, sheets=None, drive=None, fetch=download_file, 
         from .notice_data import notice_snapshot
         badges=notice_snapshot(store)
         if 'ui_generation' in payload: badges['ui_generation']=payload['ui_generation']
-        return {'message': ('所选任务没有匹配的已提交 Agent 作业。' if not groups else f'成品检查完成：本次下载 {downloaded} 个视频。') + ('仍有任务等待重试或继续收取。' if pending or failed else ''),
-                'downloaded': downloaded, 'pending': pending, 'failed': failed, 'continue_ids': continue_ids,
+        return {'message': ('所选任务没有匹配的已提交 Agent 作业。' if not groups else f'成品检查完成：本次下载 {downloaded} 个视频。') +
+                (f'{partial_count}项已先收现有片段，未标整项归档。' if partial_count else '')+
+                ('仍有任务待补、待核对或重试。' if pending or failed else ''),
+                'downloaded': downloaded, 'pending': pending, 'failed': failed, 'partial':partial_count, 'continue_ids': continue_ids,
                 'task_badges': badges}
     finally: store.release_delivery_run(token)
