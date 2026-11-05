@@ -209,6 +209,11 @@ def run_receipts(payload, run, *, sheets=None, drive=None, fetch=download_file, 
                         plan_problem = check_parts(files, plan, job['payload']['task_id'], store.delivery_files(job['id']))
                         if plan_problem:
                             pending = True; store.delivery_note(job['id'], '收取待核对', plan_problem); continue
+                        verified=store.delivery_files(job['id'])
+                        proof={'state':'received','source':signature,'total':len(files),
+                            'versions':{item['id']:verified[item['id']]['sha256'] for item in files},
+                            'archived':_cell(row,mapping,'archive') in ARCHIVED}
+                        store.save_delivery(job['id'],'@received',proof)
                         try:
                             if _cell(row, mapping, 'archive') not in ARCHIVED or attempted:
                                 if ack_budget <= 0:
@@ -217,6 +222,7 @@ def run_receipts(payload, run, *, sheets=None, drive=None, fetch=download_file, 
                                 ack_budget -= 1
                                 acknowledge(sheets, identifier, name, info, job, link_text, leased, expected_plan=plan, review_store=store)
                             cloud_note = _cell(row, mapping, 'notes')
+                            store.save_delivery(job['id'],'@received',{**proof,'archived':True})
                             store.delivery_note(job['id'], '已下载', f'{completed} 个视频已校验归档到原任务的 result 目录。' +
                                 ('\n云端交付备注（不代表已通过用户终审）：' + cloud_note if cloud_note else ''))
                         except Exception as error:
@@ -241,12 +247,14 @@ def run_receipts(payload, run, *, sheets=None, drive=None, fetch=download_file, 
                 except Exception as error:
                     leased.check_canceled(); failed += 1; pending = True
                     attempts = int(discovery.get('attempts', 0)) + 1 if discovery.get('source') == signature else 1
-                    store.save_delivery(job['id'], '@discovery', {'state': 'retry', 'source': signature,
+                    store.save_delivery(job['id'], '@discovery', {**(discovery if discovery.get('source')==signature else {}), 'state': 'retry', 'source': signature,
                         'attempts': attempts, 'retry_at': clock() + min(3600, 60 * 2 ** min(attempts - 1, 6)),
                         'total': discovery.get('total'), 'detail': error_message(error)})
                     store.delivery_note(job['id'], '收取待重试', f'检查尝试累计 {attempts} 次；' + error_message(error))
         from .notice_data import notice_snapshot
+        badges=notice_snapshot(store)
+        if 'ui_generation' in payload: badges['ui_generation']=payload['ui_generation']
         return {'message': ('所选任务没有匹配的已提交 Agent 作业。' if not groups else f'成品检查完成：本次下载 {downloaded} 个视频。') + ('仍有任务等待重试或继续收取。' if pending or failed else ''),
                 'downloaded': downloaded, 'pending': pending, 'failed': failed, 'continue_ids': continue_ids,
-                'task_badges': notice_snapshot(store)}
+                'task_badges': badges}
     finally: store.release_delivery_run(token)

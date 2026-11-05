@@ -51,9 +51,10 @@ class ReviewNoticeTests(unittest.TestCase):
     def test_received_issue_is_red_with_complete_detail_and_survives_seen_toggle(self):
         version=self.file(); self.done(); text='AI预审不通过｜审核员A｜第03段5.2秒漏读，请复核原句。'
         self.review(text)
-        for action in (lambda:None,lambda:mark_versions_seen(self.store,[version]),lambda:unmark_versions_seen(self.store,[version])):
+        for expected,action in (('已收取·AI需复核',lambda:None),('已查看 · 1',lambda:mark_versions_seen(self.store,[version])),
+                                ('已收取·AI需复核',lambda:unmark_versions_seen(self.store,[version]))):
             action(); item=notice_snapshot(self.store,announce=False)['items'][0]
-            self.assertEqual(item['tone'],'error'); self.assertEqual(item['text'],'已收取·AI需复核')
+            self.assertEqual(item['tone'],'error'); self.assertEqual(item['text'],expected)
             self.assertIn(text,item['tooltip'])
     def test_partial_transfer_stays_visibly_partial_even_with_review_error(self):
         self.file(); self.store.save_delivery(self.key,'@discovery',{'state':'checked','total':3})

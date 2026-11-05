@@ -44,7 +44,7 @@ class NoticeDataTests(unittest.TestCase):
     def test_seen_marker_preserves_permanent_received_badge_and_file(self):
         version = self.file(); self.done(); mark_versions_seen(self.store, [version])
         value = notice_snapshot(self.store)
-        self.assertEqual(value['items'][0]['text'], '已收取 · 1'); self.assertEqual(value['notify_files'], 0)
+        self.assertEqual(value['items'][0]['text'], '已查看 · 1'); self.assertEqual(value['notify_files'], 0)
         self.assertTrue(list((self.directory/'result').glob('*.mp4')))
 
     def test_seen_can_be_reversed_after_restart_without_download_or_notification(self):

@@ -12,6 +12,21 @@ from .review import review_state, review_tooltip
 def directory_key(path): return os.path.normcase(os.path.abspath(str(path)))
 
 
+def same_receipt_scope(files):
+    proof=files.get('@received', {}); discovery=files.get('@discovery', {})
+    versions=proof.get('versions')
+    if (not isinstance(versions,dict) or not versions or proof.get('total')!=len(versions) or proof.get('total')!=discovery.get('total') or
+            not proof.get('source') or proof['source']!=discovery.get('source')): return False
+    active_ids=discovery.get('file_ids')
+    if isinstance(active_ids,list) and set(active_ids)!=set(versions): return False
+    return True
+
+
+def verified_receipt(files, valid_versions):
+    return same_receipt_scope(files) and all(valid_versions.get(key)==checksum and bool(checksum)
+        for key,checksum in files['@received']['versions'].items())
+
+
 def notice_snapshot(store, *, announce=True):
     if not store.file.exists(): return {'items': [], 'notify_files': 0, 'notify_tasks': 0}
     with store.connect() as db:
@@ -28,7 +43,7 @@ def notice_snapshot(store, *, announce=True):
         canonical = directory_key(directory)
         group = groups.setdefault(canonical, {'directory': directory, 'task_id': str(payload.get('task_id') or ''),
             'files': {}, 'versions': [], 'seen_versions': [], 'current': None})
-        files = by_job[key]; valid, missing = 0, 0
+        files = by_job[key]; valid, missing = 0, 0; valid_versions={}
         active_ids = files.get('@discovery', {}).get('file_ids')
         if not isinstance(active_ids, list) or any(not isinstance(item, str) for item in active_ids): active_ids = None
         active_ids = set(active_ids) if active_ids is not None else None
@@ -41,6 +56,7 @@ def notice_snapshot(store, *, announce=True):
                 continue
             checksum = str(record.get('sha256') or '')
             if not checksum: continue
+            valid_versions[file_id]=checksum
             if active_ids is None or file_id in active_ids: valid += 1
             version = (key, file_id, checksum)
             group['files'][directory_key(record['path'])] = version
@@ -55,13 +71,19 @@ def notice_snapshot(store, *, announce=True):
         if group['current'] is None and meaningful:
             group['current'] = {'status': status, 'detail': detail, 'received': valid, 'total': expected, 'missing': missing,
                 'ai_review':files.get('@ai_review',{}).get('text','')}
+            group['current']['verified_received']=verified_receipt(files,valid_versions)
+            group['current']['receipt_archived']=bool(files.get('@received',{}).get('archived'))
+            group['current']['view_scope_ok']='@received' not in files or same_receipt_scope(files)
     items = []
     for group in groups.values():
         current = group['current']
         if not current: continue
         total_files = len(group.pop('files')); unread = len(group['versions'])
         status = current['status']; received, total = current['received'], current['total']
-        if current['missing']:
+        if current['verified_received'] and status=='收取待重试':
+            if not current['receipt_archived']: text,tone='已收取·待回写','warning'
+            else: text, tone = (f'新成品 · {unread}','success') if unread else (f'已收取 · {total_files}','muted')
+        elif current['missing']:
             text, tone = f'成品缺失 {received}/{max(total, received + current["missing"])}', 'warning'
         elif status == '已下载·待回写':
             text, tone = '已收取·待回写', 'warning'
@@ -82,7 +104,15 @@ def notice_snapshot(store, *, announce=True):
         if review['problem'] and total_files:
             text = '已收取·AI需复核' if status in {'已下载','已下载·待回写'} and not current['missing'] else text+'·AI需复核'
             tone = 'error'
-        tooltip=review_tooltip(f'Agent成品：本地可用 {total_files} 个，未查看 {unread} 个。\n{status}\n{current["detail"]}',review['text'])
+        manually_seen=received>0 and unread==0 and bool(group['seen_versions']) and current['view_scope_ok']
+        if manually_seen:
+            text=f'已查看 · {total_files}'
+            # For legacy queues the explicit human marker plus intact complete
+            # local set survives a later cloud inspection failure too.
+            if not review['problem'] and not current['missing'] and received>=total and status=='收取待重试': tone='muted'
+        human='\n手动状态：已查看。' if manually_seen else ''
+        retained='\n本地已校验收取完成；后续云端检查异常未撤销收取事实。' if current['verified_received'] and status=='收取待重试' else ''
+        tooltip=review_tooltip(f'Agent成品：本地可用 {total_files} 个，未查看 {unread} 个。{human}{retained}\n{status}\n{current["detail"]}',review['text'])
         group.update(text=text, tone=tone, unread=unread, received=total_files,tooltip=tooltip)
         group.pop('current'); items.append(group)
     claimed, claimed_tasks = 0, set()

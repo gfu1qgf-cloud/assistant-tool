@@ -116,6 +116,7 @@ class ReceiptMonitor(QtCore.QObject):
             self.manual_notice = bool(manual)
             self.handle = self.plugin.context.submit_background_task(title='AI Agent · 检查并收取成品',
                 runner=run_receipts, payload={'root': str(self.plugin.context.storage.path),
+                    'ui_generation': self.plugin.notices.generation,
                     'sheets_authorization': sheets, 'drive_authorization': drive,
                     'ids': list(ids) if ids is not None else None,
                     'directories': list(directories) if directories is not None else None, 'force': bool(force)},
@@ -132,7 +133,9 @@ class ReceiptMonitor(QtCore.QObject):
         self._continue_ids = list(dict.fromkeys(result.get('continue_ids') or [])) if self.running else []
         self._continue_manual = bool(self._continue_ids and self.manual_notice)
         self.show_status(result['message'])
-        if result.get('task_badges') is not None: self.plugin.notices.apply_snapshot(result['task_badges'])
+        if result.get('task_badges') is not None:
+            self.plugin.notices.apply_snapshot(result['task_badges'])
+            if self.plugin.notices.pending and self.plugin.notices.handle is None: self.plugin.notices.refresh()
         if result.get('downloaded') or self.manual_notice:
             self.plugin.context.log(result['message'])
         if not self._continue_ids and not result.get('task_badges', {}).get('notify_files'): self.notify_manual(result['message'])
