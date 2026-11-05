@@ -14,7 +14,7 @@ class ManualBadgeTests(unittest.TestCase):
         version=self.file(); self.done(); mark_versions_seen(self.store,[version])
         self.store.save_delivery(self.key,'@ai_review',{'text':'AI预审不通过｜第3段8秒闭眼'})
         item=notice_snapshot(self.store,announce=False)['items'][0]
-        self.assertEqual(item['text'],'已查看 · 1'); self.assertEqual(item['tone'],'error')
+        self.assertEqual(item['text'],'已查看'); self.assertEqual(item['tone'],'error')
         self.assertIn('第3段8秒闭眼',item['tooltip']); self.assertIn('手动状态：已查看',item['tooltip'])
         unmark_versions_seen(self.store,[version])
         self.assertNotIn('已查看',notice_snapshot(self.store,announce=False)['items'][0]['text'])
@@ -22,12 +22,12 @@ class ManualBadgeTests(unittest.TestCase):
         version=self.file(); self.done(); mark_versions_seen(self.store,[version])
         self.store.delivery_note(self.key,'收取待重试','云端成品目录暂时为空')
         item=notice_snapshot(self.store,announce=False)['items'][0]
-        self.assertEqual(item['text'],'已查看 · 1'); self.assertEqual(item['tone'],'muted')
+        self.assertEqual(item['text'],'已查看'); self.assertEqual(item['tone'],'muted')
         self.assertIn('云端成品目录暂时为空',item['tooltip'])
     def test_actual_new_media_version_is_not_hidden_by_old_human_marker(self):
         old=self.file(); self.done(); mark_versions_seen(self.store,[old]); self.file(data=b'new-version')
         item=notice_snapshot(self.store,announce=False)['items'][0]
-        self.assertEqual(item['text'],'新成品 · 1'); self.assertEqual(item['unread'],1)
+        self.assertEqual(item['text'],'已收取'); self.assertEqual(item['unread'],1)
     def test_missing_file_is_still_reported_and_no_false_receipt_is_created(self):
         version=self.file(); self.done(); mark_versions_seen(self.store,[version])
         next((self.directory/'result').glob('*.mp4')).unlink()
@@ -51,7 +51,7 @@ class ReceiptFactTests(unittest.TestCase):
         self.receipt(); self.fetch.reset_mock()
         result=self.receipt(collect=ValueError('云端暂未列出视频'))
         item=result['task_badges']['items'][0]
-        self.assertEqual(item['text'],'新成品 · 1'); self.assertIn('云端暂未列出视频',item['tooltip'])
+        self.assertEqual(item['text'],'已收取'); self.assertIn('云端暂未列出视频',item['tooltip'])
         self.assertIn('未撤销收取事实',item['tooltip']); self.fetch.assert_not_called()
         self.assertTrue(self.store.delivery_files(self.job['id'])['@received']['archived'])
     def test_source_change_invalidates_old_receipt_fact(self):
@@ -72,7 +72,7 @@ class ReceiptFactTests(unittest.TestCase):
         self.api.fail_write=True; self.receipt()
         proof=self.store.delivery_files(self.job['id'])['@received']; self.assertFalse(proof['archived'])
         item=self.receipt(collect=ValueError('云端巡查失败'))['task_badges']['items'][0]
-        self.assertEqual(item['text'],'已收取·待回写')
+        self.assertEqual(item['text'],'已收取'); self.assertEqual(item['tone'],'warning')
 
 
 class SeenRefreshRaceTests(unittest.TestCase):

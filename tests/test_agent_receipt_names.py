@@ -68,4 +68,4 @@ class ReceiptNamesTests(unittest.TestCase):
                 fetch.assert_not_called(); self.assertEqual(result['downloaded'],0)
                 self.assertEqual(store.delivery_statuses()[key]['status'],'已下载'); self.assertEqual(len(api.writes),1)
                 self.assertIn('音频待用户终审',store.delivery_statuses()[key]['detail'])
-                self.assertEqual(notice_snapshot(store,announce=False)['items'][0]['text'],f'新成品 · {count}')
+                self.assertEqual(notice_snapshot(store,announce=False)['items'][0]['text'],'已收取')

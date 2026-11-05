@@ -38,13 +38,31 @@ class NoticeDataTests(unittest.TestCase):
     def test_new_download_persists_badge_and_notification_is_claimed_once(self):
         self.file(); self.done()
         first = notice_snapshot(self.store); second = notice_snapshot(Store(self.store.root.path))
-        self.assertEqual(first['items'][0]['text'], '新成品 · 1')
+        self.assertEqual(first['items'][0]['text'], '已收取')
         self.assertEqual(first['notify_files'], 1); self.assertEqual(second['notify_files'], 0)
         self.assertEqual(second['items'][0]['unread'], 1)
+
+    def test_received_labels_stay_short_across_status_and_review_combinations(self):
+        version=self.file(); self.done(3)
+        for status in ('已下载', '已收取部分', '已下载·待回写', '收取待核对',
+                       '收取待重试', '正在下载', '已收取·任务未完成'):
+            for review in ('', 'AI预审不通过｜第2段漏读'):
+                self.store.delivery_note(self.key,status,'待补第2段')
+                self.store.save_delivery(self.key,'@ai_review',{'text':review})
+                with self.subTest(status=status,review=review):
+                    item=notice_snapshot(self.store,announce=False)['items'][0]
+                    self.assertEqual(item['text'],'已收取')
+                    self.assertIn('1/3',item['tooltip']); self.assertIn('待补第2段',item['tooltip'])
+                    if review: self.assertEqual(item['tone'],'error')
+                    mark_versions_seen(self.store,[version])
+                    viewed=notice_snapshot(self.store,announce=False)['items'][0]
+                    self.assertEqual(viewed['text'],'已查看')
+                    if review: self.assertEqual(viewed['tone'],'error')
+                    unmark_versions_seen(self.store,[version])
     def test_seen_marker_preserves_permanent_received_badge_and_file(self):
         version = self.file(); self.done(); mark_versions_seen(self.store, [version])
         value = notice_snapshot(self.store)
-        self.assertEqual(value['items'][0]['text'], '已查看 · 1'); self.assertEqual(value['notify_files'], 0)
+        self.assertEqual(value['items'][0]['text'], '已查看'); self.assertEqual(value['notify_files'], 0)
         self.assertTrue(list((self.directory/'result').glob('*.mp4')))
 
     def test_seen_can_be_reversed_after_restart_without_download_or_notification(self):
@@ -53,7 +71,7 @@ class NoticeDataTests(unittest.TestCase):
         self.assertEqual(value['seen_versions'],[version]); self.assertEqual(value['unread'],0)
         run=SimpleNamespace(check_canceled=Mock())
         result=run_notice_snapshot({'root':str(self.store.root.path),'unseen':[version],'ui_generation':4},run)
-        self.assertEqual(result['items'][0]['text'],'新成品 · 1'); self.assertEqual(result['notify_files'],0)
+        self.assertEqual(result['items'][0]['text'],'已收取'); self.assertEqual(result['notify_files'],0)
         persisted=notice_snapshot(Store(self.store.root.path))
         self.assertEqual(persisted['items'][0]['unread'],1); self.assertEqual(persisted['notify_files'],0)
         self.assertTrue(list((self.directory/'result').glob('*.mp4')))
@@ -78,7 +96,7 @@ class NoticeDataTests(unittest.TestCase):
         self.file(); self.store.save_delivery(self.key, '@discovery', {'state': 'checked', 'total': 5})
         self.store.delivery_note(self.key, '下载待重试', '第二段暂时失败')
         item = notice_snapshot(self.store)['items'][0]
-        self.assertEqual(item['text'], '收取中 1/5'); self.assertEqual(item['tone'], 'warning'); self.assertEqual(item['unread'], 1)
+        self.assertEqual(item['text'], '已收取'); self.assertIn('1/5',item['tooltip']); self.assertEqual(item['tone'], 'warning'); self.assertEqual(item['unread'], 1)
     def test_failed_download_without_file_is_error_and_never_notifies_success(self):
         self.store.delivery_note(self.key, '收取待重试', '无访问权限')
         value = notice_snapshot(self.store)
@@ -88,21 +106,21 @@ class NoticeDataTests(unittest.TestCase):
         self.file(); self.store.save_delivery(self.key, '@discovery', {'state':'checked', 'total':1})
         self.store.delivery_note(self.key, '收取待核对', '段号需核对')
         item=notice_snapshot(self.store)['items'][0]
-        self.assertEqual(item['text'],'已收取·待核对'); self.assertEqual(item['tone'],'warning')
+        self.assertEqual(item['text'],'已收取'); self.assertEqual(item['tone'],'warning')
         self.assertIn('段号需核对', item['tooltip'])
 
     def test_archive_write_failure_is_separate_from_download_and_success(self):
         self.file(); self.store.save_delivery(self.key,'@discovery',{'state':'checked','total':1})
         self.store.delivery_note(self.key,'已下载·待回写','Sheets暂不可用')
         item=notice_snapshot(self.store)['items'][0]
-        self.assertEqual(item['text'],'已收取·待回写'); self.assertEqual(item['tone'],'warning')
+        self.assertEqual(item['text'],'已收取'); self.assertEqual(item['tone'],'warning')
 
     def test_stale_preserved_file_is_not_counted_as_current_delivery(self):
         self.file('old'); self.file('new')
         self.store.save_delivery(self.key,'@discovery',{'state':'checked','total':2,'file_ids':['new','not_yet_downloaded']})
         self.store.delivery_note(self.key,'正在下载','')
         item=notice_snapshot(self.store)['items'][0]
-        self.assertEqual(item['text'],'收取中 1/2'); self.assertEqual(item['received'],2)
+        self.assertEqual(item['text'],'已收取'); self.assertIn('1/2',item['tooltip']); self.assertEqual(item['received'],2)
     def test_missing_local_file_does_not_show_success_or_unread(self):
         self.file(); self.done()
         next((self.directory/'result').glob('*.mp4')).unlink()

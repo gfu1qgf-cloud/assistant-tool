@@ -23,7 +23,7 @@ class PartialReceiptTests(unittest.TestCase):
         self.prepare(18,{9}); result=self.drain()
         self.assertEqual(self.fetch.call_count,17); self.assertEqual(self.api.writes,[])
         item=result['task_badges']['items'][0]
-        self.assertEqual(item['text'],'已收取 17/18·缺段'); self.assertIn('尚未核实段号：9',item['tooltip'])
+        self.assertEqual(item['text'],'已收取'); self.assertEqual(item['tone'],'warning'); self.assertIn('尚未核实段号：9',item['tooltip'])
         self.assertNotIn('@received',self.store.delivery_files(self.job['id']))
         self.receipt(); self.assertEqual(self.fetch.call_count,17)
     def test_later_missing_segment_only_downloads_new_one_then_can_archive(self):
@@ -48,7 +48,7 @@ class PartialReceiptTests(unittest.TestCase):
         self.prepare(2,{2}); self.api.rows[0][fixture.COLS['status']]='执行中'
         self.drain(allow_incomplete=True); self.fetch.reset_mock()
         item=self.receipt()['task_badges']['items'][0]
-        self.fetch.assert_not_called(); self.assertEqual(item['text'],'已收取 1/2·缺段')
+        self.fetch.assert_not_called(); self.assertEqual(item['text'],'已收取'); self.assertIn('1/2',item['tooltip'])
         self.assertIn('尚未核实段号：2',item['tooltip']); self.assertEqual(self.api.writes,[])
     def test_full_file_count_while_executing_is_downloaded_not_archived(self):
         self.prepare(2,set()); self.api.rows[0][fixture.COLS['status']]='执行中'
@@ -61,7 +61,7 @@ class PartialReceiptTests(unittest.TestCase):
         self.prepare(3,{2}); self.drain()
         versions=[[self.job['id'],fid,record['sha256']] for fid,record in self.store.delivery_files(self.job['id']).items() if record.get('state')=='downloaded']
         mark_versions_seen(self.store,versions)
-        self.assertEqual(notice_snapshot(self.store,announce=False)['items'][0]['text'],'已查看 · 2')
+        self.assertEqual(notice_snapshot(self.store,announce=False)['items'][0]['text'],'已查看')
         self.items.append({'id':'video_2','name':'任务001_第02段.mp4','url':fixture.LINK}); self.drain()
         self.assertEqual(notice_snapshot(self.store,announce=False)['items'][0]['unread'],1)
     def test_wrong_owner_duplicate_or_out_of_range_still_do_not_guess(self):

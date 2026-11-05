@@ -112,17 +112,21 @@ def notice_snapshot(store, *, announce=True):
         else: text, tone = '收取需处理', 'error'
         review=review_state(current['ai_review'])
         if review['problem'] and total_files:
-            text = '已收取·AI需复核' if status in {'已下载','已下载·待回写'} and not current['missing'] else text+'·AI需复核'
             tone = 'error'
         manually_seen=received>0 and unread==0 and bool(group['seen_versions']) and current['view_scope_ok']
         if manually_seen:
-            text=f'已查看 · {total_files}'
+            text='已查看'
             # For legacy queues the explicit human marker plus intact complete
             # local set survives a later cloud inspection failure too.
             if not review['problem'] and not current['missing'] and received>=total and status=='收取待重试': tone='muted'
+        # Receipt labels describe only the human-facing receipt/view state.
+        # Counts, partial delivery and AI findings belong in color + tooltip,
+        # not ever-growing suffixes. Never claim receipt with no local files.
+        if received and current['view_scope_ok'] or current['verified_received']:
+            text='已查看' if manually_seen else '已收取'
         human='\n手动状态：已查看。' if manually_seen else ''
         retained='\n本地已校验收取完成；后续云端检查异常未撤销收取事实。' if current['verified_received'] and status=='收取待重试' else ''
-        tooltip=review_tooltip(f'Agent成品：本地可用 {total_files} 个，未查看 {unread} 个。{human}{retained}\n{status}\n{current["detail"]}',review['text'])
+        tooltip=review_tooltip(f'Agent成品：本地可用 {total_files} 个，未查看 {unread} 个。{human}{retained}\n当前批次收取进度：{received}/{max(total,received)}。\n{status}\n{current["detail"]}',review['text'])
         group.update(text=text, tone=tone, unread=unread, received=total_files,tooltip=tooltip)
         group.pop('current'); items.append(group)
     claimed, claimed_tasks = 0, set()

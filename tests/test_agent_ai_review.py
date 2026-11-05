@@ -51,8 +51,8 @@ class ReviewNoticeTests(unittest.TestCase):
     def test_received_issue_is_red_with_complete_detail_and_survives_seen_toggle(self):
         version=self.file(); self.done(); text='AI预审不通过｜审核员A｜第03段5.2秒漏读，请复核原句。'
         self.review(text)
-        for expected,action in (('已收取·AI需复核',lambda:None),('已查看 · 1',lambda:mark_versions_seen(self.store,[version])),
-                                ('已收取·AI需复核',lambda:unmark_versions_seen(self.store,[version]))):
+        for expected,action in (('已收取',lambda:None),('已查看',lambda:mark_versions_seen(self.store,[version])),
+                                ('已收取',lambda:unmark_versions_seen(self.store,[version]))):
             action(); item=notice_snapshot(self.store,announce=False)['items'][0]
             self.assertEqual(item['tone'],'error'); self.assertEqual(item['text'],expected)
             self.assertIn(text,item['tooltip'])
@@ -60,7 +60,7 @@ class ReviewNoticeTests(unittest.TestCase):
         self.file(); self.store.save_delivery(self.key,'@discovery',{'state':'checked','total':3})
         self.store.delivery_note(self.key,'正在下载','待继续'); self.review('部分通过｜第2段未核')
         item=notice_snapshot(self.store,announce=False)['items'][0]
-        self.assertIn('1/3',item['text']); self.assertEqual(item['tone'],'error')
+        self.assertEqual(item['text'],'已收取'); self.assertIn('1/3',item['tooltip']); self.assertEqual(item['tone'],'error')
     def test_clearing_or_passing_latest_review_restores_normal_badge_not_false_user_approval(self):
         self.file(); self.done(); self.review('AI预审不通过｜缺陷')
         self.assertEqual(notice_snapshot(self.store,announce=False)['items'][0]['tone'],'error')
