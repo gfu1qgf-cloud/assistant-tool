@@ -16,6 +16,7 @@ from .receipt_plan import delivery_plan, check_parts
 from .review import cache_review
 
 DONE = {'已完成', '完成', '制作完成', '生成完成', 'completed', 'complete', 'done'}
+DISCOVERY_SCOPE = 'recursive-v1'
 
 
 class LeasedRun:
@@ -173,7 +174,8 @@ def run_receipts(payload, run, *, sheets=None, drive=None, fetch=download_file, 
                     store.delivery_note(job['id'], '等待成品链接', '成品Drive链接为空；需提供该作业正确的成品链接，不会猜测其他目录或改用素材链接。'); continue
                 signature = hashlib.sha256(link_text.encode()).hexdigest()
                 discovery = records.get('@discovery', {})
-                if discovery.get('source') == signature and discovery.get('retry_at', 0) > clock():
+                if (discovery.get('source') == signature and discovery.get('scope') == DISCOVERY_SCOPE
+                        and discovery.get('retry_at', 0) > clock()):
                     pending = True; continue
                 try:
                     directory = output_directory(job)
@@ -181,16 +183,18 @@ def run_receipts(payload, run, *, sheets=None, drive=None, fetch=download_file, 
                     links = result_links(link_text)
                     if kind == 'image' and (len(links) != 1 or '/folders/' in links[0]):
                         raise ValueError('图片任务需一个直接视频链接，不能使用整批成品文件夹；未猜测收取其他任务。')
-                    files = collect_files(links, drive, leased, root_only=kind == 'oral')
-                    if kind == 'oral': files = [item for item in files if not item.get('_depth', 0)]
-                    if not files: raise ValueError('任务目录根部未发现可交付视频；不收取分类子目录中的旧片或失败片。')
+                    # The declared result folder is the delivery boundary,
+                    # including nested folders. Validate all segment identities
+                    # before downloading; never select an arbitrary duplicate.
+                    files = collect_files(links, drive, leased)
                     plan = delivery_plan(kind, _cell(row, mapping, 'spoken'))
                     plan_problem = check_parts(files, plan, job['payload']['task_id'], records)
                     expected_total = max(len(files), plan['count'] if plan else 0)
                     active_ids = sorted(item['id'] for item in files)
                     if (discovery.get('state') != 'checked' or discovery.get('source') != signature or
+                            discovery.get('scope') != DISCOVERY_SCOPE or
                             discovery.get('total') != expected_total or discovery.get('file_ids') != active_ids):
-                        store.save_delivery(job['id'], '@discovery', {'state': 'checked', 'source': signature,
+                        store.save_delivery(job['id'], '@discovery', {'state': 'checked', 'source': signature, 'scope': DISCOVERY_SCOPE,
                             'total': expected_total, 'file_ids': active_ids})
                     # Missing segments are a delivery warning, not a download
                     # embargo. Wrong task IDs/duplicate/out-of-range ordinals
@@ -267,8 +271,9 @@ def run_receipts(payload, run, *, sheets=None, drive=None, fetch=download_file, 
                             continue_ids.append(job['id'])
                 except Exception as error:
                     leased.check_canceled(); failed += 1; pending = True
-                    attempts = int(discovery.get('attempts', 0)) + 1 if discovery.get('source') == signature else 1
-                    store.save_delivery(job['id'], '@discovery', {**(discovery if discovery.get('source')==signature else {}), 'state': 'retry', 'source': signature,
+                    same_scope = discovery.get('source') == signature and discovery.get('scope') == DISCOVERY_SCOPE
+                    attempts = int(discovery.get('attempts', 0)) + 1 if same_scope else 1
+                    store.save_delivery(job['id'], '@discovery', {**(discovery if same_scope else {}), 'state': 'retry', 'source': signature, 'scope': DISCOVERY_SCOPE,
                         'attempts': attempts, 'retry_at': clock() + min(3600, 60 * 2 ** min(attempts - 1, 6)),
                         'total': discovery.get('total'), 'detail': error_message(error)})
                     store.delivery_note(job['id'], '收取待重试', f'检查尝试累计 {attempts} 次；' + error_message(error))
