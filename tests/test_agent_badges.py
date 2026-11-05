@@ -12,7 +12,7 @@ from app_plugins.api import TaskBadge, PluginCommand, MAIN_MENU, TASK_CONTEXT_ME
 from app_plugins.host import PluginHost
 from app_plugins.builtin.ai_agent_assistant.store import Store
 from app_plugins.builtin.ai_agent_assistant.tasks import snapshot
-from app_plugins.builtin.ai_agent_assistant.notice_data import notice_snapshot, mark_versions_seen, directory_key
+from app_plugins.builtin.ai_agent_assistant.notice_data import notice_snapshot, mark_versions_seen, unmark_versions_seen, directory_key, run_notice_snapshot
 from app_plugins.builtin.ai_agent_assistant.notices import ReceiptNotices
 from test_ai_agent_assistant import target
 
@@ -46,6 +46,26 @@ class NoticeDataTests(unittest.TestCase):
         value = notice_snapshot(self.store)
         self.assertEqual(value['items'][0]['text'], '已收取 · 1'); self.assertEqual(value['notify_files'], 0)
         self.assertTrue(list((self.directory/'result').glob('*.mp4')))
+
+    def test_seen_can_be_reversed_after_restart_without_download_or_notification(self):
+        version=self.file(); self.done(); mark_versions_seen(self.store,[version])
+        value=notice_snapshot(self.store,announce=False)['items'][0]
+        self.assertEqual(value['seen_versions'],[version]); self.assertEqual(value['unread'],0)
+        run=SimpleNamespace(check_canceled=Mock())
+        result=run_notice_snapshot({'root':str(self.store.root.path),'unseen':[version],'ui_generation':4},run)
+        self.assertEqual(result['items'][0]['text'],'新成品 · 1'); self.assertEqual(result['notify_files'],0)
+        persisted=notice_snapshot(Store(self.store.root.path))
+        self.assertEqual(persisted['items'][0]['unread'],1); self.assertEqual(persisted['notify_files'],0)
+        self.assertTrue(list((self.directory/'result').glob('*.mp4')))
+
+    def test_undo_is_scoped_to_selected_exact_version(self):
+        first=self.file('first'); second=self.file('second'); self.done(2)
+        mark_versions_seen(self.store,[first,second]); unmark_versions_seen(self.store,[first])
+        item=notice_snapshot(self.store,announce=False)['items'][0]
+        self.assertEqual(item['versions'],[first]); self.assertEqual(item['seen_versions'],[second])
+        self.file('first',data=b'later-version'); mark_versions_seen(self.store,[self.file('first',data=b'later-version')])
+        unmark_versions_seen(self.store,[first])
+        self.assertEqual(notice_snapshot(self.store,announce=False)['items'][0]['unread'],0)
     def test_same_drive_file_new_checksum_becomes_unread_again(self):
         old = self.file(); self.done(); mark_versions_seen(self.store, [old])
         self.file(data=b'new-version')
@@ -63,6 +83,26 @@ class NoticeDataTests(unittest.TestCase):
         self.store.delivery_note(self.key, '收取待重试', '无访问权限')
         value = notice_snapshot(self.store)
         self.assertEqual(value['items'][0]['tone'], 'error'); self.assertEqual(value['notify_files'], 0)
+
+    def test_all_files_received_but_needs_segment_review_is_not_still_downloading(self):
+        self.file(); self.store.save_delivery(self.key, '@discovery', {'state':'checked', 'total':1})
+        self.store.delivery_note(self.key, '收取待核对', '段号需核对')
+        item=notice_snapshot(self.store)['items'][0]
+        self.assertEqual(item['text'],'已收取·待核对'); self.assertEqual(item['tone'],'warning')
+        self.assertIn('段号需核对', item['tooltip'])
+
+    def test_archive_write_failure_is_separate_from_download_and_success(self):
+        self.file(); self.store.save_delivery(self.key,'@discovery',{'state':'checked','total':1})
+        self.store.delivery_note(self.key,'已下载·待回写','Sheets暂不可用')
+        item=notice_snapshot(self.store)['items'][0]
+        self.assertEqual(item['text'],'已收取·待回写'); self.assertEqual(item['tone'],'warning')
+
+    def test_stale_preserved_file_is_not_counted_as_current_delivery(self):
+        self.file('old'); self.file('new')
+        self.store.save_delivery(self.key,'@discovery',{'state':'checked','total':2,'file_ids':['new','not_yet_downloaded']})
+        self.store.delivery_note(self.key,'正在下载','')
+        item=notice_snapshot(self.store)['items'][0]
+        self.assertEqual(item['text'],'收取中 1/2'); self.assertEqual(item['received'],2)
     def test_missing_local_file_does_not_show_success_or_unread(self):
         self.file(); self.done()
         next((self.directory/'result').glob('*.mp4')).unlink()

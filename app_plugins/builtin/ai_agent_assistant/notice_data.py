@@ -26,20 +26,26 @@ def notice_snapshot(store, *, announce=True):
         if not os.path.isabs(directory): continue
         canonical = directory_key(directory)
         group = groups.setdefault(canonical, {'directory': directory, 'task_id': str(payload.get('task_id') or ''),
-            'files': {}, 'versions': [], 'current': None})
+            'files': {}, 'versions': [], 'seen_versions': [], 'current': None})
         files = by_job[key]; valid, missing = 0, 0
+        active_ids = files.get('@discovery', {}).get('file_ids')
+        if not isinstance(active_ids, list) or any(not isinstance(item, str) for item in active_ids): active_ids = None
+        active_ids = set(active_ids) if active_ids is not None else None
         for file_id, record in files.items():
             if record.get('state') != 'downloaded': continue
             try: exists = cached_file(record, Path(directory)/'result')
             except (OSError, ValueError): exists = False
-            if not exists: missing += 1; continue
+            if not exists:
+                if active_ids is None or file_id in active_ids: missing += 1
+                continue
             checksum = str(record.get('sha256') or '')
             if not checksum: continue
-            valid += 1
+            if active_ids is None or file_id in active_ids: valid += 1
             version = (key, file_id, checksum)
             group['files'][directory_key(record['path'])] = version
             if version not in seen:
                 group['versions'].append(list(version)); available_versions.append((canonical, version))
+            else: group['seen_versions'].append(list(version))
         status, detail = statuses.get(key, ('', ''))
         expected = files.get('@discovery', {}).get('total')
         if not isinstance(expected, int) or expected < 0:
@@ -55,7 +61,15 @@ def notice_snapshot(store, *, announce=True):
         status = current['status']; received, total = current['received'], current['total']
         if current['missing']:
             text, tone = f'成品缺失 {received}/{max(total, received + current["missing"])}', 'warning'
-        elif status in {'已下载', '已下载·待回写'} or received and received >= total and not status:
+        elif status == '已下载·待回写':
+            text, tone = '已收取·待回写', 'warning'
+        elif status in {'收取待核对', '需核对质检', '任务类型不符', '任务编号不符', '需核对重复ID', '未找到云端记录'}:
+            text, tone = ('已收取·待核对' if received and received >= total else f'收取待核对 {received}/{total or "?"}'), 'warning'
+        elif status == '收取待重试':
+            text, tone = '收取待重试', 'warning' if received else 'error'
+        elif status in {'等待制作完成', '等待成品链接'}:
+            text, tone = status, 'warning'
+        elif status == '已下载' or received and received >= total and not status:
             text, tone = (f'新成品 · {unread}', 'success') if unread else (f'已收取 · {total_files}', 'muted')
         elif received:
             text, tone = f'收取中 {received}/{max(total, received)}', 'warning'
@@ -88,8 +102,26 @@ def mark_versions_seen(store, versions):
                     db.execute('INSERT OR IGNORE INTO delivery_seen VALUES (?,?,?)', version)
 
 
+def unmark_versions_seen(store, versions):
+    """Undo only explicitly selected, still-matching file versions; no file I/O."""
+    with store.connect() as db:
+        db.execute('BEGIN IMMEDIATE')
+        for version in {tuple(value) for value in versions}:
+            if len(version) != 3: raise ValueError('成品查看记录缺少精确版本。')
+            row = db.execute('SELECT record FROM delivery_files WHERE job_id=? AND file_id=?', version[:2]).fetchone()
+            if row:
+                record = json.loads(row[0])
+                if record.get('state') == 'downloaded' and record.get('sha256') == version[2]:
+                    db.execute('DELETE FROM delivery_seen WHERE job_id=? AND file_id=? AND checksum=?', version)
+                    # Restoring unread is not a newly downloaded video. Do not
+                    # create another desktop notification on the next poll.
+                    db.execute('INSERT OR IGNORE INTO delivery_announced VALUES (?,?,?)', version)
+
+
 def run_notice_snapshot(payload, run):
     run.check_canceled(); store = Store(payload['root'])
+    if payload.get('seen') and payload.get('unseen'): raise ValueError('不能同时标记已查看和未查看。')
     if payload.get('seen'): mark_versions_seen(store, payload['seen'])
+    if payload.get('unseen'): unmark_versions_seen(store, payload['unseen'])
     run.check_canceled()
-    return {**notice_snapshot(store, announce=not bool(payload.get('seen'))), 'ui_generation': payload.get('ui_generation', 0)}
+    return {**notice_snapshot(store, announce=not bool(payload.get('seen') or payload.get('unseen'))), 'ui_generation': payload.get('ui_generation', 0)}

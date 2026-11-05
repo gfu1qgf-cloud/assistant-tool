@@ -166,10 +166,19 @@ def run_receipts(payload, run, *, sheets=None, drive=None, fetch=download_file, 
                     if kind == 'oral': files = [item for item in files if not item.get('_depth', 0)]
                     if not files: raise ValueError('任务目录根部未发现可交付视频；不收取分类子目录中的旧片或失败片。')
                     plan = delivery_plan(kind, _cell(row, mapping, 'spoken'))
-                    plan_problem = check_parts(files, plan, job['payload']['task_id'])
+                    plan_problem = check_parts(files, plan, job['payload']['task_id'], records)
                     expected_total = max(len(files), plan['count'] if plan else 0)
-                    if discovery.get('state') != 'checked' or discovery.get('source') != signature or discovery.get('total') != expected_total:
-                        store.save_delivery(job['id'], '@discovery', {'state': 'checked', 'source': signature, 'total': expected_total})
+                    active_ids = sorted(item['id'] for item in files)
+                    if (discovery.get('state') != 'checked' or discovery.get('source') != signature or
+                            discovery.get('total') != expected_total or discovery.get('file_ids') != active_ids):
+                        store.save_delivery(job['id'], '@discovery', {'state': 'checked', 'source': signature,
+                            'total': expected_total, 'file_ids': active_ids})
+                    # Public direct links may reveal their filename only in the
+                    # download response. Exact-count unknowns are checked again
+                    # after transfer; known missing segments never start transfer.
+                    unknown_names = any(not item.get('name') and not records.get(item['id'], {}).get('path') for item in files)
+                    if plan_problem and (not unknown_names or (plan and len(files) < plan['count'])):
+                        pending = True; store.delivery_note(job['id'], '收取待核对', plan_problem); continue
                     completed, attempted = 0, 0
                     for item in files:
                         leased.check_canceled(); record = records.get(item['id'], {})
@@ -201,7 +210,9 @@ def run_receipts(payload, run, *, sheets=None, drive=None, fetch=download_file, 
                                     pending = True; continue
                                 ack_budget -= 1
                                 acknowledge(sheets, identifier, name, info, job, link_text, leased, expected_plan=plan)
-                            store.delivery_note(job['id'], '已下载', f'{completed} 个视频已校验归档到原任务的 result 目录。')
+                            cloud_note = _cell(row, mapping, 'notes')
+                            store.delivery_note(job['id'], '已下载', f'{completed} 个视频已校验归档到原任务的 result 目录。' +
+                                ('\n云端交付备注（不代表已通过用户终审）：' + cloud_note if cloud_note else ''))
                         except Exception as error:
                             leased.check_canceled(); store.delivery_note(job['id'], '已下载·待回写', error_message(error))
                     else:

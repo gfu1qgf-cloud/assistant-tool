@@ -5,6 +5,26 @@ from .segmentation import existing_segments
 
 PART = re.compile(r'第\s*0*(\d+)\s*段')
 TASK = re.compile(r'任务(.+?)[_\s-]+第\s*\d+\s*段')
+LOCAL_PREFIX = re.compile(r'^Agent_[a-f0-9]{12}_[a-f0-9]{12}_', re.IGNORECASE)
+SHORT_PART = re.compile(r'(?:(\d+)[_\s-]+)?S0*(\d+)', re.IGNORECASE)
+
+
+def part_number(name, task_id):
+    """Recognize explicit segment names, not arbitrary digits or file order."""
+    stem = Path(LOCAL_PREFIX.sub('', str(name))).stem
+    owner = TASK.search(stem)
+    if owner and owner.group(1).strip() != str(task_id).strip():
+        raise ValueError('成品文件名属于其他任务，未收取或归档：' + str(name))
+    matches = PART.findall(stem)
+    if len(matches) > 1: raise ValueError('成品文件名包含多个段号，未猜测顺序：' + str(name))
+    if matches: return int(matches[0])
+    short = SHORT_PART.fullmatch(stem)
+    if short:
+        number = int(short.group(2))
+        if short.group(1) is not None and int(short.group(1)) != number:
+            raise ValueError('成品排序前缀与S段号不一致，未猜测顺序：' + str(name))
+        return number
+    return None
 
 
 def delivery_plan(kind, text):
@@ -21,14 +41,14 @@ def check_parts(files, plan, task_id, records=None):
         return '' if len(files) == 1 else '图片任务尚未发现成品。'
     for item in files:
         name = item.get('name') or Path(str((records or {}).get(item['id'], {}).get('path') or '')).name
-        owner = TASK.search(name)
-        if owner and owner.group(1).strip() != str(task_id).strip():
-            raise ValueError('成品文件名属于其他任务，未收取或归档：' + name)
-        part = PART.search(name)
-        if part: found.append(int(part.group(1)))
+        number = part_number(name, task_id)
+        if number is not None: found.append(number)
     if len(files) > expected or len(found) != len(set(found)) or any(number < 1 or number > expected for number in found):
         raise ValueError('成品存在多余、重复或越界段号，请核对当前版本；未猜测归档。')
-    if len(files) < expected: return f'应交付{expected}段，目前仅发现{len(files)}段；缺段不标记已归档。'
+    if len(files) < expected:
+        missing = sorted(set(range(1, expected + 1)) - set(found))
+        detail = '；尚未核实段号：' + '、'.join(str(number) for number in missing[:30]) if missing else ''
+        return f'应交付{expected}段，目前仅发现{len(files)}段{detail}；缺段不标记已归档。'
     if expected > 1 and set(found) != set(range(1, expected + 1)):
-        return '视频数量已到，但文件名段号不完整，未标记已归档；请按“任务编号_第01段”格式核对。'
+        return '视频已收齐，但段号仍需核对，未标记已归档；支持“任务编号_第01段”“01_S01”或“S01”，不凭列表顺序猜测。'
     return ''

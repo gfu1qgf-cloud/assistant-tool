@@ -10,7 +10,7 @@ from .sheet_profiles import task_kind
 class AIAgentAssistantPlugin(QtCore.QObject):
     plugin_id = 'ai_agent_assistant'
     display_name = 'AI Agent 助手'
-    version = '0.5.0'
+    version = '0.5.1'
     required_api_version = 2
 
     def __init__(self):
@@ -52,8 +52,11 @@ class AIAgentAssistantPlugin(QtCore.QObject):
             frozenset({TASK_CONTEXT_MENU}), order=38, enabled=lambda rows: len(self.notices.selected(rows)) == 1))
         context.register_command(PluginCommand('received_seen', '标记 Agent 成品已查看', self.notices.mark_seen,
             frozenset({TASK_CONTEXT_MENU}), order=39, enabled=lambda rows: any(item['unread'] for item in self.notices.selected(rows))))
+        context.register_command(PluginCommand('received_unseen', '取消 Agent 成品已查看标记', self.notices.mark_unseen,
+            frozenset({TASK_CONTEXT_MENU}), order=40, enabled=lambda rows: any(item.get('seen_versions') for item in self.notices.selected(rows)),
+            tooltip='恢复所选任务已有成品的未查看提示；不删除、不重新下载、不重新提交制作。'))
         context.register_command(PluginCommand('received_filter', '只看新成品', self.notices.set_filter,
-            frozenset({MAIN_MENU, TASK_CONTEXT_MENU}), order=40, checkable=True, checked=lambda: self.notices.filtered,
+            frozenset({MAIN_MENU, TASK_CONTEXT_MENU}), order=41, checkable=True, checked=lambda: self.notices.filtered,
             submenu='Agent 成品', tooltip='仅显示有未查看成品的任务；再次点击恢复全部，空列表时也可从插件菜单取消。'))
 
     def check_received(self, _rows=()):

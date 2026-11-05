@@ -12,16 +12,17 @@ class ReceiptNotices(QtCore.QObject):
         self.plugin, self.handle, self.items = plugin, None, {}
         self.filtered = self.pending = False
         self.generation = 0
-    def refresh(self, *, seen=None):
+    def refresh(self, *, seen=None, unseen=None):
         context = self.plugin.context
         if not hasattr(context, 'set_task_badges'): return
         if self.handle is not None:
-            if seen: raise ValueError('成品标记正在刷新，请稍后再标记已查看。')
+            if seen or unseen: raise ValueError('成品标记正在刷新，请稍后再修改查看标记。')
             self.pending = True; return
         if not self.plugin.store.file.exists(): self.publish(); return
         try:
             self.handle = context.submit_background_task(title='AI Agent · 更新本地成品标记',
-                runner=run_notice_snapshot, payload={'root': str(context.storage.path), 'seen': list(seen or []), 'ui_generation': self.generation},
+                runner=run_notice_snapshot, payload={'root': str(context.storage.path), 'seen': list(seen or []),
+                    'unseen': list(unseen or []), 'ui_generation': self.generation},
                 kind='network', execution='parallel', resources=['agent-notices:' + str(context.storage.path).casefold()], retryable=False)
         except Exception as error:
             self.failed(error); return
@@ -50,6 +51,9 @@ class ReceiptNotices(QtCore.QObject):
     def mark_seen(self, rows):
         versions = [version for item in self.selected(rows) for version in item['versions']]
         if versions: self.refresh(seen=versions)
+    def mark_unseen(self, rows):
+        versions = [version for item in self.selected(rows) for version in item.get('seen_versions', [])]
+        if versions: self.refresh(unseen=versions)
     def open_result(self, rows):
         items = self.selected(rows)
         if len(items) != 1: raise ValueError('请只选择一条有成品标记的任务。')

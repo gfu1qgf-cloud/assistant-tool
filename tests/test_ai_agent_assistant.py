@@ -209,7 +209,7 @@ class AgentUiTests(unittest.TestCase):
         self.main.deleteLater(); self.app.sendPostedEvents(None, QtCore.QEvent.Type.DeferredDelete); self.app.processEvents()
     def test_register_does_not_create_files_or_network(self):
         self.assertEqual(list(Path(self.temp.name).iterdir()), [])
-        self.assertEqual(self.context.register_command.call_count, 7)
+        self.assertEqual(self.context.register_command.call_count, 8)
         self.assertEqual(self.context.register_main_widget.call_count, 1)
     def test_main_menu_check_runs_without_opening_assistant_or_resubmitting(self):
         from app_plugins.api import MAIN_MENU, TASK_CONTEXT_MENU
@@ -222,6 +222,18 @@ class AgentUiTests(unittest.TestCase):
         check.assert_called_once_with(manual=True); opened.assert_not_called()
         self.assertIsNone(self.plugin.dialog); self.assertEqual(list(Path(self.temp.name).iterdir()), [])
         self.context.notify.assert_called_once()
+
+    def test_main_menu_can_undo_seen_without_redownloading(self):
+        from app_plugins.builtin.ai_agent_assistant.notice_data import directory_key
+        directory=directory_key(self.temp.name)
+        versions=[['fixture-job','fixture-file','fixture-checksum']]
+        self.context.task_badge_keys=lambda rows: [directory]
+        self.plugin.notices.items={directory:{'seen_versions':versions,'unread':0}}
+        commands={call.args[0].command_id:call.args[0] for call in self.context.register_command.call_args_list}
+        self.assertTrue(commands['received_unseen'].enabled((0,)))
+        with patch.object(self.plugin.notices,'refresh') as refresh,patch.object(self.plugin.receipts,'check') as check:
+            commands['received_unseen'].callback((0,))
+        refresh.assert_called_once_with(unseen=versions); check.assert_not_called()
     def test_main_recollect_uses_directory_identity_and_requires_confirmation(self):
         self.context.task_badge_keys = Mock(return_value=['C:/example/task'])
         commands = {call.args[0].command_id: call.args[0] for call in self.context.register_command.call_args_list}
