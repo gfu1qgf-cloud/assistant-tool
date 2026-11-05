@@ -78,6 +78,9 @@ def receipt_badge(current, *, unread, seen_versions):
     if manually_seen and not pending:
         text='已查看'
         if not current['missing'] and received>=total and status=='收取待重试': tone='muted'
+    if text not in {'已收取','已查看'} and (pending or received or total):
+        target=str(max(total,received)) if total>0 else '?'
+        text+=f' {received}/{target}'
     return text,tone,manually_seen
 
 
@@ -139,7 +142,7 @@ def notice_snapshot(store, *, announce=True):
         review=review_state(current['ai_review'])
         if review['problem'] and total_files:
             tone = 'error'
-        human=('\n手动状态：已有片段已查看；仍有下载待完成。' if text in {'收取中','收取待重试'} else '\n手动状态：已查看。') if manually_seen else ''
+        human=('\n手动状态：已有片段已查看；仍有下载待完成。' if text.startswith(('收取中','收取待重试')) else '\n手动状态：已查看。') if manually_seen else ''
         retained='\n本地已校验收取完成；后续云端检查异常未撤销收取事实。' if current['verified_received'] and status=='收取待重试' else ''
         tooltip=review_tooltip(f'Agent成品：本地可用 {total_files} 个，未查看 {unread} 个。{human}{retained}\n当前批次收取进度：{received}/{max(total,received)}。\n{status}\n{current["detail"]}',review['text'])
         group.update(text=text, tone=tone, unread=unread, received=total_files,tooltip=tooltip)
@@ -189,4 +192,5 @@ def run_notice_snapshot(payload, run):
     if payload.get('seen'): mark_versions_seen(store, payload['seen'])
     if payload.get('unseen'): unmark_versions_seen(store, payload['unseen'])
     run.check_canceled()
-    return {**notice_snapshot(store, announce=not bool(payload.get('seen') or payload.get('unseen'))), 'ui_generation': payload.get('ui_generation', 0)}
+    return {**notice_snapshot(store, announce=bool(payload.get('announce',True)) and not bool(payload.get('seen') or payload.get('unseen'))),
+        'ui_generation': payload.get('ui_generation', 0), 'transient':bool(payload.get('transient')) and not bool(payload.get('seen') or payload.get('unseen'))}

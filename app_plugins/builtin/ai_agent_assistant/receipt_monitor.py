@@ -1,7 +1,7 @@
 """GUI-owned scheduler; networking and file I/O run only in host workers."""
 from qt_compat import QtCore
 from model.OfflineMode import is_offline
-from .delivery import run_receipts
+from .delivery import run_receipts,RECEIPT_PROGRESS_PREFIX
 from .tasks import spreadsheet_id
 
 DEFAULT_POLL_MINUTES = 30
@@ -29,6 +29,9 @@ class ReceiptMonitor(QtCore.QObject):
         self.timer.setSingleShot(True)
         self.timer.setInterval(DEFAULT_POLL_MINUTES * 60000)
         self.timer.timeout.connect(self.tick)
+        self.badge_timer=QtCore.QTimer(self)
+        self.badge_timer.setSingleShot(True);self.badge_timer.setInterval(500)
+        self.badge_timer.timeout.connect(self.refresh_progress_badges)
 
     def show_status(self, text):
         self.status = text
@@ -54,6 +57,7 @@ class ReceiptMonitor(QtCore.QObject):
 
     def stop(self):
         self.running = False; self.timer.stop()
+        self.badge_timer.stop()
         self._continue_ids, self._continue_manual = [], False
         if self.handle is not None:
             self.handle.requestInterruption()
@@ -131,6 +135,7 @@ class ReceiptMonitor(QtCore.QObject):
             self.show_status('成品收取待处理：' + str(error))
 
     def completed(self, result):
+        self.badge_timer.stop()
         self._continue_ids = list(dict.fromkeys(result.get('continue_ids') or [])) if self.running else []
         self._continue_manual = bool(self._continue_ids and self.manual_notice)
         self.show_status(result['message'])
@@ -155,9 +160,15 @@ class ReceiptMonitor(QtCore.QObject):
         if self.manual_notice and notify and not (dialog and dialog.isVisible()):
             try: notify('AI Agent 成品', message)
             except Exception as error: self.plugin.context.log('成品检查通知失败：' + str(error))
-    def progress(self, message, _percent): self.show_status(message)
+    def progress(self, message, _percent):
+        self.show_status(message)
+        if message.startswith(RECEIPT_PROGRESS_PREFIX) and not self.badge_timer.isActive():
+            self.badge_timer.start()
+    def refresh_progress_badges(self):
+        if self.handle is not None:self.plugin.notices.refresh(announce=False)
     def finished(self):
         if self.sender() is not self.handle: return
+        self.badge_timer.stop()
         self.handle = None
         self.manual_notice = False
         if self.plugin.dialog: self.plugin.dialog.reload()

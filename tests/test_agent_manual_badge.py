@@ -57,7 +57,7 @@ class ReceiptFactTests(unittest.TestCase):
     def test_source_change_invalidates_old_receipt_fact(self):
         self.receipt(); self.api.rows[0][receipt_fixture.COLS['result']]=receipt_fixture.LINK.replace('synthetic_video','new_video')
         item=self.receipt(collect=ValueError('新版本尚不可用'))['task_badges']['items'][0]
-        self.assertEqual(item['text'],'收取待重试')
+        self.assertEqual(item['text'],'收取待重试 1/1')
     def test_new_link_cannot_inherit_old_media_seen_marker(self):
         self.receipt(); record=self.store.delivery_files(self.job['id'])['synthetic_video']
         mark_versions_seen(self.store,[[self.job['id'],'synthetic_video',record['sha256']]])

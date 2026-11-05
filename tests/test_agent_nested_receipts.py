@@ -76,7 +76,7 @@ class NestedReceiptTests(unittest.TestCase):
         first=self.receive()
         self.assertEqual(first['downloaded'],8);self.assertTrue(first['continue_ids'])
         self.assertEqual(self.api.writes,[])
-        self.assertEqual(first['task_badges']['items'][0]['text'],'收取中')
+        self.assertEqual(first['task_badges']['items'][0]['text'],'收取中 8/9')
         second=self.receive(ids=first['continue_ids'])
         self.assertEqual(second['downloaded'],1);self.assertEqual(self.fetch.call_count,9)
         self.assertEqual(len(self.api.writes),1)

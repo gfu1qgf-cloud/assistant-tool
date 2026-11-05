@@ -20,7 +20,7 @@ class ReceiptLifecycleTests(unittest.TestCase):
         def downloading(*args):
             item=notice_snapshot(self.store,announce=False)['items'][0]
             observed.append(item['text'])
-            self.assertEqual(item['text'],'收取中')
+            self.assertEqual(item['text'],f'收取中 {len(observed)-1}/18')
             self.assertNotEqual(item['text'],'已查看')
             return self.download(*args)
         self.fetch.side_effect=downloading
@@ -29,13 +29,13 @@ class ReceiptLifecycleTests(unittest.TestCase):
             self.assertEqual(self.fetch.call_count,expected_count)
             self.assertTrue(result['continue_ids'])
             item=result['task_badges']['items'][0]
-            self.assertEqual(item['text'],'收取中');self.assertEqual(item['tone'],'error')
+            self.assertEqual(item['text'],f'收取中 {expected_count}/18');self.assertEqual(item['tone'],'error')
             self.assertIn(f'{expected_count}/18',item['tooltip'])
             self.assertEqual(self.store.delivery_statuses()[self.job['id']]['status'],'等待继续下载')
             with self.store.connect() as db:
                 self.assertEqual(db.execute('SELECT COUNT(*) FROM delivery_seen').fetchone()[0],0)
         result=self.receipt()
-        self.assertEqual(self.fetch.call_count,18);self.assertEqual(observed,['收取中']*18)
+        self.assertEqual(self.fetch.call_count,18);self.assertEqual(observed,[f'收取中 {i}/18' for i in range(18)])
         self.assertEqual(result['task_badges']['items'][0]['text'],'已收取')
         self.assertEqual(self.store.delivery_statuses()[self.job['id']]['status'],'已下载')
         self.assertEqual(len(self.api.writes),1)
@@ -48,7 +48,7 @@ class ReceiptLifecycleTests(unittest.TestCase):
         for expected_count in (8,16):
             result=self.receipt()
             self.assertEqual(self.fetch.call_count,expected_count)
-            self.assertEqual(result['task_badges']['items'][0]['text'],'收取中')
+            self.assertEqual(result['task_badges']['items'][0]['text'],f'收取中 {expected_count}/18')
         result=self.receipt()
         self.assertEqual(self.fetch.call_count,17);self.assertEqual(self.api.writes,[])
         item=result['task_badges']['items'][0]
@@ -65,7 +65,7 @@ class ReceiptLifecycleTests(unittest.TestCase):
             return self.download(*args)
         self.fetch.side_effect=downloading
         self.receipt(force=True,ids=[self.job['id']])
-        self.assertEqual(observed,['收取中'])
+        self.assertEqual(observed,['收取中 1/1'])
 
 
 class BadgeTransitionTests(unittest.TestCase):

@@ -11,26 +11,28 @@ class ReceiptNotices(QtCore.QObject):
         super().__init__(plugin)
         self.plugin, self.handle, self.items = plugin, None, {}
         self.filtered = self.pending = False
+        self.pending_announce = False
         self.generation = 0
-    def refresh(self, *, seen=None, unseen=None):
+    def refresh(self, *, seen=None, unseen=None, announce=True):
         context = self.plugin.context
         if not hasattr(context, 'set_task_badges'): return
         if self.handle is not None:
             if seen or unseen: raise ValueError('成品标记正在刷新，请稍后再修改查看标记。')
-            self.pending = True; return
+            self.pending = True; self.pending_announce |= bool(announce); return
         if not self.plugin.store.file.exists(): self.publish(); return
         try:
             self.handle = context.submit_background_task(title='AI Agent · 更新本地成品标记',
                 runner=run_notice_snapshot, payload={'root': str(context.storage.path), 'seen': list(seen or []),
-                    'unseen': list(unseen or []), 'ui_generation': self.generation},
+                    'unseen': list(unseen or []), 'ui_generation': self.generation, 'announce': bool(announce),
+                    'transient': not announce and not bool(seen or unseen)},
                 kind='network', execution='parallel', resources=['agent-notices:' + str(context.storage.path).casefold()], retryable=False)
         except Exception as error:
             self.failed(error); return
         self.handle.completed.connect(self.apply_snapshot); self.handle.failed.connect(self.failed); self.handle.finished.connect(self.finished)
     def apply_snapshot(self, snapshot):
         if 'ui_generation' in snapshot and snapshot['ui_generation'] != self.generation:
-            self.pending = True; return
-        self.generation += 1
+            self.pending = True; self.pending_announce = True; return
+        if not snapshot.get('transient'):self.generation += 1
         self.items = {directory_key(item['directory']): item for item in snapshot.get('items', [])}
         try: self.publish()
         except Exception as error: self.failed(error)
@@ -69,9 +71,12 @@ class ReceiptNotices(QtCore.QObject):
     def finished(self):
         if self.sender() is not self.handle: return
         self.handle = None
-        if self.pending: self.pending = False; self.refresh()
+        if self.pending:
+            announce=self.pending_announce
+            self.pending=self.pending_announce=False
+            self.refresh(announce=announce)
     def stop(self):
-        self.pending = False
+        self.pending = self.pending_announce = False
         if self.handle is not None: self.handle.requestInterruption(); return False
         publisher = getattr(self.plugin.context, 'set_task_badges', None)
         if publisher: publisher({})

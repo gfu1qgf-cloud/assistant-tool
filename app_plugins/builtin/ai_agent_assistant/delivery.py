@@ -17,16 +17,22 @@ from .review import cache_review
 
 DONE = {'已完成', '完成', '制作完成', '生成完成', 'completed', 'complete', 'done'}
 DISCOVERY_SCOPE = 'recursive-v1'
+RECEIPT_PROGRESS_PREFIX = 'Agent收取进度：'
 
 
 class LeasedRun:
     def __init__(self, run, store, token):
         self.run, self.store, self.token, self.renewed = run, store, token, time.monotonic()
+        self.progress_count=''
     def check_canceled(self):
         self.run.check_canceled()
         if time.monotonic() - self.renewed > 20:
             self.store.renew_delivery_run(self.token); self.renewed = time.monotonic()
-    def report(self, *args): self.check_canceled(); self.run.report(*args)
+    def report(self, message, percent=None):
+        self.check_canceled()
+        if self.progress_count and not message.startswith(RECEIPT_PROGRESS_PREFIX):
+            message=self.progress_count+' · '+message
+        self.run.report(message,percent)
 
 
 def _cell(row, mapping, key):
@@ -200,6 +206,9 @@ def run_receipts(payload, run, *, sheets=None, drive=None, fetch=download_file, 
                     # embargo. Wrong task IDs/duplicate/out-of-range ordinals
                     # still raise above; every transferred file stays verified.
                     completed, attempted = 0, 0
+                    def report_count():
+                        leased.progress_count=f'任务 {job["payload"]["task_id"]} · {completed}/{expected_total}'
+                        leased.report(RECEIPT_PROGRESS_PREFIX+leased.progress_count)
                     for item in files:
                         leased.check_canceled(); record = records.get(item['id'], {})
                         if not record.get('force_download') and cached_file(record, directory) and (not item.get('md5Checksum') or record.get('md5') == item['md5Checksum']):
@@ -208,11 +217,13 @@ def run_receipts(payload, run, *, sheets=None, drive=None, fetch=download_file, 
                         if budget <= 0 or attempted >= 8: pending = True; continue
                         attempted += 1; budget -= 1
                         store.delivery_note(job['id'], '正在下载', f'已收取 {completed}/{expected_total} 个视频')
+                        report_count()
                         try:
                             value = fetch(job, item, directory, drive, leased)
                             if not cached_file(value, directory): raise ValueError('下载器未返回完整的原任务目录成品。')
                             store.save_delivery(job['id'], item['id'], value)
                             completed += 1; downloaded += 1
+                            report_count()
                         except Exception as error:
                             leased.check_canceled()
                             attempts = int(record.get('attempts', 0)) + 1
