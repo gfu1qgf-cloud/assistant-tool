@@ -591,7 +591,8 @@ class TextBoxProperties(QtWidgets.QWidget):
         return form
 
     def _color(self,form,key,label):
-        control = QtWidgets.QPushButton()
+        from .color_field import ColorField
+        control = ColorField()
         control.setAutoDefault(False)
         control.setToolTip("点击选择任意颜色；左侧色块表示当前颜色。")
         control.clicked.connect(lambda _checked=False,key=key:self.pick_color(key))

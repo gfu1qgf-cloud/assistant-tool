@@ -49,19 +49,15 @@ class CaptionNodeEditor(QtWidgets.QWidget):
             self.basic_controls[key] = spin
             form.addRow(title, spin)
         for key, title, default in (("font", "字体", "Arial"), ("color", "文字颜色", "#ffffff")):
-            field = QtWidgets.QLineEdit(str(params.get(key, default)))
+            from .color_field import ColorField
+            field = ColorField(str(params.get(key, default))) if key=='color' else QtWidgets.QLineEdit(str(params.get(key, default)))
             field.textChanged.connect(lambda value, key=key: self.basic_change(key, value))
             self.basic_controls[key] = field
             if key == "color":
                 from .palette_ui import attach_button
                 attach_button(field,lambda:self.params,'color',self.basic_palette_changed)
-                row = QtWidgets.QHBoxLayout()
-                row.addWidget(field)
-                button = QtWidgets.QToolButton()
-                button.setText("…")
-                button.clicked.connect(self.choose_color)
-                row.addWidget(button)
-                form.addRow(title, row)
+                field.clicked.connect(self.choose_color)
+                form.addRow(title,field)
             else:
                 form.addRow(title, field)
         position = QtWidgets.QComboBox()

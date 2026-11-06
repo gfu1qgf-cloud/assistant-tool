@@ -106,7 +106,7 @@ class ColorPaletteTests(unittest.TestCase):
     def test_colour_editor_accepts_snapshot_and_manual_change_clears_it(self):
         control=EffectColorEditor('#ffffff,#000000');self.addCleanup(control.deleteLater)
         control.bind_choice({'color_rules':{'caption_effects/color_text':choice()}},'caption_effects/color_text')
-        self.assertIsNotNone(control.choice_rule);self.assertIn('套餐',control.palette_button.text())
+        self.assertIsNotNone(control.choice_rule);self.assertIn('套餐',control.buttons[0].display_text())
         control.field.setText('#112233,#445566');self.assertIsNone(control.choice_rule)
         self.assertEqual(control.text(),'#112233,#445566')
 

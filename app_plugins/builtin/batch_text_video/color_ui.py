@@ -17,8 +17,6 @@ class EffectColorEditor(QtWidgets.QWidget):
         self.add_button.clicked.connect(self.add_color)
         tools.addWidget(self.add_button)
         self.choice_rule=None;self._setting=False
-        self.palette_button=QtWidgets.QPushButton('随机／套餐…');self.palette_button.setAutoDefault(False)
-        self.palette_button.clicked.connect(self.choose_palette);tools.addWidget(self.palette_button)
         self.advanced = QtWidgets.QToolButton()
         self.advanced.setText('色值（可选）')
         self.advanced.setCheckable(True)
@@ -52,13 +50,13 @@ class EffectColorEditor(QtWidgets.QWidget):
         self.refresh_choice()
 
     def refresh_choice(self):
-        rule=self.choice_rule
-        self.palette_button.setText(('套餐：'+rule.get('name','自选') if rule['mode']=='palette' else '同色系随机') if rule else '随机／套餐…')
+        for button in getattr(self,'buttons',[]):button.update()
 
-    def choose_palette(self):
+    def choose_palette(self,mode=None):
         from .palette_ui import PaletteChoice
         try:
             dialog=PaletteChoice(self.text(),self.choice_rule,self,alpha=True)
+            if mode:dialog.mode.setCurrentIndex(dialog.mode.findData(mode))
             if dialog.exec()==QtWidgets.QDialog.DialogCode.Accepted:
                 self.choice_rule=dialog.rule;self._setting=True
                 try:self.field.textChanged.emit(self.field.text())
@@ -89,7 +87,9 @@ class EffectColorEditor(QtWidgets.QWidget):
             row = QtWidgets.QWidget(self)
             layout = QtWidgets.QHBoxLayout(row)
             layout.setContentsMargins(0, 0, 0, 0)
-            button = QtWidgets.QPushButton('选择颜色' if len(values) == 1 else f'颜色 {index + 1}')
+            from .color_field import ColorField
+            from .palette_ui import edit_library
+            button = ColorField(value)
             button.setAutoDefault(False)
             button.setToolTip('点击打开取色器；当前颜色：' + value)
             pixmap = QtGui.QPixmap(36, 20)
@@ -97,6 +97,8 @@ class EffectColorEditor(QtWidgets.QWidget):
             button.setIcon(QtGui.QIcon(pixmap))
             button.setIconSize(QtCore.QSize(36, 20))
             button.clicked.connect(lambda _checked=False, index=index: self.choose_color(index))
+            button.rule_source=lambda:self.choice_rule
+            button.set_color_menu(button.click,lambda:self.choose_palette('family'),lambda:self.choose_palette('palette'),lambda:edit_library(self))
             layout.addWidget(button, 1)
             remove = QtWidgets.QToolButton()
             remove.setText('×')

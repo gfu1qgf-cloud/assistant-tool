@@ -94,10 +94,10 @@ def add_foreground(add, path, x, y, start, stop, color, opacity, layer, scale, o
     border=layer['outline_width']*scale
     blur=layer.get('outline_blur',0)*scale
     if border and layer.get('outline_position') == 'outside':
-        from .text_outline import outside_ring
-        ring = outside_ring(path, border)
+        from .text_outline import primitive_outline
+        ring, raster = primitive_outline(path, border)
         add(ring,x,y,start,stop,layer['outline_color'],opacity*layer['outline_opacity']/100,
-            z=-1,blur=blur,outline_path=True,origin_x=path.boundingRect().width()/2,origin_y=path.boundingRect().height()/2,**options)
+            z=-1,blur=blur,outline_path=True,origin_x=path.boundingRect().width()/2,origin_y=path.boundingRect().height()/2,**raster,**options)
         border=0
     if border and blur:
         stroker=QtGui.QPainterPathStroker(); stroker.setWidth(border*2)

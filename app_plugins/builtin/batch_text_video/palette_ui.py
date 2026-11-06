@@ -86,7 +86,7 @@ class PaletteChoice(QtWidgets.QDialog):
     def __init__(self,initial,rule=None,parent=None,alpha=False,library=None):
         super().__init__(parent);self.setWindowTitle('颜色随机与套餐');self.resize(540,420)
         self.initial=initial;self.alpha=alpha;self.library=library or PaletteLibrary();self.rule=copy.deepcopy(rule)
-        root=QtWidgets.QVBoxLayout(self);form=QtWidgets.QFormLayout();root.addLayout(form)
+        root=QtWidgets.QVBoxLayout(self);form=QtWidgets.QFormLayout();self.form=form;root.addLayout(form)
         self.mode=QtWidgets.QComboBox()
         for label,key in (('固定颜色（关闭随机）','fixed'),('同色系随机 · 基于当前颜色','family'),('套餐内随机 · 只使用我选的颜色','palette')):self.mode.addItem(label,key)
         form.addRow('颜色方式',self.mode)
@@ -131,7 +131,10 @@ class PaletteChoice(QtWidgets.QDialog):
     def refresh(self):
         palette=self.mode.currentData()=='palette';family=self.mode.currentData()=='family'
         self.palette.setEnabled(palette);self.colors.setEnabled(palette);self.seed.setEnabled(palette or family)
-        for control in self.ranges.values():control.setEnabled(family)
+        for control in self.ranges.values():
+            control.setVisible(family);self.form.labelForField(control).setVisible(family)
+        for control in (self.palette,self.colors):
+            control.setVisible(palette);self.form.labelForField(control).setVisible(palette)
         try:self.samples.setPixmap(swatches(parse_colors(self.colors.text())).pixmap(420,28))
         except ValueError:self.samples.clear()
 
@@ -166,29 +169,16 @@ def edit_library(parent):
 class ButtonPalette(QtCore.QObject):
     def __init__(self,button,get_layer,path,commit):
         super().__init__(button);self.button=button;self.get_layer=get_layer;self.path=path;self.commit=commit
-        self.tool=QtWidgets.QToolButton(button);self.tool.setAutoRaise(False);self.tool.setText('随机／套餐…')
-        self.tool.setToolTip('同色系随机，或从我的颜色套餐中选择。');self.tool.clicked.connect(self.choose)
-        button.setMinimumWidth(max(button.minimumWidth(),190));button.installEventFilter(self);self.position()
-        button.setStyleSheet(button.styleSheet()+' QPushButton {text-align:left;padding-left:4px;padding-right:125px;}')
-        if isinstance(button,QtWidgets.QLineEdit):button.setTextMargins(0,0,125,0)
+        button.rule_source=lambda:(self.get_layer() or {}).get(KEY,{}).get(self.path)
+        button.set_color_menu(button.click,lambda:self.choose('family'),lambda:self.choose('palette'),lambda:edit_library(button))
 
-    def position(self):
-        width=min(125,max(90,self.button.width()//2));self.tool.setGeometry(self.button.width()-width-2,2,width,max(20,self.button.height()-4))
-
-    def eventFilter(self,obj,event):
-        if event.type() in (QtCore.QEvent.Type.Resize,QtCore.QEvent.Type.Show):self.position()
-        if event.type() in (QtCore.QEvent.Type.Paint,QtCore.QEvent.Type.Show):
-            rule=(self.get_layer() or {}).get(KEY,{}).get(self.path)
-            title=('套餐：'+rule.get('name','自选') if rule['mode']=='palette' else '同色系随机') if rule else '随机／套餐…'
-            if self.tool.text()!=title:self.tool.setText(title);self.tool.setToolTip(title+'；每条视频固定取色，点击修改。')
-        return False
-
-    def choose(self):
+    def choose(self,mode=None):
         layer=self.get_layer()
         if layer is None:return
         try:
             initial=layer.get(self.path,self.button.text())
             dialog=PaletteChoice(initial,layer.get(KEY,{}).get(self.path),self.button)
+            if mode:dialog.mode.setCurrentIndex(dialog.mode.findData(mode))
             if dialog.exec()==QtWidgets.QDialog.DialogCode.Accepted:
                 set_rule(layer,self.path,dialog.rule);self.commit()
             dialog.deleteLater()

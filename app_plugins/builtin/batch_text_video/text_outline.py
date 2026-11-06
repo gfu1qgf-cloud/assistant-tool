@@ -3,6 +3,71 @@ from qt_compat import QtCore, QtGui
 from collections import OrderedDict
 import hashlib
 import threading
+from contextlib import contextmanager
+from contextvars import ContextVar
+
+_PREVIEW = ContextVar('caption_preview_outline', default=False)
+
+
+def is_preview():
+    return _PREVIEW.get()
+
+
+@contextmanager
+def preview_geometry():
+    token = _PREVIEW.set(True)
+    try:
+        yield
+    finally:
+        _PREVIEW.reset(token)
+
+
+def primitive_outline(path, width):
+    # Native export needs vector commands. Preview only needs the visible
+    # pixels, so defer the expensive outer ring until after viewport culling.
+    if _PREVIEW.get():
+        return path, {'raster_outline': width}
+    return outside_ring(path, width), {}
+
+
+def paint_path_outline(painter, path, width, brush):
+    """Expand one visible shaped path without vector boolean operations."""
+    import cv2
+    import numpy as np
+    bounds = path.boundingRect().adjusted(-width-3,-width-3,width+3,width+3).toAlignedRect()
+    if bounds.isEmpty(): return
+    if bounds.width()*bounds.height() > 64*1024*1024:
+        raise ValueError('向外描边画面过大，请减小字号。')
+    mask = QtGui.QImage(bounds.size(), QtGui.QImage.Format.Format_ARGB32_Premultiplied)
+    if mask.isNull(): raise ValueError('向外描边所需内存不足。')
+    mask.fill(QtCore.Qt.GlobalColor.transparent)
+    local = QtGui.QPainter(mask)
+    try:
+        local.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
+        local.translate(-bounds.left(),-bounds.top())
+        local.setPen(QtCore.Qt.PenStyle.NoPen);local.setBrush(QtCore.Qt.GlobalColor.white)
+        local.drawPath(path)
+    finally:local.end()
+    alpha = mask.convertToFormat(QtGui.QImage.Format.Format_Alpha8)
+    ink = np.frombuffer(alpha.constBits().asstring(alpha.sizeInBytes()),np.uint8).reshape(
+        alpha.height(),alpha.bytesPerLine())[:,:alpha.width()]
+    if not np.any(ink):return
+    distance = cv2.distanceTransform(np.where(ink>=128,0,255).astype(np.uint8),cv2.DIST_L2,5)
+    expanded = np.rint(np.clip(width+.5-distance,0,1)*255).astype(np.uint8)
+    ring = cv2.subtract(np.maximum(expanded,ink),ink)
+    rgba = np.full((*ring.shape,4),255,np.uint8);rgba[:,:,3]=ring
+    pixels = rgba.tobytes()
+    coverage = QtGui.QImage(pixels,alpha.width(),alpha.height(),alpha.width()*4,QtGui.QImage.Format.Format_RGBA8888)
+    result = QtGui.QImage(bounds.size(),QtGui.QImage.Format.Format_ARGB32_Premultiplied)
+    result.fill(QtCore.Qt.GlobalColor.transparent)
+    local = QtGui.QPainter(result)
+    try:
+        local.translate(-bounds.left(),-bounds.top())
+        local.fillRect(QtCore.QRectF(bounds),brush)
+        local.setCompositionMode(QtGui.QPainter.CompositionMode.CompositionMode_DestinationIn)
+        local.drawImage(bounds.topLeft(),coverage)
+    finally:local.end()
+    painter.drawImage(bounds.topLeft(),result)
 
 _RINGS = OrderedDict()
 _LOCK = threading.RLock()

@@ -18,7 +18,8 @@ class KeyDetails(QtWidgets.QWidget):
         self.color.setPlaceholderText("#00ff00")
         self.color.setValidator(QtGui.QRegularExpressionValidator(
             QtCore.QRegularExpression("#[0-9a-fA-F]{6}"), self))
-        self.pick = QtWidgets.QPushButton("选颜色…")
+        from .color_field import ColorField
+        self.pick = ColorField("选颜色…")
         self.pick.setAutoDefault(False)
         self.pick.setToolTip("选任意基准颜色；会自动切换到自定义颜色。")
         self.pick.clicked.connect(self.pick_color)
@@ -59,7 +60,8 @@ class KeyDetails(QtWidgets.QWidget):
             value = "#" + "".join(f"{v:02x}" for v in rgb)
             self.layer['key_color']=value
             self.color.setText(value)
-            self.pick.setStyleSheet(f"border-bottom: 3px solid {value};text-align:left;padding-right:125px;")
+            swatch=QtGui.QPixmap(24,18);swatch.fill(QtGui.QColor(value))
+            self.pick.setIcon(QtGui.QIcon(swatch))
             self.mask.setText(layer.get("key_mask_path", ""))
         enhanced = bool(layer) and layer.get("key_method", "normal") == "enhanced"
         self.mask_group.setVisible(enhanced)

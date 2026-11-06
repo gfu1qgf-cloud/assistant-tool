@@ -110,7 +110,7 @@ def visible_segment(primitive, start, end):
     if not clip: return True
     from .caption_style_render import motion_at
     a, b = motion_at(primitive, start), motion_at(primitive, end)
-    extra = max(primitive['border'], primitive['blur']*3, 2)
+    extra = max(primitive['border'], primitive.get('raster_outline',0), primitive['blur']*3, 2)
     left = min(primitive['x']+a[1], primitive['x']+b[1])-extra
     top = min(primitive['y']+a[2], primitive['y']+b[2])-extra
     right = max(primitive['x']+a[1]+primitive['width']*max(a[0], 1),

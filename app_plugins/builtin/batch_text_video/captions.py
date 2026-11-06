@@ -397,6 +397,11 @@ def _path_commands(path):
 
 
 def _glyph(text, layer, size, native=False):
+    from .caption_glyph_cache import get
+    return get(text,layer,size,native,lambda:_uncached_glyph(text,layer,size,native))
+
+
+def _uncached_glyph(text, layer, size, native=False):
     from .fonts import weight_font
     font = weight_font(layer["font"], layer["font_weight"], layer["italic"])
     font.setPixelSize(max(1, round(size)))
@@ -435,7 +440,8 @@ def _glyph(text, layer, size, native=False):
     # vertically even with identical font sizes and no animated movement.
     top = min(0., bounds.top())
     path.translate(-bounds.left(), -top)
-    result = {"path": _path_commands(path), "width": max(advance, bounds.width()),
+    from .text_outline import is_preview
+    result = {"path": '' if native and is_preview() else _path_commands(path), "width": max(advance, bounds.width()),
               "height": max(metrics.height(), bounds.bottom()) - top,
               "_baseline": metrics.ascent() - top,
               "_space_advance": metrics.horizontalAdvance(' ')}

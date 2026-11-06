@@ -360,7 +360,8 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
             self.tint_preset.addItem(name,(color,strength))
         self.tint_preset.activated.connect(self._apply_tint_preset)
         form.addRow("色彩预设",self.tint_preset)
-        self.tint_color = QtWidgets.QPushButton(self.state["settings"]["background_tint_color"])
+        from .color_field import ColorField
+        self.tint_color = ColorField(self.state["settings"]["background_tint_color"])
         self._global_color_choices={'color_rules':copy.deepcopy(self.state['settings'].get('color_rules',{}))}
         from .palette_ui import attach_button
         attach_button(self.tint_color,lambda:self._global_color_choices,'background_tint_color',self.schedule_edit)

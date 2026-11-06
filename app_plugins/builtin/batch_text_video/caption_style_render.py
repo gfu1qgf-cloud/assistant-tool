@@ -278,10 +278,11 @@ def make_primitives(words, layer, width, height, duration):
             for n in reversed(range(min(6,int(style['stroke_expand_layers'])))):
                 border=(layer['outline_width']+(n+1)*style['stroke_expand_step'])*scale
                 if layer.get('outline_position') == 'outside':
-                    from .text_outline import outside_ring
-                    add(outside_ring(path,border),x,y,start,stop,stroke_palette[n%len(stroke_palette)],
+                    from .text_outline import primitive_outline
+                    ring,raster=primitive_outline(path,border)
+                    add(ring,x,y,start,stop,stroke_palette[n%len(stroke_palette)],
                         .55*base_opacity,z=-2,blur=style['stroke_expand_feather']*scale,outline_path=True,
-                        origin_x=path.boundingRect().width()/2,origin_y=path.boundingRect().height()/2,**options)
+                        origin_x=path.boundingRect().width()/2,origin_y=path.boundingRect().height()/2,**raster,**options)
                 else:
                     add(path,x,y,start,stop,stroke_palette[n%len(stroke_palette)],.55*base_opacity,z=-2,
                         border=border,border_color=stroke_palette[n%len(stroke_palette)],
@@ -561,11 +562,13 @@ def render_design(layer, width, height, *, words=None, duration=None, time=None)
     else:
         words=validate_words(words,duration)
     from .caption_styles import uses_style_renderer
-    if uses_style_renderer(layer):
-        primitives,_events = make_primitives(words,layer,width,height,duration)
-    else:
-        from .caption_basic_render import make_primitives as make_basic
-        primitives,_events = make_basic(words,layer,width,height,duration)
+    from .text_outline import preview_geometry
+    with preview_geometry():
+        if uses_style_renderer(layer):
+            primitives,_events = make_primitives(words,layer,width,height,duration)
+        else:
+            from .caption_basic_render import make_primitives as make_basic
+            primitives,_events = make_basic(words,layer,width,height,duration)
     image = QtGui.QImage(width,height,QtGui.QImage.Format.Format_ARGB32_Premultiplied)
     image.fill(QtCore.Qt.GlobalColor.transparent)
     painter = QtGui.QPainter(image)
@@ -597,9 +600,13 @@ def render_design(layer, width, height, *, words=None, duration=None, time=None)
                 brush=QtGui.QBrush(gradient)
             pen=QtGui.QPen(QtGui.QColor(primitive['border_color']),primitive['border'])
             def draw(target):
+                if primitive.get('raster_outline'):
+                    from .text_outline import paint_path_outline
+                    paint_path_outline(target,primitive['native'],primitive['raster_outline'],brush)
+                    return
                 target.setPen(pen if primitive['border'] else QtCore.Qt.PenStyle.NoPen)
                 target.setBrush(brush);target.drawPath(primitive['native'])
-            border = primitive['border']
+            border = max(primitive['border'],primitive.get('raster_outline',0))
             paint_blurred(painter, bounds.adjusted(-border,-border,border,border), blur, draw)
             painter.restore()
     finally: painter.end()
