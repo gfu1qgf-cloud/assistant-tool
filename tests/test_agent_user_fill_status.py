@@ -1,7 +1,8 @@
 """AI handoff is automatically receivable, not a fully completed task."""
 import hashlib
 import unittest
-from app_plugins.builtin.ai_agent_assistant.notice_data import mark_versions_seen,notice_snapshot
+from app_plugins.builtin.ai_agent_assistant.notice_data import mark_versions_seen,unmark_versions_seen,notice_snapshot
+from app_plugins.builtin.ai_agent_assistant.store import Store
 from app_plugins.builtin.ai_agent_assistant.sheet_profiles import ORAL_USER_FILL,completed,needs_user_segments
 import test_agent_delivery as delivery
 import test_agent_partial_receipts as partial
@@ -51,12 +52,56 @@ class UserFillStatusTests(unittest.TestCase):
         self.assertEqual(self.badge(result)['text'],'需用户补段 17/18')
         self.assertEqual(result['continue_ids'],[]);self.assertEqual(self.api.writes,[])
 
-    def test_viewed_does_not_erase_the_separate_user_fill_work_item(self):
+    def test_explicit_viewed_overrides_handoff_text_but_retains_warning_and_detail(self):
         self.handoff();result=self.receipt()
         mark_versions_seen(self.store,self.badge(result)['versions'])
         value=notice_snapshot(self.store,announce=False)['items'][0]
-        self.assertEqual(value['text'],'需用户补段 5/10');self.assertEqual(value['unread'],0)
+        self.assertEqual(value['text'],'已查看');self.assertEqual(value['unread'],0)
+        self.assertEqual(value['tone'],'warning')
+        self.assertIn('补段',value['tooltip']);self.assertIn('5/10',value['tooltip'])
         self.assertIn('已查看',value['tooltip'])
+
+    def test_seen_handoff_survives_store_reopen_and_unchanged_cloud_refresh_in_both_views(self):
+        self.handoff();result=self.receipt()
+        mark_versions_seen(self.store,self.badge(result)['versions'])
+        reopened=notice_snapshot(Store(self.store.root.path),announce=False)
+        self.assertEqual(reopened['items'][0]['text'],'已查看')
+        self.assertEqual(reopened['job_summaries'][self.job['id']]['text'],'已查看')
+        refreshed=self.receipt()
+        self.assertEqual(self.badge(refreshed)['text'],'已查看')
+        self.assertEqual(self.fetch.call_count,5);self.assertEqual(self.api.writes,[])
+
+    def test_ai_review_changes_color_not_human_seen_text(self):
+        self.handoff();result=self.receipt()
+        mark_versions_seen(self.store,self.badge(result)['versions'])
+        self.api.rows[0][delivery.COLS['ai_review']]='AI预审不通过：第3段台词缺失'
+        result=self.receipt();value=self.badge(result)
+        self.assertEqual(value['text'],'已查看');self.assertEqual(value['tone'],'error')
+        self.assertIn('第3段台词缺失',value['tooltip']);self.assertIn('5/10',value['tooltip'])
+
+    def test_undo_seen_restores_handoff_count_without_redownloading(self):
+        self.handoff();result=self.receipt();versions=self.badge(result)['versions']
+        mark_versions_seen(self.store,versions);unmark_versions_seen(self.store,versions)
+        result=self.receipt();value=self.badge(result)
+        self.assertEqual(value['text'],'需用户补段 5/10');self.assertEqual(value['unread'],5)
+        self.assertEqual(self.fetch.call_count,5);self.assertEqual(self.api.writes,[])
+
+    def test_genuinely_new_segment_restores_unread_count_until_user_marks_it_seen(self):
+        self.handoff();result=self.receipt()
+        mark_versions_seen(self.store,self.badge(result)['versions'])
+        self.items.append({'id':'video_6','name':'任务001_第06段.mp4','url':delivery.LINK})
+        result=self.receipt();self.assertEqual(self.badge(result)['text'],'需用户补段 6/10')
+        self.assertEqual(self.badge(result)['unread'],1)
+        mark_versions_seen(self.store,self.badge(result)['versions'])
+        self.assertEqual(notice_snapshot(self.store,announce=False)['items'][0]['text'],'已查看')
+        self.assertEqual(self.api.writes,[])
+
+    def test_seen_handoff_does_not_hide_an_active_transfer_progress(self):
+        self.handoff(18,{9});result=self.receipt()
+        mark_versions_seen(self.store,self.badge(result)['versions'])
+        snapshot=notice_snapshot(self.store,announce=False)
+        self.assertEqual(snapshot['items'][0]['text'],'补段收取中 8/18')
+        self.assertEqual(snapshot['job_summaries'][self.job['id']]['text'],'补段收取中 8/18')
 
     def test_normal_completion_after_user_fills_only_downloads_new_files_and_archives(self):
         self.handoff(6,{6});self.receipt()

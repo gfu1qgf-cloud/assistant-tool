@@ -84,7 +84,9 @@ def receipt_badge(current, *, unread, seen_versions):
         text,tone='收取中','warning'
     else: text,tone='收取需处理','error'
     manually_seen=received>0 and unread==0 and bool(seen_versions) and current['view_scope_ok']
-    if manually_seen and not pending and not current.get('needs_user_segments'):
+    # Human acknowledgement owns the label, including a user-fill handoff.
+    # Keep the warning tone/details; only an active transfer retains progress.
+    if manually_seen and not pending:
         text='已查看'
         if not current['missing'] and received>=total and status=='收取待重试': tone='muted'
     if text not in {'已收取','已查看'} and (pending or received or total):
