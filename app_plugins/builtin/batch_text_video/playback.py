@@ -69,7 +69,8 @@ def preview_key(job, state, node_bundle=None, *, preview_limit=None):
         except OSError:
             fingerprints.append((str(path), None, None))
     from .text_colors import job_color_scope
-    values = ["playback-v30-fractional-matte", preview_limit, job_color_scope(job), settings, job.get("title", ""), job.get("body", ""),
+    from .palette_rules import palette_scope
+    values = ["playback-v31-colour-palettes", preview_limit, job_color_scope(job), palette_scope(job), settings, job.get("title", ""), job.get("body", ""),
               job.get("requires_title", False), job.get("voice_override", False), fingerprints, music, next_id]
     from .node_effects import cache_snapshot
     values.append(cache_snapshot(node_bundle, job.get('id')))
@@ -117,6 +118,8 @@ class PlaybackWorker(QtCore.QThread):
             if duration is None:
                 from .text_colors import job_color_scope
                 self.job["_color_scope"] = job_color_scope(self.job)
+                from .palette_rules import palette_scope
+                self.job['_palette_scope']=palette_scope(self.job)
                 # Freeze the source before changing the task directory to a
                 # generated preview cache (and before changing its output name).
                 self.job.update(voice_path=resolve_voice(self.job, self.state, discover=True), voice_override=True)

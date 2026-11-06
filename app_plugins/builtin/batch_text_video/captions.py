@@ -570,6 +570,8 @@ def filter_path(path):
 
 def static_planes(title, body, width, height, settings, image_cache):
     """Split static runs at caption layers, preserving user-controlled Z order."""
+    from .palette_rules import resolve_settings
+    settings=resolve_settings(settings,settings.get('_color_scope','design'))
     from .layers import componentize_layers, DEFAULT_LAYERS, compose_layers
     from .layout import render_overlay
     layers = componentize_layers(settings["layers"], settings)

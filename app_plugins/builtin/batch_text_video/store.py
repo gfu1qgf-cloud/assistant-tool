@@ -98,6 +98,9 @@ class Store:
             if 'background_visual' not in old_settings and 'image_background_motion' in old_settings:
                 old_settings.update(normalize_image_background(old_settings))
             state["settings"] = {**copy.deepcopy(DEFAULTS), **old_settings}
+            if 'color_rules' in state['settings']:
+                from .palette_rules import normalize
+                state['settings']['color_rules']=normalize(state['settings']['color_rules'])
             state['settings'].update(normalize_canvas(state['settings']))
             state['settings'].update(normalize_voice_fx(state['settings']))
             state['settings'].update(normalize_image_background(state['settings']))

@@ -98,6 +98,7 @@ class CaptionAppearanceEditor(QtWidgets.QWidget):
                 value=self.layer[key] if key in DEFAULTS else style[key]
                 if isinstance(control,EffectColorEditor):
                     control.setText(','.join(value) if isinstance(value,list) else str(value))
+                    control.bind_choice(self.layer,key if key in DEFAULTS else 'caption_effects/'+key)
                 elif isinstance(control,QtWidgets.QComboBox): control.setCurrentIndex(control.findData(value))
                 elif isinstance(control,QtWidgets.QCheckBox): control.setChecked(value)
                 else: control.setValue(value)
@@ -117,8 +118,10 @@ class CaptionAppearanceEditor(QtWidgets.QWidget):
             if key in DEFAULTS: params[key]=value
             else: overrides[key]=value
         params['caption_effects']=overrides
-        candidate={**self.layer,**params}
         try:
+            from .palette_rules import merge_controls
+            params['color_rules']=merge_controls(self.layer,self.controls,lambda k:k if k in DEFAULTS else 'caption_effects/'+k)
+            candidate={**self.layer,**params}
             normalize_appearance(candidate); effects(candidate)
         except ValueError as error:
             self.error.setText(str(error)); self.error.show(); return

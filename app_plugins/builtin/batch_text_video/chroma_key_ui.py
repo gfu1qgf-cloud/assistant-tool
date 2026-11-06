@@ -22,6 +22,8 @@ class KeyDetails(QtWidgets.QWidget):
         self.pick.setAutoDefault(False)
         self.pick.setToolTip("选任意基准颜色；会自动切换到自定义颜色。")
         self.pick.clicked.connect(self.pick_color)
+        from .palette_ui import attach_button
+        attach_button(self.pick,lambda:self.layer,'key_color',self.palette_changed)
         self.color.editingFinished.connect(self.commit_color)
         color_row.addWidget(self.color, 1); color_row.addWidget(self.pick)
         form.addRow("基准颜色", color_row)
@@ -55,8 +57,9 @@ class KeyDetails(QtWidgets.QWidget):
         if layer:
             rgb = key_color(layer)
             value = "#" + "".join(f"{v:02x}" for v in rgb)
+            self.layer['key_color']=value
             self.color.setText(value)
-            self.pick.setStyleSheet(f"border-bottom: 3px solid {value};")
+            self.pick.setStyleSheet(f"border-bottom: 3px solid {value};text-align:left;padding-right:125px;")
             self.mask.setText(layer.get("key_mask_path", ""))
         enhanced = bool(layer) and layer.get("key_method", "normal") == "enhanced"
         self.mask_group.setVisible(enhanced)
@@ -75,8 +78,14 @@ class KeyDetails(QtWidgets.QWidget):
         except ValueError:
             self.set_layer(self.layer)
             return
-        if key_color(self.layer) == key_color(updated): return
-        self.changed.emit({"key_mode": "custom", "key_color": updated["key_color"]})
+        from .palette_rules import set_rule
+        had_rule='key_color' in self.layer.get('color_rules',{})
+        set_rule(self.layer,'key_color',None)
+        if key_color(self.layer) == key_color(updated) and not had_rule:return
+        self.changed.emit({"key_mode": "custom", "key_color": updated["key_color"], 'color_rules':self.layer['color_rules']})
+
+    def palette_changed(self):
+        self.changed.emit({'key_mode':'custom','key_color':self.color.text(),'color_rules':self.layer.get('color_rules',{})})
 
     def pick_color(self):
         if not self.layer: return

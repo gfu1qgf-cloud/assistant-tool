@@ -690,7 +690,7 @@ def visual_property_panel(services=None, *, mode='batch'):
     require_flat_layout(panel)
     panel.add_source()
     panel.add_geometry()
-    panel.visual_properties = panel.add_bound('visual', '', VisualProperties(), fields=set(DEFAULTS), section=False)
+    panel.visual_properties = panel.add_bound('visual', '', VisualProperties(), fields=set(DEFAULTS)|{'color_rules'}, section=False)
     panel.visual_properties.mattingRequested.connect(panel.mattingRequested)
     panel.sections.update(panel.visual_properties.sections.sections)
     return panel

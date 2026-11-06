@@ -53,14 +53,18 @@ def stale(window,token):
             or not same_value(token['key'][1],raw_value(window,token['key']),token['before']))
 
 
-def apply_value(window,token,value):
+_UNCHANGED=object()
+
+def apply_value(window,token,value,rule=_UNCHANGED):
     from .caption_parameter_window import same_value
     from .layers import normalize_layers
     if stale(window,token):raise ValueError('控件、任务或原参数已变化，本次输入未应用。')
     allowed,reason=editable(window,token['key'])
     if not allowed:raise ValueError(reason)
     domain,key=token['key']
-    if same_value(key,value,token['before']):return False
+    path='caption_effects/'+key if domain=='effect' else key
+    rule_changed=rule is not _UNCHANGED and window.owner.layer.get('color_rules',{}).get(path)!=rule
+    if same_value(key,value,token['before']) and not rule_changed:return False
     candidate=copy.deepcopy(window.owner.layer)
     if domain=='effect':
         candidate['caption_effects']={**candidate.get('caption_effects',{}),key:value}
@@ -76,6 +80,13 @@ def apply_value(window,token,value):
             if anchor(candidate,axis)!='center':
                 candidate[axis]=center(candidate,axis,distance(window.owner.layer,axis))
                 fields=(key,axis)
+    if rule is not _UNCHANGED:
+        from .palette_rules import set_rule
+        set_rule(candidate,path,rule);fields=(*fields,'color_rules')
+        if path=='color':candidate['color_mode']='fixed';fields=(*fields,'color_mode')
+    elif domain=='layer' and key=='color_mode' and 'color' in candidate.get('color_rules',{}):
+        from .palette_rules import set_rule
+        set_rule(candidate,'color',None);fields=(*fields,'color_rules')
     candidate=normalize_layers([candidate])[0]
     patch={field:copy.deepcopy(candidate[field]) for field in fields}
     host=history_host(window)
@@ -217,7 +228,7 @@ class ValueDelegate(QtWidgets.QStyledItemDelegate):
                 if type(editor._parameter_token['before']) is int and editor.decimals()==0:value=int(value)
             else:value=editor.text().strip()
             if value is None:raise ValueError('请输入有效的当前值。')
-            apply_value(self.window,editor._parameter_token,value)
+            apply_value(self.window,editor._parameter_token,value,getattr(editor,'_parameter_rule',_UNCHANGED))
             self.window.edit_error.hide()
         except (ValueError,TypeError,KeyError,RuntimeError) as error:self.window.show_edit_error(str(error))
 
@@ -237,8 +248,12 @@ class ValueDelegate(QtWidgets.QStyledItemDelegate):
         editor._choosing=True
         dialog=ColorDialog(editor._parameter_token['before'],isinstance(source,EffectColorEditor) and editor._parameter_token['key'][1]!='caption_cursor_color',self.window)
         self.color_dialog=dialog
+        domain,key=editor._parameter_token['key']
+        path='caption_effects/'+key if domain=='effect' else key
+        dialog.colors.bind_choice(self.window.owner.layer,path)
         try:
             if dialog.exec()==QtWidgets.QDialog.DialogCode.Accepted:
+                editor._parameter_rule=copy.deepcopy(dialog.colors.choice_rule)
                 editor._parameter_value=dialog.value();editor._parameter_dirty=True;self.finish(editor)
             else:self.cancel()
         finally:

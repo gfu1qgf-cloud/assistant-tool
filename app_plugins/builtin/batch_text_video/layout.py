@@ -153,6 +153,8 @@ def _text_layout(text, family, size, width, alignment, spacing,font_options=None
 
 
 def render_overlay(title, body, width, height, settings, image_cache=None, *, allow_empty=False):
+    from .palette_rules import resolve_settings
+    settings=resolve_settings(settings,settings.get('_color_scope','design'))
     from .layers import normalize_layers, compose_layers
     from .components import resolve_sources
     from .watermarks import expand_watermarks

@@ -292,9 +292,16 @@ class CaptionParameterWindow(QtWidgets.QDialog):
             domain, field = key
             if field not in values[domain] or field not in reference[domain]: continue
             value, before = values[domain][field], reference[domain][field]
-            if self.only_changed.isChecked() and same_value(field, value, before): continue
+            color_path='caption_effects/'+field if domain=='effect' else field
+            random_rule=layer.get('color_rules',{}).get(color_path) if mode!='preset' else None
+            if self.only_changed.isChecked() and same_value(field, value, before) and not random_rule: continue
             current=describe(control,value,field,label);reference_info=describe(control,before,field,label)
-            changed=not same_value(field,value,before)
+            if random_rule:
+                current['random']=True
+                current['text']=('套餐随机 · '+random_rule.get('name','自选颜色') if random_rule['mode']=='palette' else '同色系随机')
+                if random_rule['mode']=='palette':
+                    current['colors']=random_rule['colors'];current['gradient']=False
+            changed=bool(random_rule) or not same_value(field,value,before)
             item = QtWidgets.QTreeWidgetItem([label,current['text'],reference_info['text'],path])
             item.setData(0, QtCore.Qt.ItemDataRole.UserRole, key)
             if mode!='preset':item.setFlags(item.flags()|QtCore.Qt.ItemFlag.ItemIsEditable)
@@ -332,6 +339,7 @@ class CaptionParameterWindow(QtWidgets.QDialog):
         kinds={key:title for title,key in FILTERS}
         different=not same_value(item.data(0,QtCore.Qt.ItemDataRole.UserRole)[1],
                                  info.get('raw'),(item.data(2,VALUE_ROLE) or {}).get('raw'))
+        different=different or info.get('random',False)
         self.detail_kind.setText(kinds.get(info.get('kind'),'参数')+(' · 与对比值不同' if different else ' · 与对比值相同'))
         for column,(caption,preview,value) in zip((1,2),self.detail_values):
             caption.setText(self.table.headerItem().text(column))

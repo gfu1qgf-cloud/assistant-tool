@@ -59,6 +59,9 @@ def normalize_layers(value=None):
         ids.add(layer["id"])
         layer.setdefault("name", {"title": "标题", "body": "正文", "image": "图片", "text": "文本框", "watermark": "四角水印", "caption": "动态字幕", "node_effect": "节点效果"}[kind])
         normalize_source(layer)
+        if 'color_rules' in layer:
+            from .palette_rules import normalize
+            layer['color_rules']=normalize(layer['color_rules'])
         if kind == "node_effect":
             from .node_effects import normalize_effect
             normalize_effect(layer)

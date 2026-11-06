@@ -400,6 +400,10 @@ def _prepare_static_text(job, state, directory, cancel=None, progress=None, repo
     if node_effects is not None: node_effects.start_job(job, preview=preview)
     from .text_colors import job_color_scope
     settings["_color_scope"] = job_color_scope(job)
+    from .palette_rules import palette_scope
+    settings['_palette_scope']=palette_scope(job)
+    from .palette_rules import resolve_settings
+    settings=resolve_settings(settings,settings['_color_scope'])
     from .components import resolve_sources
     settings["layers"], sequence_plan = resolve_sources(settings["layers"], job.get("title", ""), job.get("body", ""), job=job)
     report = report or (lambda _text: None)

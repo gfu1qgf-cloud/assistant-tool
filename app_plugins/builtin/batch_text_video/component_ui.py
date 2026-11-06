@@ -595,6 +595,8 @@ class TextBoxProperties(QtWidgets.QWidget):
         control.setAutoDefault(False)
         control.setToolTip("点击选择任意颜色；左侧色块表示当前颜色。")
         control.clicked.connect(lambda _checked=False,key=key:self.pick_color(key))
+        from .palette_ui import attach_button
+        attach_button(control,lambda:self.layer,key,lambda:self._palette_changed(key))
         self.controls[key] = control
         form.addRow(label,control)
 
@@ -628,8 +630,16 @@ class TextBoxProperties(QtWidgets.QWidget):
     def pick_color(self,key="color"):
         color = QtWidgets.QColorDialog.getColor(QtGui.QColor(self.controls[key].text()),self,"选择颜色")
         if color.isValid():
+            from .palette_rules import set_rule
+            set_rule(self.layer,key,None)
             self.controls[key].setText(color.name())
             self.update_values()
+
+    def _palette_changed(self,key):
+        if key=='color':
+            with QtCore.QSignalBlocker(self.controls['color_mode']):
+                self.controls['color_mode'].setCurrentIndex(self.controls['color_mode'].findData('fixed'))
+        self.update_values()
 
     def _invalidate_weight_status(self):
         self._weight_status_key = None
@@ -649,7 +659,11 @@ class TextBoxProperties(QtWidgets.QWidget):
         random_allowed = bool(self.layer)
         self.controls["color_mode"].setEnabled(random_allowed)
         family = random_allowed and self.controls["color_mode"].currentData() == "family"
-        self.random_color_section.setVisible(caption or family)
+        palette_active=bool(self.layer and self.layer.get('color_rules',{}).get('color'))
+        self.controls['color_mode'].setVisible(not palette_active)
+        label=self.font_size_form.labelForField(self.controls['color_mode'])
+        if label:label.setVisible(not palette_active)
+        self.random_color_section.setVisible((caption or family) and not palette_active)
         for key in ("color_hue_variation", "color_saturation_variation", "color_value_variation", "color_seed"):
             self.controls[key].setEnabled(caption or family)
         self.new_color_group.setEnabled(caption or family)
@@ -743,6 +757,10 @@ class TextBoxProperties(QtWidgets.QWidget):
                 for key in ("color","outline_color","shadow_color","background_color")):
             self.setToolTip("请检查字号范围和颜色，当前无效值尚未应用。")
             return
+        if self.sender() is self.controls['color_mode'] and values['color_mode']=='family':
+            from .palette_rules import set_rule
+            set_rule(self.layer,'color',None)
+        if 'color_rules' in self.layer:values['color_rules']=copy.deepcopy(self.layer['color_rules'])
         self.layer.update(values)
         self._show_effect_controls()
         self.setToolTip("")

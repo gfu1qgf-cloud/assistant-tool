@@ -63,6 +63,8 @@ class PoolController(CustomPoolController, MattingController):
         self.file_menu.aboutToShow.connect(self.rebuild_profile_menu)
         self.rebuild_profile_menu()
         self.settings_menu = self.menu_bar.addMenu('设置')
+        from .palette_ui import edit_library
+        self.palette_library_action=self.settings_menu.addAction('我的颜色套餐…',lambda:edit_library(self))
         from .canvas_ui import edit_canvas
         self.canvas_settings_action = self.settings_menu.addAction('画布比例与尺寸…', lambda: edit_canvas(self))
         self.canvas_settings_action.setToolTip('当前项目：常用画面比例、跟随原素材或自定义宽高。')
@@ -662,6 +664,7 @@ class PoolController(CustomPoolController, MattingController):
         self.current_id = self.current_copy_id = self.preview_video = ""
         self._preview_pending = self._overlay_pending = None
         settings = self.state["settings"]
+        self._global_color_choices={'color_rules':copy.deepcopy(settings.get('color_rules',{}))}
         self.sync_custom_pools()
         for key, control in self.controls.items():
             if isinstance(control, QtWidgets.QAbstractSpinBox):

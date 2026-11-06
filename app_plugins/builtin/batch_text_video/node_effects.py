@@ -353,6 +353,10 @@ class EffectRuntime:
         class Token:
             def is_set(_self): return bool(self.cancel and self.cancel.is_set())
         context = TaskRunContext(Token(), lambda m, _p: self.report(m), self.logger)
+        from .text_colors import job_color_scope
+        context.batch_color_scope=job_color_scope(job)
+        from .palette_rules import palette_scope
+        context.batch_palette_scope=palette_scope(job)
         payload = self.bundle['jobs'].get(job['id'], {}).get(layer['workflow_id']) if self.bundle else None
         if payload is None: raise ValueError(layer['name']+'：缺少提交时的节点快照，请从文案视频窗口重新提交。')
         initialize_execution(payload, context)

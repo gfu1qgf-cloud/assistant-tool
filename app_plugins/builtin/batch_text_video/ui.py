@@ -48,6 +48,8 @@ class OverlayWorker(QtCore.QThread):
         title, body, width, height, settings = self.request
         try:
             settings = dict(settings)
+            from .palette_rules import resolve_settings
+            settings=resolve_settings(settings,settings.get('_color_scope','design'))
             from .design_preview import design_layers, resolve_preview_sources
             settings['layers'], source_notices = resolve_preview_sources(settings['layers'], title, body,
                 job=self.design_job, cancel=self.cancel)
@@ -359,6 +361,9 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
         self.tint_preset.activated.connect(self._apply_tint_preset)
         form.addRow("色彩预设",self.tint_preset)
         self.tint_color = QtWidgets.QPushButton(self.state["settings"]["background_tint_color"])
+        self._global_color_choices={'color_rules':copy.deepcopy(self.state['settings'].get('color_rules',{}))}
+        from .palette_ui import attach_button
+        attach_button(self.tint_color,lambda:self._global_color_choices,'background_tint_color',self.schedule_edit)
         self.tint_color.clicked.connect(self._pick_tint_color)
         self.controls["background_tint_color"] = self.tint_color
         form.addRow("背景叠色",self.tint_color)
@@ -646,6 +651,8 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
         self.tint_preset.setCurrentIndex(index)
         color,strength = self.tint_preset.itemData(index)
         if color is not None:
+            from .palette_rules import set_rule
+            set_rule(self._global_color_choices,'background_tint_color',None)
             self.tint_color.setText(color)
             self.controls["background_tint_strength"].setValue(strength)
             self.schedule_edit()
@@ -653,6 +660,8 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
     def _pick_tint_color(self):
         color = QtWidgets.QColorDialog.getColor(QtGui.QColor(self.tint_color.text()),self,"背景叠色")
         if color.isValid():
+            from .palette_rules import set_rule
+            set_rule(self._global_color_choices,'background_tint_color',None)
             self.tint_color.setText(color.name())
             self.tint_preset.setCurrentIndex(0)
             self.schedule_edit()
@@ -738,6 +747,8 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
 
     def read_settings(self):
         settings = dict(self.state["settings"])
+        if hasattr(self,'_global_color_choices'):
+            settings['color_rules']=copy.deepcopy(self._global_color_choices['color_rules'])
         for key, control in self.controls.items():
             if isinstance(control, QtWidgets.QAbstractSpinBox):
                 settings[key] = control.value()
@@ -928,6 +939,8 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
                 settings = bound_state['settings']
             from .text_colors import job_color_scope
             settings["_color_scope"] = job_color_scope(job)
+            from .palette_rules import palette_scope
+            settings['_palette_scope']=palette_scope(job)
             voice = resolve_voice(job, {**self.state, "settings": settings})
             from .preview_timeline import editor_duration
             from .image_background import is_image, duration as image_duration, scale_at

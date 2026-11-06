@@ -53,6 +53,8 @@ class CaptionNodeEditor(QtWidgets.QWidget):
             field.textChanged.connect(lambda value, key=key: self.basic_change(key, value))
             self.basic_controls[key] = field
             if key == "color":
+                from .palette_ui import attach_button
+                attach_button(field,lambda:self.params,'color',self.basic_palette_changed)
                 row = QtWidgets.QHBoxLayout()
                 row.addWidget(field)
                 button = QtWidgets.QToolButton()
@@ -110,7 +112,13 @@ class CaptionNodeEditor(QtWidgets.QWidget):
 
     def basic_change(self, key, value):
         self.params[key] = value
-        self.notify({key: value})
+        values={key:value}
+        if key=='color' and 'color' in self.params.get('color_rules',{}):
+            from .palette_rules import set_rule
+            set_rule(self.params,'color',None);values['color_rules']=self.params['color_rules']
+        self.notify(values)
+
+    def basic_palette_changed(self):self.notify({'color_rules':copy.deepcopy(self.params.get('color_rules',{}))})
 
     def notify(self, values):
         try:

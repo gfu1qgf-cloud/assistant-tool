@@ -97,6 +97,8 @@ def build_layer(inputs, params, context, *, media="text"):
             layer['_matting_snapshot'] = context.node_prepared['matting']
         layer = resolve_sources([layer])[0][0]
     if kind == 'image':
+        from .palette_rules import resolve_object,node_palette_scope
+        layer=resolve_object(layer,node_palette_scope(context))
         from .matting_assets import apply_saved
         layer = apply_saved(layer)
         if layer.get('_matting_binding'):
@@ -113,7 +115,10 @@ def build_layer(inputs, params, context, *, media="text"):
     if kind == "text":
         from .text_colors import resolve_colors
         task, globals_value = getattr(context, "task", None), getattr(context, "workflow_globals", None)
-        scope = f"node:{getattr(task, 'directory', '')}:{getattr(task, 'key', '')}:{getattr(globals_value, 'iteration', 1)}"
+        from .palette_rules import node_scope
+        scope=node_scope(context)
+        from .palette_rules import resolve_object,node_palette_scope
+        layer=resolve_object(layer,node_palette_scope(context))
         layer = resolve_colors([layer], scope)[0]
         from .workflow_colors import apply_color_inputs
         layer = apply_color_inputs(layer, inputs)

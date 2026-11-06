@@ -7,6 +7,8 @@ from .store import file_identity
 
 
 def prepare_current_export(state, entry, copy_id="", queue_id=""):
+    from .palette_rules import palette_scope
+    entry={**entry,'_palette_scope':palette_scope(entry)}
     path = str(entry.get("path") or "")
     if path and not Path(path).is_file():
         raise ValueError("请先选择一个有效的背景视频或图片。")

@@ -22,4 +22,7 @@ def apply_color_inputs(layer, inputs):
             layer[key.replace('_color', '_opacity')] = value.alpha * 100
         if key == 'color':
             layer['color_mode'] = 'fixed'
+        if 'color_rules' in layer:
+            import copy
+            layer['color_rules']=copy.deepcopy(layer['color_rules']);layer['color_rules'].pop(key,None)
     return layer

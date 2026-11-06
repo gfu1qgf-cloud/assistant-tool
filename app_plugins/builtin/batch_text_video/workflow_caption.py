@@ -39,6 +39,9 @@ def prepare_caption(_task, params, _services):
 
 
 def validate_caption_parameters(params):
+    if 'color_rules' in params:
+        from .palette_rules import normalize
+        normalize(params['color_rules'])
     if params.get("caption") is not None:
         normalize_node_caption(params["caption"])
 
@@ -67,6 +70,8 @@ def compile_caption(operation, directory, context, video_info, *, timing=None):
             or not isinstance(options["layer"], str) or len(options["layer"].encode("utf-8")) > 65536):
         raise ValueError("动态字幕操作格式无效。")
     layer = normalize_node_caption(json.loads(options["layer"]))
+    from .palette_rules import resolve_object,node_palette_scope
+    layer=resolve_object(layer,node_palette_scope(context))
     context.report(f"字幕节点：每组最多{layer['caption_words']}词，每行最多{layer['caption_per_line']}词；使用输入字幕时间。", None)
     context.check_canceled()
     words = subtitle_words(assets["filename"], video_info["duration"], layer["caption_timing"] == "uniform")

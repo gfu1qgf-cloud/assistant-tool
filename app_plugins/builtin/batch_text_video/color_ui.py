@@ -16,6 +16,9 @@ class EffectColorEditor(QtWidgets.QWidget):
         self.add_button.setToolTip('添加渐变色或多层描边色；最多8种，顺序与画面效果一致。')
         self.add_button.clicked.connect(self.add_color)
         tools.addWidget(self.add_button)
+        self.choice_rule=None;self._setting=False
+        self.palette_button=QtWidgets.QPushButton('随机／套餐…');self.palette_button.setAutoDefault(False)
+        self.palette_button.clicked.connect(self.choose_palette);tools.addWidget(self.palette_button)
         self.advanced = QtWidgets.QToolButton()
         self.advanced.setText('色值（可选）')
         self.advanced.setCheckable(True)
@@ -39,9 +42,33 @@ class EffectColorEditor(QtWidgets.QWidget):
         return self.field.text()
 
     def setText(self, value):
-        self.field.setText(value)
+        self._setting=True
+        try:self.field.setText(value)
+        finally:self._setting=False
+
+    def bind_choice(self,layer,path):
+        import copy
+        self.choice_rule=copy.deepcopy(layer.get('color_rules',{}).get(path))
+        self.refresh_choice()
+
+    def refresh_choice(self):
+        rule=self.choice_rule
+        self.palette_button.setText(('套餐：'+rule.get('name','自选') if rule['mode']=='palette' else '同色系随机') if rule else '随机／套餐…')
+
+    def choose_palette(self):
+        from .palette_ui import PaletteChoice
+        try:
+            dialog=PaletteChoice(self.text(),self.choice_rule,self,alpha=True)
+            if dialog.exec()==QtWidgets.QDialog.DialogCode.Accepted:
+                self.choice_rule=dialog.rule;self._setting=True
+                try:self.field.textChanged.emit(self.field.text())
+                finally:self._setting=False
+            dialog.deleteLater();self.refresh_choice()
+        except (ValueError,OSError) as error:self.error.setText(str(error));self.error.show()
 
     def refresh(self):
+        if not self._setting:self.choice_rule=None
+        self.refresh_choice()
         while self.swatches.count():
             widget = self.swatches.takeAt(0).widget()
             if widget:
@@ -91,6 +118,7 @@ class EffectColorEditor(QtWidgets.QWidget):
         values = colors(self.text())
         value = self.pick(values[index])
         if value is not None:
+            self.choice_rule=None
             values[index] = value
             self.setText(','.join(values))
 
@@ -100,10 +128,12 @@ class EffectColorEditor(QtWidgets.QWidget):
             return
         value = self.pick(values[-1])
         if value is not None:
+            self.choice_rule=None
             self.setText(','.join([*values, value]))
 
     def remove_color(self, index):
         values = colors(self.text())
         if len(values) > 1:
+            self.choice_rule=None
             del values[index]
             self.setText(','.join(values))

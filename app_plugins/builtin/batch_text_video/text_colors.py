@@ -60,6 +60,8 @@ def resolve_colors(layers, scope="design"):
     result = copy.deepcopy(layers)
     from .components import walk_components
     for layer in walk_components(result):
+        from .palette_rules import resolve_object
+        resolved=resolve_object(layer,scope);layer.clear();layer.update(resolved)
         if layer.get("kind") in {"title", "body", "text", "caption"} and layer.get("color_mode", "fixed") == "family":
             layer["color"] = family_color(layer, scope)
             # Runtime clone only: prevents a second render pass re-randomizing

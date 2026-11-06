@@ -116,7 +116,9 @@ class CaptionEffectEditor(QtWidgets.QWidget):
                 if isinstance(control, QtWidgets.QComboBox): control.setCurrentIndex(control.findData(value))
                 elif isinstance(control, QtWidgets.QCheckBox): control.setChecked(value)
                 elif isinstance(control, QtWidgets.QDoubleSpinBox): control.setValue(value)
-                else: control.setText(','.join(map(str, value)) if isinstance(value, list) else str(value))
+                else:
+                    control.setText(','.join(map(str, value)) if isinstance(value, list) else str(value))
+                    if isinstance(control,EffectColorEditor):control.bind_choice(self.layer,'caption_effects/'+key)
             self.error.hide(); self.update_groups()
         finally:
             self.loading = False
@@ -151,10 +153,12 @@ class CaptionEffectEditor(QtWidgets.QWidget):
         if self.loading or not self.layer: return
         try:
             values = self.value()
-            candidate = {**self.layer, 'caption_effects': values}
+            from .palette_rules import merge_controls
+            rules=merge_controls(self.layer,self.controls,lambda k:'caption_effects/'+k)
+            candidate = {**self.layer, 'caption_effects': values,'color_rules':rules}
             effects(candidate)
         except ValueError as error:
             self.error.setText(str(error)); self.error.show(); return
         self.layer = copy.deepcopy(candidate)
         self.error.hide(); self.update_groups()
-        self.changed.emit({'caption_effects': copy.deepcopy(values)})
+        self.changed.emit({'caption_effects': copy.deepcopy(values),'color_rules':rules})

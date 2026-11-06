@@ -308,6 +308,7 @@ class CaptionProperties(QtWidgets.QWidget):
                 control.setCurrentIndex(index)
             elif isinstance(control, (QtWidgets.QLineEdit,EffectColorEditor)):
                 control.setText(layer[key])
+                if isinstance(control,EffectColorEditor):control.bind_choice(self.layer,key)
             elif isinstance(control, QtWidgets.QCheckBox):
                 control.setChecked(layer[key])
             else:
@@ -438,6 +439,8 @@ class CaptionProperties(QtWidgets.QWidget):
         if self.loading or not self.layer:
             return
         candidate=copy.deepcopy(self.layer)
+        from .palette_rules import merge_controls
+        candidate['color_rules']=merge_controls(self.layer,self.controls)
         for key, control in self.controls.items():
             if key == 'caption_pop_ms':
                 continue  # UI alias for the active animation's single duration.
@@ -488,6 +491,7 @@ def caption_property_panel(services=None, *, mode='batch'):
     panel = ComponentPropertyPanel(mode=mode)
     def patch(values):
         fields = set(DEFAULTS)
+        fields.add('color_rules')
         if values.get('_caption_style_apply'): fields.update(LAYER_KEYS)
         if values.get('_caption_source_apply'): fields.update(('source','source_file'))
         return {key:copy.deepcopy(values[key]) for key in fields if key in values}

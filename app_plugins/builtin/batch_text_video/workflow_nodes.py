@@ -17,10 +17,14 @@ def build_caption(inputs, params, context):
         from .workflow_caption import normalize_node_caption
         import json
         layer = normalize_node_caption(params["caption"])
+        from .palette_rules import resolve_object,node_palette_scope
+        layer=resolve_object(layer,node_palette_scope(context))
         layer = apply_color_inputs(layer, inputs)
         return {"operations": (FilterOperation("添加字幕 · " + layer["caption_preset"], None,
             "batch_text_video.caption", options=(("layer", json.dumps(layer, ensure_ascii=False, allow_nan=False)),),
             assets=(("filename", subtitles),)),)}
+    from .palette_rules import resolve_object,node_palette_scope
+    params=resolve_object(params,node_palette_scope(context))
     font = str(params.get("font", "Arial"))
     if not re.fullmatch(r"[\w -]{1,80}", font):
         raise ValueError("字体名称不能包含表达式或分隔符。")
@@ -60,6 +64,7 @@ def caption_node():
                     NodeParameter("font", "字体", default="Arial"),
                     NodeParameter("size", "字号（ASS 基准）", "integer", 24, 8, 120),
                     NodeParameter("color", "文字颜色", "color", "#ffffff"),
+                    NodeParameter('color_rules','颜色随机与套餐','object',{},required=False),
                     NodeParameter("outline", "暗红描边厚度", "integer", 2, 0, 8),
                     NodeParameter("position", "垂直位置", "choice", "bottom",
                         choices=(("bottom", "下方"), ("middle", "中间"), ("top", "上方")))),
