@@ -7,6 +7,7 @@ from pathlib import Path
 from .store import Store
 from .delivery_drive import cached_file
 from .review import review_state, review_tooltip
+from .sheet_profiles import needs_user_segments,task_kind
 
 
 def directory_key(path): return os.path.normcase(os.path.abspath(str(path)))
@@ -49,11 +50,15 @@ def receipt_badge(current, *, unread, seen_versions):
     partial=current.get('verified_partial',False)
     normal='success' if unread else 'muted'
     if status in {'正在下载','等待继续下载'}:
-        text,tone='收取中','warning'
+        text,tone=('补段收取中' if current.get('needs_user_segments') else '收取中'),'warning'
     elif status=='下载待重试':
-        text,tone='收取待重试','warning' if received else 'error'
+        text,tone=('补段下载待重试' if current.get('needs_user_segments') else '收取待重试'),'warning' if received else 'error'
     elif current['missing']:
         text,tone='成品缺失','warning'
+    elif current.get('needs_user_segments'):
+        if status=='收取待重试':text,tone='补段下载待重试','warning' if received else 'error'
+        elif status=='等待成品链接':text,tone='等待补段成品链接','warning'
+        else:text,tone='需用户补段','warning'
     elif current.get('cloud_complete') is False:
         text,tone=('待补齐' if received and total>received else '等待制作完成'),'warning'
     elif status=='收取待重试':
@@ -79,7 +84,7 @@ def receipt_badge(current, *, unread, seen_versions):
         text,tone='收取中','warning'
     else: text,tone='收取需处理','error'
     manually_seen=received>0 and unread==0 and bool(seen_versions) and current['view_scope_ok']
-    if manually_seen and not pending:
+    if manually_seen and not pending and not current.get('needs_user_segments'):
         text='已查看'
         if not current['missing'] and received>=total and status=='收取待重试': tone='muted'
     if text not in {'已收取','已查看'} and (pending or received or total):
@@ -145,6 +150,7 @@ def notice_snapshot(store, *, announce=True):
                 if active_ids is None or file_id in active_ids)
         current = {'status': status, 'detail': detail, 'received': valid, 'total': expected, 'missing': missing,
             'ai_review':files.get('@ai_review',{}).get('text',''), 'cloud_complete':cloud.get('completed'),
+            'needs_user_segments':needs_user_segments(task_kind(payload),cloud.get('status')),
             'total_known':total_known or not cloud and expected>0,
             'verified_received':verified_receipt(files,valid_versions),
             'verified_partial':verified_partial_receipt(files,valid_versions),
@@ -156,7 +162,7 @@ def notice_snapshot(store, *, announce=True):
         meaningful = valid or missing or bool(status)
         if meaningful:
             summaries[key]={'text':label,'tone':tone,'tooltip':review_tooltip(
-                f'当前收取数量：{valid}/{expected if current["total_known"] else "?"}。\n'+status+'\n'+detail,review['text'])}
+                f'当前收取数量：{valid}/{expected if current["total_known"] else "?"}。\n'+cloud.get('status','')+'\n'+status+'\n'+detail,review['text'])}
         if group['current'] is None and meaningful:
             group['current'] = current
     items = []
@@ -169,10 +175,12 @@ def notice_snapshot(store, *, announce=True):
         review=review_state(current['ai_review'])
         if review['problem'] and total_files:
             tone = 'error'
-        human=('\n手动状态：已有片段已查看；仍有下载待完成。' if text.startswith(('收取中','收取待重试')) else '\n手动状态：已查看。') if manually_seen else ''
+        human=('\n手动状态：已有片段已查看；补段待办仍需处理。' if current.get('needs_user_segments') else
+            '\n手动状态：已有片段已查看；仍有下载待完成。' if text.startswith(('收取中','收取待重试')) else '\n手动状态：已查看。') if manually_seen else ''
         retained='\n本地已校验收取完成；后续云端检查异常未撤销收取事实。' if current['verified_received'] and status=='收取待重试' else ''
         target=str(total) if current['total_known'] and total>0 else '?'
-        tooltip=review_tooltip(f'Agent成品：本地可用 {total_files} 个，未查看 {unread} 个。{human}{retained}\n当前批次收取进度：{received}/{target}。\n{status}\n{current["detail"]}',review['text'])
+        handoff='\nAI已完成，需用户补段。补完后将表格执行状态改为“已完成”；已查看不代表补段完成。' if current.get('needs_user_segments') else ''
+        tooltip=review_tooltip(f'Agent成品：本地可用 {total_files} 个，未查看 {unread} 个。{human}{retained}{handoff}\n当前批次收取进度：{received}/{target}。\n{status}\n{current["detail"]}',review['text'])
         group.update(text=text, tone=tone, unread=unread, received=total_files,tooltip=tooltip)
         group.pop('current'); items.append(group)
     claimed, claimed_tasks = 0, set()

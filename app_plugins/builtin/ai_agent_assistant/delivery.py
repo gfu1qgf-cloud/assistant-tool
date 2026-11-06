@@ -11,7 +11,7 @@ from .sheets import inspect, a1, column, _execute
 from .store import Store
 from .tasks import spreadsheet_id
 from .notice_data import directory_key
-from .sheet_profiles import task_kind, completed as status_completed, archive_value, ARCHIVED
+from .sheet_profiles import task_kind, completed as status_completed, archive_value, ARCHIVED,needs_user_segments
 from .receipt_plan import delivery_plan, check_parts
 from .review import cache_review
 
@@ -163,15 +163,16 @@ def run_receipts(payload, run, *, sheets=None, drive=None, fetch=download_file, 
                 if job['state'] != 'submitted': store.mark([job['id']], 'submitted', destination, '成品监视已按作业ID核实云端记录')
                 cloud_status=_cell(row,mapping,'status')
                 cloud_done=status_completed(kind,cloud_status)
+                user_fill=needs_user_segments(kind,cloud_status)
                 cloud_plan=delivery_plan(kind,_cell(row,mapping,'spoken'))
                 cloud_link=_cell(row,mapping,'result')
-                cloud={'status':cloud_status,'completed':cloud_done,
+                cloud={'status':cloud_status,'completed':cloud_done,'needs_user_segments':user_fill,
                     'source':hashlib.sha256(cloud_link.encode()).hexdigest() if cloud_link else '',
                     'expected':cloud_plan['count'] if cloud_plan else None}
                 if records.get('@cloud')!=cloud:store.save_delivery(job['id'],'@cloud',cloud)
                 records['@cloud']=cloud
                 manual_partial=bool(payload.get('allow_incomplete')) and kind=='oral' and cloud_status in {'执行中','已领取','待确认','失败'}
-                if not cloud_done and not manual_partial:
+                if not cloud_done and not manual_partial and not user_fill:
                     previous=records.get('@partial',{}); previous_link=_cell(row,mapping,'result')
                     if (kind=='oral' and previous_link and previous.get('source')==hashlib.sha256(previous_link.encode()).hexdigest()
                             and previous.get('versions')):
@@ -190,6 +191,7 @@ def run_receipts(payload, run, *, sheets=None, drive=None, fetch=download_file, 
                 signature = hashlib.sha256(link_text.encode()).hexdigest()
                 discovery = records.get('@discovery', {})
                 if (discovery.get('source') == signature and discovery.get('scope') == DISCOVERY_SCOPE
+                        and bool(discovery.get('handoff'))==user_fill
                         and discovery.get('retry_at', 0) > clock()):
                     pending = True; continue
                 try:
@@ -208,8 +210,9 @@ def run_receipts(payload, run, *, sheets=None, drive=None, fetch=download_file, 
                     active_ids = sorted(item['id'] for item in files)
                     if (discovery.get('state') != 'checked' or discovery.get('source') != signature or
                             discovery.get('scope') != DISCOVERY_SCOPE or
+                            bool(discovery.get('handoff'))!=user_fill or
                             discovery.get('total') != expected_total or discovery.get('file_ids') != active_ids):
-                        store.save_delivery(job['id'], '@discovery', {'state': 'checked', 'source': signature, 'scope': DISCOVERY_SCOPE,
+                        store.save_delivery(job['id'], '@discovery', {'state': 'checked', 'source': signature, 'scope': DISCOVERY_SCOPE,'handoff':user_fill,
                             'total': expected_total, 'file_ids': active_ids})
                     # Missing segments are a delivery warning, not a download
                     # embargo. Wrong task IDs/duplicate/out-of-range ordinals
@@ -251,6 +254,7 @@ def run_receipts(payload, run, *, sheets=None, drive=None, fetch=download_file, 
                             detail+='\n云端执行状态：'+cloud_status
                             cloud_note=_cell(row,mapping,'notes')
                             if cloud_note: detail+='\n云端备注：'+cloud_note
+                            if user_fill:detail+='\nAI已交付现有片段，剩余由用户补段；补完后将执行状态改为“已完成”，再检查并收取。'
                             pending=True; partial_count+=1
                             state='已收取部分' if plan and len(files)<plan['count'] else '收取待核对' if plan_problem else '已收取·任务未完成'
                             store.delivery_note(job['id'],state,detail); continue
@@ -291,9 +295,10 @@ def run_receipts(payload, run, *, sheets=None, drive=None, fetch=download_file, 
                             continue_ids.append(job['id'])
                 except Exception as error:
                     leased.check_canceled(); failed += 1; pending = True
-                    same_scope = discovery.get('source') == signature and discovery.get('scope') == DISCOVERY_SCOPE
+                    same_scope = (discovery.get('source') == signature and discovery.get('scope') == DISCOVERY_SCOPE
+                        and bool(discovery.get('handoff'))==user_fill)
                     attempts = int(discovery.get('attempts', 0)) + 1 if same_scope else 1
-                    store.save_delivery(job['id'], '@discovery', {**(discovery if same_scope else {}), 'state': 'retry', 'source': signature, 'scope': DISCOVERY_SCOPE,
+                    store.save_delivery(job['id'], '@discovery', {**(discovery if same_scope else {}), 'state': 'retry', 'source': signature, 'scope': DISCOVERY_SCOPE,'handoff':user_fill,
                         'attempts': attempts, 'retry_at': clock() + min(3600, 60 * 2 ** min(attempts - 1, 6)),
                         'total': discovery.get('total') if same_scope else None, 'detail': error_message(error)})
                     store.delivery_note(job['id'], '收取待重试', f'检查尝试累计 {attempts} 次；' + error_message(error))

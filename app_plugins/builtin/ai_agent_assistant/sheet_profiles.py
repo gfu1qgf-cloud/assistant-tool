@@ -9,6 +9,7 @@ IMAGE_FIELDS = [
 ]
 IMAGE_REQUIRED = {'job_id', 'task_id', 'reference', 'status', 'result', 'archive'}
 ORAL_DONE = {'已完成', '完成', '制作完成', '生成完成', 'completed', 'complete', 'done'}
+ORAL_USER_FILL = 'AI已完成，需用户补段'
 IMAGE_DONE = {'已交付'}
 ARCHIVED = {'已下载', '已归档'}
 
@@ -18,6 +19,11 @@ def task_kind(payload): return 'image' if payload.get('task_kind') == 'image' el
 
 def completed(kind, status):
     return str(status or '').strip().casefold() in (IMAGE_DONE if kind == 'image' else ORAL_DONE)
+
+
+def needs_user_segments(kind, status):
+    """AI handoff permits receipt, never complete-task acknowledgement."""
+    return kind=='oral' and str(status or '').strip().casefold()==ORAL_USER_FILL.casefold()
 
 
 def archive_value(kind, options=None):
