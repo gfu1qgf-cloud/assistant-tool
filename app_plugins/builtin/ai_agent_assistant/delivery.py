@@ -12,7 +12,7 @@ from .store import Store
 from .tasks import spreadsheet_id
 from .notice_data import directory_key
 from .sheet_profiles import task_kind, completed as status_completed, archive_value, ARCHIVED,needs_user_segments
-from .receipt_plan import delivery_plan, check_parts
+from .receipt_plan import delivery_plan, check_parts, handoff_files, HANDOFF_POLICY
 from .review import cache_review
 
 DONE = {'已完成', '完成', '制作完成', '生成完成', 'completed', 'complete', 'done'}
@@ -192,6 +192,7 @@ def run_receipts(payload, run, *, sheets=None, drive=None, fetch=download_file, 
                 discovery = records.get('@discovery', {})
                 if (discovery.get('source') == signature and discovery.get('scope') == DISCOVERY_SCOPE
                         and bool(discovery.get('handoff'))==user_fill
+                        and (not user_fill or discovery.get('handoff_policy') == HANDOFF_POLICY)
                         and discovery.get('retry_at', 0) > clock()):
                     pending = True; continue
                 try:
@@ -205,14 +206,19 @@ def run_receipts(payload, run, *, sheets=None, drive=None, fetch=download_file, 
                     # before downloading; never select an arbitrary duplicate.
                     files = collect_files(links, drive, leased)
                     plan = delivery_plan(kind, _cell(row, mapping, 'spoken'))
+                    selection_problem = ''
+                    if user_fill:
+                        files, selection_problem = handoff_files(files, plan, job['payload']['task_id'], records)
                     plan_problem = check_parts(files, plan, job['payload']['task_id'], records)
                     expected_total = max(len(files), plan['count'] if plan else 0)
                     active_ids = sorted(item['id'] for item in files)
                     if (discovery.get('state') != 'checked' or discovery.get('source') != signature or
                             discovery.get('scope') != DISCOVERY_SCOPE or
                             bool(discovery.get('handoff'))!=user_fill or
+                            user_fill and discovery.get('handoff_policy') != HANDOFF_POLICY or
                             discovery.get('total') != expected_total or discovery.get('file_ids') != active_ids):
                         store.save_delivery(job['id'], '@discovery', {'state': 'checked', 'source': signature, 'scope': DISCOVERY_SCOPE,'handoff':user_fill,
+                            'handoff_policy': HANDOFF_POLICY if user_fill else None,
                             'total': expected_total, 'file_ids': active_ids})
                     # Missing segments are a delivery warning, not a download
                     # embargo. Wrong task IDs/duplicate/out-of-range ordinals
@@ -244,6 +250,7 @@ def run_receipts(payload, run, *, sheets=None, drive=None, fetch=download_file, 
                             failed += 1; pending = True
                     if completed == len(files):
                         plan_problem = check_parts(files, plan, job['payload']['task_id'], store.delivery_files(job['id']))
+                        plan_problem = '\n'.join(value for value in (plan_problem, selection_problem) if value)
                         if plan_problem or not cloud_done:
                             verified=store.delivery_files(job['id'])
                             store.save_delivery(job['id'],'@partial',{'state':'partial','source':signature,'total':expected_total,
@@ -296,9 +303,11 @@ def run_receipts(payload, run, *, sheets=None, drive=None, fetch=download_file, 
                 except Exception as error:
                     leased.check_canceled(); failed += 1; pending = True
                     same_scope = (discovery.get('source') == signature and discovery.get('scope') == DISCOVERY_SCOPE
-                        and bool(discovery.get('handoff'))==user_fill)
+                        and bool(discovery.get('handoff'))==user_fill
+                        and (not user_fill or discovery.get('handoff_policy') == HANDOFF_POLICY))
                     attempts = int(discovery.get('attempts', 0)) + 1 if same_scope else 1
                     store.save_delivery(job['id'], '@discovery', {**(discovery if same_scope else {}), 'state': 'retry', 'source': signature, 'scope': DISCOVERY_SCOPE,'handoff':user_fill,
+                        'handoff_policy': HANDOFF_POLICY if user_fill else None,
                         'attempts': attempts, 'retry_at': clock() + min(3600, 60 * 2 ** min(attempts - 1, 6)),
                         'total': discovery.get('total') if same_scope else None, 'detail': error_message(error)})
                     store.delivery_note(job['id'], '收取待重试', f'检查尝试累计 {attempts} 次；' + error_message(error))

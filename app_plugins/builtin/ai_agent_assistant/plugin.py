@@ -10,7 +10,7 @@ from .sheet_profiles import task_kind
 class AIAgentAssistantPlugin(QtCore.QObject):
     plugin_id = 'ai_agent_assistant'
     display_name = 'AI Agent 助手'
-    version = '0.5.11'
+    version = '0.5.12'
     required_api_version = 2
 
     def __init__(self):

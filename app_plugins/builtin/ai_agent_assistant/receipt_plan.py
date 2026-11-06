@@ -7,6 +7,45 @@ PART = re.compile(r'第\s*0*(\d+)\s*段')
 TASK = re.compile(r'任务(.+?)[_\s-]+第\s*\d+\s*段')
 LOCAL_PREFIX = re.compile(r'^Agent_[a-f0-9]{12}_[a-f0-9]{12}_', re.IGNORECASE)
 SHORT_PART = re.compile(r'(?:(\d+)[_\s-]+)?S0*(\d+)', re.IGNORECASE)
+HANDOFF_POLICY = 'isolated-segments-v1'
+
+
+def handoff_files(files, plan, task_id, records=None):
+    """Receive unambiguous handoff segments, never choose between versions.
+
+    Explicit candidate/unchecked videos are not deliverables. A conflicted
+    ordinal must not prevent unrelated, uniquely identified parts downloading.
+    No candidate is promoted merely because a formal version is absent.
+    """
+    selected, numbered, problems = [], {}, []
+    for item in files:
+        name = item.get('name') or Path(str((records or {}).get(item['id'], {}).get('path') or '')).name
+        if any(marker in name for marker in ('候选', '待验', '待审核', '未通过')):
+            problems.append('暂不收取候选／待验文件：' + name)
+            continue
+        if not plan:
+            selected.append(item)
+            continue
+        try:
+            number = part_number(name, task_id)
+        except ValueError as error:
+            problems.append(str(error))
+            continue
+        if number is None:
+            problems.append('未能确认段号，暂不收取：' + (name or item['id']))
+        elif not 1 <= number <= plan['count']:
+            problems.append('段号越界，暂不收取：' + name)
+        else:
+            numbered.setdefault(number, []).append(item)
+    for number, versions in numbered.items():
+        if len(versions) == 1:
+            selected.append(versions[0])
+        else:
+            problems.append(f'第{number}段存在重复版本，暂不收取该段：' + '、'.join(value.get('name', value['id']) for value in versions))
+    # Keep a finite diagnostic without letting one issue hide all the others.
+    detail = '\n'.join(problems[:30])
+    if len(problems) > 30: detail += f'\n另有{len(problems)-30}项需核对。'
+    return selected, detail
 
 
 def part_number(name, task_id):
