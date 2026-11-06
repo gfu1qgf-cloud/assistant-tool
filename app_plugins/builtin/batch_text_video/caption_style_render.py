@@ -182,7 +182,9 @@ def make_primitives(words, layer, width, height, duration):
         height*(layer['y']-layer['height']/2)/100,width*layer['width']/100,height*layer['height']/100).intersected(
             QtCore.QRectF(0,0,width,height))
     track = track_for(events,layer,viewport,duration) if following else None
-    clip = (viewport.left(),viewport.top(),viewport.right(),viewport.bottom())
+    from .caption_clip import clip_bounds
+    clip_box=clip_bounds(layer,width,height)
+    clip = (clip_box.left(),clip_box.top(),clip_box.right(),clip_box.bottom())
     primitives = []
     group_palette=group_colors(layer,math.ceil(len(events)/layer['caption_words']) if following else len(groups),words)
     def add(path,x,y,start,end,color,opacity=1,**options):

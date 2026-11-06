@@ -6,27 +6,36 @@ from qt_compat import QtCore, QtGui
 MAX_CACHED_MASK_BYTES = 8*1024*1024
 
 
+def clip_bounds(layer,width,height):
+    box=QtCore.QRectF(width*(layer['x']-layer['width']/2)/100,
+        height*(layer['y']-layer['height']/2)/100,width*layer['width']/100,height*layer['height']/100).intersected(
+            QtCore.QRectF(0,0,width,height))
+    if layer.get('caption_clip_axis','vertical')=='vertical':
+        box.setLeft(0);box.setRight(width)
+    return box
+
+
 def geometry(layer, width, height):
     from .caption_follow import enabled
     amount = layer.get('caption_clip_feather',0)
     if not enabled(layer) or amount <= 0:
         return None
-    box=QtCore.QRectF(width*(layer['x']-layer['width']/2)/100,
-        height*(layer['y']-layer['height']/2)/100,width*layer['width']/100,height*layer['height']/100).intersected(
-            QtCore.QRectF(0,0,width,height))
+    box=clip_bounds(layer,width,height)
     if box.isEmpty():
         return None
-    return ((box.left(),box.top(),box.right(),box.bottom()), min(box.width(),box.height())*amount/100)
+    extent=box.height() if layer.get('caption_clip_axis','vertical')=='vertical' else min(box.width(),box.height())
+    return ((box.left(),box.top(),box.right(),box.bottom()), extent*amount/100)
 
 
-def _make_mask(width, height, clip, feather, alpha):
+def _make_mask(width, height, clip, feather, alpha,axis='all'):
     import numpy as np
     left,top,right,bottom=clip
     x=np.arange(width,dtype=np.float32)+.5
     y=np.arange(height,dtype=np.float32)+.5
     x=np.minimum((x-left)/feather,(right-x)/feather)
     y=np.minimum((y-top)/feather,(bottom-y)/feather)
-    values=np.minimum(y[:,None],x[None,:])
+    values=(np.broadcast_to(y[:,None],(height,width)).copy() if axis=='vertical'
+            else np.minimum(y[:,None],x[None,:]))
     np.clip(values,0,1,out=values)
     values=np.rint(values*255).astype(np.uint8)
     if alpha:
@@ -38,8 +47,8 @@ def _make_mask(width, height, clip, feather, alpha):
 
 
 @lru_cache(maxsize=4)
-def _cached_mask(width, height, clip, feather, alpha):
-    return _make_mask(width,height,clip,feather,alpha)
+def _cached_mask(width, height, clip, feather, alpha,axis):
+    return _make_mask(width,height,clip,feather,alpha,axis)
 
 
 def mask_image(layer, width, height, *, alpha=False):
@@ -48,7 +57,7 @@ def mask_image(layer, width, height, *, alpha=False):
         return None
     clip,feather=value
     build=_cached_mask if width*height*(4 if alpha else 1)<=MAX_CACHED_MASK_BYTES else _make_mask
-    return build(width,height,clip,feather,alpha)
+    return build(width,height,clip,feather,alpha,layer.get('caption_clip_axis','vertical'))
 
 
 def apply_preview_mask(image, layer, width, height):

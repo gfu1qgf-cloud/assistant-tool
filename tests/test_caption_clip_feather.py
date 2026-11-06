@@ -27,7 +27,7 @@ class CaptionClipFeatherTests(unittest.TestCase):
     def layer(self, **values):
         layer=new_follow_caption()
         layer.update(font='Arial',font_min=48,font_max=48,outline_width=0,shadow_enabled=False,
-                     background_enabled=False,caption_follow_mode='line',caption_clip_feather=8)
+                     background_enabled=False,caption_follow_mode='line',caption_clip_feather=8,caption_clip_axis='all')
         layer['caption_effects'].update(anim_in_type='none',anim_out_type='none',karaoke_highlight=False)
         layer.update(values)
         return normalize_layers([layer])[0]
@@ -68,7 +68,7 @@ class CaptionClipFeatherTests(unittest.TestCase):
         self.assertTrue(control.isEnabled())
         changes=[];panel.changed.connect(changes.append);control.setValue(12)
         self.assertEqual(changes[-1]['caption_clip_feather'],12)
-        self.assertEqual(parameter_targets(panel)[('layer','caption_clip_feather')][1],'裁切边缘柔化')
+        self.assertEqual(parameter_targets(panel)[('layer','caption_clip_feather')][1],'边缘渐隐')
         panel.set_layer(self.layer(caption_follow_mode='none'));self.assertTrue(control.isEnabled())
         control.setValue(16)
         self.assertEqual(changes[-1]['caption_clip_feather'],16)

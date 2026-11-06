@@ -132,8 +132,8 @@ def append_native(args,filters,source,output,ass_path,layer,width,height,duratio
         if mask is None:
             mask=QtGui.QImage(width,height,QtGui.QImage.Format.Format_Grayscale8);mask.fill(0)
             painter=QtGui.QPainter(mask)
-            painter.fillRect(QtCore.QRectF(width*(layer['x']-layer['width']/2)/100,height*(layer['y']-layer['height']/2)/100,
-                                         width*layer['width']/100,height*layer['height']/100),QtGui.QColor('white'));painter.end()
+            from .caption_clip import clip_bounds
+            painter.fillRect(clip_bounds(layer,width,height),QtGui.QColor('white'));painter.end()
         mask_path=Path(metadata['image']).with_suffix('.mask.png')
         if not mask.save(str(mask_path),'PNG'):raise RuntimeError('光标裁切遮罩保存失败。')
         args.extend(('-i',str(mask_path)));used+=1
