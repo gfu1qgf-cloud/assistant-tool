@@ -32,6 +32,8 @@ from .caption_appearance import DEFAULTS as APPEARANCE_DEFAULTS
 DEFAULTS.update(copy.deepcopy(APPEARANCE_DEFAULTS))
 from .caption_display import DEFAULTS as DISPLAY_DEFAULTS
 DEFAULTS.update(copy.deepcopy(DISPLAY_DEFAULTS))
+from .caption_cursor import DEFAULTS as CURSOR_DEFAULTS
+DEFAULTS.update(copy.deepcopy(CURSOR_DEFAULTS))
 
 
 def new_caption():

@@ -347,7 +347,7 @@ def source_paths(state):
         if binding:
             from .matting_assets import record_files
             inputs.extend(record_files(binding))
-        inputs.extend(layer.get(key) for key in ('path', 'source_file', 'caption_file'))
+        inputs.extend(layer.get(key) for key in ('path', 'source_file', 'caption_file','caption_cursor_image'))
         if layer.get('kind') == 'image' and active_mask(layer):
             inputs.append(active_mask(layer))
         inputs.extend(item.get('path') for item in layer.get('sequence_items', []))
@@ -440,7 +440,8 @@ def _prepare_static_text(job, state, directory, cancel=None, progress=None, repo
     from .captions import active_captions, task_word_timings, static_planes, write_caption_ass, filter_path
     captions = active_captions(settings["layers"])
     if captions and not voice_path:
-        raise ValueError("动态字幕需要人声。请启用人声并选择任务音频或人声池；不会使用背景音乐充当朗读。")
+        from .export_validation import missing_voice
+        raise missing_voice(settings['layers'],job)
     if voice_path:
         if not Path(voice_path).is_file():
             raise FileNotFoundError("任务人声不存在：" + voice_path)

@@ -241,6 +241,8 @@ def make_primitives(words, layer, width, height, duration):
                 background(rectangle(bounds.width(),bounds.height()/3,style['box_radius']*scale),
                     bounds.x(),bounds.y(),group['start'],group['end'],'#ffffff',.08)
     draw_events = reveal_events(events, layer)
+    from .caption_cursor import prepare_image
+    cursor_image=prepare_image(layer,scale)
     for event in draw_events:
         context = event['context']
         start = reveal_start(event, layer, events)
@@ -320,9 +322,8 @@ def make_primitives(words, layer, width, height, duration):
                 {**phase,'gradient_direction':style['high_gradient_direction']
                  if color==style['color_high'] else style['text_gradient_direction']})
         display = display_settings(layer)
-        if event.get('_character_piece') and display['caption_cursor']:
-            add(rectangle(max(1,2*scale),event['height']),x+event['_cursor_edge'],y,
-                event['start'],min(stop,event['_cursor_until']),display['caption_cursor_color'])
+        from .caption_cursor import add_cursor
+        add_cursor(add,event,layer,scale,options,image=cursor_image)
         if style['use_underline'] and not context:
             add(rectangle(event['width'],max(1,3*scale)),x,y+event['height']+2*scale,
                 start,stop,style['color_underline'],**options)
@@ -435,6 +436,8 @@ def write_style_ass(path, words, layer, width, height, duration):
 
 def write_primitives_ass(path, primitives, events, layer, width, height):
     from .captions import _ass_time, _ass_color, _path_commands
+    from .caption_cursor import write_native_assets
+    write_native_assets(path,primitives,layer,width,height)
     header = f'''[Script Info]
 ScriptType: v4.00+
 PlayResX: {width}
@@ -449,6 +452,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 '''
     rows,bytes_used = [],0
     for primitive in primitives:
+        if primitive.get('cursor_image'):continue
         motion = primitive['motion']
         # Only positional trajectories need segments; libass interpolates each
         # segment. Static, fading, scale, gradient and blur paths are not frames.
@@ -600,6 +604,12 @@ def render_design(layer, width, height, *, words=None, duration=None, time=None)
                 brush=QtGui.QBrush(gradient)
             pen=QtGui.QPen(QtGui.QColor(primitive['border_color']),primitive['border'])
             def draw(target):
+                if primitive.get('cursor_image'):
+                    from .caption_cursor import read_image
+                    image=read_image(primitive['cursor_image'],primitive['height'])
+                    target.setRenderHint(QtGui.QPainter.RenderHint.SmoothPixmapTransform)
+                    target.drawImage(bounds,image)
+                    return
                 if primitive.get('raster_outline'):
                     from .text_outline import paint_path_outline
                     paint_path_outline(target,primitive['native'],primitive['raster_outline'],brush)

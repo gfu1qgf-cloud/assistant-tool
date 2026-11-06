@@ -40,6 +40,7 @@ class CaptionProperties(QtWidgets.QWidget):
             ("caption_preset", "动画预设", [("逐词跃动", "pop"), ("逐词出现（无弹跳）", "appear")]+preset_choices()),
             ('caption_display_mode', '显示方式', DISPLAY_CHOICES),
             ('caption_follow_mode', '跟随方式', FOLLOW_CHOICES),
+            ('caption_cursor_mode','光标类型',( ('竖线','bar'),('自定义图片','image'))),
             ("caption_timing", "时间戳来源", (("优先 ELE 逐词记录／任务 SRT，否则本地对齐", "auto"),
                 ("仅使用任务已有逐词记录／SRT", "task"), ("手动指定 SRT", "file"), ("本地模型逐词对齐", "model"),
                 ("匀速动画", "uniform"), ("ELE 云端逐词对齐（上传音频与文案）", "elevenlabs"))),
@@ -80,6 +81,17 @@ class CaptionProperties(QtWidgets.QWidget):
         cursor_color.field.textChanged.connect(self.edit)
         self.controls['caption_cursor_color']=cursor_color
         form.addRow('光标颜色',cursor_color)
+        cursor_path=QtWidgets.QLineEdit(self);cursor_path.setPlaceholderText('选择图片…');cursor_path.setClearButtonEnabled(True)
+        cursor_path.editingFinished.connect(self.edit)
+        action=cursor_path.addAction(self.style().standardIcon(QtWidgets.QStyle.StandardPixmap.SP_DirOpenIcon),QtWidgets.QLineEdit.ActionPosition.TrailingPosition)
+        action.setToolTip('选择光标图片');action.triggered.connect(self.choose_cursor_image)
+        self.controls['caption_cursor_image']=cursor_path;form.addRow('光标图片',cursor_path)
+        cursor_path.setToolTip('支持透明图片；保留原图颜色和透明度。')
+        for key,label,low,high,suffix in (('caption_cursor_scale','图片大小',5,500,' %'),
+                ('caption_cursor_offset_x','光标水平偏移',-1000,1000,' px'),('caption_cursor_offset_y','光标垂直偏移',-1000,1000,' px')):
+            spin=QtWidgets.QDoubleSpinBox();spin.setRange(low,high);spin.setSuffix(suffix);spin.valueChanged.connect(self.edit)
+            self.controls[key]=spin;form.addRow(label,spin)
+        self.controls['caption_cursor_scale'].setToolTip('相对基础最大字号；保留图片比例。')
         consent = QtWidgets.QCheckBox('允许上传当前人声和文案并消耗 ELE 对齐额度', self)
         consent.setToolTip('只用主程序指定的对齐 Key；首次播放预览也会对齐，后续复用。原 task_audio.srt 不会改动。')
         consent.toggled.connect(self.edit)
@@ -117,6 +129,7 @@ class CaptionProperties(QtWidgets.QWidget):
         self.style_note.setWordWrap(True)
         self.style_note.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored,QtWidgets.QSizePolicy.Policy.Preferred)
         form.addRow(self.style_note)
+        self.style_note.hide()
         self.controls["caption_file"] = QtWidgets.QLineEdit(self)
         self.controls["caption_file"].setPlaceholderText("请选择 .srt 文件，支持 task_audio[动态].srt")
         self.controls["caption_file"].setToolTip("手动指定的 SRT 由该组件整批共用；不同任务请使用自动读取，或向任务提供 subtitle_path。")
@@ -132,6 +145,7 @@ class CaptionProperties(QtWidgets.QWidget):
         self.source_note = QtWidgets.QLabel('字幕池或固定文件在上方“来源”选择。')
         self.source_note.setWordWrap(True)
         form.addRow(self.source_note)
+        self.source_note.hide()
         for key, label, low, high, suffix in (
             ("caption_words", "每组最多词数", 1, 32, " 个"),
             ("caption_per_line", "每行最多词数", 1, 12, " 个"),
@@ -238,11 +252,13 @@ class CaptionProperties(QtWidgets.QWidget):
         from .property_pairs import pair_form_fields, order_form_fields
         base=self.forms['caption']
         order_form_fields(base,[self.controls[key] for key in ('caption_preset','caption_display_mode',
-            'caption_pop_ms','caption_cursor','caption_cursor_color')])
+            'caption_pop_ms','caption_cursor','caption_cursor_mode','caption_cursor_color','caption_cursor_image',
+            'caption_cursor_scale','caption_cursor_offset_x','caption_cursor_offset_y')])
         self.display_note = QtWidgets.QLabel()
         self.display_note.setWordWrap(True)
         self.display_note.setStyleSheet('color: palette(mid);')
         base.insertRow(base.getWidgetPosition(self.controls['caption_display_mode'])[0]+1, self.display_note)
+        self.display_note.hide()
         order_form_fields(self.forms['timing'],[self.controls['caption_clip_feather'],self.controls['caption_timing'],self.file_row]+
             [self.controls[key] for key in ('caption_source','caption_language','caption_cloud_consent')])
         order_form_fields(rhythm_form,[self.controls[key] for key in
@@ -257,7 +273,8 @@ class CaptionProperties(QtWidgets.QWidget):
             '不会因文案长而整篇缩小。选择“整组显示”可预先看到上下文。每行词数控制换行，每组词数仍可控制分组配色。'
             '未读、正在读、已读不透明度分别调节；词结束后转为已读，默认恢复100%。'
             '跟随模式优先连续排版，随机定位和歌词上下文参数保留，关闭跟随后恢复。')
-        note.setWordWrap(True);follow_form.addRow(note)
+        self.controls['caption_follow_mode'].setToolTip(note.text())
+        note.deleteLater()
         # These values affect glyph SIZE, so they live with the base font size.
         self.font_effect_controls={}
         for key,title,low,high in (
@@ -328,6 +345,7 @@ class CaptionProperties(QtWidgets.QWidget):
         self.update_duration_label(style)
         self.update_timing_controls()
         self.style_note.setText('播放预览可查看逐词动画。')
+        self.style_note.hide()
         self.style_note.setToolTip(description(layer))
         self.controls['caption_preset'].setToolTip(description(layer))
 
@@ -335,10 +353,14 @@ class CaptionProperties(QtWidgets.QWidget):
         if not self.layer: return
         self.display_note.setText(DISPLAY_NOTES.get(
             self.controls['caption_display_mode'].currentData(), '选择字幕显示方式。'))
+        self.controls['caption_display_mode'].setToolTip(self.display_note.text());self.display_note.hide()
         self.random_widget.show()
         self.controls['caption_cursor'].show()
-        color=self.controls['caption_cursor_color']; color.show()
-        self.form_for(color).labelForField(color).show()
+        image=self.controls['caption_cursor_mode'].currentData()=='image'
+        color=self.controls['caption_cursor_color']; color.setVisible(not image)
+        self.form_for(color).labelForField(color).setVisible(not image)
+        for key in ('caption_cursor_image','caption_cursor_scale'):
+            control=self.controls[key];control.setVisible(image);self.form_for(control).labelForField(control).setVisible(image)
         color.setEnabled(True)
         color.setToolTip('逐字显示并开启光标时生效；其他模式也可以预先设置，不会清除数值。')
         self.controls['caption_words'].setEnabled(True)
@@ -371,7 +393,7 @@ class CaptionProperties(QtWidgets.QWidget):
         candidate={**self.layer,'caption_effects':overrides}
         try: effects(candidate)
         except ValueError as error:
-            self.style_note.setText(str(error)); return
+            self.style_note.setText(str(error));self.style_note.show(); return
         self.layer=candidate; self.update_display_controls()
         self.effects_editor.set_layer(candidate)
         self.changed.emit(copy.deepcopy(candidate))
@@ -428,6 +450,11 @@ class CaptionProperties(QtWidgets.QWidget):
             self.set_layer(self.layer)
             self.changed.emit({**copy.deepcopy(self.layer), '_caption_source_apply':True})
 
+    def choose_cursor_image(self):
+        path,_=QtWidgets.QFileDialog.getOpenFileName(self,'选择逐字光标图片',self.controls['caption_cursor_image'].text(),
+            '图片 (*.png *.webp *.jpg *.jpeg *.bmp *.gif *.tif *.tiff)')
+        if path:self.controls['caption_cursor_image'].setText(path);self.edit()
+
     def update_timing_controls(self):
         mode = self.layer['caption_timing'] if self.layer else ''
         self.controls['caption_cloud_consent'].setVisible(mode == 'elevenlabs')
@@ -454,7 +481,7 @@ class CaptionProperties(QtWidgets.QWidget):
                 key:self.controls['caption_pop_ms'].value()/1000}
         try: normalize_display(candidate)
         except ValueError as error:
-            self.style_note.setText(str(error)); return
+            self.style_note.setText(str(error));self.style_note.show(); return
         self.layer=candidate
         source_apply = False
         mode = self.layer['caption_timing']

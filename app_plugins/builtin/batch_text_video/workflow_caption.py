@@ -66,10 +66,16 @@ def compile_caption(operation, directory, context, video_info, *, timing=None):
     if QtGui.QGuiApplication.instance() is None:
         raise ValueError("动态字幕缺少字体环境；不会在后台线程创建Qt窗口。")
     options, assets = dict(operation.options), dict(operation.assets)
-    if (set(options) != {"layer"} or set(assets) != {"filename"}
+    if (set(options) != {"layer"} or set(assets) not in ({"filename"},{"filename","cursor_image"})
             or not isinstance(options["layer"], str) or len(options["layer"].encode("utf-8")) > 65536):
         raise ValueError("动态字幕操作格式无效。")
     layer = normalize_node_caption(json.loads(options["layer"]))
+    from .caption_cursor import image_enabled
+    if image_enabled(layer):
+        ref=assets.get('cursor_image')
+        if ref is None:raise ValueError('图片光标缺少资源快照，请重新提交节点。')
+        ref.verify()
+        if Path(ref.path).resolve()!=Path(layer['caption_cursor_image']).resolve():raise ValueError('光标资源与字幕设置不一致。')
     from .palette_rules import resolve_object,node_palette_scope
     layer=resolve_object(layer,node_palette_scope(context))
     context.report(f"字幕节点：每组最多{layer['caption_words']}词，每行最多{layer['caption_per_line']}词；使用输入字幕时间。", None)
@@ -89,11 +95,12 @@ def compile_caption(operation, directory, context, video_info, *, timing=None):
     assets["filename"].verify()
     from .caption_clip import geometry as clip_geometry
     soft_clip=clip_geometry(layer,width,height) is not None
-    if timing or soft_clip:
+    cursor=path.with_suffix('.cursor.json').is_file()
+    if timing or soft_clip or cursor:
         from .workflow_timing import caption_plane
         return caption_plane(operation, name, "ass", "", context, video_info, timing,
                              center=(width*layer['x']/100, height*layer['y']/100),
-                             clip_layer=layer if soft_clip else None,directory=directory)
+                             clip_layer=layer if soft_clip or cursor else None,directory=directory)
     native = (FilterOperation(operation.title, operation.video, "ass", (("filename", name),)),)
     # Exactly the full-chroma blending used by the existing batch renderer.
     return ((FilterOperation("字幕全色彩混合", operation.video, "format", (("pix_fmts", "rgba"),)),) + native

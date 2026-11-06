@@ -103,6 +103,16 @@ def prepare_plane(filters, name, ass_path, layer, width, height, duration, fps, 
 
 def append_caption(args, filters, source, output, ass_path, layer, width, height, duration, fps, next_index):
     from .captions import filter_path
+    if Path(ass_path).with_suffix('.cursor.json').is_file():
+        text=output+'_text'
+        used=append_caption_text(args,filters,source,text,ass_path,layer,width,height,duration,fps,next_index)
+        from .caption_cursor import append_native
+        return used+append_native(args,filters,text,output,ass_path,layer,width,height,duration,fps,next_index+used)
+    return append_caption_text(args,filters,source,output,ass_path,layer,width,height,duration,fps,next_index)
+
+
+def append_caption_text(args, filters, source, output, ass_path, layer, width, height, duration, fps, next_index):
+    from .captions import filter_path
     if geometry(layer,width,height) is None:
         filters.append(f'[{source}]ass=filename={filter_path(ass_path)}[{output}]')
         return 0

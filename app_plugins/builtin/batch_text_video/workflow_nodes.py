@@ -20,9 +20,14 @@ def build_caption(inputs, params, context):
         from .palette_rules import resolve_object,node_palette_scope
         layer=resolve_object(layer,node_palette_scope(context))
         layer = apply_color_inputs(layer, inputs)
+        assets=[('filename',subtitles)]
+        from .caption_cursor import image_enabled
+        if image_enabled(layer):
+            from model.node_workflow.contracts import ResourceRef
+            assets.append(('cursor_image',ResourceRef.capture(layer['caption_cursor_image'],'caption_cursor')))
         return {"operations": (FilterOperation("添加字幕 · " + layer["caption_preset"], None,
             "batch_text_video.caption", options=(("layer", json.dumps(layer, ensure_ascii=False, allow_nan=False)),),
-            assets=(("filename", subtitles),)),)}
+            assets=tuple(assets)),)}
     from .palette_rules import resolve_object,node_palette_scope
     params=resolve_object(params,node_palette_scope(context))
     font = str(params.get("font", "Arial"))

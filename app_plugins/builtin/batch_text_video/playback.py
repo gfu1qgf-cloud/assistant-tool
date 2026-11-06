@@ -19,6 +19,7 @@ def preview_key(job, state, node_bundle=None, *, preview_limit=None):
     from .components import resolve_sources, walk_components
     from .pools import bind_pool_layers
     original_layers = settings["layers"]
+    paths_cursor=[layer.get('caption_cursor_image') for layer in walk_components(original_layers) if layer.get('caption_cursor_image')]
     settings["layers"], _ = resolve_sources(bind_pool_layers(original_layers, state), job.get("title", ""), job.get("body", ""), job=job)
     for field in ("output_dir", "overwrite", "geometry_units", "show_layer_bounds", "export_quality"):
         settings.pop(field, None)
@@ -30,6 +31,7 @@ def preview_key(job, state, node_bundle=None, *, preview_limit=None):
     if active_effects(settings):
         paths.append(subtitle_for(job, paths[1]))
     from .captions import active_captions, caption_subtitle_path
+    paths.extend(paths_cursor)
     uses_model = False
     for caption in active_captions(settings["layers"]):
         try:
@@ -70,7 +72,7 @@ def preview_key(job, state, node_bundle=None, *, preview_limit=None):
             fingerprints.append((str(path), None, None))
     from .text_colors import job_color_scope
     from .palette_rules import palette_scope
-    values = ["playback-v31-colour-palettes", preview_limit, job_color_scope(job), palette_scope(job), settings, job.get("title", ""), job.get("body", ""),
+    values = ["playback-v32-follow-cursor", preview_limit, job_color_scope(job), palette_scope(job), settings, job.get("title", ""), job.get("body", ""),
               job.get("requires_title", False), job.get("voice_override", False), fingerprints, music, next_id]
     from .node_effects import cache_snapshot
     values.append(cache_snapshot(node_bundle, job.get('id')))
@@ -286,6 +288,8 @@ class PlaybackController:
             state["settings"] = self.read_settings()
             if getattr(self, 'pool_preview', None) is not None:
                 job, state = self.pool_preview.prepare(job, state)
+            from .export_validation import validate_caption_voice
+            validate_caption_voice(state,[job])
             from .cloud_alignment import prepare_binding
             elevenlabs_binding = prepare_binding(state['settings'], getattr(self, 'context', None))
             from .node_effects import prepare_preview_bundle
@@ -316,6 +320,8 @@ class PlaybackController:
         except Exception as error:
             self.playback_status.setText("预览无法播放：" + str(error))
             self._log("播放预览失败：" + traceback.format_exc())
+            from .export_results_ui import show_action_error
+            show_action_error(self,'无法播放预览',error,details=traceback.format_exc())
 
     def _playback_progress(self, value):
         title = '前10秒快速预览' if self._playback_preview_limit else '完整播放预览'
@@ -332,6 +338,8 @@ class PlaybackController:
         if result.get("error"):
             self.playback_status.setText("播放预览失败：" + result["error"])
             self._log("播放预览失败：" + result.get("traceback", result["error"]))
+            from .export_results_ui import show_action_error
+            show_action_error(self,'播放预览失败',result['error'],details=result.get('traceback',''))
             return
         try:
             self._playback_cache_owner = owner
@@ -417,6 +425,8 @@ class PlaybackController:
         self.return_to_editor()
         self.playback_status.setText("播放器错误：" + str(message))
         self._log("播放器错误：" + str(message))
+        from .export_results_ui import show_action_error
+        show_action_error(self,'播放器错误',message)
 
     def stop_playback(self):
         self.invalidate_playback()

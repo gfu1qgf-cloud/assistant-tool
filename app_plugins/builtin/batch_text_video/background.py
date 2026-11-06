@@ -66,6 +66,9 @@ def _execute_batch(store, state, ids, cancel, progress, message, done, renderers
     from model.MediaEncoding import normalize_export_settings
     from .export_pipeline import pipeline_workers, execute_parallel_batch
     try:
+        from .export_validation import validate_caption_voice
+        selected_ids=set(ids)
+        validate_caption_voice(state,[job for job in state['jobs'] if job['id'] in selected_ids])
         normalize_export_settings(state['settings'])
         configure(file_identity(store.path), state['settings']['export_workers'], replace=False)
         renderer = (renderers or RENDERERS)[state['settings']['scheme']]

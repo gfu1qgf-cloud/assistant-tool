@@ -1576,9 +1576,13 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
                          name=self.name.text().strip() or entry.get("name", ""))
             state, job_id = prepare_current_export(self.state, entry,
                 self.current_copy_id, self.current_id)
+            from .export_validation import validate_caption_voice
+            validate_caption_voice(state,[next(job for job in state['jobs'] if job['id']==job_id)])
             payload = {"state": state, "job_id": job_id}
         except Exception as error:
             self._log("快速导出失败：" + str(error) + "\n" + traceback.format_exc())
+            from .export_results_ui import show_action_error
+            show_action_error(self,'无法快速导出',error,details=traceback.format_exc())
             return
         self.stop_playback()
         if self.playback_worker:
@@ -1592,9 +1596,11 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
     def _start_quick_export(self, payload):
         try:
             self.state = self.store.save(payload["state"], payload["state"]["revision"])
-        except Exception:
+        except Exception as error:
             self._set_work_controls(False)
             self._log("快速导出记录保存失败，未开始生成：\n" + traceback.format_exc())
+            from .export_results_ui import show_action_error
+            show_action_error(self,'未开始导出',error,details=traceback.format_exc())
             return
         self._quick_export_id = payload["job_id"]
         self._quick_export_ids[self.state['active_profile']] = payload['job_id']
@@ -1611,6 +1617,9 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
             from .background import validate_batch_outputs
             profile_store = ProfileStore(self.store.directory, profile_id)
             render_state = profile_store.load()
+            from .export_validation import validate_caption_voice
+            selected_ids=set(ids)
+            validate_caption_voice(render_state,[job for job in render_state['jobs'] if job['id'] in selected_ids])
             self.status.setText(f'正在核对{len(ids)}项成品路径…')
             checked_at = time.monotonic()
             self._log(f'提交前校验：{len(ids)}项成品，共用一次源文件路径检查。')
@@ -1632,6 +1641,9 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
                     self._set_work_controls(self.is_batch_busy())
             self._log('渲染计划准备失败：'+str(error))
             self.status.setText('渲染计划准备失败：'+str(error))
+            from .export_results_ui import show_action_error
+            name=next((p['name'] for p in self.state['profiles'] if p['id']==profile_id),profile_id)
+            show_action_error(self,'未开始渲染',error,profile=name if profile_id!=self.state['active_profile'] else '')
             return False
         self.reset_editor_history()
         self.progress_bar.setValue(0)
@@ -1658,7 +1670,7 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
                 handle.itemStage.connect(lambda job_id, stage, p=profile_id: self._host_item_stage(p, job_id, stage))
                 handle.progressChanged.connect(lambda message, value, p=profile_id: self._host_batch_progress(p, message, value))
                 handle.completed.connect(lambda result, h=handle, p=profile_id: self._host_batch_result(h, p, result))
-                handle.failed.connect(lambda message, p=profile_id: self._host_batch_failed(p, message))
+                handle.failed.connect(lambda message, p=profile_id, h=handle: self._host_batch_failed(p, message, handle=h))
                 handle.finished.connect(lambda p=profile_id, h=handle, q=plan: self._host_render_finished(p, h, q))
             except Exception as error:
                 if 'handle' in locals():
@@ -1676,6 +1688,8 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
                 self._set_work_controls(self.is_batch_busy())
                 self._log('提交后台失败：' + traceback.format_exc())
                 self.status.setText('提交后台失败：' + str(error) + '；计划仍在队列，可修复后重试。')
+                from .export_results_ui import show_action_error
+                show_action_error(self,'提交后台失败',error,details=traceback.format_exc())
                 return False
             if profile_id == self.state['active_profile']:
                 self._set_work_controls(True)
@@ -1766,16 +1780,35 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
         self.render_queue_panel.timing.finish(profile_id, result)
         if profile_id == self.state['active_profile']:
             self._batch_result(result)
+        elif result.get('failed') or result.get('error'):
+            from .export_results_ui import show_export_warning
+            profile_name=next((p['name'] for p in self.state['profiles'] if p['id']==profile_id),profile_id)
+            show_export_warning(self,result,profile=profile_name)
+        handle._batch_failure_notified=bool(result.get('failed') or result.get('error'))
         if profile_id == self.state['active_profile'] and not result.get("failed") and not result.get("error") and not result.get("cancelled"):
             self.progress_bar.setValue(100)
+        if result.get('failed') or result.get('error'):
+            from .export_results_ui import show_export_warning
+            name=next((p['name'] for p in self.state['profiles'] if p['id']==profile_id),profile_id)
+            handle.set_result_handler(lambda:show_export_warning(self,result,profile=name),pending=True)
+            return
         handle.set_result_handler(lambda: QtWidgets.QMessageBox.information(self, "文案视频导出结果",
             f"完成 {result['completed']} 个，需处理 {result['failed']} 个。\n" +
             "\n".join(result.get("failures", []) + result.get("paths", []))),
             pending=bool(result.get("failed") or result.get("error")))
 
-    def _host_batch_failed(self, profile_id, message):
+    def _host_batch_failed(self, profile_id, message, *, handle=None):
         if profile_id == self.state['active_profile']:
             self.status.setText(message)
+        if getattr(handle,'_batch_failure_notified',False):return
+        if handle is not None and handle.manager.get(handle.task_id)['status']=='canceled':return
+        if message=='操作已取消。':return
+        from .export_results_ui import show_action_error
+        name=next((p['name'] for p in self.state['profiles'] if p['id']==profile_id),profile_id)
+        show_action_error(self,'后台渲染失败',message,profile=name if profile_id!=self.state['active_profile'] else '')
+        if handle is not None:
+            handle._batch_failure_notified=True
+            handle.set_result_handler(lambda:show_action_error(self,'后台渲染失败',message,profile=name),pending=True)
 
     def _host_render_finished(self, profile_id, handle, plan):
         self.render_queue_panel.timing.finish(profile_id)

@@ -45,6 +45,8 @@ def make_primitives(words, layer, width, height, duration):
                     layer['background_radius']*scale,layer['background_radius']*scale)
                 add(highlight,bounds.x(),bounds.y(),group[0]['group_start'],group[0]['group_end'],
                     '#ffffff',.08,z=-5)
+    from .caption_cursor import prepare_image
+    cursor_image=prepare_image(layer,scale)
     for event in reveal_events(events, layer):
         start,stop=reveal_start(event,layer,events),event['end']; x,y=event['x'],event['y']; path=event['_native_path']
         pop=min(round(style['anim_in_duration']*1000),round((stop-start)*1000))
@@ -65,8 +67,6 @@ def make_primitives(words, layer, width, height, duration):
                 {**phase,'gradient_direction':style['high_gradient_direction']
                  if color==style['color_high'] else style['text_gradient_direction']})
         display=display_settings(layer)
-        if event.get('_character_piece') and display['caption_cursor']:
-            cursor=QtGui.QPainterPath(); cursor.addRect(QtCore.QRectF(0,0,max(1,2*scale),event['height']))
-            add(cursor,x+event['_cursor_edge'],y,event['start'],min(stop,event['_cursor_until']),
-                display['caption_cursor_color'])
+        from .caption_cursor import add_cursor
+        add_cursor(add,event,layer,scale,image=cursor_image)
     return primitives,events

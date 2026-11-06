@@ -39,6 +39,8 @@ def preset_defaults(layer):
 
 
 def normalize_display(layer):
+    from .caption_cursor import normalize as normalize_cursor
+    normalize_cursor(layer)
     defaults = preset_defaults(layer) if any(key not in layer for key in DEFAULTS) else DEFAULTS
     for key, value in defaults.items():
         layer.setdefault(key, copy.deepcopy(value))

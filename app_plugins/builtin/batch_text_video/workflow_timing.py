@@ -94,8 +94,14 @@ def caption_plane(operation, name, filter_name, style, context, video_info, timi
     else:
         filters = [f"color=c=black@0:s={width}x{height}:r={float(fps):.9f}:d={local_duration:.9f},"
                    f"format=rgba,{caption_filter}[caption_plane]"]
-    timed = (add_timed_plane(filters, "caption_plane", "caption_timed", width, height, duration, fps, timing, center=center)
-             if timing is not None else 'caption_plane')
+    plane='caption_plane'
+    if directory is not None and Path(directory,name).with_suffix('.cursor.json').is_file():
+        from .caption_cursor import append_native
+        args=[]
+        append_native(args,filters,plane,'caption_cursor',Path(directory)/name,clip_layer,width,height,local_duration,fps,len(inputs))
+        inputs+=tuple(tuple(args[i:i+2]) for i in range(0,len(args),2));plane='caption_cursor'
+    timed = (add_timed_plane(filters, plane, "caption_timed", width, height, duration, fps, timing, center=center)
+             if timing is not None else plane)
     filters.append(f"[input][{timed}]overlay=0:0:format=auto:eof_action=pass[output]")
     context.check_canceled()
     return (VideoFilterFragment(operation.video, inputs, tuple(filters)),)
