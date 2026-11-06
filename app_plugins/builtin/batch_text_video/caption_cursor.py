@@ -8,7 +8,8 @@ from uuid import uuid4
 from qt_compat import QtCore,QtGui
 
 DEFAULTS={'caption_cursor_mode':'bar','caption_cursor_image':'','caption_cursor_scale':100.,
-          'caption_cursor_offset_x':0.,'caption_cursor_offset_y':0.}
+          'caption_cursor_offset_x':0.,'caption_cursor_offset_y':0.,
+          'caption_cursor_width':2.,'caption_cursor_height':100.,'caption_cursor_opacity':100.}
 
 
 def normalize(layer):
@@ -16,7 +17,8 @@ def normalize(layer):
     if layer['caption_cursor_mode'] not in {'bar','image'}:raise ValueError('光标类型无效。')
     path=layer['caption_cursor_image']
     if not isinstance(path,str) or len(path)>4096 or any(c in path for c in '\x00\r\n'):raise ValueError('光标图片路径无效。')
-    for key,low,high in (('caption_cursor_scale',5,500),('caption_cursor_offset_x',-1000,1000),('caption_cursor_offset_y',-1000,1000)):
+    for key,low,high in (('caption_cursor_scale',5,500),('caption_cursor_offset_x',-1000,1000),('caption_cursor_offset_y',-1000,1000),
+            ('caption_cursor_width',.1,100),('caption_cursor_height',5,300),('caption_cursor_opacity',0,100)):
         value=layer[key]
         if type(value) not in (float,int) or not math.isfinite(value) or not low<=value<=high:raise ValueError('光标大小或偏移超出范围。')
 
@@ -24,7 +26,8 @@ def normalize(layer):
 def image_enabled(layer):
     from .caption_display import display_settings
     display=display_settings(layer)
-    return display['caption_cursor'] and display['caption_display_mode']=='char' and layer.get('caption_cursor_mode','bar')=='image'
+    return (display['caption_cursor'] and display['caption_display_mode']=='char'
+            and layer.get('caption_cursor_mode','bar')=='image' and layer.get('caption_cursor_opacity',100)>0)
 
 
 @lru_cache(maxsize=4)
@@ -60,15 +63,19 @@ def add_cursor(add,event,layer,scale,options=None,*,image=None):
     if stop-start<.005:return
     options=options or {}
     follow={key:options[key] for key in ('follow_track','screen_clip') if key in options}
-    opacity=layer.get('caption_active_opacity',100)/100 if follow else 1
+    opacity=(layer.get('caption_active_opacity',100)/100 if follow else 1)*layer.get('caption_cursor_opacity',100)/100
+    if opacity<=0:return
     x=event['x']+event['_cursor_edge']+layer.get('caption_cursor_offset_x',0)*scale
     y=event['y']+layer.get('caption_cursor_offset_y',0)*scale
-    width,height=max(1,2*scale),event['height']
     extra={}
     if layer.get('caption_cursor_mode','bar')=='image':
         if image is None:image=prepare_image(layer,scale)
         width,height=image.width(),image.height();y+=(event['height']-height)/2
         extra={'cursor_image':layer['caption_cursor_image']}
+    else:
+        width=max(.1,layer.get('caption_cursor_width',2)*scale)
+        height=event['height']*layer.get('caption_cursor_height',100)/100
+        y+=(event['height']-height)/2
     path=QtGui.QPainterPath();path.addRect(0,0,width,height)
     add(path,x,y,start,stop,display['caption_cursor_color'],opacity,z=2,**follow,**extra)
 

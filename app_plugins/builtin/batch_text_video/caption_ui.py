@@ -88,10 +88,14 @@ class CaptionProperties(QtWidgets.QWidget):
         self.controls['caption_cursor_image']=cursor_path;form.addRow('光标图片',cursor_path)
         cursor_path.setToolTip('支持透明图片；保留原图颜色和透明度。')
         for key,label,low,high,suffix in (('caption_cursor_scale','图片大小',5,500,' %'),
+                ('caption_cursor_width','竖线厚度',.1,100,' px'),('caption_cursor_height','竖线高度',5,300,' %'),
+                ('caption_cursor_opacity','光标不透明度',0,100,' %'),
                 ('caption_cursor_offset_x','光标水平偏移',-1000,1000,' px'),('caption_cursor_offset_y','光标垂直偏移',-1000,1000,' px')):
             spin=QtWidgets.QDoubleSpinBox();spin.setRange(low,high);spin.setSuffix(suffix);spin.valueChanged.connect(self.edit)
             self.controls[key]=spin;form.addRow(label,spin)
         self.controls['caption_cursor_scale'].setToolTip('相对基础最大字号；保留图片比例。')
+        self.controls['caption_cursor_width'].setToolTip('按1080宽画布计量，预览与导出同比例缩放。')
+        self.controls['caption_cursor_height'].setToolTip('相对当前文字高度，围绕文字高度中心调整。')
         consent = QtWidgets.QCheckBox('允许上传当前人声和文案并消耗 ELE 对齐额度', self)
         consent.setToolTip('只用主程序指定的对齐 Key；首次播放预览也会对齐，后续复用。原 task_audio.srt 不会改动。')
         consent.toggled.connect(self.edit)
@@ -253,7 +257,8 @@ class CaptionProperties(QtWidgets.QWidget):
         base=self.forms['caption']
         order_form_fields(base,[self.controls[key] for key in ('caption_preset','caption_display_mode',
             'caption_pop_ms','caption_cursor','caption_cursor_mode','caption_cursor_color','caption_cursor_image',
-            'caption_cursor_scale','caption_cursor_offset_x','caption_cursor_offset_y')])
+            'caption_cursor_width','caption_cursor_height','caption_cursor_scale','caption_cursor_opacity',
+            'caption_cursor_offset_x','caption_cursor_offset_y')])
         self.display_note = QtWidgets.QLabel()
         self.display_note.setWordWrap(True)
         self.display_note.setStyleSheet('color: palette(mid);')
@@ -361,6 +366,8 @@ class CaptionProperties(QtWidgets.QWidget):
         self.form_for(color).labelForField(color).setVisible(not image)
         for key in ('caption_cursor_image','caption_cursor_scale'):
             control=self.controls[key];control.setVisible(image);self.form_for(control).labelForField(control).setVisible(image)
+        for key in ('caption_cursor_width','caption_cursor_height'):
+            control=self.controls[key];control.setVisible(not image);self.form_for(control).labelForField(control).setVisible(not image)
         color.setEnabled(True)
         color.setToolTip('逐字显示并开启光标时生效；其他模式也可以预先设置，不会清除数值。')
         self.controls['caption_words'].setEnabled(True)
