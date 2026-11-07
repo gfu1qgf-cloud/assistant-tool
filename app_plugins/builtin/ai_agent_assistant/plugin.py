@@ -5,12 +5,13 @@ from .tasks import snapshot, spreadsheet_id, fingerprint
 from .sheets import run_export, run_copy
 from .segmentation import require_available, existing_segments
 from .sheet_profiles import task_kind
+from .lifecycle import reclaim, watch_finished, stop_watch
 
 
 class AIAgentAssistantPlugin(QtCore.QObject):
     plugin_id = 'ai_agent_assistant'
     display_name = 'AI Agent 助手'
-    version = '0.5.13'
+    version = '0.5.14'
     required_api_version = 2
 
     def __init__(self):
@@ -180,7 +181,7 @@ class AIAgentAssistantPlugin(QtCore.QObject):
                                         'account_id': authorization['account_id'], 'google_authorization': authorization,
                                         'reference_approval': reference_approval},
             kind='network', execution='parallel', resources=['agent-sheet:' + spreadsheet_id(target['url'])], retryable=False)
-        self.handle.completed.connect(self.completed); self.handle.failed.connect(self.failed); self.handle.finished.connect(self.finished)
+        self.handle.completed.connect(self.completed); self.handle.failed.connect(self.failed); watch_finished(self, self.handle)
         self.handle.progressChanged.connect(self.progress)
         if self.dialog: self.dialog.busy(True); self.show_status('已交由主程序后台执行，可关闭此窗口。')
 
@@ -195,7 +196,7 @@ class AIAgentAssistantPlugin(QtCore.QObject):
             runner=run_copy, payload={'ids': list(ids), 'root': str(self.context.storage.path)},
             kind='cpu', execution='parallel', retryable=False)
         self.handle.completed.connect(self.completed); self.handle.failed.connect(self.failed)
-        self.handle.finished.connect(self.finished); self.handle.progressChanged.connect(self.progress)
+        watch_finished(self, self.handle); self.handle.progressChanged.connect(self.progress)
         if self.dialog: self.dialog.busy(True); self.dialog.status.setText('后台分段中，完成后自动复制；不调用AI或音频模型。')
 
     def completed(self, result):
@@ -220,9 +221,11 @@ class AIAgentAssistantPlugin(QtCore.QObject):
     def progress(self, message, _percent):
         self.show_status(message)
 
-    def finished(self):
-        if self.sender() is not self.handle: return
+    def finished(self, handle=None, *, recovered=False, closing=False):
+        if (handle if handle is not None else self.sender()) is not self.handle: return
         self.handle = None
+        stop_watch(self)
+        if closing: return
         if self.dialog: self.dialog.reload()
         if self._pending_reference_plan is not None:
             result, self._pending_reference_plan = self._pending_reference_plan, None
@@ -243,7 +246,7 @@ class AIAgentAssistantPlugin(QtCore.QObject):
         self.handle = self.context.submit_background_task(title='AI Agent · 读取已有图片任务', runner=run_image_bind_list,
             payload={**target, 'target_dir': local['target_dir'], 'parent_task_id': local['task_id'], 'authorization': authorization},
             kind='network', execution='parallel', retryable=False)
-        self.handle.completed.connect(self.completed); self.handle.failed.connect(self.failed); self.handle.finished.connect(self.finished)
+        self.handle.completed.connect(self.completed); self.handle.failed.connect(self.failed); watch_finished(self, self.handle)
         if self.dialog: self.dialog.busy(True); self.show_status('只读获取已有图片任务，下一步由你确认接收目录。')
 
     def remove_job_records(self, ids, parent=None):
@@ -264,7 +267,7 @@ class AIAgentAssistantPlugin(QtCore.QObject):
         self.handle = self.context.submit_background_task(title='AI Agent · 预览待上传图片', runner=run_reference_plan,
             payload={'root': str(self.context.storage.path), 'ids': [job['id'] for job in jobs], 'next': dict(target)},
             kind='cpu', execution='parallel', retryable=False)
-        self.handle.completed.connect(self.completed); self.handle.failed.connect(self.failed); self.handle.finished.connect(self.finished)
+        self.handle.completed.connect(self.completed); self.handle.failed.connect(self.failed); watch_finished(self, self.handle)
         if self.dialog: self.dialog.busy(True); self.show_status('后台检查图片并生成预览；确认前不会上传或提交。')
         return True
 
@@ -294,11 +297,15 @@ class AIAgentAssistantPlugin(QtCore.QObject):
             if self.dialog: self.show_status('素材上传未启动：' + str(error))
             else: self.context.log('素材上传未启动：' + str(error))
 
-    def can_close(self): return (self.handle is None and self.receipts.handle is None and self.notices.handle is None, 'AI Agent 后台操作仍在结束中，请先完成或取消。')
+    def can_close(self):
+        for owner in (self, self.receipts, self.notices): reclaim(owner, closing=True)
+        return (self.handle is None and self.receipts.handle is None and self.notices.handle is None, 'AI Agent 后台操作仍在结束中，请先完成或取消。')
     def start(self): self.notices.refresh(); self.receipts.start()
     def stop(self):
-        if not self.notices.stop(): return False
-        if not self.receipts.stop(): return False
-        if self.handle is not None: return False
+        notices_stopped = self.notices.stop()
+        receipts_stopped = self.receipts.stop()
+        reclaim(self, closing=True)
+        if self.handle is not None: self.handle.requestInterruption()
+        if not notices_stopped or not receipts_stopped or self.handle is not None: return False
         if self.dialog: self.dialog.close()
         return True

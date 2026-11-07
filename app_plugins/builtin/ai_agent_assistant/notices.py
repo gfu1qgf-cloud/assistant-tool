@@ -4,6 +4,7 @@ from pathlib import Path
 from qt_compat import QtCore, QtGui
 from app_plugins.api import TaskBadge
 from .notice_data import directory_key, run_notice_snapshot
+from .lifecycle import reclaim, watch_finished, stop_watch
 
 
 class ReceiptNotices(QtCore.QObject):
@@ -15,6 +16,7 @@ class ReceiptNotices(QtCore.QObject):
         self.pending_announce = False
         self.generation = 0
     def refresh(self, *, seen=None, unseen=None, announce=True):
+        reclaim(self, closing=True)
         context = self.plugin.context
         if not hasattr(context, 'set_task_badges'): return
         if self.handle is not None:
@@ -29,7 +31,7 @@ class ReceiptNotices(QtCore.QObject):
                 kind='network', execution='parallel', resources=['agent-notices:' + str(context.storage.path).casefold()], retryable=False)
         except Exception as error:
             self.failed(error); return
-        self.handle.completed.connect(self.apply_snapshot); self.handle.failed.connect(self.failed); self.handle.finished.connect(self.finished)
+        self.handle.completed.connect(self.apply_snapshot); self.handle.failed.connect(self.failed); watch_finished(self, self.handle)
     def apply_snapshot(self, snapshot):
         if 'ui_generation' in snapshot and snapshot['ui_generation'] != self.generation:
             self.pending = True; self.pending_announce = True; return
@@ -73,15 +75,19 @@ class ReceiptNotices(QtCore.QObject):
         updater = getattr(self.plugin.context, 'update_command', None)
         if updater: updater('received_filter', checked=self.filtered)
     def failed(self, message): self.plugin.context.log('成品标记刷新失败，原标记保留：' + str(message))
-    def finished(self):
-        if self.sender() is not self.handle: return
+    def finished(self, handle=None, *, recovered=False, closing=False):
+        if (handle if handle is not None else self.sender()) is not self.handle: return
         self.handle = None
+        stop_watch(self)
+        if closing: return
+        if recovered: self.pending = True
         if self.pending:
             announce=self.pending_announce
             self.pending=self.pending_announce=False
             self.refresh(announce=announce)
     def stop(self):
         self.pending = self.pending_announce = False
+        reclaim(self, closing=True)
         if self.handle is not None: self.handle.requestInterruption(); return False
         publisher = getattr(self.plugin.context, 'set_task_badges', None)
         if publisher: publisher({})

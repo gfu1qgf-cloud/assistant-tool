@@ -318,6 +318,10 @@ class ThreadLifecycleTests(unittest.TestCase):
             # Same host-owned QObject handle; badge reads/acknowledgements have
             # no native QThread owned by the plugin or its dialog.
             'app_plugins/builtin/ai_agent_assistant/notices.py': {'self.handle.finished.connect'},
+            # Consolidated host-owned BackgroundTaskHandle binding, with an
+            # explicit QThread rejection; native joins remain in the manager.
+            # Real-manager tests cover missed finish, stale ownership and exit.
+            'app_plugins/builtin/ai_agent_assistant/lifecycle.py': {'handle.finished.connect'},
             # Reviewed: all three execution fields are returned by the host's
             # BackgroundTaskManager.submit (not plugin-owned QThreads). The
             # host joins native workers before emitting their handle.finished.

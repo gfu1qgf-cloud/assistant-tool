@@ -3,6 +3,7 @@ from qt_compat import QtCore
 from model.OfflineMode import is_offline
 from .delivery import run_receipts,RECEIPT_PROGRESS_PREFIX
 from .tasks import spreadsheet_id
+from .lifecycle import reclaim, watch_finished, stop_watch
 
 DEFAULT_POLL_MINUTES = 30
 
@@ -62,6 +63,7 @@ class ReceiptMonitor(QtCore.QObject):
         self.badge_timer.stop()
         self._continue_ids, self._continue_manual = [], False
         self._allow_incomplete=self._continue_incomplete=False
+        reclaim(self, closing=True)
         if self.handle is not None:
             self.handle.requestInterruption()
             return False
@@ -88,6 +90,8 @@ class ReceiptMonitor(QtCore.QObject):
         return self.plugin.context.prepare_google_account('downloads')
 
     def check(self, *, manual=False, ids=None, directories=None, force=False, allow_incomplete=False):
+        reclaim(self, closing=True)
+        reclaim(self.plugin, closing=True)
         if allow_incomplete and not (manual and (ids or directories)):
             raise ValueError('提前收取必须手动选择具体任务并确认，普通检查不会收取执行中任务。')
         if self.handle is not None:
@@ -137,7 +141,7 @@ class ReceiptMonitor(QtCore.QObject):
                 resources=['agent-receipts:' + str(store.root.path).casefold(),
                            *['agent-sheet:' + value.split(':', 1)[0] for value in sorted(destinations)]])
             self.handle.completed.connect(self.completed); self.handle.failed.connect(self.failed)
-            self.handle.progressChanged.connect(self.progress); self.handle.finished.connect(self.finished)
+            self.handle.progressChanged.connect(self.progress); watch_finished(self, self.handle)
             self.show_status('后台检查成品中；可关闭助手窗口。')
         except Exception as error:
             self.show_status('成品收取待处理：' + str(error))
@@ -175,11 +179,15 @@ class ReceiptMonitor(QtCore.QObject):
             self.badge_timer.start()
     def refresh_progress_badges(self):
         if self.handle is not None:self.plugin.notices.refresh(announce=False)
-    def finished(self):
-        if self.sender() is not self.handle: return
+    def finished(self, handle=None, *, recovered=False, closing=False):
+        if (handle if handle is not None else self.sender()) is not self.handle: return
         self.badge_timer.stop()
         self.handle = None
+        stop_watch(self)
         self._allow_incomplete=False
         self.manual_notice = False
+        if closing: return
         if self.plugin.dialog: self.plugin.dialog.reload()
         self.configure()
+        if recovered and self.running and self.plugin.store.settings().get('auto_download',True):
+            self.timer.start(0)  # One catch-up after a missed finish, not faster polling.

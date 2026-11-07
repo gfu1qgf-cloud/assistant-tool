@@ -156,6 +156,14 @@ class BackgroundTaskHandle(QtCore.QObject):
     def isRunning(self):
         return self.manager.get(self.task_id)["status"] in ACTIVE
 
+    def isSettled(self):
+        """Terminal AND past result callbacks; other jobs need not be idle."""
+        self.manager._assert_main_thread()
+        return (self.manager.get(self.task_id)['status'] in TERMINAL
+                and self.task_id not in self.manager._workers
+                and self.task_id not in self.manager._queue
+                and self.task_id not in self.manager._notifying)
+
     def requestInterruption(self):
         self.manager.cancel(self.task_id)
 
