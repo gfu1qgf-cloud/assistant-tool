@@ -22,6 +22,7 @@ from app_plugins.builtin import (
     AIAgentAssistantPlugin,
     AudioSplitterPlugin,
     AIModelClientPlugin,
+    ImageRemixPlugin,
     BatchTextVideoPlugin,
     VideoStitchPlugin,
     FlowAssistantPlugin,
@@ -295,6 +296,7 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
         # now lives inside the single Life Assistant plugin and keeps its data.
         self.cooking_assistant_plugin = self.waste_reminder_plugin.cooking
         self.ai_model_client_plugin = self.plugin_host.install(AIModelClientPlugin())
+        self.image_remix_plugin = self.plugin_host.install(ImageRemixPlugin())
         self.video_prompt_assistant_plugin = self.plugin_host.install(
             VideoPromptAssistantPlugin()
         )

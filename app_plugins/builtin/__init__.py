@@ -1,5 +1,6 @@
 from .audio_splitter import AudioSplitterPlugin
 from .ai_model_client import AIModelClientPlugin
+from .image_remix import ImageRemixPlugin
 from .ai_agent_assistant import AIAgentAssistantPlugin
 from .batch_text_video import BatchTextVideoPlugin
 from .video_stitch import VideoStitchPlugin
@@ -45,6 +46,7 @@ from .waste_reminder import WasteReminderPlugin
 __all__ = [
     "AIAgentAssistantPlugin",
     "AIModelClientPlugin",
+    "ImageRemixPlugin",
     "AudioSplitterPlugin",
     "BatchTextVideoPlugin",
     "VideoStitchPlugin",

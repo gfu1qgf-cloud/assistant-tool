@@ -299,6 +299,9 @@ class ThreadLifecycleTests(unittest.TestCase):
             # Host-owned BackgroundTaskHandle (QObject), not a dialog-owned QThread;
             # AI client tests verify GUI callbacks, cancellation and hidden-window completion.
             'app_plugins/builtin/ai_model_client/ui.py': {'handle.finished.connect'},
+            # Reviewed host-owned BackgroundTaskHandle with an explicit type
+            # guard. Remix tests cover exact-handle cleanup and real-manager exit.
+            'app_plugins/builtin/image_remix/plugin.py': {'handle.finished.connect'},
             # These migrated jobs expose manager-owned QObject handles; the host
             # joins their native QThread before emitting handle.finished.
             'app_plugins/builtin/task_audio_subtitle.py': {'handle.finished.connect'},
