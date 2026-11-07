@@ -99,7 +99,8 @@ class DailyQuantityDialogTests(unittest.TestCase):
     def test_summary_shows_selected_day_and_overall_total(self):
         dialog = DailyQuantityDialog()
         try:
-            self.assertEqual(dialog.tabs.tabText(0), "数量概览")
+            self.assertEqual(dialog.tabs.tabText(0), "当日填写表")
+            self.assertEqual(dialog.tabs.tabText(1), "数量概览")
             self.assertEqual(dialog.tabs.tabText(dialog.video_tab_index), "视频清单")
             dialog.folder_day.setDate(QtCore.QDate(2026, 9, 26))
             dialog.show_result({

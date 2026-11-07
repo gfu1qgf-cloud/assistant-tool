@@ -1388,9 +1388,10 @@ def preview_external_day(records, day):
 def reconcile_daily_quantity(
     config, root, service=None, records=None, state_path=None, dry_run=False,
     drive_service=None, only_sheet=None, only_dates=None, verify_content=False,
-    manual_refresh=False,
+    manual_refresh=False, write_cloud=True,
 ):
     """Apply verified absolute counts; never guess over a nonempty manual cell."""
+    if type(write_cloud) is not bool: raise ValueError('云端填写选项必须为明确的开关值。')
     scope = _scope_key(config, root)
     spreadsheet_id = scope.split("|", 1)[0]
     state_path = Path(state_path or STATE_FILE)
@@ -1419,7 +1420,7 @@ def reconcile_daily_quantity(
             for video in cell.get("videos", [])
             if str(video.get("drive_file_id")) in uncertain_ids
         }
-        if synced_uncertain:
+        if synced_uncertain and write_cloud:
             raise ValueError(
                 f"有 {len(synced_uncertain)} 条旧版视频的计数选择不明确，且曾写入每日数量。"
                 "为避免自动改动表格，请先在每日数量的文件清单里逐条确认是否计数并保存；"
@@ -1508,7 +1509,7 @@ def reconcile_daily_quantity(
         overrides = {str(item.get("drive_file_id") or ""): item
                      for item in previous.get("external_videos", []) if item.get("upload_history")}
         groups, warnings = collect_assignments(
-            config, root, records, allowed_dates=allowed_dates,
+            config, root, records, allowed_dates=(allowed_dates if write_cloud else None),
             ignored_file_ids=ignored_ids, classification_overrides=overrides,
             review_overrides=previous.get('review_overrides'),
         )
@@ -1542,12 +1543,12 @@ def reconcile_daily_quantity(
             if selected(key) and retired(key)})
         retired_periods = [{"sheet": sheet, "date": day, "slot": slot}
                            for sheet, day, slot in retired_periods]
-        verify_keys = {key for key in groups if selected(key) and not retired(key)}
+        verify_keys = {key for key in groups if selected(key) and (not write_cloud or not retired(key))}
         content_cache = dict(previous.get("content_cache", {}))
         groups = _prepare_video_content(groups, records, content_cache,
                                         drive_service, verify=verify_content, verify_keys=verify_keys)
         groups, duplicate_exclusions = deduplicate_video_groups(groups)
-        groups = {key: videos for key, videos in groups.items() if selected(key) and not retired(key)}
+        groups = {key: videos for key, videos in groups.items() if selected(key) and (not write_cloud or not retired(key))}
         duplicate_exclusions = [item for item in duplicate_exclusions if selected((
             item["sheet"], item["date"], item["slot"], item["category"], "")) and not retired((
             item["sheet"], item["date"], item["slot"]))]
@@ -1558,13 +1559,38 @@ def reconcile_daily_quantity(
         warnings.extend(duration_warnings)
         daily_counts = _daily_count_rows(groups)
         counted = sum(row["total"] for row in daily_counts)
+        from model.DailyQuantityCopy import make_copy_tables
+        cache_days = selected_dates if selected_dates is not None else {row['date'] for row in daily_counts}
+        if write_cloud: cache_days={day for day in cache_days if day in allowed_dates}
+        previews = copy.deepcopy(previous.get('local_previews', {}))
+        creator = str(config.get('task_submission_creator') or '').strip()
+        person = previews.setdefault(creator, {})
+        built = {}
+        for day in sorted(cache_days):
+            day_counts = [row for row in daily_counts if row['date'] == day]
+            tables, table_warnings = make_copy_tables(day, creator, day_counts, label_snapshots, header_snapshots,
+                owner_rows=_creator_category_rows, periods=_period_columns, normalize=_key)
+            built[day] = {'schema':1,'date':day,'tables':tables,'daily_counts':day_counts,
+                'counted':sum(row['total'] for row in day_counts),
+                'warnings':list(dict.fromkeys([*warnings,*table_warnings])),
+                'cached_at':datetime.now().astimezone().isoformat(timespec='seconds')}
+            person[day] = built[day]
+        if not write_cloud:
+            if not dry_run:
+                state[scope] = {**previous,'content_cache':content_cache,'duration_cache':duration_cache,
+                                'local_previews':previews}
+                _save_state(state_path,state)
+            return {'updated':[],'warnings':list(dict.fromkeys([*warnings,*(w for p in built.values() for w in p['warnings'])])),
+                'counted':counted,'daily_counts':daily_counts,'category_options':category_options,
+                'duplicate_exclusions':duplicate_exclusions,'automatic_classifications':adjustments,
+                'write_mode':'local','preview_days':built,'sync_progress':_sync_progress_summary(previous)}
         desired = {
             json.dumps(key, ensure_ascii=False): videos for key, videos in groups.items()
         }
         relevant = {key for key in set(desired) | set(old_cells)
                     if selected(json.loads(key)) and not retired(json.loads(key))}
         if not relevant:
-            next_state = {**previous, "last_refresh_warning_count": len(warnings),
+            next_state = {**previous, 'local_previews':previews,"last_refresh_warning_count": len(warnings),
                           "updated_at": datetime.now().astimezone().isoformat(timespec="seconds")}
             if not dry_run:
                 if not retired_periods:
@@ -1576,6 +1602,7 @@ def reconcile_daily_quantity(
                     "duplicate_exclusions": duplicate_exclusions,
                     "automatic_classifications": adjustments,
                     "category_options": category_options, "daily_counts": daily_counts,
+                    'write_mode':'cloud','preview_days':built,
                     "sync_progress": _sync_progress_summary(previous if dry_run else next_state)}
 
         updates = []
@@ -1634,7 +1661,7 @@ def reconcile_daily_quantity(
             next_cells[key] = entry
             verified_cells[key] = entry
         if not dry_run:
-            state[scope] = {**previous,
+            state[scope] = {**previous, 'local_previews':previews,
                             "content_cache": content_cache,
                             "duration_cache": duration_cache,
                             "last_refresh_warning_count": len(warnings),
@@ -1652,4 +1679,19 @@ def reconcile_daily_quantity(
                 "counted": counted,
                 "daily_counts": daily_counts,
                 "category_options": category_options,
+                'write_mode':'cloud','preview_days':built,
                 "sync_progress": _sync_progress_summary(previous if dry_run else state[scope])}
+
+
+def cached_daily_quantity_preview(config, root, day, state_path=None):
+    """Read a saved view only: no scan, history traversal, or Google calls."""
+    if _date(day) != day: raise ValueError('请选择有效日期。')
+    with _LOCK:
+        previous = _load_state(state_path or STATE_FILE).get(_scope_key(config,root),{})
+        creator = str(config.get('task_submission_creator') or '').strip()
+        value = previous.get('local_previews',{}).get(creator,{}).get(day)
+        if value is not None:
+            from model.DailyQuantityCopy import valid_preview
+            if not valid_preview(value,day):raise ValueError('该日期缓存格式无效，请点击刷新重建；历史统计和分类未修改。')
+        return {'write_mode':'cache','cache_date':day,'preview_days':{day:copy.deepcopy(value)} if value else {},
+                'cache_miss':not bool(value)}

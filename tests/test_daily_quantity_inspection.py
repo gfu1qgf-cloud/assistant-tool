@@ -251,7 +251,7 @@ class InspectionUiTests(unittest.TestCase):
             d._copy_external_values([0], "name")
         copy_text.assert_called_once_with("a.mp4")
 
-    def test_open_triggers_inspection_without_cloud_refresh(self):
+    def test_open_loads_cached_copy_table_without_scanning_or_cloud_refresh(self):
         from app_plugins.builtin.task_delivery import TaskDeliveryPlugin
         parent = QtWidgets.QWidget()
         parent.task_path_edit = QtWidgets.QLineEdit("root", parent)
@@ -262,11 +262,12 @@ class InspectionUiTests(unittest.TestCase):
              patch("app_plugins.builtin.task_delivery.external_video_sources", return_value=[]), \
              patch.object(p, "refresh_daily_quantity_review_queue"), \
              patch.object(p, "load_daily_quantity_categories"), patch.object(p, "_load_daily_quantity_progress"), \
-             patch.object(p, "inspect_daily_quantity") as inspect, patch.object(p, "refresh_daily_quantity") as refresh:
+             patch.object(p, "inspect_daily_quantity") as inspect, patch.object(p, "refresh_daily_quantity") as refresh, \
+             patch.object(p,'load_daily_quantity_copy_cache') as cached:
             d = p.open_daily_quantity()
-            inspect.assert_called_once()
+            inspect.assert_not_called();cached.assert_called_once()
             refresh.assert_not_called()
-            self.assertEqual(d.tabs.currentIndex(), d.pending_tab_index)
+            self.assertEqual(d.tabs.currentIndex(), d.copy_tab_index)
         d.close()
         parent.deleteLater()
 

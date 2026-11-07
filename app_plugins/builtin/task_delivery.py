@@ -34,6 +34,7 @@ from model.TaskResultOrganizer import load_effective_config
 from model.TaskResultOrganizer import get_upload_batch
 from model.TaskDeliveryBackground import UPLOAD_RESOURCE, run_quick_upload
 from model.DailyQuantityCategories import CategoryStore
+from model.DailyQuantityCopy import AUTO_WRITE_KEY, auto_write_enabled
 from app_plugins.builtin.task_delivery_category_editor import CategoryEditorDialog
 
 
@@ -145,7 +146,7 @@ class TaskDeliveryQuickActions(QtWidgets.QWidget):
 class TaskDeliveryPlugin:
     plugin_id = "task_delivery"
     display_name = "任务交付"
-    version = "1.0"
+    version = "1.1"
     required_api_version = 2
 
     def __init__(self):
@@ -160,6 +161,7 @@ class TaskDeliveryPlugin:
         self.daily_quantity_date_thread = None
         self.daily_quantity_inspection_thread = None
         self.daily_quantity_dialog_scope = None
+        self._daily_quantity_pending_day = None
         self.todo_store = None
         self.delivery_board_dialog = None
 
@@ -326,8 +328,8 @@ class TaskDeliveryPlugin:
         config = self.context.load_config()
         root = self.context.parent_widget.task_path_edit.text().strip()
         previous = self.daily_quantity_dialog_scope
-        changed_scope = previous and (previous[0].get("daily_quantity_sheet_url"), previous[1]) != (
-            config.get("daily_quantity_sheet_url"), root)
+        changed_scope = previous and (previous[0].get("daily_quantity_sheet_url"), previous[0].get('task_submission_creator'), previous[1]) != (
+            config.get("daily_quantity_sheet_url"), config.get('task_submission_creator'), root)
         if changed_scope and self.daily_quantity_dialog is not None:
             if not self._save_daily_quantity_external_edits(*previous):
                 self.daily_quantity_dialog.show()
@@ -335,6 +337,7 @@ class TaskDeliveryPlugin:
             self.daily_quantity_dialog.show_external_records([])
             self.daily_quantity_dialog.show_inspection({})
             self.daily_quantity_dialog.show_external_sources([])
+            self.daily_quantity_dialog.copy_panel.clear_scope()
         self.daily_quantity_dialog_scope = (dict(config), root)
         if self.daily_quantity_dialog is None:
             dialog = DailyQuantityDialog(self.context.parent_widget)
@@ -352,6 +355,8 @@ class TaskDeliveryPlugin:
             dialog.inspect_requested.connect(self.inspect_daily_quantity)
             dialog.view_pending_requested.connect(self.view_daily_quantity_pending)
             dialog.ignore_requested.connect(self.ignore_daily_quantity_records)
+            dialog.copy_date_requested.connect(self.load_daily_quantity_copy_cache)
+            dialog.auto_write_requested.connect(self.set_daily_quantity_auto_write)
             self.daily_quantity_dialog = dialog
             try:
                 dialog.show_external_records(external_video_records(
@@ -369,14 +374,35 @@ class TaskDeliveryPlugin:
             self.context.load_config().get("daily_quantity_sheet_url")
         )
         self._load_daily_quantity_progress()
+        self.daily_quantity_dialog.set_auto_write(auto_write_enabled(config))
         self.daily_quantity_dialog.show()
         self.daily_quantity_dialog.raise_()
         self.daily_quantity_dialog.activateWindow()
         self.load_daily_quantity_categories()
         self.daily_quantity_dialog._pending_view = None
-        self.daily_quantity_dialog.tabs.setCurrentIndex(self.daily_quantity_dialog.pending_tab_index)
-        self.inspect_daily_quantity()
+        self.daily_quantity_dialog.tabs.setCurrentIndex(self.daily_quantity_dialog.copy_tab_index)
+        self.load_daily_quantity_copy_cache(self.daily_quantity_dialog.folder_day.date().toString('yyyy-MM-dd'))
         return self.daily_quantity_dialog
+
+    def set_daily_quantity_auto_write(self, enabled):
+        config=self.context.load_config()
+        saved=self.context.patch_config({AUTO_WRITE_KEY:bool(enabled)},expected=config)
+        if not saved:
+            self.daily_quantity_dialog.set_auto_write(auto_write_enabled(config))
+            self.daily_quantity_dialog.status.setText('开关保存失败，未改变云端填写方式。')
+        return bool(saved)
+
+    def load_daily_quantity_copy_cache(self, day):
+        if self.daily_quantity_dialog is None:return False
+        if self.daily_quantity_thread is not None:
+            self._daily_quantity_pending_day=day;return False
+        config=self.context.load_config();root=self.context.parent_widget.task_path_edit.text().strip()
+        if not config.get('daily_quantity_sheet_url'):return False
+        thread=DailyQuantityThread(config,root,self.context.parent_widget,only_dates=[day],cache_only=True)
+        self.daily_quantity_thread=thread
+        thread.completed.connect(self._daily_quantity_completed);thread.failed.connect(self._daily_quantity_failed)
+        connect_thread_finished(thread,self,'daily_quantity_thread',self._daily_quantity_finished)
+        thread.start();return True
 
     def inspect_daily_quantity(self):
         dialog = self.daily_quantity_dialog
@@ -494,6 +520,7 @@ class TaskDeliveryPlugin:
     def edit_daily_quantity_sheet(self):
         self.context.parent_widget.openSettings(focus_daily_quantity=True)
         if self.daily_quantity_dialog is not None:
+            self.daily_quantity_dialog.set_auto_write(auto_write_enabled(self.context.load_config()))
             self.daily_quantity_dialog.set_sheet_url(
                 self.context.load_config().get("daily_quantity_sheet_url")
             )
@@ -546,8 +573,12 @@ class TaskDeliveryPlugin:
                     "请先在程序设置 → 整理任务结果填写每日数量表格链接。"
                 )
             return False
+        if self.daily_quantity_dialog is not None:
+            self.daily_quantity_dialog.set_auto_write(auto_write_enabled(config))
         if manual and only_dates is None and self.daily_quantity_dialog is not None:
             only_dates = [self.daily_quantity_dialog.folder_day.date().toString('yyyy-MM-dd')]
+        if only_dates is None and not auto_write_enabled(config):
+            only_dates=[get_upload_batch(config)[0].isoformat()]
         if manual and self.daily_quantity_dialog is not None and only_dates is not None:
             edited_dates = {edit['batch_date'] for edit in self.daily_quantity_dialog.changed_external_edits()}
             extra = edited_dates - set(only_dates)
@@ -745,11 +776,24 @@ class TaskDeliveryPlugin:
         self.inspect_daily_quantity()
 
     def _daily_quantity_completed(self, result):
+        thread=getattr(self,'daily_quantity_thread',None)
+        if thread is not None:
+            try:
+                current=self.context.load_config()
+                active_root=self.context.parent_widget.task_path_edit.text().strip()
+            except RuntimeError:return  # A late result after native window destruction.
+            if (thread.root!=active_root or
+                thread.config.get('daily_quantity_sheet_url')!=current.get('daily_quantity_sheet_url') or
+                thread.config.get('task_submission_creator')!=current.get('task_submission_creator')):return
         if self.daily_quantity_dialog is not None:
             self.daily_quantity_dialog.set_busy(False)
             self.daily_quantity_dialog.show_result(result)
+        if result.get('write_mode')=='cache':return
         self.refresh_daily_quantity_review_queue()
         warnings = result.get("warnings", [])
+        if result.get('write_mode')=='local':
+            self.context.log(f'每日数量：本地填写表已更新缓存，归类{result.get("counted",0)}个视频；云端自动填写关闭，未改写表格。')
+            return
         self.context.log(
             f"每日数量统计：已归类 {result.get('counted', 0)} 个视频，"
             f"更新 {len(result.get('updated', []))} 格，待处理 {len(warnings)} 条。"
@@ -788,6 +832,10 @@ class TaskDeliveryPlugin:
                 self.daily_quantity_dialog.raise_()
 
     def _daily_quantity_failed(self, error):
+        if getattr(getattr(self,'daily_quantity_thread',None),'cache_only',False):
+            if self.daily_quantity_dialog is not None:
+                self.daily_quantity_dialog.copy_panel.note.setText('缓存读取失败，未重新统计、未改写云端：'+str(error))
+            return
         self.context.log(f"每日数量统计失败：{error}")
         self.context.notify("每日数量统计失败", error, critical=True)
         if self.daily_quantity_dialog is not None:
@@ -799,7 +847,9 @@ class TaskDeliveryPlugin:
         self.daily_quantity_thread = None
         if thread is not None:
             thread.deleteLater()
-        self.inspect_daily_quantity()
+        pending=self._daily_quantity_pending_day;self._daily_quantity_pending_day=None
+        if pending:self.load_daily_quantity_copy_cache(pending)
+        elif not getattr(thread,'cache_only',False):self.inspect_daily_quantity()
 
     def start_quick_upload(self, name, sources):
         if self.quick_upload_thread is not None and self.quick_upload_thread.isRunning():

@@ -14,6 +14,8 @@ from model.DailyQuantityStats import (
     scan_external_video_folder,
 )
 from model.TaskResultOrganizer import get_upload_batch
+from model.DailyQuantityCopy import auto_write_enabled
+from .task_delivery_quantity_copy import DailyQuantityCopyPanel
 from model.ReviewSubmissionHistory import read_review_history
 
 
@@ -39,18 +41,23 @@ class DailyQuantityThread(QtCore.QThread):
     completed = QtCore.pyqtSignal(object)
     failed = QtCore.pyqtSignal(str)
 
-    def __init__(self, config, root, parent=None, *, manual=False, only_dates=None):
+    def __init__(self, config, root, parent=None, *, manual=False, only_dates=None, cache_only=False):
         super().__init__(parent)
         self.config = dict(config)
         self.root = str(root)
         self.manual = bool(manual)
         self.only_dates = None if only_dates is None else tuple(only_dates)
+        self.cache_only = cache_only
 
     def run(self):
         try:
+            if self.cache_only:
+                from model.DailyQuantityStats import cached_daily_quantity_preview
+                self.completed.emit(cached_daily_quantity_preview(self.config,self.root,self.only_dates[0]));return
             options = {'only_dates': self.only_dates} if self.only_dates is not None else {}
             self.completed.emit(reconcile_daily_quantity(self.config, self.root, verify_content=True,
-                                                         manual_refresh=self.manual, **options))
+                                                         manual_refresh=self.manual,
+                                                         write_cloud=auto_write_enabled(self.config), **options))
         except Exception as exc:
             self.failed.emit(f"{type(exc).__name__}: {exc}")
 
@@ -123,6 +130,8 @@ class DailyQuantityDialog(QtWidgets.QDialog):
     inspect_requested = QtCore.pyqtSignal()
     view_pending_requested = QtCore.pyqtSignal(str, bool)
     ignore_requested = QtCore.pyqtSignal(object, bool)
+    auto_write_requested = QtCore.pyqtSignal(bool)
+    copy_date_requested = QtCore.pyqtSignal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -169,8 +178,15 @@ class DailyQuantityDialog(QtWidgets.QDialog):
         self.refresh_button.clicked.connect(self.refresh_requested.emit)
         toolbar.addWidget(self.refresh_button)
         layout.addLayout(toolbar)
+        self.auto_write=QtWidgets.QCheckBox('自动填写云端每日数量表（默认关闭）')
+        self.auto_write.setToolTip('关闭后只统计并保存本地填写表；开启后，从下一次统计开始按原规则填写云端数字格。')
+        self.auto_write.toggled.connect(self.auto_write_requested.emit)
+        layout.addWidget(self.auto_write)
 
         progress_card = QtWidgets.QFrame(self)
+        self.sync_progress_card=progress_card
+        progress_card.setVisible(False)
+        self.auto_write.toggled.connect(progress_card.setVisible)
         progress_card.setFrameShape(QtWidgets.QFrame.Shape.StyledPanel)
         progress_layout = QtWidgets.QVBoxLayout(progress_card)
         progress_row = QtWidgets.QHBoxLayout()
@@ -193,6 +209,11 @@ class DailyQuantityDialog(QtWidgets.QDialog):
 
         self.tabs = QtWidgets.QTabWidget()
         layout.addWidget(self.tabs, 1)
+        self.copy_panel=DailyQuantityCopyPanel(self)
+        self.copy_tab_index=self.tabs.addTab(self.copy_panel,'当日填写表')
+        self.folder_day.dateChanged.connect(lambda d:(self.copy_panel.set_day(d.toString('yyyy-MM-dd')),
+                                                      self.copy_date_requested.emit(d.toString('yyyy-MM-dd'))))
+        self.copy_panel.set_day(self.folder_day.date().toString('yyyy-MM-dd'))
 
         overview = QtWidgets.QWidget()
         overview_layout = QtWidgets.QVBoxLayout(overview)
@@ -436,6 +457,11 @@ class DailyQuantityDialog(QtWidgets.QDialog):
 
     def _show_review_tab(self):
         self.tabs.setCurrentIndex(self.review_tab_index)
+
+    def set_auto_write(self, enabled):
+        blocker=QtCore.QSignalBlocker(self.auto_write)
+        self.auto_write.setChecked(bool(enabled));del blocker
+        self.sync_progress_card.setVisible(bool(enabled))
 
     def show_video_list(self):
         self.tabs.setCurrentIndex(self.video_tab_index)
@@ -1086,12 +1112,19 @@ class DailyQuantityDialog(QtWidgets.QDialog):
             self.folder_status.setText("正在扫描 Google Drive 文件夹及子文件夹…")
 
     def set_busy(self, busy):
+        self.auto_write.setEnabled(not busy)
         self.refresh_button.setEnabled(not busy)
         self.save_external_button.setEnabled(not busy)
         if busy:
             self.status.setText("正在读取上传历史、本地任务表和 Google 表格…")
 
     def show_result(self, result):
+        self.copy_panel.show_result(result)
+        if result.get('write_mode')=='cache':
+            if result.get('cache_date')==self.folder_day.date().toString('yyyy-MM-dd'):
+                self.status.setText('该日期暂无缓存，请点击“保存并刷新数量”统计一次。' if result.get('cache_miss')
+                                    else '已读取该日期缓存；未重新统计、未联网、未改写云端。')
+            return
         # Online labels are used by the writer to locate cells, not as choices.
         # A partial response must never clear the user-owned local catalog.
         warnings = result.get("warnings", [])
@@ -1104,6 +1137,11 @@ class DailyQuantityDialog(QtWidgets.QDialog):
         if "sync_progress" in result:
             self.show_sync_progress(result["sync_progress"])
         self._show_daily_summary()
+        if result.get('write_mode')=='local':
+            self.status.setText(f'本地填写表已更新并缓存；已归类{self._overall_count}个视频，云端自动填写关闭。')
+            self.details.setPlainText('本次只生成本地填写表，未改写云端数字。\n\n'+'\n'.join(warnings))
+            self.tabs.setCurrentIndex(self.copy_tab_index)
+            return
         self.status.setText(
             f"本次同步范围已归类视频 {self._overall_count} 个；本次更新数字格 {len(updated)} 个；"
             f"待处理提示 {len(warnings)} 条"

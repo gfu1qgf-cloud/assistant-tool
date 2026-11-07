@@ -960,6 +960,8 @@ class MainSettingDialog(QtWidgets.QDialog, Ui_MainSettingDialog):
         self.task_result_submission_sheet_url_edit = QtWidgets.QLineEdit()
         self.task_result_submission_creator_edit = QtWidgets.QLineEdit()
         self.daily_quantity_sheet_url_edit = QtWidgets.QLineEdit()
+        self.daily_quantity_auto_write_checkbox=QtWidgets.QCheckBox('自动填写云端每日数量表（默认关闭）')
+        self.daily_quantity_auto_write_checkbox.setToolTip('关闭后统计结果保存在每日数量窗口的“当日填写表”，可自行复制。新统计操作读取此设置。')
         self.daily_quantity_sheet_url_edit.setPlaceholderText(
             'https://docs.google.com/spreadsheets/d/…/edit'
         )
@@ -979,6 +981,7 @@ class MainSettingDialog(QtWidgets.QDialog, Ui_MainSettingDialog):
         form.addRow('任务表格链接：', self.task_result_submission_sheet_url_edit)
         form.addRow('任务制作人：', self.task_result_submission_creator_edit)
         form.addRow('每日数量表格：', self.daily_quantity_sheet_url_edit)
+        form.addRow('', self.daily_quantity_auto_write_checkbox)
         form.addRow('文件名制作人标记：', self.task_result_creator_marker_edit)
 
         note = QtWidgets.QLabel(
@@ -1229,6 +1232,7 @@ class MainSettingDialog(QtWidgets.QDialog, Ui_MainSettingDialog):
         self.task_result_submission_sheet_url_edit.setText(task_result_config_str(config, 'task_submission_sheet_url'))
         self.task_result_submission_creator_edit.setText(task_result_config_str(config, 'task_submission_creator'))
         self.daily_quantity_sheet_url_edit.setText(task_result_config_str(config, 'daily_quantity_sheet_url'))
+        self.daily_quantity_auto_write_checkbox.setChecked(config.get('daily_quantity_auto_write') is True)
         self.task_result_creator_marker_edit.setText(task_result_config_str(config, 'task_submission_creator_marker'))
         self._update_task_result_enabled_state()
 
@@ -1331,6 +1335,7 @@ class MainSettingDialog(QtWidgets.QDialog, Ui_MainSettingDialog):
             'task_submission_sheet_url': self.task_result_submission_sheet_url_edit.text().strip(),
             'task_submission_creator': self.task_result_submission_creator_edit.text().strip(),
             'daily_quantity_sheet_url': self.daily_quantity_sheet_url_edit.text().strip(),
+            'daily_quantity_auto_write': self.daily_quantity_auto_write_checkbox.isChecked(),
             'task_submission_creator_marker': self.task_result_creator_marker_edit.text().strip(),
             'video_filename_creator_marker': self.task_result_creator_marker_edit.text().strip(),
         }

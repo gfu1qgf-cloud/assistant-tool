@@ -10,6 +10,18 @@ from globalValue import globalValue
 
 
 class DailyQuantitySettingsTests(unittest.TestCase):
+    def test_only_write_toggle_or_first_default_save_does_not_restart_plugins(self):
+        for initial,enabled in (({},False),({'daily_quantity_auto_write':False},True)):
+            previous={'daily_quantity_sheet_url':'synthetic',**initial}
+            updated={**previous,'daily_quantity_auto_write':enabled}
+            window=mock.Mock();window.load_config.side_effect=[previous,updated]
+            with mock.patch.object(MainSettingDialog,'get_settings',return_value=updated),mock.patch.object(
+                    globalValue,'loaded_whisper_model_name',return_value='large-v3'):
+                MainDialog.openSettings(window,focus_daily_quantity=True)
+            window.plugin_host.apply_settings.assert_not_called()
+            window.registerLoadTaskGlobalHotkey.assert_not_called()
+            window.restartFlowParameterGuard.assert_not_called()
+
     def test_only_sheet_link_change_does_not_reapply_unrelated_qt_services(self):
         previous = {
             "daily_quantity_sheet_url": "https://docs.google.com/spreadsheets/d/old/edit",

@@ -1693,7 +1693,7 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
         if 'config_hot_reload' in changed:
             applied.add('config_hot_reload')
         # These are already read directly from disk when a new operation starts.
-        dynamic = {'daily_quantity_sheet_url', 'task_submission_sheet_url', 'elevenlabs_api_keys', 'elevenlabs_alignment_key_id', 'elevenlabs_key_preferences',
+        dynamic = {'daily_quantity_sheet_url', 'daily_quantity_auto_write', 'task_submission_sheet_url', 'elevenlabs_api_keys', 'elevenlabs_alignment_key_id', 'elevenlabs_key_preferences',
                    'elevenlabs_api_key_statuses', 'task_table_schema'}
         applied.update(changed & dynamic)
         deferred = changed - applied - retry
@@ -1757,7 +1757,10 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
             current_other = dict(current_config)
             previous_url = previous_other.pop("daily_quantity_sheet_url", "")
             current_url = current_other.pop("daily_quantity_sheet_url", "")
-            if previous_url != current_url and previous_other == current_other:
+            previous_write=previous_other.pop('daily_quantity_auto_write',False)
+            current_write=current_other.pop('daily_quantity_auto_write',False)
+            mode_key_added=('daily_quantity_auto_write' in previous_config)!=('daily_quantity_auto_write' in current_config)
+            if ((previous_url,previous_write)!=(current_url,current_write) or mode_key_added) and previous_other == current_other:
                 # Updating the statistics target needs no hotkey, guard or
                 # plugin restart. Reapplying every setting here can tear down
                 # active Qt workers while this modal dialog is closing.

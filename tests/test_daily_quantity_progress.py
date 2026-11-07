@@ -150,6 +150,7 @@ class QuantityProgressUiTests(unittest.TestCase):
     def test_progress_stays_visible_when_selected_day_or_tab_changes(self):
         d = DailyQuantityDialog()
         try:
+            d.set_auto_write(True)
             d.show_sync_progress(self.progress())
             d.folder_day.setDate(QtCore.QDate(2026, 9, 25))
             self.assertIn("手动刷新至：2026-09-26", d.sync_progress_heading.text())
