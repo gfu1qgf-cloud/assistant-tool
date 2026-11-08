@@ -72,6 +72,14 @@ class BatchClient:
     def rewrite(self, body):
         return self.json('POST', '/responses', json=body, timeout=(10, 180))
 
+    def list_models(self):
+        from model.OpenAIResponses import is_chat_model
+        rows = self.json('GET', '/models').get('data', [])
+        image_ids = sorted({r['id'] for r in rows if isinstance(r, dict) and isinstance(r.get('id'), str)
+                            and r['id'].startswith(('gpt-image-', 'chatgpt-image-'))})
+        text_ids = sorted({r['id'] for r in rows if isinstance(r, dict) and is_chat_model(r.get('id'))})
+        return {'text': text_ids, 'image': image_ids}
+
     def create(self, file_id, metadata):
         return self.json('POST', '/batches', json={'input_file_id': safe_id(file_id, 'file-'),
             'endpoint': metadata['endpoint'], 'completion_window': '24h',

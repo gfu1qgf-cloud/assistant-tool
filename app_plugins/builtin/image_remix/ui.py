@@ -26,7 +26,7 @@ def thumbnail(path, size):
 class RemixDialog(QtWidgets.QDialog):
     def __init__(self, plugin, parent=None):
         super().__init__(parent)
-        if getattr(plugin, 'submission_api_version', 0) < 3:
+        if getattr(plugin, 'submission_api_version', 0) < 4:
             raise RuntimeError('图片翻版已更新，请重启软件后使用；已阻止新旧提交代码混用。')
         self.plugin = plugin
         self.draft_loaded = False
@@ -53,7 +53,11 @@ class RemixDialog(QtWidgets.QDialog):
         self.rewrite_model = QtWidgets.QComboBox(left); self.rewrite_model.setEditable(True)
         self.rewrite_model.addItem('gpt-5-mini')
         self.rewrite_model.setToolTip('先由此文字模型批量改写提示词，再调用图片模型。可填写账号支持Responses与结构化输出的模型ID。')
-        fields.addRow('提示词模型', self.rewrite_model)
+        text_model_row = QtWidgets.QWidget(left); model_bar = QtWidgets.QHBoxLayout(text_model_row); model_bar.setContentsMargins(0, 0, 0, 0)
+        self.refresh_models = QtWidgets.QPushButton('刷新账号模型', left)
+        self.refresh_models.clicked.connect(lambda: plugin.launch('models'))
+        model_bar.addWidget(self.rewrite_model, 1); model_bar.addWidget(self.refresh_models)
+        fields.addRow('提示词模型', text_model_row)
         self.count = QtWidgets.QSpinBox(left); self.count.setRange(1, 500); self.count.setValue(4)
         fields.addRow('生成数量', self.count)
         self.innovation = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal, left)
@@ -75,9 +79,13 @@ class RemixDialog(QtWidgets.QDialog):
             self.quality.addItem(title, value)
         self.quality.setCurrentIndex(1); fields.addRow('质量', self.quality)
         self.model = QtWidgets.QComboBox(left)
+        self.model.setEditable(True)
         for title, value in zip(('Flare · 日常生成', 'Sunburst · 精细生成'), MODELS):
-            self.model.addItem(title, value)
+            self.model.addItem(value, value)
+        self.model.setToolTip('下拉选择，也可直接输入GPT图片模型ID。可用列表由“刷新账号模型”读取，不自动替换已提交任务的模型。')
         fields.addRow('图片模型', self.model)
+        model_hint = QtWidgets.QLabel('两个模型都可下拉选择，或直接输入模型ID；刷新不会改动当前选择。', left)
+        model_hint.setWordWrap(True); fields.addRow('', model_hint)
         form.addLayout(fields)
         reference_bar = QtWidgets.QHBoxLayout()
         reference_bar.addWidget(QtWidgets.QLabel('人物参考图（可选，最多4张）', left))
@@ -163,7 +171,7 @@ class RemixDialog(QtWidgets.QDialog):
         return {'rewrite_enabled': True, 'rewrite_model': self.rewrite_model.currentText().strip(),
                 'mode': self.mode.currentData(), 'prompt': self.prompt.toPlainText(), 'count': self.count.value(),
                 'innovation': self.innovation.value(), 'size': self.size.currentData(),
-                'quality': self.quality.currentData(), 'model': self.model.currentData(),
+                'quality': self.quality.currentData(), 'model': self.model.currentText().strip(),
                 'output': self.output.text().strip(),
                 'references': [self.references.item(i).data(QtCore.Qt.ItemDataRole.UserRole)
                                for i in range(self.references.count())]}
@@ -177,7 +185,8 @@ class RemixDialog(QtWidgets.QDialog):
         for key in ('count', 'innovation'):
             if type(draft.get(key)) is int:
                 getattr(self, key).setValue(draft[key])
-        for key in ('mode', 'size', 'quality', 'model'):
+        self.model.setCurrentText(str(draft.get('model') or MODELS[0]))
+        for key in ('mode', 'size', 'quality'):
             widget = getattr(self, key); index = widget.findData(draft.get(key, 'batch' if key == 'mode' else None))
             if index >= 0: widget.setCurrentIndex(index)
         self.output.setText(str(draft.get('output', '')))
@@ -187,6 +196,16 @@ class RemixDialog(QtWidgets.QDialog):
     def choose_output(self):
         directory = QtWidgets.QFileDialog.getExistingDirectory(self, '结果保存目录', self.output.text())
         if directory: self.output.setText(directory)
+
+    def set_models(self, models):
+        for widget, key in ((self.rewrite_model, 'text'), (self.model, 'image')):
+            selected = widget.currentText()
+            widget.blockSignals(True)
+            widget.clear()
+            values = list(dict.fromkeys([selected, *models.get(key, [])]))
+            for value in values:
+                if value: widget.addItem(value, value)
+            widget.setCurrentText(selected); widget.blockSignals(False)
 
     def add_references(self):
         files, _ = QtWidgets.QFileDialog.getOpenFileNames(self, '添加人物参考图', '', '图片 (*.png *.jpg *.jpeg *.webp)')
@@ -267,6 +286,7 @@ class RemixDialog(QtWidgets.QDialog):
         if identifier is None and jobs: self.history.selectRow(0)
         self.history.blockSignals(False)
         self.generate.setEnabled(not busy); self.check.setEnabled(not busy)
+        self.refresh_models.setEnabled(not busy)
         self.status.setText(message)
         self.show_results()
 
@@ -319,8 +339,7 @@ class RemixDialog(QtWidgets.QDialog):
                 layout = QtWidgets.QVBoxLayout(dialog); text = QtWidgets.QPlainTextEdit(dialog); text.setReadOnly(True)
                 content = ['原始提示词：', job['spec']['prompt'], '\n批次：', *[a.get('batch_id') or a['state'] for a in job['attempts']],
                            '\n最近提示：', job.get('error', '')]
-                content += [f'\n{i["index"] + 1:04d} · {i["status"]}\n创意：{i.get("plan", {}).get("concept", "旧流程")}\n'
-                            f'变化：{i.get("plan", {}).get("changes", [])}\n{i["prompt"]}\n{i["error"]}' for i in job['items']]
+                content += [f'\n{i["index"] + 1:04d} · {i["status"]}\n{i["prompt"]}\n{i["error"]}' for i in job['items']]
                 text.setPlainText('\n'.join(content)); layout.addWidget(text); dialog.exec()
             elif chosen == reuse:
                 self.prompt.clear(); self.references.clear(); self.load_draft(job['spec'])

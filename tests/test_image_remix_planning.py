@@ -146,14 +146,14 @@ class PlanningTests(unittest.TestCase):
         job['snapshot_pending'] = True; self.store.save(job); self.store.prepare_snapshot(job)
         self.assertEqual(job['items'][0]['prompt'], prompt)
 
-    def test_high_innovation_with_only_camera_change_is_rejected(self):
+    def test_high_innovation_does_not_require_dimension_labels(self):
         value = plans([0, 1, 2])
         for row in value['variants']: row['changes'] = [{'dimension': 'camera', 'description': '换一个角度'}]
-        with self.assertRaises(ValueError): checked_variants(self.job, self.job['planning']['chunks'][0], value)
+        self.assertEqual(len(checked_variants(self.job, self.job['planning']['chunks'][0], value)), 3)
 
-    def test_100_requires_scene_action_composition_and_fourth_dimension(self):
+    def test_100_does_not_require_arbitrary_four_dimensions(self):
         value = plans([0, 1, 2]); value['variants'][0]['changes'].pop()
-        with self.assertRaises(ValueError): checked_variants(self.job, self.job['planning']['chunks'][0], value)
+        self.assertEqual(len(checked_variants(self.job, self.job['planning']['chunks'][0], value)), 3)
 
     def test_duplicate_or_missing_indices_rejected(self):
         for change in ('duplicate', 'missing'):
@@ -162,9 +162,9 @@ class PlanningTests(unittest.TestCase):
             else: value['variants'].pop()
             with self.assertRaises(ValueError): checked_variants(self.job, self.job['planning']['chunks'][0], value)
 
-    def test_duplicate_creative_prompts_rejected(self):
+    def test_prompt_similarity_is_not_a_mechanical_blocker(self):
         value = plans([0, 1, 2]); value['variants'][1]['prompt'] = value['variants'][0]['prompt']
-        with self.assertRaises(ValueError): checked_variants(self.job, self.job['planning']['chunks'][0], value)
+        self.assertEqual(len(checked_variants(self.job, self.job['planning']['chunks'][0], value)), 3)
 
     def test_incomplete_or_refused_response_blocks_image_stage(self):
         for body in ({'status': 'incomplete'}, {'status': 'completed', 'output': [

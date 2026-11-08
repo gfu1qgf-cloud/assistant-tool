@@ -86,7 +86,7 @@ class RemixTests(unittest.TestCase):
             with self.assertRaises(ValueError): validate_spec(spec(self.root, count=count))
 
     def test_no_silent_unsupported_model_or_size_fallback(self):
-        for values in ({'model': 'gpt-image-2'}, {'size': '100x1'}, {'quality': 'ultra'}, {'innovation': -1}):
+        for values in ({'model': 'text-model'}, {'size': '100x1'}, {'quality': 'ultra'}, {'innovation': -1}):
             with self.assertRaises(ValueError): validate_spec(spec(self.root, **values))
 
     def test_creation_is_durable_before_network_and_unique_output(self):

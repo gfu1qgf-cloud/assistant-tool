@@ -27,8 +27,9 @@ def validate_spec(value):
     for key, low, high in (('count', 1, 500), ('innovation', 0, 100)):
         if type(spec.get(key)) is not int or not low <= spec[key] <= high:
             raise ValueError(f'{key}必须为{low}—{high}之间的整数。')
-    if spec.get('model') not in MODELS:
-        raise ValueError('请选择已核对支持图片Batch的模型；不会自动改用普通接口。')
+    model = spec.get('model')
+    if not isinstance(model, str) or not re.fullmatch(r'(?:gpt-image-[A-Za-z0-9.-]+|chatgpt-image-latest)', model):
+        raise ValueError('请选择或填写GPT图片模型ID；接口／Batch兼容性以账号实际返回为准，不会自动改模型或计费方式。')
     if spec.get('size') not in SIZES or spec.get('quality') not in ('low', 'medium', 'high'):
         raise ValueError('图片尺寸或质量设置不正确。')
     references = spec.get('references', [])

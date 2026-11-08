@@ -10,8 +10,8 @@ from .service import run_operation, credential_identity
 class ImageRemixPlugin(QtCore.QObject):
     plugin_id = 'image_remix'
     display_name = 'GPT 图片翻版'
-    version = '0.3.0'
-    submission_api_version = 3
+    version = '0.3.1'
+    submission_api_version = 4
     required_api_version = 1
 
     def __init__(self):
@@ -75,7 +75,8 @@ class ImageRemixPlugin(QtCore.QObject):
         handle = self.context.submit_background_task(title='图片翻版 · ' + {
             'create': '提交批次', 'check': '检查并收取', 'retry': '重试失败项',
             'cancel': '停止／取消', 'delete': '删除记录', 'snapshot': '读取记录', 'bind': '关联原批次',
-            'resume': '继续未提交图片', 'retry_unknown': '确认重试未确认图片', 'retry_planning': '重试提示词创新'}[action],
+            'resume': '继续未提交图片', 'retry_unknown': '确认重试未确认图片', 'retry_planning': '重试提示词创新',
+            'models': '刷新账号模型'}[action],
             runner=run_operation, payload=payload, kind='network', execution='parallel',
             resources=('image-remix-state',), retryable=False, dedup_key='image-remix-operation')
         from model.BackgroundTasks import BackgroundTaskHandle
@@ -127,6 +128,14 @@ class ImageRemixPlugin(QtCore.QObject):
         self.auto_continue = result.get('auto_continue', False)
         messages = result.get('messages', [])
         self.message = '\n'.join(messages) if messages else '记录已更新：先创新提示词，再逐张生图；Batch模式分两轮，每5分钟检查。'
+        if 'models' in result and self.dialog is not None:
+            try: current = credential_identity(self.context.load_config())
+            except (ValueError, RuntimeError, OSError): current = None
+            if current == result.get('model_credential'):
+                self.dialog.set_models(result['models'])
+                self.message = '已读取账号模型列表；可下拉选择或直接输入ID。列表不代表所有模型都兼容当前接口／Batch。'
+            else:
+                self.message = '当前Key已更换，忽略旧账号的模型列表；请重新刷新。'
         if self.dialog is not None and not self.dialog.draft_loaded:
             self.dialog.load_draft(result.get('draft') or {})
         self.refresh()

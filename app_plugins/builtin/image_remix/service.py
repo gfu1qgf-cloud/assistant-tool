@@ -304,6 +304,13 @@ def _run_operation(store, payload, context):
         store.delete(payload['id'])
         return {'jobs': store.all()}
     config = payload.get('config') or {}
+    if action == 'models':
+        key = read_provider_key(config, 'openai')
+        client = BatchClient(key, context.check_canceled)
+        try:
+            return {'jobs': store.all(), 'draft': store.draft(), 'models': client.list_models(),
+                    'model_credential': credential_identity(config)}
+        finally: client.close()
     if action == 'create':
         job = store.create(payload['spec'], payload['credential'], identifier=payload['id'])
         identifiers = [job['id']]
