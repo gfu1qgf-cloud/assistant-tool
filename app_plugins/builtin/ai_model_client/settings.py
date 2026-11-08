@@ -93,6 +93,10 @@ class ClientSettingsPage:
     def load_config(self, config):
         keys = config.get(KEYS_CONFIG_KEY, {})
         keys = keys if isinstance(keys, dict) else {}
+        # MainSettingDialog.get_config() starts with a fresh partial dict, not
+        # the loaded config. Include untouched providers in that projection;
+        # otherwise saving one provider deletes all the others on disk.
+        self._loaded_keys = deepcopy(keys)
         for provider, editor in self.editors.items():
             editor.load(keys.get(provider))
         settings = config.get(CONFIG_KEY) or {}
@@ -125,7 +129,7 @@ class ClientSettingsPage:
 
     def update_config(self, config):
         self.validate()
-        source = config.get(KEYS_CONFIG_KEY, {})
+        source = config.get(KEYS_CONFIG_KEY, self._loaded_keys)
         keys = deepcopy(source) if isinstance(source, dict) else {}
         for provider, editor in self.editors.items():
             if not editor.dirty: continue
