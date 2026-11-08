@@ -52,20 +52,26 @@ def show_window(layer, duration):
     return resolve_window(layer['visual_timing'], duration, automatic_clock='restart')
 
 
-def preview_transform(layer, width, height, editor_timing):
+def preview_transform(layer, width, height, editor_timing, *, object_size=None):
     """Numeric transform of the same source-clock motion and global show window."""
     if editor_timing is None:
         return 1., 0., 0., 1.
     duration, time = editor_timing['duration'], editor_timing['time']
     window = show_window(layer, duration)
-    opacity, transition_scale, dx, dy = transform_at(window, time) if window else (1., 1., 0., 0.)
-    if not opacity:
+    if window and (time < window.start or time >= window.end):
         return 1., 0., 0., 0.
     local_duration = window.source_duration(duration) if window else duration
     local_time = time-window.start if window and window.clock == 'restart' else time
     scale, movement = motion_at(layer, local_duration, local_time) if layer.get('visual_animation', 'none') != 'none' else (1., 0.)
+    cx, cy = layer['x']/100, layer['y']/100
+    w, h = object_size or (width*layer['width']/100, height*layer['height']/100)
+    half_w, half_h = w*scale/(2*width), h*scale/(2*height)
+    offset = layer['height']/100*movement
+    opacity, transition_scale, dx, dy = transform_at(window, time,
+        bounds=(cx-half_w, cy+offset-half_h, cx+half_w, cy+offset+half_h),
+        center=(cx, cy), margin=(2/width, 2/height)) if window else (1., 1., 0., 0.)
     return (scale*transition_scale, width*dx,
-            height*dy + height*layer['height']/100*movement*transition_scale, opacity)
+            height*dy + height*offset*transition_scale, opacity)
 
 
 def motion_at(layer, duration, time):

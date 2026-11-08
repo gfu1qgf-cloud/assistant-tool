@@ -32,7 +32,7 @@ class TimingNodeEditor(QtWidgets.QWidget):
             self.controls[key].setSpecialValueText('0 秒（关闭）')
             self.controls[key].setToolTip('独立控制透明度；0关闭，不影响位移／缩放动画。')
         self.number(form, "distance", "运动幅度", 80, " %")
-        self.controls["distance"].setToolTip("滑动距离按画面宽／高计算；缩放幅度按元素原尺寸计算。只移动叠加内容，不移动背景。")
+        self.controls["distance"].setToolTip("滑入从画布外开始，滑出直到完全离开画布；自动考虑素材尺寸和位置。滑动幅度是最小行程，缩放幅度按原尺寸计算；淡入淡出独立。")
         form = self.group(root, "素材播放")
         self.choice(form, "clock", "时钟", (("auto", "自动（推荐）"),
             ("restart", "出现时从头播放"), ("global", "跟随全片时间")))

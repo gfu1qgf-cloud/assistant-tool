@@ -88,7 +88,7 @@ def resolve_window(value, duration, *, automatic_clock="restart", report=None):
                       settings["distance"] / 100, clock, fade_in, fade_out)
 
 
-def transform_at(window, time):
+def transform_at(window, time, *, bounds=(0., 0., 1., 1.), center=(.5, .5), margin=(0., 0.)):
     """Design-preview counterpart of add_timed_plane's fade/easing expressions."""
     if type(time) not in (int, float) or not math.isfinite(time):
         raise ValueError('动画快览时间无效。')
@@ -99,13 +99,18 @@ def transform_at(window, time):
     fade_in = max(0., min(1., (time-window.start)/window.fade_in)) if window.fade_in else 1.
     fade_out = max(0., min(1., (time-window.end+window.fade_out)/window.fade_out)) if window.fade_out else 0.
     opacity, scale, x, y = fade_in*(1-fade_out), 1., 0., 0.
-    for mode, progress in ((window.enter, (1-incoming)**3), (window.exit, outgoing**3)):
-        if mode == 'left': x -= window.distance*progress
-        elif mode == 'right': x += window.distance*progress
-        elif mode == 'up': y -= window.distance*progress
-        elif mode == 'down': y += window.distance*progress
-        elif mode == 'small': scale -= window.distance*progress
+    phases = ((window.enter, (1-incoming)**3), (window.exit, outgoing**3))
+    for mode, progress in phases:
+        if mode == 'small': scale -= window.distance*progress
         elif mode == 'large': scale += window.distance*progress
+    # Geometry is normalized to the canvas, after source motion but before the
+    # show-window scale. Expand around the same component pivot as FFmpeg.
+    left, top, right, bottom = (center[i % 2]+(n-center[i % 2])*scale for i,n in enumerate(bounds))
+    for mode, progress in phases:
+        if mode == 'left': x -= max(window.distance, right+margin[0])*progress
+        elif mode == 'right': x += max(window.distance, 1-left+margin[0])*progress
+        elif mode == 'up': y -= max(window.distance, bottom+margin[1])*progress
+        elif mode == 'down': y += max(window.distance, 1-top+margin[1])*progress
     return opacity, scale, x, y
 
 
@@ -128,15 +133,10 @@ def add_timed_plane(filters, plane, label, width, height, duration, fps, window,
                 if window.enter_duration else "0")
     outgoing = (f"pow(clip((t-{window.end-window.exit_duration:.9f})/{window.exit_duration:.9f},0,1),3)"
                 if window.exit_duration else "0")
-    x, y, scale = [], [], []
-    for mode, progress in ((window.enter, incoming), (window.exit, outgoing)):
-        if mode in {"left", "right"}:
-            sign = -1 if mode == "left" else 1
-            x.append(f"{sign*width*window.distance:.9f}*({progress})")
-        elif mode in {"up", "down"}:
-            sign = -1 if mode == "up" else 1
-            y.append(f"{sign*height*window.distance:.9f}*({progress})")
-        elif mode in {"small", "large"}:
+    scale = []
+    phases = ((window.enter, incoming), (window.exit, outgoing))
+    for mode, progress in phases:
+        if mode in {"small", "large"}:
             sign = -1 if mode == "small" else 1
             scale.append(f"{sign*window.distance:.9f}*({progress})")
     factor = "1+" + "+".join(scale) if scale and window.distance else '1'
@@ -154,13 +154,30 @@ def add_timed_plane(filters, plane, label, width, height, duration, fps, window,
     filters.append(f"color=c=black@0:s={width}x{height}:r={float(fps):.9f}:d={duration:.9f},"
                    f"format=rgba[{label}_blank]")
     # Compensate scaling around the object's center, not the video corner.
-    xx = f"{cx:.9f}*(1-overlay_w/{width})" + ("+" + "+".join(x) if x else "")
-    yy = f"{cy:.9f}*(1-overlay_h/{height})" + ("+" + "+".join(y) if y else "")
+    xx = f"{cx:.9f}*(1-overlay_w/{width})"
+    yy = f"{cy:.9f}*(1-overlay_h/{height})"
     if raw_object:
         import re
         movement = re.sub(r'\bt\b', f'(t-{window.start:.9f})', vertical_movement) if window.clock == 'restart' else vertical_movement
-        xx = f'{cx:.9f}-overlay_w/2' + ('+'+'+'.join(x) if x else '')
-        yy = f'{cy:.9f}-overlay_h/2+({movement})*({factor})' + ('+'+'+'.join(y) if y else '')
+        xx = f'{cx:.9f}-overlay_w/2'
+        yy = f'{cy:.9f}-overlay_h/2+({movement})*({factor})'
+    base_x, base_y = xx, yy
+    # Use the actual post-scale rectangle. A canvas percentage alone leaves
+    # large/off-centre objects partly visible at the first frame. Two pixels
+    # cover overlay integer rounding and the antialiased edge in Qt.
+    for mode, progress in phases:
+        if mode == 'left':
+            travel = f'max({width*window.distance:.9f},({base_x})+overlay_w+2)'
+            xx += f'-({travel})*({progress})'
+        elif mode == 'right':
+            travel = f'max({width*window.distance:.9f},{width}-({base_x})+2)'
+            xx += f'+({travel})*({progress})'
+        elif mode == 'up':
+            travel = f'max({height*window.distance:.9f},({base_y})+overlay_h+2)'
+            yy += f'-({travel})*({progress})'
+        elif mode == 'down':
+            travel = f'max({height*window.distance:.9f},{height}-({base_y})+2)'
+            yy += f'+({travel})*({progress})'
     enabled = f"gte(t,{window.start:.9f})*lt(t,{window.end:.9f})"
     filters.append(f"[{label}_blank][{label}_moving]overlay=x='{xx}':y='{yy}':eval=frame:"
                    f"enable='{enabled}':format=auto:eof_action=pass:repeatlast=0[{label}]")

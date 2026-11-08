@@ -107,7 +107,13 @@ class StaticVisualOnceTests(unittest.TestCase):
         # Frozen 1.43 compositor: independent reference for full-frame output,
         # kept in this test so future test runs need no external stage or Git.
         namespace=dict(vars(visual_media))
-        exec(compile(REFERENCE_SOURCE,'<1.43-compositor>','exec'),namespace)
+        # This reference keeps the original uncached key path. Apply only the
+        # shared 1.63 safety correction: a colour filter configured at the first
+        # dimensions must precede dynamic resize, including partial opacity.
+        reference = REFERENCE_SOURCE.replace('    movement = "0"',
+            '    effect.append(f"colorchannelmixer=aa={layer[\'opacity\']/100:.8f}")\n    movement = "0"')
+        reference = reference.replace('effect += [f"colorchannelmixer=aa={layer[\'opacity\']/100:.8f}", ', 'effect += [')
+        exec(compile(reference,'<uncached-compositor-safe-opacity>','exec'),namespace)
         cls.before=types.SimpleNamespace(add_plane=namespace['add_plane'])
 
     def setUp(self):

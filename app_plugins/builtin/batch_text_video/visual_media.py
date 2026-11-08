@@ -279,6 +279,9 @@ def add_plane(args, filters, layer, input_index, background, label, width, heigh
         # Rebuild the clock before animated scaling, movement and fades. No PNG
         # intermediates, Python frame producer, or unbounded frame cache.
         effect += ['loop=loop=-1:size=1:start=0', f'setpts=N/({float(fps):.9f}*TB)']
+    # Keep colourchannelmixer on fixed-size frames: a shrinking dynamic input
+    # can crash FFmpeg when opacity is applied after the changing dimensions.
+    effect.append(f"colorchannelmixer=aa={layer['opacity']/100:.8f}")
     movement = "0"
     if layer["visual_animation"] != "none":
         from .visual_animation import expressions
@@ -289,7 +292,7 @@ def add_plane(args, filters, layer, input_index, background, label, width, heigh
             if alpha_box: effect += ['format=gbrap', 'premultiply=inplace=1']
             effect.append(f"scale=w='max(1,round(iw*({scale})))':h='max(1,round(ih*({scale})))':eval=frame")
             if alpha_box: effect += ['unpremultiply=inplace=1', 'format=rgba']
-    effect += [f"colorchannelmixer=aa={layer['opacity']/100:.8f}", f"trim=duration={local_duration:.9f}", "setsar=1"]
+    effect += [f"trim=duration={local_duration:.9f}", "setsar=1"]
     filters.append(f"[{input_label}]" + ",".join(effect) + f"[{label}_source]")
     if timing:
         from .overlay_timing import add_timed_plane

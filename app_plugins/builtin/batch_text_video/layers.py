@@ -299,6 +299,9 @@ def compose_layers(text_images, layers, width, height, darkness, cache=None,tint
                     source = source.scaled(bounds, QtCore.Qt.AspectRatioMode.KeepAspectRatio,
                                            QtCore.Qt.TransformationMode.SmoothTransformation)
                 rect = image_rect(layer, source, width, height)
+                scale, dx, dy, opacity = preview_transform(layer, width, height, editor_timing,
+                    object_size=(rect.width(), rect.height()))
+                painter.setOpacity(layer['opacity']/100*opacity)
                 center, size = rect.center(), rect.size()*scale
                 rect = QtCore.QRectF(center.x()-size.width()/2+dx, center.y()-size.height()/2+dy,
                                     size.width(), size.height())
