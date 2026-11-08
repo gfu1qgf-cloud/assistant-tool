@@ -139,6 +139,8 @@ class PoolController(CustomPoolController, MattingController):
         if item and not item.isSelected():
             table.selectRow(item.row())
         menu = QtWidgets.QMenu(table)
+        from .background_trim_ui import add_actions
+        add_actions(self, menu, key)
         if key == 'jobs':
             from .render_assignment import clear_selected
             menu.addAction('重新分配所选任务素材（不回退池位置）', lambda: clear_selected(self)).setEnabled(bool(table.identifiers()))
@@ -216,7 +218,13 @@ class PoolController(CustomPoolController, MattingController):
         self.sync_custom_pools()
         if hasattr(self, "layer_panel"):
             self.layer_panel.set_pool_state(self.state)
-        self.video_pool.populate([(path, [Path(path).name], path, "") for path in self.state["backgrounds"]])
+        from .background_trim import lookup, display
+        rules = lookup(self.state['settings'])
+        rows = []
+        for path in self.state['backgrounds']:
+            name, tip = display(path, Path(path).name, rules)
+            rows.append((path, [name], tip, ''))
+        self.video_pool.populate(rows)
         self.copy_pool.populate([(item["id"], [item.get("label") or item.get("name", "文案"), item.get("title", "")],
                                   "\n".join((item.get("title", ""), item.get("body", ""), item.get("task_dir", ""),
                                              "人声：" + (item.get("task_voice_path") or item.get("voice_path") or "未找到"),

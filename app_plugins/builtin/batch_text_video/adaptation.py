@@ -80,7 +80,8 @@ def base_filter(width, height, settings, plan, fps):
                     f"trim=start={padding:.9f},setpts=PTS-STARTPTS")
     # Cover only final-frame rounding, after the interpolation context is handled.
     color = settings.get('_source_color_filter', '')
-    return (f"{color + ',' if color else ''}{retiming},format=yuv420p,settb=AVTB,tpad=stop_mode=clone:stop_duration={3/float(fps):.9f},"
+    from .background_trim import prefix
+    return (f"{prefix(settings)}{color + ',' if color else ''}{retiming},format=yuv420p,settb=AVTB,tpad=stop_mode=clone:stop_duration={3/float(fps):.9f},"
             f"trim=duration={plan['clip_duration']:.9f},setpts=PTS-STARTPTS")
 
 
@@ -91,6 +92,7 @@ def prepare_cycle(source, directory, ffmpeg, ffprobe, width, height, settings, p
               width, height, settings["fit"], settings["slow_interpolation"],
               settings.get("_background_crop"), settings.get('_source_color_filter', ''),
               {key: plan[key] for key in ("speed", "clip_duration", "fade")}, str(fps)]
+    if settings.get('_background_trim'): values.append(settings['_background_trim'])
     key = hashlib.sha256(json.dumps(values, sort_keys=True).encode("utf-8")).hexdigest()
     cache = Path(directory)/"video-cache"
     data_directory(cache).ensure(parents=True, exist_ok=True)
@@ -132,7 +134,7 @@ def _prepare_cycle_cached(source, cache, target, ffmpeg, ffprobe, width, height,
     with data_io.TemporaryDirectory(dir=cache, prefix="cycle-") as folder:
         script, output = Path(folder)/"cycle.filter", Path(folder)/"cycle.mp4"
         data_file(script).write_text(";\n".join(graph), "utf-8")
-        _run([ffmpeg, "-y", "-nostdin", "-hide_banner", "-loglevel", "error", "-i", str(source),
+        _run([ffmpeg, "-y", "-nostdin", "-hide_banner", "-loglevel", "error", "-i", source,
               filter_file_option(ffmpeg), str(script), "-map", "[out]", "-an", "-c:v", "libx264",
               "-preset", "veryfast", "-crf", "16", "-pix_fmt", "yuv420p", *sdr_output_args(), str(output)], cancel,
              timeout=max(600, end*60))

@@ -15,6 +15,7 @@ VISUAL_FILTER = "图片 / 视频 / GIF (" + " ".join("*" + item for item in sort
 DEFAULTS = {"blend_mode": "normal", "key_mode": "none", "key_similarity": .15,
             "key_softness": .08, "key_despill": False, "media_loop": True, "use_saved_matte": True,
             "media_loop_transition": "none", "media_loop_fade": .3, "media_loop_regions": [], "matting_enabled": True,
+            "media_crop_alpha": False, "media_crop_alpha_threshold": 1, "media_crop_alpha_padding": 2,
             **MATTE_DEFAULTS, **ANIMATION_DEFAULTS, **KEY_DEFAULTS, **SHOW_DEFAULTS}
 
 def is_animated(path):
@@ -28,6 +29,11 @@ def normalize_visual(layer):
     for key, value in DEFAULTS.items():
         if key not in layer: layer[key] = copy.deepcopy(value)
     normalize_key(layer)
+    if type(layer["media_crop_alpha"]) is not bool: raise ValueError("裁切透明空白开关无效。")
+    for field, high in (("media_crop_alpha_threshold", 255), ("media_crop_alpha_padding", 100)):
+        value = layer[field]
+        if type(value) is not int or not (1 if field.endswith("threshold") else 0) <= value <= high:
+            raise ValueError("裁切透明空白的阈值或留白无效。")
     if type(layer['matting_enabled']) is not bool: raise ValueError('启用抠像总开关必须是开关值。')
     if type(layer['use_saved_matte']) is not bool: raise ValueError('素材已存抠像开关无效。')
     if layer["blend_mode"] not in {"normal", "add", "screen"}:
@@ -179,7 +185,7 @@ def preview_planes(title, body, width, height, settings, cache):
             result.append(("normal", image))
     return result
 
-def add_plane(args, filters, layer, input_index, background, label, width, height, duration, fps, *, timing=None, ffmpeg=''):
+def add_plane(args, filters, layer, input_index, background, label, width, height, duration, fps, *, timing=None, ffmpeg='', cancel=None):
     """Alpha-correct normal/add/screen, with transparent clipping at canvas edges."""
     from .matting_switch import original
     layer = original(layer)
@@ -220,7 +226,11 @@ def add_plane(args, filters, layer, input_index, background, label, width, heigh
         else:
             start_time = float(media['video'].get('start_time') or 0.)
             native_region = PlaylistInput(path, region, local_duration, start_time)
-    loop_source = LoopInput(layer, local_duration, fps, executable, (box_w, box_h)) if candidate else None
+    from .alpha_bounds import for_layer, filter_for
+    alpha_box = for_layer(layer, ffmpeg=ffmpeg, cancel=cancel)
+    loop_box = (box_w, box_h) if alpha_box is None else (
+        math.ceil(box_w*alpha_box['width']/alpha_box['w']), math.ceil(box_h*alpha_box['height']/alpha_box['h']))
+    loop_source = LoopInput(layer, local_duration, fps, executable, loop_box) if candidate else None
     live_loop = loop_source is not None and (loop_source.overlap > 0 or region is not None)
     if dynamic(layer) or live_loop:
         source = (loop_source if live_loop else
@@ -256,7 +266,14 @@ def add_plane(args, filters, layer, input_index, background, label, width, heigh
                                                 source_label=input_label, auxiliary_index=input_index+consumed)
         consumed += keyed_count-1
         effect = []
+    crop = filter_for(alpha_box)
+    if crop: effect.append(crop)
+    # Hidden RGB differs between original frames and premultiplied loop joins.
+    # Scale alpha-cropped footage in premultiplied space to avoid changing edge
+    # colour/opacity across a dissolve, then restore straight RGBA for overlay.
+    if alpha_box: effect += ['format=gbrap', 'premultiply=inplace=1']
     effect += [f"scale={box_w}:{box_h}:force_original_aspect_ratio=decrease"]
+    if alpha_box: effect += ['unpremultiply=inplace=1', 'format=rgba']
     if static_source:
         # Cache one fully keyed, despilled, scaled RGBA frame inside FFmpeg.
         # Rebuild the clock before animated scaling, movement and fades. No PNG
@@ -269,7 +286,9 @@ def add_plane(args, filters, layer, input_index, background, label, width, heigh
         if scale != "1":
             # Fixed input dimensions, changing output dimensions; preserve the
             # source aspect and re-center at every frame, not at filter init.
+            if alpha_box: effect += ['format=gbrap', 'premultiply=inplace=1']
             effect.append(f"scale=w='max(1,round(iw*({scale})))':h='max(1,round(ih*({scale})))':eval=frame")
+            if alpha_box: effect += ['unpremultiply=inplace=1', 'format=rgba']
     effect += [f"colorchannelmixer=aa={layer['opacity']/100:.8f}", f"trim=duration={local_duration:.9f}", "setsar=1"]
     filters.append(f"[{input_label}]" + ",".join(effect) + f"[{label}_source]")
     if timing:
@@ -400,6 +419,15 @@ class VisualProperties(QtWidgets.QWidget):
             control.toggled.connect(self.edit)
             self.controls[key] = control
             (self.basic_form if key == 'media_loop' else form).addRow(control)
+        alpha_crop = QtWidgets.QCheckBox('自动裁切透明空白')
+        alpha_crop.setToolTip('按整段视频所有帧的透明通道确定固定边界，再按控件大小缩放居中；不逐帧改变大小，不改原文件。首次预览需检测，之后复用边界。')
+        alpha_crop.toggled.connect(self.edit); self.controls['media_crop_alpha'] = alpha_crop
+        self.basic_form.addRow(alpha_crop)
+        for field, label, low, high, suffix in (('media_crop_alpha_padding', '裁切留白', 0, 100, ' px'),
+                ('media_crop_alpha_threshold', '透明阈值', 1, 255, ' / 255')):
+            box = QtWidgets.QSpinBox(); box.setRange(low, high); box.setSuffix(suffix)
+            box.valueChanged.connect(self.edit); self.controls[field] = box; self.basic_form.addRow(label, box)
+        self.controls['media_crop_alpha_threshold'].setToolTip('默认1，保留所有非全透明像素。提高可忽略很淡的影子；过高会裁掉半透明边缘。')
         transition = QtWidgets.QComboBox()
         transition.addItem('直接衔接', 'none'); transition.addItem('叠化', 'fade')
         transition.currentIndexChanged.connect(self.edit)
@@ -553,6 +581,11 @@ class VisualProperties(QtWidgets.QWidget):
             self._last_animation[self.layer['id']] = mode.currentData()
         mode.setCurrentIndex(mode.findData(self._last_animation.get(self.layer['id'], 'pulse') if enabled else 'none'))
     def _update_key_controls(self):
+        from .visual_loop_region import sources
+        can_crop = bool(self.layer and sources(self.layer))
+        self.controls['media_crop_alpha'].setEnabled(can_crop or self.controls['media_crop_alpha'].isChecked())
+        for field in ('media_crop_alpha_padding', 'media_crop_alpha_threshold'):
+            self.controls[field].setEnabled(can_crop and self.controls['media_crop_alpha'].isChecked())
         self.controls['media_loop_transition'].setEnabled(self.controls['media_loop'].isChecked())
         self.controls['media_loop_fade'].setEnabled(self.controls['media_loop'].isChecked()
             and self.controls['media_loop_transition'].currentData() == 'fade')

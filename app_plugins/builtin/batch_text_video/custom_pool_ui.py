@@ -105,6 +105,8 @@ class CustomPoolController:
         self.sync_custom_pools()
 
     def sync_custom_pools(self):
+        from .background_trim import lookup, display
+        trim_rules = lookup(self.state['settings'])
         pools = self.state.get("resource_pools", [])
         ids = {pool["id"] for pool in pools}
         for identifier in list(self.custom_pages):
@@ -145,7 +147,9 @@ class CustomPoolController:
                 if kind == "music":
                     prefix = "→ " if item["id"] == pool["next_id"] or not pool["next_id"] and row == 0 else ""
                     values = [prefix + values[0], f"{item.get('cursor', 0):.1f}秒", item.get("last_used") or "未使用"]
-                rows.append((item["id"], values, item["path"],
+                tip = item['path']
+                if kind in {'video', 'visual'}: values[0], tip = display(item['path'], values[0], trim_rules)
+                rows.append((item["id"], values, tip,
                              (item['path'], item.get('thumbnail', '')) if kind in {'image', 'video', 'visual'} else ''))
             table.populate(rows)
         if hasattr(self, "controls") and "background_pool_id" in self.controls:

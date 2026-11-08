@@ -385,6 +385,7 @@ def _prepare_static_text(job, state, directory, cancel=None, progress=None, repo
     job, state = apply_assignment(job, state)
     job = background_job(job, state)
     settings = dict(state["settings"])
+    settings.pop("_background_trim", None)
     from .voice_effects import active as voice_fx_active, normalized as normalize_voice_fx, PRESETS
     settings.update(normalize_voice_fx(settings))
     from model.MediaEncoding import normalize_export_settings, resolve_video_encoder, video_encoding_args, filter_thread_args, encoder_label, video_pixel_format, quality_label
@@ -423,6 +424,7 @@ def _prepare_static_text(job, state, directory, cancel=None, progress=None, repo
         raise ValueError("背景素材不存在：" + Path(job["path"]).name)
     from .image_background import probe_background, duration as image_duration, materialize, motion_filter, FPS
     media = probe_background(job["path"], ffprobe, settings)
+    if media.get("_background_trim"): settings["_background_trim"] = media["_background_trim"]
     still = media.get("still_image", False)
     empty = media.get("empty_background", False)
     settings['_still_background'] = still
@@ -529,7 +531,7 @@ def _prepare_static_text(job, state, directory, cancel=None, progress=None, repo
             if music_session is not None:
                 music_session.release(music['path'])
         args = [ffmpeg, "-y", "-nostdin", "-hide_banner", "-loglevel", "error", "-progress", "pipe:1", *filter_thread_args(workers)]
-        if adaptation and adaptation["repeating"] and (not adaptation["fade"] or
+        if not media.get("_background_trim") and adaptation and adaptation["repeating"] and (not adaptation["fade"] or
                 media["audio"] and settings["keep_audio"] and not voice_path):
             args += ["-stream_loop", str(adaptation["loops"])]
         if empty:
@@ -538,7 +540,8 @@ def _prepare_static_text(job, state, directory, cancel=None, progress=None, repo
             image_path = materialize(job["path"], temporary/"background.png")
             args += ["-framerate", str(FPS), "-i", image_path]
         else:
-            args += ["-i", job["path"]]
+            from .background_trim import input_for
+            args += ["-i", input_for(job["path"], media, duration*(adaptation["speed"] if adaptation else 1.))]
         next_index = 1
         if empty:
             filters = ['[0:v]setpts=PTS-STARTPTS,setsar=1[background]']
@@ -548,7 +551,7 @@ def _prepare_static_text(job, state, directory, cancel=None, progress=None, repo
             # Decode and fit once. Only one fitted frame lives in FFmpeg's RAM loop.
             filters = [f"[0:v]{fit},loop=loop=-1:size=1:start=0,setpts=N/({FPS}*TB),{motion}[background]"]
         elif adaptation and adaptation["fade"]:
-            cycle, cycle_duration = prepare_cycle(job["path"], media_directory, ffmpeg, ffprobe, width, height,
+            cycle, cycle_duration = prepare_cycle(input_for(job["path"], media, media["duration"]), media_directory, ffmpeg, ffprobe, width, height,
                 settings, adaptation, fps, cancel, report, leases=leases)
             prefix = adaptation["clip_duration"] - adaptation["fade"]
             cycle_loops = max(0, math.ceil((duration-prefix)/cycle_duration)-1)
@@ -563,7 +566,8 @@ def _prepare_static_text(job, state, directory, cancel=None, progress=None, repo
         else:
             fit = framing_filter(width, height, settings)
             color = settings['_source_color_filter']
-            filters = [f"[0:v]setpts=PTS-STARTPTS,{color + ',' if color else ''}{fit},setsar=1[background]"]
+            from .background_trim import prefix as trim_prefix
+            filters = [f"[0:v]{trim_prefix(settings)}setpts=PTS-STARTPTS,{color + ',' if color else ''}{fit},setsar=1[background]"]
         from .background_visual import control as background_control
         if not (still or empty) and background_control(settings)["visual_animation"] != "none":
             filters.append(f"[background]{motion_filter(width, height, settings, duration, source_fps(media))}[moving_background]")
@@ -596,7 +600,7 @@ def _prepare_static_text(job, state, directory, cancel=None, progress=None, repo
                 next_index = node_effects.append(job, path, args, filters, background, next_index, label,
                     temporary, info, voice_path, ffmpeg)
             elif kind == "visual":
-                next_index += add_plane(args, filters, path, next_index, background, label, width, height, duration, source_fps(media))
+                next_index += add_plane(args, filters, path, next_index, background, label, width, height, duration, source_fps(media), ffmpeg=ffmpeg, cancel=cancel)
             elif kind == "scroll":
                 next_index += add_scroll_plane(args, filters, path, next_index, background, label, duration, source_fps(media))
             else:
@@ -629,9 +633,14 @@ def _prepare_static_text(job, state, directory, cancel=None, progress=None, repo
             voice_ir_index = next_index
             args += ['-i', str(response)]
             next_index += 1
+        original_input = None
+        if media.get('_background_trim') and media['audio'] and settings['keep_audio'] and not voice_path:
+            anchor = 'atrim=start=0.000001,' if media['_background_trim']['start'] > 0 else ''
+            filters.append('[0:a]aselect=concatdec_select,'+anchor+'asetpts=PTS-STARTPTS[trimmed_original_audio]')
+            original_input = '[trimmed_original_audio]'
         audio_filters, has_audio = audio_graph(settings, duration, voice_index, music_index, music, media["audio"],
             original_speed=adaptation["speed"] if adaptation and not voice_path else None, voice_ir_index=voice_ir_index,
-            music_input=music_input, music_start=music_start)
+            music_input=music_input, music_start=music_start, original_input=original_input)
         filters += audio_filters
         script = temporary / "render.filter"
         data_file(script).write_text(";\n".join(filters), "utf-8")
@@ -674,12 +683,16 @@ def prepare_static_text(job, state, directory, cancel=None, progress=None, repor
             not 0 < preview_limit <= 86400):
         raise ValueError('预览时长限制只用于播放预览，须为0–86400秒之间的正数；不会截短正式导出。')
     from .music_preparation import MusicPreparationSession, current_music_session, music_session
+    from .alpha_bounds import cancel_scope
     with ExitStack() as stack:
         if not state['settings'].get('keep_media_cache', True) and current_music_session() is None:
             session = stack.enter_context(MusicPreparationSession(cancel, 1))
             stack.enter_context(music_session(session))
-        prepared = stack.enter_context(_prepare_static_text(job, state, directory, cancel, progress, report, preview,
-            node_effects=node_effects, preview_limit=preview_limit))
+        # Preparation and encoding/publication can live on different workers.
+        # Restore this thread's cancellation scope before yielding the export.
+        with cancel_scope(cancel):
+            prepared = stack.enter_context(_prepare_static_text(job, state, directory, cancel, progress, report, preview,
+                node_effects=node_effects, preview_limit=preview_limit))
         yield prepared
 
 

@@ -45,6 +45,10 @@ class OverlayWorker(QtCore.QThread):
         self.directory, self.cancel = directory, threading.Event()
 
     def run(self):
+        from .alpha_bounds import cancel_scope
+        with cancel_scope(self.cancel): self.render()
+
+    def render(self):
         title, body, width, height, settings = self.request
         try:
             settings = dict(settings)
@@ -128,7 +132,10 @@ class PreviewWorker(QtCore.QThread):
                 self.ready.emit({**identity, "image": b"", "media": None, "voice_duration": voice_duration})
                 return
             from .image_background import probe_background, is_image
-            media = probe_background(self.path, ffprobe, self.frame_settings) if is_image(self.path) else probe(self.path, ffprobe)
+            if is_image(self.path): media = probe_background(self.path, ffprobe, self.frame_settings)
+            else:
+                from .background_trim import apply as apply_background_trim
+                media = apply_background_trim(probe(self.path, ffprobe), self.path, self.frame_settings or {})
             crop = None
             if self.frame_settings:
                 from .background_framing import prepare_background_settings, framing_filter, preview_size
@@ -153,7 +160,7 @@ class PreviewWorker(QtCore.QThread):
             from .image_background import materialize
             with data_io.TemporaryDirectory(prefix="background-poster-") as temporary:
                 source = materialize(self.path, Path(temporary)/"background.png") if media.get("still_image") else self.path
-                seek = [] if media.get("still_image") else ["-ss", "0.1"]
+                seek = [] if media.get("still_image") else ["-ss", f"{media['_background_trim']['start']:.9f}" if media.get("_background_trim") else "0.1"]
                 result = subprocess.run([ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "error", *seek,
                                          "-i", source, "-vf", frame_filter, "-frames:v", "1",
                                          "-f", "image2pipe", "-c:v", "png", "pipe:1"],
@@ -1153,9 +1160,13 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
         request = (path, voice, self.ffmpeg.text().strip())
         frame_settings = {key:self.controls[key].currentData() for key in ("aspect","fit")}
         frame_settings.update({key: self.controls[key].value() for key in ('canvas_width', 'canvas_height')})
+        frame_settings['background_trims'] = copy.deepcopy(self.state['settings'].get('background_trims', []))
         frame_settings["auto_crop_black_bars"] = self.controls["auto_crop_black_bars"].isChecked()
         request += (frame_settings["aspect"],frame_settings["fit"],frame_settings["auto_crop_black_bars"],blur_strength({"background_blur":self.controls["background_blur"].value()}))
         request += (frame_settings['canvas_width'], frame_settings['canvas_height'])
+        from .background_trim import selected as selected_trim
+        trim_rule = selected_trim(frame_settings, path)
+        if trim_rule: request += (repr(trim_rule),)
         if not force:
             cancel = getattr(self.preview_worker, "cancel", None)
             if self._preview_pending == request or (self._preview_path == request and not (cancel and cancel.is_set())):
@@ -1190,6 +1201,8 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
         for key in ('canvas_width', 'canvas_height'):
             if result.get(key, self.controls[key].value()) != self.controls[key].value(): return
         job = self.active_entry()
+        from .background_trim import selected as selected_trim
+        if selected_trim(result, result.get('path', '')) != selected_trim(self.state['settings'], job.get('path', '')): return
         try:
             voice = self.active_voice(job)
         except (ValueError, OSError):

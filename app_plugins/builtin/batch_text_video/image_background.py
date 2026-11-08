@@ -5,7 +5,7 @@ from qt_compat import QtCore, QtGui
 from .layers import IMAGE_SUFFIXES, read_image
 
 FPS = 30
-DEFAULTS = {'background_pool_id': '', 'background_visual': {'visual_animation': 'none'}}
+DEFAULTS = {'background_pool_id': '', 'background_visual': {'visual_animation': 'none'}, 'background_trims': []}
 
 
 def is_image(path):
@@ -16,7 +16,8 @@ def normalized(settings):
     from .background_visual import control, values
     identifier = settings.get('background_pool_id', '')
     if not isinstance(identifier, str): raise ValueError('背景池设置无效。')
-    return {'background_pool_id': identifier, 'background_visual': values(control(settings))}
+    from .background_trim import normalized as trim_rules
+    return {'background_pool_id': identifier, 'background_visual': values(control(settings)), 'background_trims': trim_rules(settings)}
 
 
 def duration(settings, voice_duration=None):
@@ -35,7 +36,8 @@ def probe_background(path, ffprobe, settings=None):
                           'avg_frame_rate': f'{FPS}/1', 'r_frame_rate': f'{FPS}/1'}}
     if not is_image(path):
         from .engine import probe
-        return probe(path, ffprobe)
+        from .background_trim import apply
+        return apply(probe(path, ffprobe), path, settings or {})
     path = Path(path)
     if not path.is_file():
         raise FileNotFoundError('背景图片不存在：' + path.name)
@@ -80,6 +82,7 @@ def scale_at(settings, time, full_duration=None):
 
 
 def motion_filter(width, height, settings, full_duration=None, fps=FPS):
+    fps = float(fps)  # Fraction formatting differs between Python 3.10 and 3.14.
     import re
     from .background_visual import control
     from .visual_animation import expressions

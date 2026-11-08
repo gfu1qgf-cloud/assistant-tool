@@ -61,6 +61,8 @@ def detect_background_crop(source, media, ffmpeg, directory=None, cancel=None):
     width, height = output_size({"aspect": "source"}, media)
     info = Path(source).stat()
     signature = [_VERSION, str(Path(source).resolve()), info.st_size, info.st_mtime_ns, width, height, ffmpeg]
+    trim = media.get('_background_trim')
+    if trim: signature.append(trim)
     key = hashlib.sha256(json.dumps(signature).encode("utf-8")).hexdigest()
     cache = Path(directory)/"background-framing-cache" if directory else None
     path = cache/(key+".json") if cache else None
@@ -82,10 +84,10 @@ def detect_background_crop(source, media, ffmpeg, directory=None, cancel=None):
     moments = sorted({min(.1, duration*.1), duration*.2, duration*.5, duration*.8, max(0, duration-.3)})
     samples = []
     for moment in moments:
-        log = _run([ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "info", "-ss", f"{moment:.6f}",
+        log = _run([ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "info", "-ss", f"{moment + (trim['start'] if trim else 0.):.6f}",
                     # Limited-range YUV encodes black at 16, not 0. The normal
                     # cropdetect limit of 24 includes black without dark grays.
-                    "-i", str(source), "-an", "-vf", "cropdetect=limit=0.0941176:round=2:reset=0:skip=0",
+                    "-i", str(source), *(["-t", f"{max(.000001, duration-moment):.9f}"] if trim else []), "-an", "-vf", "cropdetect=limit=0.0941176:round=2:reset=0:skip=0",
                     "-frames:v", "8", "-f", "null", "-"], cancel, timeout=30)
         values = [tuple(map(int, match)) for match in re.findall(r"crop=(\d+):(\d+):(\d+):(\d+)", log)]
         # Cropdetect accumulates the largest visible bounds within each sample.

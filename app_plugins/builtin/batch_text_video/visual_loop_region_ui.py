@@ -50,9 +50,10 @@ class SourceWorker(QtCore.QThread):
 
 
 class LoopRegionDialog(QtWidgets.QDialog):
-    def __init__(self, layer, parent=None):
+    def __init__(self, layer, parent=None, *, trim_mode=False):
         super().__init__(parent)
-        self.setWindowTitle('视频循环区间 · 首遍保留开头，后续循环 A–B')
+        self.trim_mode = trim_mode
+        self.setWindowTitle('裁切视频' if trim_mode else '视频循环区间 · 首遍保留开头，后续循环 A–B')
         self.resize(860, 720)
         self.rules = copy.deepcopy(layer.get(KEY, []))
         self.worker = self.loader = None
@@ -68,20 +69,20 @@ class LoopRegionDialog(QtWidgets.QDialog):
             self.source.setItemData(self.source.count()-1, path, QtCore.Qt.ItemDataRole.ToolTipRole)
         self.source.setToolTip('区间按这个控件的每个素材分别保存；不会改动资源池的生成顺序。')
         form.addRow('素材', self.source)
-        self.enabled = QtWidgets.QCheckBox('为此素材指定后续循环区间')
+        self.enabled = QtWidgets.QCheckBox('使用裁切区间' if trim_mode else '为此素材指定后续循环区间')
         form.addRow(self.enabled)
         self.start = QtWidgets.QDoubleSpinBox(); self.end = QtWidgets.QDoubleSpinBox()
         for box in (self.start, self.end):
             box.setDecimals(6); box.setRange(0, 86400); box.setSuffix(' 秒'); box.setKeyboardTracking(False)
             box.installEventFilter(self)
-        form.addRow('循环起点 A（包含）', self.start); form.addRow('循环终点 B（不包含）', self.end)
+        form.addRow('起点 A（包含）' if trim_mode else '循环起点 A（包含）', self.start); form.addRow('终点 B（不包含）' if trim_mode else '循环终点 B（不包含）', self.end)
         self.summary = QtWidgets.QLabel('正在读取素材…'); self.summary.setWordWrap(True); root.addWidget(self.summary)
         cards = QtWidgets.QHBoxLayout(); root.addLayout(cards)
         self.start_view, self.end_view = FrameView(), FrameView()
         for title, view, box in (('A · 后续每次从这里开始', self.start_view, self.start),
                                  ('B · 到这里之前结束（显示最后一帧）', self.end_view, self.end)):
             column = QtWidgets.QVBoxLayout(); cards.addLayout(column)
-            label = QtWidgets.QLabel(title); column.addWidget(label); column.addWidget(view, 1)
+            label = QtWidgets.QLabel('A · 起始画面' if trim_mode and box is self.start else title); column.addWidget(label); column.addWidget(view, 1)
             jump = QtWidgets.QPushButton('定位到'+('起点 A' if box is self.start else '终点 B 前一帧'))
             jump.setAutoDefault(False); column.addWidget(jump)
             jump.clicked.connect(lambda checked=False, target=box: self.seek_boundary(target))
@@ -99,12 +100,15 @@ class LoopRegionDialog(QtWidgets.QDialog):
         self.play = QtWidgets.QPushButton('试看后续循环 A→B')
         self.join = QtWidgets.QPushButton('试看首次接头 B→A')
         self.pause = QtWidgets.QPushButton('暂停')
+        if trim_mode:
+            self.play.setText('播放所选区间'); self.join.hide()
         for button in (self.play, self.join, self.pause): button.setAutoDefault(False); row.addWidget(button)
         self.play.clicked.connect(lambda: self.play_segment(False)); self.join.clicked.connect(lambda: self.play_segment(True))
         self.pause.clicked.connect(self.stop)
         note = QtWidgets.QLabel('首遍：从0秒播放到B；之后：只重复A–B。未设置区间的素材仍循环整段。\n'
             '这里无声试看原片动作；抠像、叠化和合成效果使用主窗口的播放预览。取消不会保存任何调整。')
         note.setWordWrap(True); root.addWidget(note)
+        if trim_mode: note.hide()
         self.status = QtWidgets.QLabel(); self.status.setWordWrap(True); root.addWidget(self.status)
         self.buttons = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.StandardButton.Ok|QtWidgets.QDialogButtonBox.StandardButton.Cancel)
         self.buttons.button(QtWidgets.QDialogButtonBox.StandardButton.Ok).setText('保存区间')
@@ -159,7 +163,7 @@ class LoopRegionDialog(QtWidgets.QDialog):
         self.info, self.source_stamp, self.ffmpeg = result['info'], result['stamp'], result['ffmpeg']
         rule = next((r for r in self.rules if identity(r['path']) == identity(self.path)), None)
         self.loading = True
-        self.enabled.setChecked(rule is not None)
+        self.enabled.setChecked(rule is not None or self.trim_mode)
         self.start.setRange(0, max(0., self.info['duration']-1/self.info['fps']))
         self.end.setRange(1/self.info['fps'], self.info['duration'])
         for box in (self.start, self.end): box.setSingleStep(1/self.info['fps'])
@@ -183,6 +187,8 @@ class LoopRegionDialog(QtWidgets.QDialog):
         a,b = self.start.value(), self.end.value()
         self.summary.setText(f'首遍 0 → {b:.3f} 秒；后续 {a:.3f} → {b:.3f} 秒（每次 {b-a:.3f} 秒）'
             if self.enabled.isChecked() else f'循环整段：0 → {self.info["duration"]:.3f} 秒')
+        if self.trim_mode:
+            self.summary.setText(f'仅使用 {a:.3f} → {b:.3f} 秒（{b-a:.3f} 秒）' if self.enabled.isChecked() else '使用整段视频')
         self.refresh(); self.timer.start()
 
     def capture(self):

@@ -345,7 +345,12 @@ class LoopRegionTests(unittest.TestCase):
                 with patch('app_plugins.builtin.batch_text_video.visual_loop_region_ui.LoopRegionDialog',Draft):
                     dialog.layer_panel.visual_properties._edit_loop_region()
                 self.assertEqual(dialog.layer_panel.current(),before)
-            finally:dialog.edit_timer.stop();dialog.close();dialog.deleteLater();self.app.processEvents()
+            finally:
+                dialog.edit_timer.stop();dialog.close()
+                # Closing is asynchronous. Drain decoders before tempfile
+                # cleanup so Windows never deletes a source still being read.
+                self.wait_until(lambda: not dialog.is_busy(), timeout=15)
+                dialog.deleteLater();self.app.processEvents()
 
 
 if __name__=='__main__': unittest.main()

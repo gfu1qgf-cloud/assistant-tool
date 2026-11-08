@@ -88,7 +88,11 @@ def playlist(spec):
         raise ValueError('循环素材已改变，请重新设置区间。')
     path = Path(str(spec)).resolve().as_posix().replace("'", "'\\''")
     if any(c in path for c in '\x00\r\n'): raise ValueError('循环素材路径包含无效字符。')
-    segments = [(0., spec.rule['end'])] + [(spec.rule['start'], spec.rule['end'])]*spec.repeats
+    segments = [(getattr(spec, 'first_start', 0.), spec.rule['end'])] + [(spec.rule['start'], spec.rule['end'])]*spec.repeats
+    # A first inpoint after zero can make FFmpeg normalize preroll PTS,
+    # invalidating concatdec_select on long GOPs. Anchor the demuxer clock at
+    # zero with a discarded microsecond; TrimInput removes it before retiming.
+    if getattr(spec, 'clock_anchor', False): segments.insert(0, (0., .000001))
     content = 'ffconcat version 1.0\n'
     for a, b in segments:
         content += (f"file '{path}'\ninpoint {a+spec.start_time:.9f}\n"

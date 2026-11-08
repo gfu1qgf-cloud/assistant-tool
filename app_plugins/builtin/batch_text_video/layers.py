@@ -282,12 +282,19 @@ def compose_layers(text_images, layers, width, height, darkness, cache=None,tint
                 # Native composition keys before resizing. Do the same for the
                 # poster, otherwise downsampling can erase a small green prop
                 # or open its contour before region protection is calculated.
+                from .alpha_bounds import for_layer, crop_image
+                alpha_box = for_layer(layer)
                 decode_bounds = QtCore.QSize(4096, 4096) if layer.get("key_mode", "none") != "none" else bounds
+                if alpha_box is not None:
+                    # Keep small subjects sharp without upscaling a 2000px
+                    # source to 4096px just to throw the empty borders away.
+                    decode_bounds = QtCore.QSize(min(4096, alpha_box['width']), min(4096, alpha_box['height']))
                 from .matting_live import dynamic, poster
-                if dynamic(layer): source = poster(layer['_matting_binding'], bounds)
+                if dynamic(layer): source = poster(layer['_matting_binding'], decode_bounds if alpha_box else bounds)
                 else: source = cache.get(layer["path"], decode_bounds) if cache else read_image(layer["path"], decode_bounds)
                 from .visual_media import keyed_image
                 source = keyed_image(source, layer)
+                source = crop_image(source, alpha_box)
                 if source.width() > bounds.width() or source.height() > bounds.height():
                     source = source.scaled(bounds, QtCore.Qt.AspectRatioMode.KeepAspectRatio,
                                            QtCore.Qt.TransformationMode.SmoothTransformation)
