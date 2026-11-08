@@ -69,6 +69,9 @@ class BatchClient:
         endpoint = '/images/edits' if references else '/images/generations'
         return self.json('POST', endpoint, json=body, timeout=(10, 180))
 
+    def rewrite(self, body):
+        return self.json('POST', '/responses', json=body, timeout=(10, 180))
+
     def create(self, file_id, metadata):
         return self.json('POST', '/batches', json={'input_file_id': safe_id(file_id, 'file-'),
             'endpoint': metadata['endpoint'], 'completion_window': '24h',

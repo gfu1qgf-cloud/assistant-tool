@@ -68,6 +68,8 @@ def new_attempt(job, *, retry=False):
 
 
 def batch_lines(job, attempt):
+    if job.get('planning') and job['planning']['state'] != 'done':
+        raise ValueError('提示词创新尚未完整通过校验，不能提交生图。')
     selected = set(attempt['item_ids'])
     spec = job['spec']
     endpoint = '/v1/images/edits' if job['references'] else '/v1/images/generations'
@@ -276,6 +278,7 @@ class Service:
         data_file(destination / f'{item["index"] + 1:04d}.json').write_json({
             'job_id': job['id'], 'custom_id': custom, 'batch_id': attempt['batch_id'],
             'submission_mode': job['spec'].get('mode', 'batch'),
+            'creative_plan': item.get('plan'), 'rewrite_model': job['spec'].get('rewrite_model'),
             'original_prompt': job['spec']['prompt'], 'prompt': item['prompt'],
             'innovation': job['spec']['innovation'], 'model': job['spec']['model'],
             'usage': body.get('usage'), 'sha256': digest})
@@ -308,9 +311,9 @@ def _run_operation(store, payload, context):
         identifiers = [payload['id']]
     else:
         waiting = sorted((j for j in store.all() if j['status'] not in SETTLED and
-                          (j['status'] not in ('attention', 'paused') or payload.get('manual')) and
+                          (j['status'] not in ('attention', 'paused', 'planning_failed') or payload.get('manual')) and
                           (not payload.get('instant_only') or
-                           j['spec'].get('mode', 'batch') == 'instant' and j['status'] == 'ready')),
+                           j['spec'].get('mode', 'batch') == 'instant' and j['status'] in ('ready', 'planning'))),
                          key=lambda j: j.get('last_check', 0))
         identifiers = [j['id'] for j in waiting[:8]]
     messages = []
@@ -325,6 +328,26 @@ def _run_operation(store, payload, context):
             key = read_provider_key(pinned, 'openai')
             client = BatchClient(key, context.check_canceled)
             service = Service(store, client, context.check_canceled)
+            planning_bound = False
+            if action == 'retry_planning' and (not job.get('planning') or job['planning']['state'] == 'done'):
+                raise ValueError('该任务不需要重试提示词创新；未触发生图。')
+            if job.get('planning') and job['planning']['state'] != 'done':
+                from .planning import Planner
+                planner = Planner(store, client, context.check_canceled)
+                if action == 'retry_planning': planner.retry(job)
+                if action == 'bind':
+                    planner.bind(job, payload['batch_id']); planning_bound = True
+                if action in ('resume', 'retry'):
+                    if job['planning']['state'] in ('failed', 'unknown'):
+                        raise ValueError('请使用“重试提示词创新”，不能绕过失败方案直接生图。')
+                    store.clear_stop(job['id'])
+                if action == 'cancel':
+                    if job['spec'].get('mode', 'batch') == 'instant': store.request_stop(job['id'])
+                    else: job['cancel_requested'] = True; store.save(job)
+                context.report('提示词创新 · ' + identifier[:8] + f' · 已完成 {sum(c["state"] == "done" for c in job["planning"]["chunks"])} 组', 0)
+                if not planner.ensure(job):
+                    if job.get('error'): messages.append(identifier[:8] + '：' + job['error'])
+                    continue
             if job['spec'].get('mode', 'batch') == 'instant':
                 from .instant import InstantService
                 report_stage = getattr(context, 'report_item_stage', lambda identifier, stage: None)
@@ -340,7 +363,7 @@ def _run_operation(store, payload, context):
                 context.report('即时生成 · ' + identifier[:8] + f' · 已保存 {summary(job)[0]}/{len(job["items"])}', 0)
                 direct.advance(job)
                 continue
-            if action == 'bind':
+            if action == 'bind' and not planning_bound:
                 attempt = active_attempt(job)
                 if not attempt or attempt.get('batch_id') or job['status'] not in ('unknown', 'submitting'):
                     raise ValueError('只有提交结果不明且尚无批次ID时可以手动关联。')
@@ -375,4 +398,6 @@ def _run_operation(store, payload, context):
     context.report('本次图片处理结束；各任务保留独立状态', 100)
     jobs = store.all()
     return {'jobs': jobs, 'messages': messages, 'draft': store.draft(),
-            'auto_continue': any(j['spec'].get('mode', 'batch') == 'instant' and j['status'] == 'ready' for j in jobs)}
+            'auto_continue': any(j['spec'].get('mode', 'batch') == 'instant' and
+                                 (j['status'] == 'ready' or j['status'] == 'planning' and
+                                  j.get('planning', {}).get('state') == 'ready') for j in jobs)}

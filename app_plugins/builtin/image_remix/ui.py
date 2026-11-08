@@ -9,6 +9,7 @@ LABELS = {'ready': '等待提交', 'submitting': '正在提交', 'unknown': '提
           'running': '云端处理中', 'collecting': '正在收取', 'cancelling': '取消确认中',
           'attention': '需处理（检查可恢复）',
           'paused': '已暂停',
+          'planning': '正在创新提示词', 'planning_unknown': '改写提交待核对', 'planning_failed': '提示词创新失败',
           'cancelled': '已取消', 'done': '已完成', 'partial': '部分完成', 'failed': '失败'}
 
 
@@ -25,7 +26,7 @@ def thumbnail(path, size):
 class RemixDialog(QtWidgets.QDialog):
     def __init__(self, plugin, parent=None):
         super().__init__(parent)
-        if getattr(plugin, 'submission_api_version', 0) < 2:
+        if getattr(plugin, 'submission_api_version', 0) < 3:
             raise RuntimeError('图片翻版已更新，请重启软件后使用；已阻止新旧提交代码混用。')
         self.plugin = plugin
         self.draft_loaded = False
@@ -49,6 +50,10 @@ class RemixDialog(QtWidgets.QDialog):
         self.mode.addItem('即时生成 · 标准价，不等Batch排队', 'instant')
         self.mode.addItem('Batch · 优惠价，24小时处理窗口', 'batch')
         fields.addRow('提交方式', self.mode)
+        self.rewrite_model = QtWidgets.QComboBox(left); self.rewrite_model.setEditable(True)
+        self.rewrite_model.addItem('gpt-5-mini')
+        self.rewrite_model.setToolTip('先由此文字模型批量改写提示词，再调用图片模型。可填写账号支持Responses与结构化输出的模型ID。')
+        fields.addRow('提示词模型', self.rewrite_model)
         self.count = QtWidgets.QSpinBox(left); self.count.setRange(1, 500); self.count.setValue(4)
         fields.addRow('生成数量', self.count)
         self.innovation = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal, left)
@@ -140,8 +145,8 @@ class RemixDialog(QtWidgets.QDialog):
     def update_mode(self):
         instant = self.mode.currentData() == 'instant'
         self.generate.setText('生成 · 即时提交' if instant else '生成 · 提交Batch')
-        self.mode_note.setText('标准价，通常比Batch快；仍需等待模型生成。逐张保存，不自动重发未确认请求。'
-                              if instant else 'Batch优惠价 · 24小时处理窗口 · 关闭软件后云端继续')
+        self.mode_note.setText('先文字创新，再生图；两步均按标准价计费。逐张保存，结果不明不自动重发。'
+                              if instant else '两步均用Batch优惠价；先改写后生图，可能需要两轮24小时处理窗口。')
 
     def stop_instant(self):
         job = self.selected_job()
@@ -155,7 +160,8 @@ class RemixDialog(QtWidgets.QDialog):
             self.status.setText(str(error))
 
     def spec(self):
-        return {'mode': self.mode.currentData(), 'prompt': self.prompt.toPlainText(), 'count': self.count.value(),
+        return {'rewrite_enabled': True, 'rewrite_model': self.rewrite_model.currentText().strip(),
+                'mode': self.mode.currentData(), 'prompt': self.prompt.toPlainText(), 'count': self.count.value(),
                 'innovation': self.innovation.value(), 'size': self.size.currentData(),
                 'quality': self.quality.currentData(), 'model': self.model.currentData(),
                 'output': self.output.text().strip(),
@@ -167,6 +173,7 @@ class RemixDialog(QtWidgets.QDialog):
         if self.prompt.toPlainText().strip() or not draft:
             return
         self.prompt.setPlainText(str(draft.get('prompt', '')))
+        self.rewrite_model.setCurrentText(str(draft.get('rewrite_model') or 'gpt-5-mini'))
         for key in ('count', 'innovation'):
             if type(draft.get(key)) is int:
                 getattr(self, key).setValue(draft[key])
@@ -217,8 +224,9 @@ class RemixDialog(QtWidgets.QDialog):
             answer = QtWidgets.QMessageBox.question(self, '提交付费图片批次',
                 f'生成 {spec["count"]} 张，创新程度 {spec["innovation"]}，{self.quality.currentText()}质量。\n'
                 f'模型：{spec["model"]}\n人物参考图：{len(spec["references"])} 张（会上传给OpenAI）。\n' +
+                f'先用 {spec["rewrite_model"]} 创新提示词（另有文字费用），完成并校验后才生图。\n' +
                 ('即时生成：使用普通API标准价格，不享受Batch折扣。逐张提交，按实际用量计费。确认提交？'
-                 if spec['mode'] == 'instant' else '使用Batch优惠价，按实际用量计费；24小时处理窗口。确认提交？'),
+                 if spec['mode'] == 'instant' else '两步使用Batch优惠价，可能需要两轮24小时处理窗口。确认提交？'),
                 QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No,
                 QtWidgets.QMessageBox.StandardButton.No)
             if answer == QtWidgets.QMessageBox.StandardButton.Yes:
@@ -244,6 +252,9 @@ class RemixDialog(QtWidgets.QDialog):
             status = LABELS.get(job['status'], job['status'])
             mode = '即时' if job['spec'].get('mode', 'batch') == 'instant' else 'Batch'
             text = f'{mode} · {status} · 已收取 {done}/{len(job["items"])}'
+            if job.get('planning') and job['planning']['state'] != 'done':
+                planned = sum(len(c['indices']) for c in job['planning']['chunks'] if c['state'] == 'done')
+                text += f' · 创意方案 {planned}/{len(job["items"])}'
             if mode == 'Batch' and job['status'] in ('running', 'cancelling'): text += f' · 云端完成 {cloud}'
             values = [time.strftime('%m-%d %H:%M', time.localtime(job['created'])),
                       job['spec']['prompt'].replace('\n', ' ')[:120], text,
@@ -262,7 +273,7 @@ class RemixDialog(QtWidgets.QDialog):
     def show_results(self):
         job = self.selected_job(); self.results.clear()
         self.stop_button.setEnabled(bool(job and job['spec'].get('mode', 'batch') == 'instant'
-                                        and job['status'] in ('ready', 'running', 'submitting')))
+                                        and job['status'] in ('ready', 'running', 'submitting', 'planning')))
         if not job: return
         for result in job['items']:
             if result['status'] == 'done':
@@ -296,7 +307,10 @@ class RemixDialog(QtWidgets.QDialog):
         remove = menu.addAction('删除记录（保留图片）…')
         remove.setEnabled(job['status'] in ('done', 'partial', 'failed', 'cancelled') and not self.plugin.busy())
         bind = menu.addAction('关联控制台批次ID（提交不明时备用）…')
-        bind.setEnabled(not instant and job['status'] in ('unknown', 'submitting') and not self.plugin.busy())
+        bind.setEnabled(not instant and job['status'] in ('unknown', 'submitting', 'planning_unknown') and not self.plugin.busy())
+        planning_retry = menu.addAction('重试失败／未确认的提示词创新…')
+        planning_retry.setEnabled(job.get('planning', {}).get('state') in ('failed', 'unknown')
+                                  and not job['attempts'] and not self.plugin.busy())
         chosen = menu.exec(self.history.viewport().mapToGlobal(position))
         try:
             if chosen == folder: QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(job['output']))
@@ -305,7 +319,8 @@ class RemixDialog(QtWidgets.QDialog):
                 layout = QtWidgets.QVBoxLayout(dialog); text = QtWidgets.QPlainTextEdit(dialog); text.setReadOnly(True)
                 content = ['原始提示词：', job['spec']['prompt'], '\n批次：', *[a.get('batch_id') or a['state'] for a in job['attempts']],
                            '\n最近提示：', job.get('error', '')]
-                content += [f'\n{i["index"] + 1:04d} · {i["status"]}\n{i["prompt"]}\n{i["error"]}' for i in job['items']]
+                content += [f'\n{i["index"] + 1:04d} · {i["status"]}\n创意：{i.get("plan", {}).get("concept", "旧流程")}\n'
+                            f'变化：{i.get("plan", {}).get("changes", [])}\n{i["prompt"]}\n{i["error"]}' for i in job['items']]
                 text.setPlainText('\n'.join(content)); layout.addWidget(text); dialog.exec()
             elif chosen == reuse:
                 self.prompt.clear(); self.references.clear(); self.load_draft(job['spec'])
@@ -318,6 +333,12 @@ class RemixDialog(QtWidgets.QDialog):
                     '从OpenAI控制台复制本次batch_开头的ID。只关联身份匹配的原批次，不重新生成：')
                 if accepted and identifier.strip():
                     self.plugin.launch('bind', id=job['id'], batch_id=identifier.strip())
+            elif chosen == planning_retry:
+                if QtWidgets.QMessageBox.question(self, '重试提示词创新',
+                    '仅重试未完成／失败的文字改写，已接受方案保留，不重新生图。未确认的文字请求可能已计费，重试可能产生额外文字费用。继续？',
+                    QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No,
+                    QtWidgets.QMessageBox.StandardButton.No) == QtWidgets.QMessageBox.StandardButton.Yes:
+                    self.plugin.launch('retry_planning', id=job['id'])
             elif chosen is not None and chosen in (retry, cancel, remove, resume, uncertain):
                 action = {retry: 'retry', cancel: 'cancel', remove: 'delete', resume: 'resume', uncertain: 'retry_unknown'}[chosen]
                 message = {'retry': ('按标准价继续未提交和已明确失败的图片；未确认请求不重发，已成功图片不重做。' if instant

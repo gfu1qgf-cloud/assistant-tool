@@ -406,7 +406,7 @@ class UIPluginTests(unittest.TestCase):
         with patch('app_plugins.builtin.image_remix.plugin.credential_identity', return_value='identity'):
             with self.assertRaises(RuntimeError): self.plugin.submit(spec(self.root))
         jobs = Store(self.root / 'private').all()
-        self.assertEqual(len(jobs), 1); self.assertEqual(jobs[0]['status'], 'ready')
+        self.assertEqual(len(jobs), 1); self.assertEqual(jobs[0]['status'], 'planning')
 
     def test_settings_share_host_key_pool_and_preserve_other_providers(self):
         from app_plugins.builtin.image_remix.settings import RemixSettingsPage

@@ -22,7 +22,7 @@ class Store:
         self.lock = threading.RLock()
         with self.connection() as db:
             version = db.execute('PRAGMA user_version').fetchone()[0]
-            if version not in (0, 1, 2):
+            if version not in (0, 1, 2, 3):
                 raise ValueError('图片翻版记录来自更新版本，不能覆盖。')
             db.executescript('''CREATE TABLE IF NOT EXISTS jobs (
                 id TEXT PRIMARY KEY, value TEXT NOT NULL, created REAL NOT NULL);
@@ -78,10 +78,11 @@ class Store:
 
     def save(self, job):
         with self.connection() as db:
-            if job['spec'].get('mode', 'batch') == 'instant':
+            target_version = 3 if job.get('planning') else 2 if job['spec'].get('mode', 'batch') == 'instant' else 1
+            if target_version > db.execute('PRAGMA user_version').fetchone()[0]:
                 # Old 0.1 clients reject version 2 rather than interpreting a
                 # queued instant intent as a new Batch on downgrade.
-                db.execute('PRAGMA user_version=2')
+                db.execute('PRAGMA user_version=' + str(target_version))
             db.execute('INSERT INTO jobs(id,value,created) VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET value=excluded.value',
                        (job['id'], json.dumps(job, ensure_ascii=False), job['created']))
 
@@ -124,6 +125,11 @@ class Store:
                'status': 'ready', 'error': '', 'attempts': [], 'cancel_requested': False,
                'items': [{'id': f'{identifier}-{i:04d}', 'index': i, 'prompt': '' if defer_snapshot else variant_prompt(spec, i),
                           'status': 'pending', 'error': '', 'path': ''} for i in range(spec['count'])]}
+        if spec.get('rewrite_enabled'):
+            from .planning import initial_plan
+            job['planning'] = initial_plan(spec['count'], spec['rewrite_model'])
+            job['status'] = 'planning'
+            for item in job['items']: item['prompt'] = ''
         self.save(job)  # The complete input snapshot exists before any API call.
         return job
 
@@ -138,8 +144,9 @@ class Store:
             filename = hashlib.sha256(raw).hexdigest() + '.' + suffix
             assets.file(filename).write_bytes(raw)
             refs.append({'file': filename, 'mime': mime, 'width': width, 'height': height})
-        for item in job['items']:
-            item['prompt'] = variant_prompt(job['spec'], item['index'])
+        if not job.get('planning'):
+            for item in job['items']:
+                item['prompt'] = variant_prompt(job['spec'], item['index'])
         job.update(references=refs, snapshot_pending=False)
         self.save(job)
 

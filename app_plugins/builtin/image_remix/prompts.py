@@ -14,6 +14,13 @@ def validate_spec(value):
     if mode not in ('batch', 'instant'):
         raise ValueError('提交方式只能是Batch或即时生成。')
     spec['mode'] = mode
+    if type(spec.get('rewrite_enabled', False)) is not bool:
+        raise ValueError('提示词创新开关格式不正确。')
+    if spec.get('rewrite_enabled'):
+        model = str(spec.get('rewrite_model') or 'gpt-5-mini').strip()
+        if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._:-]{0,99}', model):
+            raise ValueError('请填写有效的文字模型ID。')
+        spec['rewrite_model'] = model
     prompt = str(spec.get('prompt', '')).strip()
     if not prompt or len(prompt) > 12000:
         raise ValueError('请填写图片提示词（最多12000字）。')

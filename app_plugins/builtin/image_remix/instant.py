@@ -93,6 +93,8 @@ class InstantService:
         return restored
 
     def advance(self, job):
+        if job.get('planning') and job['planning']['state'] != 'done':
+            raise ValueError('提示词创新尚未完整通过校验，不能即时生图。')
         if self.store.stop_requested(job['id']) and not job['attempts']:
             self.attempt(job)
             return self.finish(job)

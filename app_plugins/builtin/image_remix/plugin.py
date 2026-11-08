@@ -10,8 +10,8 @@ from .service import run_operation, credential_identity
 class ImageRemixPlugin(QtCore.QObject):
     plugin_id = 'image_remix'
     display_name = 'GPT 图片翻版'
-    version = '0.2.0'
-    submission_api_version = 2
+    version = '0.3.0'
+    submission_api_version = 3
     required_api_version = 1
 
     def __init__(self):
@@ -75,7 +75,7 @@ class ImageRemixPlugin(QtCore.QObject):
         handle = self.context.submit_background_task(title='图片翻版 · ' + {
             'create': '提交批次', 'check': '检查并收取', 'retry': '重试失败项',
             'cancel': '停止／取消', 'delete': '删除记录', 'snapshot': '读取记录', 'bind': '关联原批次',
-            'resume': '继续未提交图片', 'retry_unknown': '确认重试未确认图片'}[action],
+            'resume': '继续未提交图片', 'retry_unknown': '确认重试未确认图片', 'retry_planning': '重试提示词创新'}[action],
             runner=run_operation, payload=payload, kind='network', execution='parallel',
             resources=('image-remix-state',), retryable=False, dedup_key='image-remix-operation')
         from model.BackgroundTasks import BackgroundTaskHandle
@@ -93,6 +93,7 @@ class ImageRemixPlugin(QtCore.QObject):
     def submit(self, spec):
         if self.busy():
             return False
+        spec = {**spec, 'rewrite_enabled': True, 'rewrite_model': spec.get('rewrite_model') or 'gpt-5-mini'}
         config = self.context.load_config()
         try:
             credential = credential_identity(config)
@@ -110,7 +111,7 @@ class ImageRemixPlugin(QtCore.QObject):
     def check(self, *_args, manual=False, instant_only=False):
         if self.stopping:
             return
-        if self.loaded and not manual and not any(j['status'] not in ('done', 'partial', 'failed', 'cancelled', 'attention', 'paused') for j in self.jobs):
+        if self.loaded and not manual and not any(j['status'] not in ('done', 'partial', 'failed', 'cancelled', 'attention', 'paused', 'planning_failed') for j in self.jobs):
             return
         try:
             if instant_only:
@@ -125,7 +126,7 @@ class ImageRemixPlugin(QtCore.QObject):
         self.jobs = result.get('jobs', [])
         self.auto_continue = result.get('auto_continue', False)
         messages = result.get('messages', [])
-        self.message = '\n'.join(messages) if messages else '记录已更新。即时模式逐张保存并继续；Batch每5分钟检查，也可手动检查。'
+        self.message = '\n'.join(messages) if messages else '记录已更新：先创新提示词，再逐张生图；Batch模式分两轮，每5分钟检查。'
         if self.dialog is not None and not self.dialog.draft_loaded:
             self.dialog.load_draft(result.get('draft') or {})
         self.refresh()
