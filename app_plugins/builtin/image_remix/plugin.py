@@ -10,14 +10,16 @@ from .service import run_operation, credential_identity
 class ImageRemixPlugin(QtCore.QObject):
     plugin_id = 'image_remix'
     display_name = 'GPT 图片翻版'
-    version = '0.1.0'
+    version = '0.2.0'
+    submission_api_version = 2
     required_api_version = 1
 
     def __init__(self):
         super().__init__()
         self.context = self.dialog = self.handle = None
         self.jobs = []
-        self.message = '仅使用官方Batch；关闭窗口不取消云端任务，重启后继续检查。'
+        self.message = '可选即时生成（标准价）或Batch（优惠价）；提交记录持久化，关闭面板不取消。'
+        self.auto_continue = False
         self.stopping = False
         self.loaded = False
         self.poll = QtCore.QTimer(self)
@@ -31,7 +33,7 @@ class ImageRemixPlugin(QtCore.QObject):
         self.context = context
         self.setParent(context.parent_widget)
         context.register_command(PluginCommand('open', 'GPT 图片翻版…', lambda _rows: self.open_dialog(),
-            frozenset({MAIN_MENU}), order=23, tooltip='文字提示词批量生图，可选人物参考图；真实Batch与重启恢复'))
+            frozenset({MAIN_MENU}), order=23, tooltip='文字提示词批量生图，可选人物参考图；即时／Batch与重启恢复'))
         from .settings import RemixSettingsPage
         context.register_settings_page(PluginSettingsPage('settings', self.display_name,
             lambda parent=None: RemixSettingsPage(context, parent), order=223))
@@ -72,7 +74,8 @@ class ImageRemixPlugin(QtCore.QObject):
         # consulted on each check; no plaintext credentials in plugin storage.
         handle = self.context.submit_background_task(title='图片翻版 · ' + {
             'create': '提交批次', 'check': '检查并收取', 'retry': '重试失败项',
-            'cancel': '取消批次', 'delete': '删除记录', 'snapshot': '读取记录', 'bind': '关联原批次'}[action],
+            'cancel': '停止／取消', 'delete': '删除记录', 'snapshot': '读取记录', 'bind': '关联原批次',
+            'resume': '继续未提交图片', 'retry_unknown': '确认重试未确认图片'}[action],
             runner=run_operation, payload=payload, kind='network', execution='parallel',
             resources=('image-remix-state',), retryable=False, dedup_key='image-remix-operation')
         from model.BackgroundTasks import BackgroundTaskHandle
@@ -81,6 +84,7 @@ class ImageRemixPlugin(QtCore.QObject):
         self.handle = handle
         handle.completed.connect(self.completed)
         handle.failed.connect(self.failed)
+        handle.itemStage.connect(self.item_stage)
         handle.finished.connect(partial(self.finished, handle))
         self.watch.start()
         self.refresh()
@@ -103,28 +107,53 @@ class ImageRemixPlugin(QtCore.QObject):
         self.loaded = True
         return self.launch('create', spec=spec, credential=credential, id=job['id'])
 
-    def check(self, *_args, manual=False):
+    def check(self, *_args, manual=False, instant_only=False):
         if self.stopping:
             return
-        if self.loaded and not manual and not any(j['status'] not in ('done', 'partial', 'failed', 'cancelled', 'attention') for j in self.jobs):
+        if self.loaded and not manual and not any(j['status'] not in ('done', 'partial', 'failed', 'cancelled', 'attention', 'paused') for j in self.jobs):
             return
         try:
-            self.launch('check', manual=manual)
+            if instant_only:
+                self.launch('check', manual=manual, instant_only=True)
+            else:
+                self.launch('check', manual=manual)
         except Exception as error:
             self.failed(str(error))
 
     def completed(self, result):
         self.loaded = True
         self.jobs = result.get('jobs', [])
+        self.auto_continue = result.get('auto_continue', False)
         messages = result.get('messages', [])
-        self.message = '\n'.join(messages) if messages else '本地记录已更新。云端等待不占工作线程；每5分钟自动检查，也可手动检查。'
+        self.message = '\n'.join(messages) if messages else '记录已更新。即时模式逐张保存并继续；Batch每5分钟检查，也可手动检查。'
         if self.dialog is not None and not self.dialog.draft_loaded:
             self.dialog.load_draft(result.get('draft') or {})
+        self.refresh()
+
+    def item_stage(self, identifier, stage):
+        job = next((j for j in self.jobs if j['id'] == identifier and j['spec'].get('mode', 'batch') == 'instant'), None)
+        if job is None:
+            return
+        if stage == 'instant:running':
+            job['status'] = 'running'
+            self.message = '正在即时生成，已完成图片会逐张保存；可停止后续图片。'
+        elif stage.startswith('instant:saved:'):
+            try: index = int(stage.rsplit(':', 1)[1])
+            except ValueError: return
+            item = next((i for i in job['items'] if i['index'] == index), None)
+            if item is None: return
+            from pathlib import Path
+            item.update(status='done', error='', path=str(Path(job['output']) / f'{index + 1:04d}.png'))
+            count = sum(i['status'] == 'done' for i in job['items'])
+            self.message = f'即时生成 · 已保存 {count}/{len(job["items"])}'
+        else:
+            return
         self.refresh()
 
     def failed(self, message):
         from model.SensitiveData import redact_sensitive_text
         self.message = redact_sensitive_text(message)
+        self.auto_continue = False
         self.refresh()
 
     def finished(self, handle):
@@ -134,6 +163,9 @@ class ImageRemixPlugin(QtCore.QObject):
         self.handle = None
         self.watch.stop()
         self.refresh()
+        if self.auto_continue and not self.stopping:
+            self.auto_continue = False
+            QtCore.QTimer.singleShot(0, lambda: self.check(instant_only=True))
 
     def refresh(self):
         if self.dialog is not None:
@@ -146,7 +178,7 @@ class ImageRemixPlugin(QtCore.QObject):
         self.reclaim()
         if self.handle is not None:
             self.handle.requestInterruption()
-            return False, '图片翻版正在保存／结束本次网络请求，请稍候再退出（读取超时最多60秒）；不会等待云端24小时。'
+            return False, '图片翻版正在保存／结束当前网络请求，请稍候再退出；即时生图读取超时180秒，不会等待云端24小时。'
         return True, ''
 
     def stop(self):

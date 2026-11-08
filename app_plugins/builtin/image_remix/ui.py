@@ -8,6 +8,7 @@ from .store import Store, summary
 LABELS = {'ready': '等待提交', 'submitting': '正在提交', 'unknown': '提交待核对',
           'running': '云端处理中', 'collecting': '正在收取', 'cancelling': '取消确认中',
           'attention': '需处理（检查可恢复）',
+          'paused': '已暂停',
           'cancelled': '已取消', 'done': '已完成', 'partial': '部分完成', 'failed': '失败'}
 
 
@@ -24,11 +25,13 @@ def thumbnail(path, size):
 class RemixDialog(QtWidgets.QDialog):
     def __init__(self, plugin, parent=None):
         super().__init__(parent)
+        if getattr(plugin, 'submission_api_version', 0) < 2:
+            raise RuntimeError('图片翻版已更新，请重启软件后使用；已阻止新旧提交代码混用。')
         self.plugin = plugin
         self.draft_loaded = False
         self.jobs = []
         self.preview_path = ''
-        self.setWindowTitle('GPT 图片翻版 · Batch')
+        self.setWindowTitle('GPT 图片翻版 · 即时／Batch')
         self.resize(1130, 800)
         self.setWindowFlag(QtCore.Qt.WindowType.WindowMaximizeButtonHint, True)
         outer = QtWidgets.QVBoxLayout(self)
@@ -42,6 +45,10 @@ class RemixDialog(QtWidgets.QDialog):
         fields = QtWidgets.QFormLayout()
         fields.setLabelAlignment(QtCore.Qt.AlignmentFlag.AlignRight | QtCore.Qt.AlignmentFlag.AlignVCenter)
         fields.setFieldGrowthPolicy(QtWidgets.QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
+        self.mode = QtWidgets.QComboBox(left)
+        self.mode.addItem('即时生成 · 标准价，不等Batch排队', 'instant')
+        self.mode.addItem('Batch · 优惠价，24小时处理窗口', 'batch')
+        fields.addRow('提交方式', self.mode)
         self.count = QtWidgets.QSpinBox(left); self.count.setRange(1, 500); self.count.setValue(4)
         fields.addRow('生成数量', self.count)
         self.innovation = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal, left)
@@ -101,8 +108,12 @@ class RemixDialog(QtWidgets.QDialog):
         self.generate.clicked.connect(self.generate_clicked); actions.addWidget(self.generate)
         self.check = QtWidgets.QPushButton('检查并收取结果', self)
         self.check.clicked.connect(lambda: plugin.check(manual=True)); actions.addWidget(self.check); actions.addStretch()
-        note = QtWidgets.QLabel('仅Batch计费 · 通常24小时内 · 等待中可退出，重启继续', self)
-        note.setWordWrap(True); actions.addWidget(note); outer.addLayout(actions)
+        self.stop_button = QtWidgets.QPushButton('停止后续图片', self)
+        self.stop_button.clicked.connect(self.stop_instant); actions.addWidget(self.stop_button)
+        self.mode_note = QtWidgets.QLabel(self)
+        self.mode_note.setWordWrap(True); actions.addWidget(self.mode_note); outer.addLayout(actions)
+        self.mode.currentIndexChanged.connect(self.update_mode)
+        self.update_mode()
         self.history = QtWidgets.QTableWidget(0, 5, self)
         self.history.setHorizontalHeaderLabels(['提交时间', '提示词', '状态／数量', '创新', '模型'])
         self.history.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
@@ -126,8 +137,25 @@ class RemixDialog(QtWidgets.QDialog):
         self.innovation_number.setText(str(value))
         self.innovation_hint.setText(innovation_note(value))
 
+    def update_mode(self):
+        instant = self.mode.currentData() == 'instant'
+        self.generate.setText('生成 · 即时提交' if instant else '生成 · 提交Batch')
+        self.mode_note.setText('标准价，通常比Batch快；仍需等待模型生成。逐张保存，不自动重发未确认请求。'
+                              if instant else 'Batch优惠价 · 24小时处理窗口 · 关闭软件后云端继续')
+
+    def stop_instant(self):
+        job = self.selected_job()
+        if not job or job['spec'].get('mode', 'batch') != 'instant':
+            return
+        try:
+            Store(self.plugin.context.storage.path).request_stop(job['id'])
+            self.status.setText('已要求停止后续图片。当前已发送的请求不能保证撤回或退费；返回后仍会保存结果。')
+            if not self.plugin.busy(): self.plugin.check(manual=True)
+        except Exception as error:
+            self.status.setText(str(error))
+
     def spec(self):
-        return {'prompt': self.prompt.toPlainText(), 'count': self.count.value(),
+        return {'mode': self.mode.currentData(), 'prompt': self.prompt.toPlainText(), 'count': self.count.value(),
                 'innovation': self.innovation.value(), 'size': self.size.currentData(),
                 'quality': self.quality.currentData(), 'model': self.model.currentData(),
                 'output': self.output.text().strip(),
@@ -142,8 +170,8 @@ class RemixDialog(QtWidgets.QDialog):
         for key in ('count', 'innovation'):
             if type(draft.get(key)) is int:
                 getattr(self, key).setValue(draft[key])
-        for key in ('size', 'quality', 'model'):
-            widget = getattr(self, key); index = widget.findData(draft.get(key))
+        for key in ('mode', 'size', 'quality', 'model'):
+            widget = getattr(self, key); index = widget.findData(draft.get(key, 'batch' if key == 'mode' else None))
             if index >= 0: widget.setCurrentIndex(index)
         self.output.setText(str(draft.get('output', '')))
         for path in draft.get('references', [])[:4]:
@@ -188,8 +216,9 @@ class RemixDialog(QtWidgets.QDialog):
                 raise ValueError('请先选择有效的结果保存目录。')
             answer = QtWidgets.QMessageBox.question(self, '提交付费图片批次',
                 f'生成 {spec["count"]} 张，创新程度 {spec["innovation"]}，{self.quality.currentText()}质量。\n'
-                f'模型：{spec["model"]}\n人物参考图：{len(spec["references"])} 张（会上传给OpenAI）。\n'
-                '只使用Batch，按实际用量计费；本工具不把估算冒充账单。确认提交？',
+                f'模型：{spec["model"]}\n人物参考图：{len(spec["references"])} 张（会上传给OpenAI）。\n' +
+                ('即时生成：使用普通API标准价格，不享受Batch折扣。逐张提交，按实际用量计费。确认提交？'
+                 if spec['mode'] == 'instant' else '使用Batch优惠价，按实际用量计费；24小时处理窗口。确认提交？'),
                 QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No,
                 QtWidgets.QMessageBox.StandardButton.No)
             if answer == QtWidgets.QMessageBox.StandardButton.Yes:
@@ -213,8 +242,9 @@ class RemixDialog(QtWidgets.QDialog):
             done, failed, counts = summary(job)
             cloud = counts.get('completed', 0)
             status = LABELS.get(job['status'], job['status'])
-            text = f'{status} · 已收取 {done}/{len(job["items"])}'
-            if job['status'] in ('running', 'cancelling'): text += f' · 云端完成 {cloud}'
+            mode = '即时' if job['spec'].get('mode', 'batch') == 'instant' else 'Batch'
+            text = f'{mode} · {status} · 已收取 {done}/{len(job["items"])}'
+            if mode == 'Batch' and job['status'] in ('running', 'cancelling'): text += f' · 云端完成 {cloud}'
             values = [time.strftime('%m-%d %H:%M', time.localtime(job['created'])),
                       job['spec']['prompt'].replace('\n', ' ')[:120], text,
                       str(job['spec']['innovation']), job['spec']['model'].removeprefix('gpt-image-')]
@@ -231,6 +261,8 @@ class RemixDialog(QtWidgets.QDialog):
 
     def show_results(self):
         job = self.selected_job(); self.results.clear()
+        self.stop_button.setEnabled(bool(job and job['spec'].get('mode', 'batch') == 'instant'
+                                        and job['status'] in ('ready', 'running', 'submitting')))
         if not job: return
         for result in job['items']:
             if result['status'] == 'done':
@@ -241,6 +273,8 @@ class RemixDialog(QtWidgets.QDialog):
             self.preview(self.results.item(0).data(QtCore.Qt.ItemDataRole.UserRole))
 
     def history_menu(self, position):
+        row = self.history.rowAt(position.y())
+        if row >= 0: self.history.selectRow(row)
         job = self.selected_job()
         if not job: return
         menu = QtWidgets.QMenu(self)
@@ -248,14 +282,21 @@ class RemixDialog(QtWidgets.QDialog):
         folder = menu.addAction('打开结果目录')
         reuse = menu.addAction('用这套参数再做一批…')
         menu.addSeparator()
-        retry = menu.addAction('仅重试失败图片…')
-        retry.setEnabled(job['status'] in ('partial', 'failed', 'cancelled') and not self.plugin.busy())
-        cancel = menu.addAction('取消云端批次…')
+        instant = job['spec'].get('mode', 'batch') == 'instant'
+        retry = menu.addAction('继续未提交／重试失败图片…' if instant else '仅重试失败图片…')
+        retry.setEnabled((job['status'] in ('partial', 'failed', 'cancelled', 'paused', 'unknown') if instant
+                          else job['status'] in ('partial', 'failed', 'cancelled')) and not self.plugin.busy())
+        resume = menu.addAction('仅继续尚未提交的图片…') if instant else None
+        uncertain = menu.addAction('确认重试未确认图片（可能重复计费）…') if instant else None
+        if instant:
+            resume.setEnabled(any(i['status'] == 'pending' for i in job['items']) and not self.plugin.busy())
+            uncertain.setEnabled(any(i['status'] == 'unknown' for i in job['items']) and not self.plugin.busy())
+        cancel = menu.addAction('停止后续图片…' if instant else '取消云端批次…')
         cancel.setEnabled(job['status'] not in ('done', 'partial', 'failed', 'cancelled') and not self.plugin.busy())
         remove = menu.addAction('删除记录（保留图片）…')
         remove.setEnabled(job['status'] in ('done', 'partial', 'failed', 'cancelled') and not self.plugin.busy())
         bind = menu.addAction('关联控制台批次ID（提交不明时备用）…')
-        bind.setEnabled(job['status'] in ('unknown', 'submitting') and not self.plugin.busy())
+        bind.setEnabled(not instant and job['status'] in ('unknown', 'submitting') and not self.plugin.busy())
         chosen = menu.exec(self.history.viewport().mapToGlobal(position))
         try:
             if chosen == folder: QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(job['output']))
@@ -277,10 +318,14 @@ class RemixDialog(QtWidgets.QDialog):
                     '从OpenAI控制台复制本次batch_开头的ID。只关联身份匹配的原批次，不重新生成：')
                 if accepted and identifier.strip():
                     self.plugin.launch('bind', id=job['id'], batch_id=identifier.strip())
-            elif chosen in (retry, cancel, remove):
-                action = {retry: 'retry', cancel: 'cancel', remove: 'delete'}[chosen]
-                message = {'retry': '仅重新生成失败图片，会产生新的Batch费用；已成功图片不会重做。',
-                           'cancel': '请求取消剩余云端生成。已执行的图片仍可能计费并会继续收取；取消可能需要数分钟。',
+            elif chosen is not None and chosen in (retry, cancel, remove, resume, uncertain):
+                action = {retry: 'retry', cancel: 'cancel', remove: 'delete', resume: 'resume', uncertain: 'retry_unknown'}[chosen]
+                message = {'retry': ('按标准价继续未提交和已明确失败的图片；未确认请求不重发，已成功图片不重做。' if instant
+                                     else '仅重新生成失败图片，会产生新的Batch费用；已成功图片不会重做。'),
+                           'resume': '仅提交尚未发送的图片，按标准价计费；已完成和结果未确认的请求都不重发。',
+                           'retry_unknown': '警告：未确认的请求可能已在云端成功并计费。继续会重新生成这些图片，可能重复计费；也会继续未提交／失败项。确认承担这笔费用？',
+                           'cancel': ('停止后续图片，当前已发送请求不能保证撤回或退费，返回后仍保存。' if instant
+                                      else '请求取消剩余云端生成。已执行的图片仍可能计费并会继续收取；取消可能需要数分钟。'),
                            'delete': '删除本地任务记录，但保留所有已保存图片及参考图。'}[action]
                 if QtWidgets.QMessageBox.question(self, '确认操作', message,
                     QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No,

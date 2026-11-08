@@ -9,9 +9,10 @@ from .prompts import safe_id
 
 
 class APIError(RuntimeError):
-    def __init__(self, message, *, definite=False):
+    def __init__(self, message, *, definite=False, status=None):
         super().__init__(message)
         self.definite = definite
+        self.status = status
 
 
 class BatchClient:
@@ -24,13 +25,14 @@ class BatchClient:
         self.session.close()
 
     def request(self, method, path, **kwargs):
-        require_online('GPT图片批处理')
+        require_online('GPT图片生成')
         if not path.startswith('/') or '://' in path or '..' in path:
             raise ValueError('拒绝非官方API路径。')
         self.cancel()
         try:
+            timeout = kwargs.pop('timeout', (10, 60))
             response = self.session.request(method, 'https://api.openai.com/v1' + path,
-                                            timeout=(10, 60), allow_redirects=False, **kwargs)
+                                            timeout=timeout, allow_redirects=False, **kwargs)
         except requests.RequestException as error:
             raise APIError('网络响应未确认；已保留原批次，不自动重新生成。' + type(error).__name__) from error
         if not 200 <= response.status_code < 300:
@@ -43,7 +45,7 @@ class BatchClient:
             status = response.status_code
             response.close()
             # A 5xx / proxy timeout cannot establish that a POST was rejected.
-            raise APIError(message, definite=400 <= status < 500 and status not in (408, 409))
+            raise APIError(message, definite=400 <= status < 500 and status not in (408, 409), status=status)
         return response
 
     def json(self, method, path, **kwargs):
@@ -60,6 +62,12 @@ class BatchClient:
             'expires_after[anchor]': 'created_at', 'expires_after[seconds]': '604800'},
             files={'file': (filename, raw, 'application/octet-stream')})
         return safe_id(value.get('id'), 'file-')
+
+    def generate(self, body, *, references=False):
+        # Ordinary standard-price API, deliberately separate from /batches.
+        # No retry adapter / SDK auto-retry on this billable POST.
+        endpoint = '/images/edits' if references else '/images/generations'
+        return self.json('POST', endpoint, json=body, timeout=(10, 180))
 
     def create(self, file_id, metadata):
         return self.json('POST', '/batches', json={'input_file_id': safe_id(file_id, 'file-'),

@@ -9,6 +9,11 @@ ANGLES = ('正面中景，镜头稍低', '侧前方四分之三视角', '稍高�
 
 def validate_spec(value):
     spec = dict(value)
+    # Missing mode belongs to an old Batch record; never upgrade its price.
+    mode = spec.get('mode', 'batch')
+    if mode not in ('batch', 'instant'):
+        raise ValueError('提交方式只能是Batch或即时生成。')
+    spec['mode'] = mode
     prompt = str(spec.get('prompt', '')).strip()
     if not prompt or len(prompt) > 12000:
         raise ValueError('请填写图片提示词（最多12000字）。')

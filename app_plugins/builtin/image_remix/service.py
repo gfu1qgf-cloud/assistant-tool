@@ -275,6 +275,7 @@ class Service:
         # If interrupted after the PNG write, replay compares the content hash.
         data_file(destination / f'{item["index"] + 1:04d}.json').write_json({
             'job_id': job['id'], 'custom_id': custom, 'batch_id': attempt['batch_id'],
+            'submission_mode': job['spec'].get('mode', 'batch'),
             'original_prompt': job['spec']['prompt'], 'prompt': item['prompt'],
             'innovation': job['spec']['innovation'], 'model': job['spec']['model'],
             'usage': body.get('usage'), 'sha256': digest})
@@ -307,7 +308,9 @@ def _run_operation(store, payload, context):
         identifiers = [payload['id']]
     else:
         waiting = sorted((j for j in store.all() if j['status'] not in SETTLED and
-                          (j['status'] != 'attention' or payload.get('manual'))),
+                          (j['status'] not in ('attention', 'paused') or payload.get('manual')) and
+                          (not payload.get('instant_only') or
+                           j['spec'].get('mode', 'batch') == 'instant' and j['status'] == 'ready')),
                          key=lambda j: j.get('last_check', 0))
         identifiers = [j['id'] for j in waiting[:8]]
     messages = []
@@ -322,6 +325,21 @@ def _run_operation(store, payload, context):
             key = read_provider_key(pinned, 'openai')
             client = BatchClient(key, context.check_canceled)
             service = Service(store, client, context.check_canceled)
+            if job['spec'].get('mode', 'batch') == 'instant':
+                from .instant import InstantService
+                report_stage = getattr(context, 'report_item_stage', lambda identifier, stage: None)
+                direct = InstantService(store, client, service, context.check_canceled,
+                                        stage=lambda stage: report_stage(job['id'], stage))
+                if action == 'bind':
+                    raise ValueError('即时任务没有Batch ID，不能关联批次。')
+                if action in ('resume', 'retry', 'retry_unknown'):
+                    direct.restore_receipts(job)
+                    direct.resume(job, retry=action != 'resume', include_unknown=action == 'retry_unknown')
+                if action == 'cancel':
+                    store.request_stop(job['id'])
+                context.report('即时生成 · ' + identifier[:8] + f' · 已保存 {summary(job)[0]}/{len(job["items"])}', 0)
+                direct.advance(job)
+                continue
             if action == 'bind':
                 attempt = active_attempt(job)
                 if not attempt or attempt.get('batch_id') or job['status'] not in ('unknown', 'submitting'):
@@ -354,5 +372,7 @@ def _run_operation(store, payload, context):
         finally:
             if client is not None:
                 client.close()
-    context.report('本次批次检查结束；云端任务仍按各自状态继续', 100)
-    return {'jobs': store.all(), 'messages': messages, 'draft': store.draft()}
+    context.report('本次图片处理结束；各任务保留独立状态', 100)
+    jobs = store.all()
+    return {'jobs': jobs, 'messages': messages, 'draft': store.draft(),
+            'auto_continue': any(j['spec'].get('mode', 'batch') == 'instant' and j['status'] == 'ready' for j in jobs)}

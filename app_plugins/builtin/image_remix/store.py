@@ -22,12 +22,12 @@ class Store:
         self.lock = threading.RLock()
         with self.connection() as db:
             version = db.execute('PRAGMA user_version').fetchone()[0]
-            if version not in (0, 1):
+            if version not in (0, 1, 2):
                 raise ValueError('图片翻版记录来自更新版本，不能覆盖。')
             db.executescript('''CREATE TABLE IF NOT EXISTS jobs (
                 id TEXT PRIMARY KEY, value TEXT NOT NULL, created REAL NOT NULL);
-                CREATE TABLE IF NOT EXISTS drafts (id INTEGER PRIMARY KEY CHECK(id=1), value TEXT NOT NULL);
-                PRAGMA user_version=1;''')
+                CREATE TABLE IF NOT EXISTS drafts (id INTEGER PRIMARY KEY CHECK(id=1), value TEXT NOT NULL);''')
+            if version == 0: db.execute('PRAGMA user_version=1')
 
     @contextmanager
     def connection(self):
@@ -78,6 +78,10 @@ class Store:
 
     def save(self, job):
         with self.connection() as db:
+            if job['spec'].get('mode', 'batch') == 'instant':
+                # Old 0.1 clients reject version 2 rather than interpreting a
+                # queued instant intent as a new Batch on downgrade.
+                db.execute('PRAGMA user_version=2')
             db.execute('INSERT INTO jobs(id,value,created) VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET value=excluded.value',
                        (job['id'], json.dumps(job, ensure_ascii=False), job['created']))
 
@@ -148,6 +152,18 @@ class Store:
         if hashlib.sha256(raw).hexdigest() != filename.split('.')[0]:
             raise ValueError('已保存的人物参考图损坏，不会改用其他图片。')
         return raw
+
+    def request_stop(self, identifier):
+        job = self.get(identifier)
+        if job['spec'].get('mode', 'batch') != 'instant':
+            raise ValueError('停止后续图片仅适用于即时模式。')
+        data_directory(self.root / identifier).file('stop.json').write_json({'stop': True})
+
+    def stop_requested(self, identifier):
+        return data_directory(self.root / identifier).file('stop.json').exists()
+
+    def clear_stop(self, identifier):
+        data_directory(self.root / identifier).file('stop.json').remove(missing_ok=True)
 
     def delete(self, identifier):
         job = self.get(identifier)
