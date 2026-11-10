@@ -76,6 +76,7 @@ class Preview(QtWidgets.QWidget):
         self.background_zoom = 1.0
         self.cover,self.show_bounds = False,True
         self.layers,self.selected_id = [],""
+        self.face_layouts = {}
         self._drag = None
         self.guides_visible, self.snapping_enabled = True, True
         self._alignment_guides = []
@@ -98,17 +99,39 @@ class Preview(QtWidgets.QWidget):
 
     def layer_rect(self,layer):
         canvas = self.canvas_rect()
-        return QtCore.QRectF(canvas.left()+canvas.width()*(layer["x"]-layer["width"]/2)/100,
-            canvas.top()+canvas.height()*(layer["y"]-layer["height"]/2)/100,
+        x,y = layer['x'],layer['y']
+        if layer.get('position_reference') == 'face' and self.face_layouts.get(layer['id']):
+            from .face_anchor import center_for
+            cx,cy = center_for(layer, self.canvas_size.width(), self.canvas_size.height(), self.face_layouts[layer['id']])
+            x,y = cx*100/self.canvas_size.width(), cy*100/self.canvas_size.height()
+        return QtCore.QRectF(canvas.left()+canvas.width()*(x-layer["width"]/2)/100,
+            canvas.top()+canvas.height()*(y-layer["height"]/2)/100,
             canvas.width()*layer["width"]/100,canvas.height()*layer["height"]/100)
+
+    def display_layers(self):
+        result = []
+        for layer in self.layers:
+            value = self.face_layouts.get(layer['id'])
+            if layer.get('position_reference') == 'face' and value:
+                from .face_anchor import center_for
+                cx,cy = center_for(layer, self.canvas_size.width(), self.canvas_size.height(), value)
+                layer = dict(layer, x=cx*100/self.canvas_size.width(), y=cy*100/self.canvas_size.height())
+            result.append(layer)
+        return result
 
     def editable_layers(self):
         return [layer for layer in self.layers if layer.get("enabled") and layer.get("opacity",100)>0
                 and all(key in layer for key in GEOMETRY_KEYS)]
 
+    def set_face_layouts(self, values):
+        self.face_layouts = copy.deepcopy(values)
+        self.update()
+
     def set_layers(self,layers,selected_id=""):
         self.layers = copy.deepcopy(layers)
         self.selected_id = selected_id
+        valid = {v['id'] for v in layers if v.get('position_reference') == 'face'}
+        self.face_layouts = {k:v for k,v in self.face_layouts.items() if k in valid}
         self.update()
 
     def handle_rects(self,layer):
@@ -256,7 +279,11 @@ class Preview(QtWidgets.QWidget):
         from .preview_guides import aligned_geometry
         layer = next((v for v in self.editable_layers() if v['id'] == self.selected_id),None)
         if layer:
-            values = aligned_geometry(layer,horizontal,vertical)
+            if layer.get('position_reference') == 'face':
+                values = {key:layer[key] for key in GEOMETRY_KEYS}
+                for axis,side in (('x',horizontal),('y',vertical)):
+                    if side is not None: values[axis] = 50 if side == 'center' else 0 if side in {'left','top'} else 100
+            else: values = aligned_geometry(layer,horizontal,vertical)
             if values is not None and any(layer[key] != values[key] for key in GEOMETRY_KEYS):
                 layer.update(values)
                 self.geometryEdited.emit(layer['id'],values)
@@ -297,9 +324,21 @@ class Preview(QtWidgets.QWidget):
             values = dragged_geometry(self._drag["values"],delta.x()*100/canvas.width(),delta.y()*100/canvas.height(),self._drag["handle"],
                 max_size=MAX_VISUAL_SIZE_PERCENT if layer and layer['kind'] == 'image' else 100)
             self._alignment_guides = []
-            if self.snapping_enabled and not event.modifiers() & QtCore.Qt.KeyboardModifier.AltModifier:
+            face = bool(layer and layer.get('position_reference') == 'face')
+            if face and self._drag['handle']:
+                hx,hy = self._drag['handle']; original = self._drag['values']
+                values = dict(original, width=max(1,min(MAX_VISUAL_SIZE_PERCENT,original['width']+2*hx*delta.x()*100/canvas.width())),
+                              height=max(1,min(MAX_VISUAL_SIZE_PERCENT,original['height']+2*hy*delta.y()*100/canvas.height())))
+            if self.snapping_enabled and face and not self._drag['handle'] and not event.modifiers() & QtCore.Qt.KeyboardModifier.AltModifier:
+                from .preview_guides import targets
+                for axis,pixels in (('x',canvas.width()),('y',canvas.height())):
+                    choices = [(abs(target-values[axis]),target,name) for target,name in targets(self.display_layers(),layer['id'],axis) if 0 <= target <= 100]
+                    gap,target,name = min(choices)
+                    if gap*pixels/100 <= 6:
+                        values[axis] = target; self._alignment_guides.append((axis,target,name))
+            if self.snapping_enabled and not face and not event.modifiers() & QtCore.Qt.KeyboardModifier.AltModifier:
                 from .preview_guides import snapped_geometry
-                values,self._alignment_guides = snapped_geometry(values,self.layers,self._drag['id'],
+                values,self._alignment_guides = snapped_geometry(values,self.display_layers(),self._drag['id'],
                     (canvas.width(),canvas.height()),handle=self._drag['handle'],
                     max_size=MAX_VISUAL_SIZE_PERCENT if layer and layer['kind'] == 'image' else 100)
             if layer and any(layer[key] != values[key] for key in GEOMETRY_KEYS):

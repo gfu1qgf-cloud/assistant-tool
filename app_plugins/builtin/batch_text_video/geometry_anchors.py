@@ -3,6 +3,10 @@ ANCHORS = {"x": ("center", "left", "right"), "y": ("center", "top", "bottom")}
 
 
 def normalize_anchors(layer):
+    if layer.get("position_reference") == "face":
+        if layer.get("kind") != "image": raise ValueError("人脸定位仅适用于图片／视频控件。")
+        # Face-target coordinates cannot also mean a source-box edge margin.
+        layer.update(position_anchor_x='center', position_anchor_y='center')
     for axis, choices in ANCHORS.items():
         key = "position_anchor_" + axis
         if key in layer and layer[key] not in choices:

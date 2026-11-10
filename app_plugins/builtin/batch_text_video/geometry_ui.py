@@ -8,6 +8,10 @@ from .property_pairs import FieldPair
 GEOMETRY_KEYS = ('x', 'y', 'width', 'height')
 
 
+class UnitCombo(QtWidgets.QComboBox):
+    def wheelEvent(self, event): event.ignore()
+
+
 class GeometryEditor(QtWidgets.QWidget):
     changed = QtCore.pyqtSignal(object)
     unitChanged = QtCore.pyqtSignal(str)
@@ -21,7 +25,7 @@ class GeometryEditor(QtWidgets.QWidget):
         form.setContentsMargins(3, 3, 3, 3)
         form.setFieldGrowthPolicy(form.FieldGrowthPolicy.AllNonFixedFieldsGrow)
         form.setRowWrapPolicy(form.RowWrapPolicy.WrapLongRows)
-        self.units = QtWidgets.QComboBox()
+        self.units = UnitCombo()
         self.units.addItem('百分比 %', 'percent'); self.units.addItem('像素 px', 'pixels')
         self.units.setCurrentIndex(max(0, self.units.findData(unit)))
         self.units.currentIndexChanged.connect(self._unit_changed)
@@ -32,6 +36,10 @@ class GeometryEditor(QtWidgets.QWidget):
         unit_layout.setContentsMargins(0,0,0,0)
         unit_layout.addWidget(self.units); unit_layout.addWidget(self.canvas_label,1)
         form.addRow('单位', unit_row)
+        self.face_status = QtWidgets.QLabel(); self.face_status.setWordWrap(True)
+        self.face_status.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored, QtWidgets.QSizePolicy.Policy.Preferred)
+        self.face_status.hide(); form.addRow(self.face_status)
+        self.units.setToolTip('人脸定位：首帧人脸中心作为位置基准；X/Y是相对画布中心的偏移，0居中，宽高仍为百分比。')
         self.anchor_controls, self.properties, self.geometry_labels = {}, {}, {}
         for axis, label, choices in (
                 ('x', 'X', (('中心', 'center'), ('左边', 'left'), ('右边', 'right'))),
@@ -71,7 +79,21 @@ class GeometryEditor(QtWidgets.QWidget):
         self.layer = copy.deepcopy(layer) if layer else None
         if canvas_size is not None: self.canvas_size = QtCore.QSize(canvas_size)
         self.loading = True
-        if unit is not None: self.units.setCurrentIndex(max(0, self.units.findData(unit)))
+        face = bool(layer and layer.get('kind') == 'image' and layer.get('position_reference') == 'face')
+        face_index = self.units.findData('face')
+        if layer and layer.get('kind') == 'image':
+            if face_index < 0: self.units.addItem('人脸定位', 'face')
+        elif face_index >= 0: self.units.removeItem(face_index)
+        requested = 'face' if face else (unit if unit is not None else self.units.currentData())
+        self.units.setCurrentIndex(max(0, self.units.findData(requested)))
+        self.anchor_pair.setEnabled(not face)
+        self.anchor_pair.setVisible(not face)
+        anchor_label = self.layout().labelForField(self.anchor_pair)
+        if anchor_label: anchor_label.setVisible(not face)
+        self.face_status.setVisible(face)
+        if face:
+            from .face_anchor import cached, status
+            self.face_status.setText(status(cached(layer)))
         self.setEnabled(bool(layer))
         self.canvas_label.setText(f'画布 {self.canvas_size.width()} × {self.canvas_size.height()} px')
         if layer:
@@ -83,19 +105,20 @@ class GeometryEditor(QtWidgets.QWidget):
                 self.geometry_labels[axis].setToolTip(name)
                 short={'left':'距左', 'right':'距右', 'top':'距上',
                     'bottom':'距下', 'center':'中心'}[anchor(layer, axis)]
-                self.geometry_labels[axis].setText(f'{axis.upper()}（{short}）')
+                self.geometry_labels[axis].setText(axis.upper() if face else f'{axis.upper()}（{short}）')
             centers=sum(anchor(layer,axis)=='center' for axis in ('x','y'))
-            self.position_label.setText('中心' if centers==2 else '边距' if centers==0 else '位置')
+            self.position_label.setText('偏移' if face else '中心' if centers==2 else '边距' if centers==0 else '位置')
+            self.snap_button.setText('人脸贴边／居中' if face else '一键贴边／居中')
             for key, spin in self.properties.items():
                 extent = self.canvas_size.width() if key in {'x','width'} else self.canvas_size.height()
                 factor = extent / 100 if pixels else 1
                 maximum = MAX_VISUAL_SIZE_PERCENT if layer['kind'] == 'image' else 100
-                low, high = distance_range(layer, key) if key in {'x','y'} else (1, maximum)
+                low, high = ((-50,50) if face else distance_range(layer,key)) if key in {'x','y'} else (1, maximum)
                 spin.setDecimals(2 if pixels else 3)
                 spin.setRange(low * factor, high * factor)
                 spin.setSuffix(' px' if pixels else ' %')
                 spin.setSingleStep(1 if pixels else .1)
-                value = distance(layer, key) if key in {'x','y'} else layer[key]
+                value = (layer[key]-50 if face else distance(layer,key)) if key in {'x','y'} else layer[key]
                 spin.setValue(value * factor)
                 spin.setToolTip(f'实际值：{value*extent/100:.2f} px；{value:.3f}%' +
                     ('；允许超出画面，超出部分裁切。' if maximum > 100 else ''))
@@ -104,7 +127,15 @@ class GeometryEditor(QtWidgets.QWidget):
     def _unit_changed(self):
         if not self.loading:
             unit = self.units.currentData()
-            self.bind(self.layer)
+            if not self.layer: return
+            face = self.layer.get('position_reference') == 'face'
+            if unit == 'face':
+                candidate = dict(self.layer, position_reference='face', x=50., y=50.,
+                                 position_anchor_x='center', position_anchor_y='center')
+                self._emit(candidate)
+                return  # Face mode belongs to this layer, not the global unit.
+            if face: self._emit(dict(self.layer, position_reference='canvas'))
+            else: self.bind(self.layer)
             self.unitChanged.emit(unit)
 
     def _emit(self, candidate):
@@ -115,6 +146,8 @@ class GeometryEditor(QtWidgets.QWidget):
             self.message.emit('位置调整未应用：'+str(error))
             return
         values = {key: normalized[key] for key in (*GEOMETRY_KEYS, 'position_anchor_x', 'position_anchor_y') if key in normalized}
+        if normalized.get('position_reference','canvas') != self.layer.get('position_reference','canvas'):
+            values['position_reference'] = normalized.get('position_reference','canvas')
         self.layer.update(values)
         self.bind(self.layer)
         self.changed.emit(values)
@@ -126,7 +159,7 @@ class GeometryEditor(QtWidgets.QWidget):
         value = self.properties[key].value()
         if self.units.currentData() == 'pixels': value = value * 100 / extent
         if key in {'x','y'}:
-            candidate[key] = center(candidate, key, value)
+            candidate[key] = value+50 if candidate.get('position_reference') == 'face' else center(candidate, key, value)
         else:
             axis = 'x' if key == 'width' else 'y'
             candidate[key] = value
@@ -134,7 +167,7 @@ class GeometryEditor(QtWidgets.QWidget):
         self._emit(candidate)
 
     def _anchor_changed(self, *_):
-        if not self.loading and self.layer:
+        if not self.loading and self.layer and self.layer.get('position_reference') != 'face':
             candidate = copy.deepcopy(self.layer)
             candidate.update({f'position_anchor_{axis}': combo.currentData() for axis, combo in self.anchor_controls.items()})
             self._emit(candidate)
@@ -144,6 +177,9 @@ class GeometryEditor(QtWidgets.QWidget):
         candidate = copy.deepcopy(self.layer)
         for axis, side in (('x', horizontal), ('y', vertical)):
             if side is not None:
-                candidate['position_anchor_' + axis] = side
-                candidate[axis] = 50 if side == 'center' else center(candidate, axis, 0)
+                if candidate.get('position_reference') == 'face':
+                    candidate[axis] = 50 if side == 'center' else 0 if side in {'left','top'} else 100
+                else:
+                    candidate['position_anchor_' + axis] = side
+                    candidate[axis] = 50 if side == 'center' else center(candidate, axis, 0)
         self._emit(candidate)

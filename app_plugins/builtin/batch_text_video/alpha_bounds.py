@@ -28,6 +28,10 @@ def cancel_scope(cancel):
     finally: _CONTEXT.cancel = previous
 
 
+def current_cancel():
+    return getattr(_CONTEXT, "cancel", None)
+
+
 def enabled(layer):
     return bool(layer.get('media_crop_alpha', False))
 

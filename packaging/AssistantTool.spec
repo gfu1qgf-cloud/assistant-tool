@@ -14,6 +14,19 @@ datas = []
 binaries = []
 hiddenimports = ["PyQt6.QtMultimedia", "PyQt6.QtMultimediaWidgets"]
 
+# Offline first-frame face positioning uses the classifiers already in OpenCV.
+from importlib.util import find_spec
+face_data_spec = find_spec("cv2.data")
+if face_data_spec is None or not face_data_spec.origin:
+    raise SystemExit("Missing OpenCV face positioning data")
+face_model_dir = Path(face_data_spec.origin).parent
+hiddenimports.append("cv2.data")
+for classifier_name in ("haarcascade_frontalface_default.xml", "haarcascade_profileface.xml"):
+    classifier_file = face_model_dir / classifier_name
+    if not classifier_file.is_file():
+        raise SystemExit("Missing face positioning classifier: " + classifier_name)
+    datas.append((str(classifier_file), "cv2/data"))
+
 app_icon = project_root / "app_icon.ico"
 if not app_icon.is_file():
     raise SystemExit("Missing application icon: app_icon.ico")

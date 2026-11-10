@@ -67,8 +67,10 @@ class OverlayWorker(QtCore.QThread):
             layers, _ = resolve_sources(settings["layers"], title, body)
             planes = preview_planes(title, body, width, height, settings, self.cache) if any(
                 needs_plane(layer) and layer["enabled"] and layer["opacity"] for layer in layers) else []
+            from .face_anchor import enabled as face_enabled, cached as face_cached
+            faces = {v['id']: face_cached(v) for v in layers if face_enabled(v) and v.get('enabled')}
             self.ready.emit({"request": self.request, "image": image, "info": info, "planes": planes,
-                             'design_notices': notices})
+                             'design_notices': notices, 'face_layouts': faces})
         except Exception as error:
             self.ready.emit({"request": self.request, "error": str(error), "traceback": traceback.format_exc()})
 
@@ -1074,6 +1076,11 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
             background_label = "图片背景缩放快览" if preview_settings.get('_still_background') else "背景首帧"
             self.preview.overlay = result["image"]
             self.preview.composite_planes = result.get("planes", [])
+            if result.get('face_layouts'): self.preview.set_face_layouts(result['face_layouts'])
+            editor = getattr(getattr(self.layer_panel, 'editor', None), 'geometry_editor', None)
+            if editor and editor.layer and editor.layer.get('position_reference') == 'face':
+                from .face_anchor import status
+                editor.face_status.setText(status(result.get('face_layouts', {}).get(editor.layer['id'])))
             info = result["info"]
             sizes = info.get("component_sizes",{})
             text = ("文本框字号："+" / ".join(f"{size:.0f}" for size in list(sizes.values())[:3])

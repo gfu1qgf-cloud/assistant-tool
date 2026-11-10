@@ -114,7 +114,7 @@ def transform_at(window, time, *, bounds=(0., 0., 1., 1.), center=(.5, .5), marg
     return opacity, scale, x, y
 
 
-def add_timed_plane(filters, plane, label, width, height, duration, fps, window, *, center=None, raw_object=False, vertical_movement='0'):
+def add_timed_plane(filters, plane, label, width, height, duration, fps, window, *, center=None, raw_object=False, vertical_movement='0', raw_anchor=(.5, .5)):
     """Input is a full-canvas RGBA layer on its source clock; output is global RGBA.
 
     Entrance/exit affect only this plane. The full-canvas output continues before
@@ -159,8 +159,10 @@ def add_timed_plane(filters, plane, label, width, height, duration, fps, window,
     if raw_object:
         import re
         movement = re.sub(r'\bt\b', f'(t-{window.start:.9f})', vertical_movement) if window.clock == 'restart' else vertical_movement
-        xx = f'{cx:.9f}-overlay_w/2'
-        yy = f'{cy:.9f}-overlay_h/2+({movement})*({factor})'
+        ax, ay = raw_anchor
+        if not all(math.isfinite(n) and 0 <= n <= 1 for n in (ax, ay)): raise ValueError('素材定位点无效。')
+        xx = f'{cx:.9f}-overlay_w/2' if ax == .5 else f'{cx:.9f}-{ax:.9f}*overlay_w'
+        yy = (f'{cy:.9f}-overlay_h/2' if ay == .5 else f'{cy:.9f}-{ay:.9f}*overlay_h')+f'+({movement})*({factor})'
     base_x, base_y = xx, yy
     # Use the actual post-scale rectangle. A canvas percentage alone leaves
     # large/off-centre objects partly visible at the first frame. Two pixels

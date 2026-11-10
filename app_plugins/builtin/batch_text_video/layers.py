@@ -245,8 +245,9 @@ def image_rect(layer, image, width, height):
     size = QtCore.QSizeF(image.size())
     size.scale(QtCore.QSizeF(width*layer["width"]/100, height*layer["height"]/100),
                QtCore.Qt.AspectRatioMode.KeepAspectRatio)
-    return QtCore.QRectF(width*layer["x"]/100-size.width()/2,
-                        height*layer["y"]/100-size.height()/2, size.width(), size.height())
+    ax, ay = layer.get('_face_anchor', (.5, .5))
+    return QtCore.QRectF(width*layer["x"]/100-size.width()*ax,
+                        height*layer["y"]/100-size.height()*ay, size.width(), size.height())
 
 
 def compose_layers(text_images, layers, width, height, darkness, cache=None,tint_color="#000000",tint_strength=0, *, editor_timing=None):
@@ -295,6 +296,9 @@ def compose_layers(text_images, layers, width, height, darkness, cache=None,tint
                 from .visual_media import keyed_image
                 source = keyed_image(source, layer)
                 source = crop_image(source, alpha_box)
+                from .face_anchor import for_layer as face_for_layer
+                face = face_for_layer(layer, alpha_box=alpha_box)
+                if face: layer = dict(layer, _face_anchor=(face["ax"], face["ay"]))
                 if source.width() > bounds.width() or source.height() > bounds.height():
                     source = source.scaled(bounds, QtCore.Qt.AspectRatioMode.KeepAspectRatio,
                                            QtCore.Qt.TransformationMode.SmoothTransformation)

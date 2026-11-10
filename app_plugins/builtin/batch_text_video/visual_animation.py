@@ -63,15 +63,21 @@ def preview_transform(layer, width, height, editor_timing, *, object_size=None):
     local_duration = window.source_duration(duration) if window else duration
     local_time = time-window.start if window and window.clock == 'restart' else time
     scale, movement = motion_at(layer, local_duration, local_time) if layer.get('visual_animation', 'none') != 'none' else (1., 0.)
-    cx, cy = layer['x']/100, layer['y']/100
+    px, py = layer['x']/100, layer['y']/100
     w, h = object_size or (width*layer['width']/100, height*layer['height']/100)
+    ax, ay = layer.get('_face_anchor', (.5, .5))
+    # Scale around the selected source point. Normal layers keep their centre;
+    # face-aligned layers keep their first-frame face at the requested offset.
+    cx, cy = px+(.5-ax)*w/width, py+(.5-ay)*h/height
     half_w, half_h = w*scale/(2*width), h*scale/(2*height)
+    sx, sy = px+(cx-px)*scale, py+(cy-py)*scale
     offset = layer['height']/100*movement
     opacity, transition_scale, dx, dy = transform_at(window, time,
-        bounds=(cx-half_w, cy+offset-half_h, cx+half_w, cy+offset+half_h),
-        center=(cx, cy), margin=(2/width, 2/height)) if window else (1., 1., 0., 0.)
-    return (scale*transition_scale, width*dx,
-            height*dy + height*offset*transition_scale, opacity)
+        bounds=(sx-half_w, sy+offset-half_h, sx+half_w, sy+offset+half_h),
+        center=(px, py), margin=(2/width, 2/height)) if window else (1., 1., 0., 0.)
+    total = scale*transition_scale
+    return (total, width*(dx+(cx-px)*(total-1)),
+            height*(dy+(cy-py)*(total-1)+offset*transition_scale), opacity)
 
 
 def motion_at(layer, duration, time):

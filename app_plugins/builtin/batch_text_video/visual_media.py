@@ -15,7 +15,7 @@ VISUAL_FILTER = "图片 / 视频 / GIF (" + " ".join("*" + item for item in sort
 DEFAULTS = {"blend_mode": "normal", "key_mode": "none", "key_similarity": .15,
             "key_softness": .08, "key_despill": False, "media_loop": True, "use_saved_matte": True,
             "media_loop_transition": "none", "media_loop_fade": .3, "media_loop_regions": [], "matting_enabled": True,
-            "media_crop_alpha": False, "media_crop_alpha_threshold": 1, "media_crop_alpha_padding": 2,
+            "position_reference": "canvas", "media_crop_alpha": False, "media_crop_alpha_threshold": 1, "media_crop_alpha_padding": 2,
             **MATTE_DEFAULTS, **ANIMATION_DEFAULTS, **KEY_DEFAULTS, **SHOW_DEFAULTS}
 
 def is_animated(path):
@@ -29,6 +29,7 @@ def normalize_visual(layer):
     for key, value in DEFAULTS.items():
         if key not in layer: layer[key] = copy.deepcopy(value)
     normalize_key(layer)
+    if not isinstance(layer["position_reference"], str) or layer["position_reference"] not in {"canvas", "face"}: raise ValueError("视觉控件的定位基准无效。")
     if type(layer["media_crop_alpha"]) is not bool: raise ValueError("裁切透明空白开关无效。")
     for field, high in (("media_crop_alpha_threshold", 255), ("media_crop_alpha_padding", 100)):
         value = layer[field]
@@ -97,7 +98,7 @@ def import_visuals(paths, directory, cancel=None):
 def needs_plane(layer):
     from .matting_switch import original
     layer = original(layer)
-    return layer["kind"] == "image" and (layer.get("_matting_binding", {}).get("mode") == "dynamic" or is_animated(layer.get("path", "")) or
+    return layer["kind"] == "image" and (layer.get("position_reference") == "face" or layer.get("_matting_binding", {}).get("mode") == "dynamic" or is_animated(layer.get("path", "")) or
         layer.get("blend_mode", "normal") != "normal" or layer.get("key_mode", "none") != "none" or
         layer.get("visual_animation", "none") != "none" or layer.get('visual_timing_enabled', False))
 
@@ -228,6 +229,9 @@ def add_plane(args, filters, layer, input_index, background, label, width, heigh
             native_region = PlaylistInput(path, region, local_duration, start_time)
     from .alpha_bounds import for_layer, filter_for
     alpha_box = for_layer(layer, ffmpeg=ffmpeg, cancel=cancel)
+    from .face_anchor import for_layer as face_for_layer
+    face = face_for_layer(layer, alpha_box=alpha_box, ffmpeg=ffmpeg, cancel=cancel)
+    raw_anchor = (face["ax"], face["ay"]) if face else (.5, .5)
     loop_box = (box_w, box_h) if alpha_box is None else (
         math.ceil(box_w*alpha_box['width']/alpha_box['w']), math.ceil(box_h*alpha_box['height']/alpha_box['h']))
     loop_source = LoopInput(layer, local_duration, fps, executable, loop_box) if candidate else None
@@ -298,11 +302,13 @@ def add_plane(args, filters, layer, input_index, background, label, width, heigh
         from .overlay_timing import add_timed_plane
         plane = add_timed_plane(filters, label+'_source', label + "_timed", width, height, duration, fps, timing,
                                 center=(width*layer['x']/100, height*layer['y']/100),
-                                raw_object=True, vertical_movement=f'{box_h}*({movement})')
+                                raw_object=True, vertical_movement=f'{box_h}*({movement})', raw_anchor=raw_anchor)
     else:
         filters.append(f"color=c=black@0:s={width}x{height}:r={float(fps):.9f}:d={local_duration:.9f},format=rgba[{label}_canvas]")
-        filters.append(f"[{label}_canvas][{label}_source]overlay=x='{width*layer['x']/100:.4f}-overlay_w/2':"
-            f"y='{height*layer['y']/100:.4f}-overlay_h/2+{box_h}*({movement})':eval=frame:"
+        xx = f"{width*layer['x']/100:.4f}-overlay_w/2" if face is None else f"{width*layer['x']/100:.9f}-{raw_anchor[0]:.9f}*overlay_w"
+        yy = f"{height*layer['y']/100:.4f}-overlay_h/2" if face is None else f"{height*layer['y']/100:.9f}-{raw_anchor[1]:.9f}*overlay_h"
+        filters.append(f"[{label}_canvas][{label}_source]overlay=x='{xx}':"
+            f"y='{yy}+{box_h}*({movement})':eval=frame:"
             f"format=auto:eof_action=pass:repeatlast=0[{label}_plane]")
         plane = label + "_plane"
     if layer["blend_mode"] == "normal":
