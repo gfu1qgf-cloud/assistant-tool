@@ -10,6 +10,7 @@ import uuid
 
 from app_paths import DATA_ROOT as APP_ROOT
 from model.AppDataStorage import data_file, data_directory
+from .export_destination import DEFAULTS as DESTINATION_DEFAULTS, normalized as normalize_destination
 from .layers import DEFAULT_LAYERS, normalize_layers
 from .effects import blur_strength
 from .voice_effects import DEFAULTS as VOICE_FX_DEFAULTS, normalized as normalize_voice_fx
@@ -18,7 +19,7 @@ from .canvas_settings import DEFAULTS as CANVAS_DEFAULTS, normalized as normaliz
 
 SCHEMES = {"static_text": "静态文字版"}
 DEFAULTS = {
-    "scheme": "static_text", **CANVAS_DEFAULTS, "fit": "contain",
+    "scheme": "static_text", **CANVAS_DEFAULTS, **DESTINATION_DEFAULTS, "fit": "contain",
     "auto_crop_black_bars": True,
     "geometry_units": "percent", "show_layer_bounds": True,
     "background_tint_color":"#000000","background_tint_strength":0,
@@ -101,6 +102,7 @@ class Store:
             if 'color_rules' in state['settings']:
                 from .palette_rules import normalize
                 state['settings']['color_rules']=normalize(state['settings']['color_rules'])
+            state['settings'].update(normalize_destination(state['settings']))
             state['settings'].update(normalize_canvas(state['settings']))
             state['settings'].update(normalize_voice_fx(state['settings']))
             state['settings'].update(normalize_image_background(state['settings']))
@@ -162,6 +164,7 @@ class Store:
             state = copy.deepcopy(state)
             apply_global(state, DEFAULTS)
             from .adaptation import normalize_duration
+            state['settings'].update(normalize_destination(state['settings']))
             state['settings'].update(normalize_canvas(state['settings']))
             state['settings'].update(normalize_voice_fx(state['settings']))
             state['settings'].update(normalize_image_background(state['settings']))
@@ -198,6 +201,7 @@ class Store:
                 state.update(copy.deepcopy(profile['data']))
             state['active_profile'] = identifier
             state['revision'] = profile.get('revision', 0)
+            state['settings'].update(normalize_destination(state['settings']))
             state['settings'].update(normalize_canvas(state['settings']))
             from .render_settings import apply_global
             apply_global(state, DEFAULTS)

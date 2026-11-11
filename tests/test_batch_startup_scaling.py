@@ -53,6 +53,7 @@ class BatchStartupScalingTests(unittest.TestCase):
     def test_colliding_sanitized_output_names_are_still_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
             state = self.state(Path(tmp), 2)
+            state['settings']['overwrite'] = True
             state['jobs'][0]['name'] = 'same:name'
             state['jobs'][1]['name'] = 'same?name'
             with self.assertRaisesRegex(ValueError, '同一成品'):

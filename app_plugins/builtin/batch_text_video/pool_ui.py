@@ -201,7 +201,7 @@ class PairingDialog(QtWidgets.QDialog):
         scopes.addStretch()
         layout.addLayout(scopes)
         self.table = QtWidgets.QTableWidget(0, 5)
-        self.table.setHorizontalHeaderLabels(["文案 / 任务", "背景素材（可更换）", "标题", "任务目录", "人声（可更换）"])
+        self.table.setHorizontalHeaderLabels(["文案 / 任务", "背景素材（可更换）", "标题", "成品目录", "人声（可更换）"])
         self.table.setEditTriggers(self.table.EditTrigger.NoEditTriggers)
         self.table.setSelectionBehavior(self.table.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(self.table.SelectionMode.ExtendedSelection)
@@ -217,7 +217,7 @@ class PairingDialog(QtWidgets.QDialog):
         self.status = QtWidgets.QLabel()
         self.status.setWordWrap(True)
         layout.addWidget(self.status)
-        note = QtWidgets.QLabel("上方卡片设默认；每行可直接选任意人声池或指定音频。多选行后右键可批量换人声。\n人声从头播放，成品时长跟随人声；音乐保留续播及避让人声。表格任务仍导出到原任务目录。")
+        note = QtWidgets.QLabel("上方卡片设默认；每行可直接选任意人声池或指定音频。多选行后右键可批量换人声。\n人声从头播放，成品时长跟随人声；音乐保留续播及避让人声。成品位置按主窗口“导出到”设置。")
         note.setWordWrap(True)
         layout.addWidget(note)
         self.buttons = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.StandardButton.Ok |
@@ -270,12 +270,17 @@ class PairingDialog(QtWidgets.QDialog):
         self.table.setRowCount(len(self.pairs))
         voice_titles = {item['path']: (voice_pool['name']+' / '+Path(item['path']).name) for item in voices}
         background_titles = {path: Path(path).name for path in videos}
+        from .export_destination import settings_for as routing_settings, folder as export_folder
+        future_jobs = list(self.pool_state.get('jobs', [])) + [dict(p['copy'] or {}, path=p['path']) for p in self.pairs]
+        try: output_settings = routing_settings({**self.pool_state, 'jobs': future_jobs})
+        except ValueError: output_settings = self.pool_state['settings']
         for row, pair in enumerate(self.pairs):
             source = pair["copy"] or {}
-            directory = source.get("task_dir", "")
-            short_directory = str(Path(*Path(directory).parts[-3:])) if directory else "普通视频输出目录"
+            try: directory = str(export_folder(dict(source, path=pair['path']), output_settings))
+            except ValueError as error: directory = str(error)
+            short_directory = str(Path(*Path(directory).parts[-3:])) if directory else "请选择导出文件夹"
             for column, value in ((0, source.get("label") or source.get("name") or "固定 / 轮换组件"),
-                                  (2, source.get("title", "")), (3, source.get("task_dir") or "普通视频输出目录")):
+                                  (2, source.get("title", "")), (3, directory)):
                 item = QtWidgets.QTableWidgetItem(short_directory if column == 3 else value)
                 item.setToolTip(value)
                 self.table.setItem(row, column, item)

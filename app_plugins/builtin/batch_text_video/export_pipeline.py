@@ -47,6 +47,8 @@ def execute_parallel_batch(store, state, ids, cancel, progress, message, done, p
     remaining = deque(enumerate(ids))
     pending = deque()
     outputs = {}
+    from .export_destination import OutputNames
+    output_names = OutputNames()
     completed = failed = 0
     paths, failures = [], []
     paths_by_id = {}
@@ -112,7 +114,12 @@ def execute_parallel_batch(store, state, ids, cancel, progress, message, done, p
                             from .store import file_identity
                             identity = file_identity(prepared.output)
                             if identity in outputs and outputs[identity] != job_id:
-                                raise ValueError('本批次多个任务指向同一成品文件，已阻止覆盖；请检查任务文件名。')
+                                if getattr(prepared, 'overwrite', state['settings']['overwrite']):
+                                    raise ValueError('本批次多个任务指向同一成品文件，已阻止覆盖；请检查任务文件名。')
+                                base = getattr(prepared, 'requested_output', None) or prepared.output
+                                prepared.output = output_names.choose(base, getattr(prepared, 'source_paths', ()))
+                                identity = file_identity(prepared.output)
+                            output_names.claimed.add(identity)
                             from .render_assignment import reserve
                             state, reserved = reserve(store, state, job_id, prepared)
                             reservation = copy.deepcopy(state) if reserved else store.completion_state(speculative, job_id, prepared.output,

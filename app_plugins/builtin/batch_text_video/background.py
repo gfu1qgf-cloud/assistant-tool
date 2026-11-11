@@ -15,9 +15,11 @@ def batch_resources(store, state, ids):
     from .store import file_identity
     from .background_visual import background_job
     jobs = [job for job in state["jobs"] if job["id"] in ids]
+    from .export_destination import settings_for
+    routing = settings_for(state)
     profile = f"batch-profile:{file_identity(store.path)}:{state.get('active_profile', 'default')}"
     return [profile] + [directory_resource(
-        output_folder(background_job(job, state), state["settings"])) for job in jobs]
+        output_folder(background_job(job, state), routing)) for job in jobs]
 
 
 def validate_batch_outputs(state, ids):
@@ -32,6 +34,8 @@ def validate_batch_outputs(state, ids):
     # preflight, not once per row (782 x 2639 in the reported project).
     # Preparation and publication still resolve current sources afresh.
     identities = frozenset(file_identity(path) for path in dict.fromkeys(inputs))
+    from .export_destination import settings_for, OutputNames
+    routing, names = settings_for(state), OutputNames()
     seen_ids, outputs = set(), {}
     for job_id in ids:
         if job_id in seen_ids:
@@ -39,10 +43,14 @@ def validate_batch_outputs(state, ids):
         seen_ids.add(job_id)
         job = jobs[job_id]
         from .background_visual import background_job
-        folder = output_folder(background_job(job, state), state["settings"])
+        folder = output_folder(background_job(job, state), routing)
         name = output_stem(job, state['settings'].get('task_naming_rules', {}))
         output = safe_output(folder, name, inputs, input_identities=identities)
         identity = file_identity(output)
+        if identity in outputs and not state["settings"]["overwrite"]:
+            output = names.choose(output, input_identities=identities)
+            identity = file_identity(output)
+        names.claimed.add(identity)
         if identity in outputs:
             raise ValueError(f'两条任务会写入同一成品 {output.name}（{outputs[identity]}、{job_id}）；请修改输出名称后重试。')
         outputs[identity] = job_id

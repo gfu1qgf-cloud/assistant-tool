@@ -30,6 +30,7 @@ class PreparedExport:
     render_scope: str = ''
     source_paths: tuple = field(default_factory=tuple)
     assignment: dict = field(default_factory=dict)
+    requested_output: object = None
 
     def encode(self):
         from .render_slots import render_slot
@@ -101,10 +102,8 @@ class PreparedExport:
             raise Cancelled('已取消，未发布临时成品。')
         if self.effects is not None:
             self.effects.verify()
-        safe_output(self.output.parent, self.output.name, self.source_paths)
-        if self.output.exists() and not self.overwrite:
-            raise FileExistsError('生成期间已有同名文件出现，未覆盖。')
-        data_io.replace(self.target, self.output)
+        from .export_destination import publish
+        publish(self)
         self.report(f"导出耗时：准备 {self.timings.get('prepare_seconds', 0):.2f}秒；"
             f"编码 {self.timings.get('encode_seconds', 0):.2f}秒；校验 {self.timings.get('verify_seconds', 0):.2f}秒；"
             f"实际编码器 {encoder_label(self.encoder)}。")

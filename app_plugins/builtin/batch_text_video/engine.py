@@ -159,12 +159,8 @@ def output_size(settings, media=None):
 
 def output_folder(job, settings):
     """No source is valid; no destination must never silently mean the working directory."""
-    folder = job.get('task_dir') or settings.get('output_dir')
-    if not folder and job.get('path'):
-        folder = str(Path(job['path']).parent)
-    if not folder:
-        raise ValueError('请选择输出文件夹。')
-    return folder
+    from .export_destination import folder
+    return folder(job, settings)
 
 
 def audible_ranges(text, duration):
@@ -463,18 +459,20 @@ def _prepare_static_text(job, state, directory, cancel=None, progress=None, repo
         report(f"{'人声' if voice_path else '固定成品'} {duration:.2f}秒；背景 {media['duration']:.2f}秒；速度 {adaptation['speed']:.2f}×；"
                f"{'循环叠化' if adaptation['fade'] else '循环直切' if adaptation['repeating'] else '单次播放'}")
     from .copy_binding import imported_task
-    if imported_task(job) and not job.get("task_dir"):
+    if imported_task(job) and not job.get("task_dir") and settings.get("output_destination", "auto") == "auto":
         raise ValueError("表格任务缺少绑定的任务目录，请重新导入；未写入其他目录。")
-    folder = output_folder(job, settings)
+    from .export_destination import settings_for, OutputNames
+    routing = settings_for({**state, "settings": settings})
+    folder = output_folder(job, routing)
     inputs = original_sources + source_paths(state) + source_paths({'settings': settings})
     if voice_path:
         inputs.append(voice_path)
     from .task_naming import output_stem
     name = job["name"] if preview else output_stem(job, settings.get("task_naming_rules", {}))
-    output = safe_output(folder, name, inputs)
+    identities = frozenset(file_identity(value) for value in dict.fromkeys(inputs))
+    requested_output = safe_output(folder, name, inputs, input_identities=identities)
+    output = requested_output if settings['overwrite'] else OutputNames().choose(requested_output, input_identities=identities)
     report("成品目录："+str(output.parent))
-    if output.exists() and not settings["overwrite"]:
-        raise FileExistsError("成品已存在，未覆盖；请改名或启用覆盖：" + output.name)
     data_directory(output.parent).ensure(parents=True, exist_ok=True)
     from model.MediaStorage import media_cache_root
     media_directory = media_cache_root(directory, anchors=(output.parent, Path(job['path']).parent if job.get('path') else None), namespace='batch-text-video')
@@ -675,7 +673,7 @@ def _prepare_static_text(job, state, directory, cancel=None, progress=None, repo
             settings['encoder_fallback'], preview, workers, effects=node_effects if effects else None,
             cwd=temporary if effects else None, timings={'prepare_seconds': time.monotonic()-started},
             quality=settings['export_quality'], render_scope='' if preview else file_identity(Path(directory)/'state.json'),
-            source_paths=tuple(inputs), assignment=assignment)
+            source_paths=tuple(inputs), requested_output=requested_output, assignment=assignment)
 
 
 @contextmanager

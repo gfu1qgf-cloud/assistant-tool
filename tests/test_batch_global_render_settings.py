@@ -154,6 +154,8 @@ class GlobalRenderSettingsTests(unittest.TestCase):
     def test_four_one_video_projects_enter_real_encoders_together(self):
         from qt_compat import QtWidgets
         app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+        from app_plugins.builtin.batch_text_video.layout import ensure_fonts
+        ensure_fonts()
         ffmpeg = os.environ['NODE_FFMPEG']
         source = self.root/'background.mp4'
         subprocess.run([ffmpeg, '-y', '-nostdin', '-loglevel', 'error', '-f', 'lavfi', '-i',

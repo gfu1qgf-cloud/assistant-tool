@@ -21,7 +21,7 @@ def preview_key(job, state, node_bundle=None, *, preview_limit=None):
     original_layers = settings["layers"]
     paths_cursor=[layer.get('caption_cursor_image') for layer in walk_components(original_layers) if layer.get('caption_cursor_image')]
     settings["layers"], _ = resolve_sources(bind_pool_layers(original_layers, state), job.get("title", ""), job.get("body", ""), job=job)
-    for field in ("output_dir", "overwrite", "geometry_units", "show_layer_bounds", "export_quality"):
+    for field in ("output_dir", "output_destination", "output_relative_root", "overwrite", "geometry_units", "show_layer_bounds", "export_quality"):
         settings.pop(field, None)
     paths = [job.get("path"), resolve_voice(job, state, discover=True)]
     if paths[1] and Path(paths[1]).is_file():
@@ -144,6 +144,7 @@ class PlaybackWorker(QtCore.QThread):
                         frozen_subtitles[layer['id']] = str(path)
                 self.job['caption_subtitles'] = frozen_subtitles
                 self.job.update(name=self.key, task_dir=str(cache))
+                self.state["settings"].update(output_destination="directory", output_dir=str(cache), output_relative_root="")
                 self.state["settings"]["overwrite"] = True
                 kwargs = {}
                 if self.preview_limit is not None:

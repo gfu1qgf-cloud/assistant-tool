@@ -93,6 +93,8 @@ class EmptyBackgroundTests(unittest.TestCase):
             state['settings']['output_dir'] = directory
             validate_batch_outputs(state, [job['id']])
             duplicate = dict(job, id='second'); state['jobs'].append(duplicate)
+            validate_batch_outputs(state, [job['id'], 'second'])
+            state['settings']['overwrite'] = True
             with self.assertRaisesRegex(ValueError, '同一成品'): validate_batch_outputs(state, [job['id'], 'second'])
 
     def test_pairing_dialog_has_explicit_empty_choice_and_can_generate_without_copy(self):

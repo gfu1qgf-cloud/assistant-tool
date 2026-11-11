@@ -117,7 +117,7 @@ class TaskOutputNameTests(unittest.TestCase):
         from app_plugins.builtin.batch_text_video.watermarks import apply_corner_watermarks
         from app_plugins.builtin.batch_text_video.layout import ensure_fonts
         ensure_fonts()
-        ffmpeg=Path(__file__).resolve().parents[1]/'runtime/ffmpeg/ffmpeg.exe'
+        ffmpeg=Path(os.environ['NODE_FFMPEG']) if os.environ.get('NODE_FFMPEG') else Path(__file__).resolve().parents[1]/'runtime/ffmpeg/ffmpeg.exe'
         if not ffmpeg.is_file(): self.skipTest('Requires pinned local FFmpeg')
         with tempfile.TemporaryDirectory() as root:
             root=Path(root);job=self.job(root)

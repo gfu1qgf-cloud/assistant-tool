@@ -389,7 +389,7 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
         render_form.setRowWrapPolicy(render_form.RowWrapPolicy.WrapLongRows)
         render_form.setFieldGrowthPolicy(render_form.FieldGrowthPolicy.AllNonFixedFieldsGrow)
         check = QtWidgets.QCheckBox("导出时允许覆盖同名文件")
-        check.setToolTip('所有项目共用；仅覆盖目标成品文件，原始素材和抠像管理文件继续保护。')
+        check.setToolTip('所有项目共用；开启时覆盖目标成品；关闭时自动编号另存。原始素材和抠像管理文件继续保护。')
         check.setChecked(self.state["settings"]["overwrite"])
         self.controls["overwrite"] = check
         render_form.addRow(check)
@@ -545,21 +545,8 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
         self.splitter.setSizes([260, 500, 440])
         self.splitter.setStretchFactor(1, 1)
         layout.addWidget(self.splitter, 1)
-        output_row = QtWidgets.QHBoxLayout()
-        self.output = QtWidgets.QLineEdit(self.state["settings"]["output_dir"])
-        output_row.addWidget(QtWidgets.QLabel("默认导出文件夹"))
-        self.output.setPlaceholderText('任务指定目录优先；普通独立视频使用此目录')
-        self.output.setToolTip("表格/人声任务始终导出到各自任务目录，不使用这里的路径。普通独立视频留空则导出到源视频目录。")
-        output_row.addWidget(self.output, 1)
-        browse = QtWidgets.QPushButton("选择…")
-        browse.clicked.connect(self.choose_output)
-        output_row.addWidget(browse)
-        self.open_directory_button = QtWidgets.QPushButton("打开目录")
-        self.open_directory_button.setAutoDefault(False)
-        self.open_directory_button.setToolTip("打开当前预览对应的成品目录；表格/人声任务优先使用实际任务目录，不打开预览缓存。")
-        self.open_directory_button.clicked.connect(self.open_output_directory)
-        output_row.addWidget(self.open_directory_button)
-        layout.addLayout(output_row)
+        from .export_destination_ui import build as build_destination
+        layout.addWidget(build_destination(self))
         footer = QtWidgets.QHBoxLayout()
         footer.addWidget(QtWidgets.QLabel('批量导出：在渲染队列勾选任务，再点击“开始全部计划”。'))
         self.global_queue_button = QtWidgets.QPushButton("渲染队列")
@@ -915,7 +902,7 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
         self.title.setPlainText(job["title"])
         self.body.setPlainText(job["body"])
         self.name.setText(job["name"])
-        self.name.setToolTip("任务成品按主程序整理规则命名，保存到本任务目录。手动改名后使用自定义名称，可能不再被整理规则识别。" if job.get("task_dir") else "自定义成品文件名。")
+        self.name.setToolTip("任务成品按主程序整理规则命名，按下方“导出到”保存。手动改名后使用自定义名称，可能不再被整理规则识别。" if job.get("task_dir") else "自定义成品文件名。")
         try:
             voice = self.active_voice(job)
             displayed = voice or (job.get("voice_path", "") if not self.controls["use_voice"].isChecked() else "")
@@ -1460,6 +1447,8 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
         folder = QtWidgets.QFileDialog.getExistingDirectory(self, "选择输出目录", self.output.text())
         if folder:
             self.output.setText(folder)
+            mode = self.controls['output_destination']
+            if mode.currentData() == 'auto': mode.setCurrentIndex(mode.findData('directory'))
 
     def open_result(self, row, _column):
         job = self.state["jobs"][row]
@@ -1480,8 +1469,11 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
             if output and Path(output).is_file():
                 folder = Path(output).parent
             else:
-                value = entry.get("task_dir") or self.output.text().strip()
-                folder = Path(value) if value else Path(entry["path"]).parent if entry.get("path") else None
+                from .export_destination import settings_for, folder as destination_folder
+                routing = settings_for({**self.state, 'settings': self.read_settings()})
+                try: folder = Path(destination_folder(entry, routing))
+                except ValueError as error:
+                    self.status.setText(str(error)); return False
             if folder is None:
                 self.status.setText("请先选择视频或设置输出目录。")
                 return False
@@ -1925,7 +1917,7 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
         self.task_text_panel.setEnabled(not busy)
         # Project switching stays available while a host-owned render runs.
         self.menu_bar.setEnabled(not busy or self.state['active_profile'] in self._host_plans)
-        for widget in (self.scheme,self.output):
+        for widget in (self.scheme,self.output,self.export_destination_widget):
             widget.setEnabled(not busy)
         self.global_queue_button.setEnabled(True)
         self.stop_button.setEnabled(busy)
