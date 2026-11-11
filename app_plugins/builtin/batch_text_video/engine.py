@@ -59,6 +59,24 @@ def _run(args, cancel=None, progress=None, duration=0, timeout=3600, *, cwd=None
         return _run_inputs(inputs, cancel, progress, duration, timeout, cwd=cwd)
 
 
+def stable_video_inputs(args):
+    """Keep one composition clock when decoded frame colour tags change.
+
+    FFmpeg otherwise rebuilds the entire shared graph: STARTPTS, concat,
+    generated canvases and animations restart while demux timestamps continue.
+    Apply only to video streams; audio format changes retain normal handling.
+    Inputs remain native and no frames are dropped or pre-transcoded.
+    """
+    if not any(value in args for value in ('-filter_complex', '-filter_complex_script', '-/filter_complex', '-vf', '-filter:v')):
+        return args
+    stable = []
+    for value in args:
+        if value == '-i':
+            stable += ['-reinit_filter:v', '0']
+        stable.append(value)
+    return stable
+
+
 def _run_inputs(inputs, cancel=None, progress=None, duration=0, timeout=3600, *, cwd=None):
     args = inputs.args
     from model.MediaStorage import require_media_output
@@ -79,7 +97,7 @@ def _run_inputs(inputs, cancel=None, progress=None, duration=0, timeout=3600, *,
                     if (value == '-i' and args[max(0, index-2):index] != ['-f', 'lavfi']
                             and not str(args[index+1]).startswith('\\\\.\\pipe\\')):
                         args[index+1] = str(Path(args[index+1]).resolve())
-            process = subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=writer, stderr=writer, cwd=cwd,
+            process = subprocess.Popen(stable_video_inputs(args), stdin=subprocess.DEVNULL, stdout=writer, stderr=writer, cwd=cwd,
                                        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
             started = time.monotonic()
             from .encoding_watchdog import EncodingWatchdog
