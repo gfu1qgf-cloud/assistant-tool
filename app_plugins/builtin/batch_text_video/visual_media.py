@@ -239,7 +239,12 @@ def add_plane(args, filters, layer, input_index, background, label, width, heigh
     loop_box = (box_w, box_h) if alpha_box is None else (
         math.ceil(box_w*alpha_box['width']/alpha_box['w']), math.ceil(box_h*alpha_box['height']/alpha_box['h']))
     loop_source = LoopInput(layer, local_duration, fps, executable, loop_box) if candidate else None
-    live_loop = loop_source is not None and (loop_source.overlap > 0 or region is not None)
+    # A selected dissolve also owns decoding before the first loop join.
+    # Falling back to the native file here can deadlock a mixed-input graph.
+    single_pass = (loop_source is not None and local_duration <=
+                   loop_source.clip_duration + .5/float(loop_source.fps))
+    live_loop = loop_source is not None and (loop_source.overlap > 0 or region is not None or
+                                           single_pass and loop_fade_enabled(layer))
     if audio_specs is not None and layer.get("media_audio_enabled"):
         audio_specs.append((copy.deepcopy(layer), timing, float(loop_source.overlap/loop_source.fps) if live_loop else 0.))
     if dynamic(layer) or live_loop:

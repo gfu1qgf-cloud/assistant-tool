@@ -72,7 +72,7 @@ def preview_key(job, state, node_bundle=None, *, preview_limit=None):
             fingerprints.append((str(path), None, None))
     from .text_colors import job_color_scope
     from .palette_rules import palette_scope
-    values = ["playback-v37-pool-audio", preview_limit, job_color_scope(job), palette_scope(job), settings, job.get("title", ""), job.get("body", ""),
+    values = ["playback-v38-loop-decode", preview_limit, job_color_scope(job), palette_scope(job), settings, job.get("title", ""), job.get("body", ""),
               job.get("requires_title", False), job.get("voice_override", False), fingerprints, music, next_id]
     from .node_effects import cache_snapshot
     values.append(cache_snapshot(node_bundle, job.get('id')))
