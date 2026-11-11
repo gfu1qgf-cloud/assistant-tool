@@ -54,7 +54,7 @@ def fresh_state():
     return {"version": 1, "revision": 0, "settings": settings,
             'render_settings': {key: copy.deepcopy(settings[key]) for key in KEYS},
             "jobs": [], "music": [], "next_music_id": "", "backgrounds": [],
-            "copy_pool": [], "image_pool": [], "resource_pools": [], "active_profile": "default",
+            "copy_pool": [], "image_pool": [], "resource_pools": [], "resource_orders": {}, "active_profile": "default",
             "profiles": [{"id": "default", "name": "默认配置", "data": None}],
             "render_plans": []}
 

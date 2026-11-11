@@ -6,7 +6,7 @@ import uuid
 
 from .store import file_identity
 
-RESOURCE_KEYS = ("settings", "jobs", "music", "next_music_id", "backgrounds", "copy_pool", "image_pool", "resource_pools")
+RESOURCE_KEYS = ("settings", "jobs", "music", "next_music_id", "backgrounds", "copy_pool", "image_pool", "resource_pools", "resource_orders")
 
 
 def migrate_pools(state):
@@ -31,6 +31,9 @@ def migrate_pools(state):
             if item.get("path") and file_identity(item["path"]) not in known:
                 state["image_pool"].append(copy.deepcopy(item))
                 known.add(file_identity(item["path"]))
+
+    from .pool_order import normalize
+    normalize(state)
 
 
 def add_videos(state, paths):

@@ -90,7 +90,7 @@ class AudioSourceCard(QtWidgets.QFrame):
 
     def choose_file(self):
         from .custom_pools import create_pool, add_pool_paths
-        path, _ = QtWidgets.QFileDialog.getOpenFileName(self, "固定音频来源", "", "音频 (*.mp3 *.wav *.flac *.aac *.m4a *.ogg *.opus *.wma)")
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(self, "固定音频来源", "", ("音频／视频 (*.mp3 *.wav *.flac *.aac *.m4a *.ogg *.opus *.wma *.mp4 *.mov *.mkv *.avi *.webm *.m4v *.mts)" if self.kind == "voice" else "音频 (*.mp3 *.wav *.flac *.aac *.m4a *.ogg *.opus *.wma)"))
         if not path: return
         # A single-file source uses the same ledger as an ordinary pool, keeping
         # music seek/undo/profile isolation and failed-export rollback intact.
@@ -121,7 +121,12 @@ class AudioSourceCard(QtWidgets.QFrame):
     def update_note(self, *_args):
         identifier = self.pool.currentData()
         pool = next((p for p in self._state.get("resource_pools", []) if p["id"] == identifier), None)
-        count = len(pool["items"]) if pool else len(self._state.get("music", [])) if self.kind == "music" and not identifier else 0
+        if self.kind == "voice" and identifier:
+            from .audio_sources import voice_library
+            try: pool, voice_items = voice_library(self._state, identifier)
+            except ValueError: pool, voice_items = None, []
+        else: voice_items = []
+        count = len(voice_items) if self.kind == "voice" else len(pool["items"]) if pool else len(self._state.get("music", [])) if self.kind == "music" and not identifier else 0
         if self.kind == "voice" and self.mode.currentData() == "task":
             text = "任务人声 · 选池可直接切换轮换"
         elif self.kind == "voice" and self.mode.currentData() == "none":

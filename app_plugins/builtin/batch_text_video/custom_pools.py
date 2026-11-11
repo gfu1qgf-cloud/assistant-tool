@@ -4,8 +4,8 @@ from pathlib import Path
 import uuid
 
 POOL_TYPES = {
-    "image": ("视觉元素", "图片 / GIF / 水印", "在视觉元素的来源中选择此池，逐视频使用下一项"),
-    "video": ("视觉元素", "视频", "用于背景搭配或绑定画面中的视频元素"),
+    "image": ("视觉元素", "图片／视频／GIF", "可混合导入图片、视频与GIF，绑定控件或用作背景"),
+    "video": ("视觉元素", "图片／视频／GIF", "可混合导入图片、视频与GIF，绑定控件或用作背景"),
     "visual": ("视觉元素", "图片／视频／GIF", "混合视觉素材，可绑定到同一个画面元素"),
     "text": ("文字元素", "文案文件", "UTF-8 TXT／Markdown，绑定文本框时逐视频取用"),
     "subtitle": ("文字元素", "字幕文件", "已有SRT，绑定字幕控件时逐视频取用"),
@@ -66,16 +66,13 @@ def create_pool(state, name, kind):
 
 
 def accepted_suffixes(kind):
-    if kind == "visual":
+    if kind in {"image", "video", "visual"}:
         from .visual_media import VISUAL_SUFFIXES
         return VISUAL_SUFFIXES
     if kind in {"text", "subtitle"}:
         return {".txt", ".md"} if kind == "text" else {".srt"}
-    if kind == "image":
-        from .layers import IMAGE_SUFFIXES
-        return IMAGE_SUFFIXES | {".gif"}
     from .matching import AUDIO_EXTENSIONS, VIDEO_EXTENSIONS
-    return VIDEO_EXTENSIONS if kind == "video" else AUDIO_EXTENSIONS
+    return AUDIO_EXTENSIONS | VIDEO_EXTENSIONS if kind == "voice" else AUDIO_EXTENSIONS
 
 
 def add_pool_paths(pool, paths):
@@ -98,6 +95,9 @@ def add_pool_paths(pool, paths):
 
 
 def pool_choices(state, kind, default_label=None):
+    if kind == "voice":
+        from .audio_sources import voice_choices
+        return ([("", default_label)] if default_label else []) + voice_choices(state)
     return ([('', default_label)] if default_label else []) + [
         (pool["id"], pool["name"]) for pool in state.get("resource_pools", []) if pool["kind"] == kind]
 

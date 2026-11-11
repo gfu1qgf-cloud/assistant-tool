@@ -38,8 +38,11 @@ class NewPoolDialog(QtWidgets.QDialog):
     def update_kinds(self, *_args):
         self.kind.clear()
         for kind, (category, label, _note) in POOL_TYPES.items():
-            if category == self.category.currentText():
+            if category == self.category.currentText() and kind not in {"image", "video"}:
                 self.kind.addItem(label, kind)
+        multiple = self.kind.count() > 1
+        self.kind.setVisible(multiple)
+        self.layout().labelForField(self.kind).setVisible(multiple)
         self.update_note()
 
     def update_note(self, *_args):
@@ -130,7 +133,7 @@ class CustomPoolController:
                 table.filesDropped.connect(lambda paths, i=identifier: self.add_to_custom_pool(i, paths))
                 # A named pool can supply an overlay or an explicit background
                 # pairing. Browsing its rows must never change the base video.
-                if kind == "image":
+                if kind in {"image", "video", "visual"}:
                     table.setIconSize(QtCore.QSize(48, 48))
                 layout.addWidget(table, 1)
                 note = QtWidgets.QLabel(POOL_TYPES[kind][2] + "。\n上方“添加文件…”导入，“使用素材”选择用途；也可拖入文件。")

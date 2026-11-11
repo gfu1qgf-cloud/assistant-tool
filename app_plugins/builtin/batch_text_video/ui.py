@@ -462,7 +462,7 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
         for key,label,low,high in (("silence_seconds","最短静音 秒",.1,5),
                                    ("fade_seconds","音乐淡入淡出 秒",0,5)):
             mix_form.addRow(label,self._spin(key,low,high,floating=True))
-        for key,label in (("skip_silence","自动跳过音乐静音"),("keep_audio","保留视频原声")):
+        for key,label in (("skip_silence","自动跳过音乐静音"),("keep_audio","保留底层背景原声")):
             check = QtWidgets.QCheckBox(label)
             check.setChecked(self.state["settings"][key])
             self.controls[key] = check
@@ -868,6 +868,8 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
     def _edit_changed(self):
         self.persist()
         self.refresh_pools()
+        from .pool_order_ui import refresh as refresh_order
+        refresh_order(self)
         self.update_preview()
         job = self.active_entry()
         if job:
@@ -1295,6 +1297,8 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
             if row >= 0:
                 self._show_job(self.state["jobs"][row])
         self.refresh_pools()
+        from .pool_order_ui import refresh as refresh_order
+        refresh_order(self)
         self._sync_preview_layers()
         self._loading = False
         self.refresh_navigation()

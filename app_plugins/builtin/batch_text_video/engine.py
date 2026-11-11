@@ -586,6 +586,7 @@ def _prepare_static_text(job, state, directory, cancel=None, progress=None, repo
         # when finite reverb/ducking branches finish, despite output -t.
         filters.append(f"[{background}]trim=duration={duration:.9f},format=rgba[composition_background]")
         background = 'composition_background'
+        visual_audio_specs = []
         for index, (kind, path) in enumerate(prepared):
             label = f"layer{index}"
             if kind == "caption":
@@ -600,7 +601,7 @@ def _prepare_static_text(job, state, directory, cancel=None, progress=None, repo
                 next_index = node_effects.append(job, path, args, filters, background, next_index, label,
                     temporary, info, voice_path, ffmpeg)
             elif kind == "visual":
-                next_index += add_plane(args, filters, path, next_index, background, label, width, height, duration, source_fps(media), ffmpeg=ffmpeg, cancel=cancel)
+                next_index += add_plane(args, filters, path, next_index, background, label, width, height, duration, source_fps(media), ffmpeg=ffmpeg, cancel=cancel, audio_specs=visual_audio_specs)
             elif kind == "scroll":
                 next_index += add_scroll_plane(args, filters, path, next_index, background, label, duration, source_fps(media))
             else:
@@ -610,6 +611,9 @@ def _prepare_static_text(job, state, directory, cancel=None, progress=None, repo
             background = label
         downscale = f"scale={encoded_width}:{encoded_height}:flags=lanczos," if (encoded_width, encoded_height) != (width, height) else ""
         filters.append(f"[{background}]{downscale}{sdr_output_filter()}[v]")
+        from .visual_audio import append as append_visual_audio
+        next_index, visual_audio_labels = append_visual_audio(args, filters, visual_audio_specs, next_index,
+            duration, ffmpeg, ffprobe, report=report, voice_path=voice_path)
         voice_index = None
         if voice_path:
             voice_index = next_index
@@ -640,7 +644,7 @@ def _prepare_static_text(job, state, directory, cancel=None, progress=None, repo
             original_input = '[trimmed_original_audio]'
         audio_filters, has_audio = audio_graph(settings, duration, voice_index, music_index, music, media["audio"],
             original_speed=adaptation["speed"] if adaptation and not voice_path else None, voice_ir_index=voice_ir_index,
-            music_input=music_input, music_start=music_start, original_input=original_input)
+            music_input=music_input, music_start=music_start, original_input=original_input, extra_sources=visual_audio_labels)
         filters += audio_filters
         script = temporary / "render.filter"
         data_file(script).write_text(";\n".join(filters), "utf-8")

@@ -4,7 +4,7 @@ from qt_compat import QtCore, QtGui, QtWidgets
 from .component_ui import Combo
 from .pools import pairing_plan
 from .custom_pools import pool_choices, get_pool, assign_voices
-from .audio_sources import pool_voice
+from .audio_sources import pool_voice, voice_library, voice_choices
 from .audio_ui import AudioSourceCard
 
 
@@ -246,8 +246,9 @@ class PairingDialog(QtWidgets.QDialog):
         pool_videos = [item["path"] for item in get_pool(self.pool_state, identifier)["items"]] if identifier and identifier != "none" else self.videos
         videos = [] if identifier == "none" else [path for path in pool_videos if not self.only_videos.isChecked() or path in self.selected_videos]
         voice_id = self.voice_source.currentData()
-        voices = get_pool(self.pool_state, voice_id, "voice")["items"] if voice_id else []
+        voice_pool, voices = {}, []
         try:
+            voice_pool, voices = voice_library(self.pool_state, voice_id) if voice_id else ({}, [])
             from .quantity_basis import entries
             count_videos = [p for p in self.videos if not self.only_videos.isChecked() or p in self.selected_videos]
             quantity = entries(self.pool_state, self.quantity_basis.currentData(), copies, count_videos)
@@ -267,7 +268,7 @@ class PairingDialog(QtWidgets.QDialog):
                 if widget: widget.hide()
         self.table.clearContents()
         self.table.setRowCount(len(self.pairs))
-        voice_titles = {item['path']: (get_pool(self.pool_state, voice_id, 'voice')['name']+' / '+Path(item['path']).name) for item in voices}
+        voice_titles = {item['path']: (voice_pool['name']+' / '+Path(item['path']).name) for item in voices}
         background_titles = {path: Path(path).name for path in videos}
         for row, pair in enumerate(self.pairs):
             source = pair["copy"] or {}
@@ -291,10 +292,9 @@ class PairingDialog(QtWidgets.QDialog):
             task_path = source.get("voice_path", "")
             voice_combo.addItem("沿用任务人声" + ("：" + Path(task_path).name if task_path else ""), None)
             voice_combo.addItem("不使用人声", "")
-            for pool in self.pool_state.get("resource_pools", []):
-                if pool["kind"] == "voice":
-                    voice_combo.addItem("池：" + pool["name"] + " · 轮换", "pool:" + pool["id"])
-                    voice_combo.setItemData(voice_combo.count()-1, f"{len(pool['items'])} 条音频；按当前行顺序轮换。", QtCore.Qt.ItemDataRole.ToolTipRole)
+            for identifier, name in voice_choices(self.pool_state):
+                voice_combo.addItem("池：" + name + " · 轮换", "pool:" + identifier)
+                voice_combo.setItemData(voice_combo.count()-1, "按当前行顺序轮换音轨。", QtCore.Qt.ItemDataRole.ToolTipRole)
             selected_voice = pair.get('voice_path', '')
             if selected_voice:
                 voice_combo.addItem(voice_titles.get(selected_voice, Path(selected_voice).name), selected_voice)
@@ -354,10 +354,9 @@ class PairingDialog(QtWidgets.QDialog):
             self.table.selectRow(row)
         menu = QtWidgets.QMenu(self)
         pool_menu = menu.addMenu("从人声池轮换")
-        for pool in self.pool_state.get("resource_pools", []):
-            if pool["kind"] == "voice":
-                action = pool_menu.addAction(pool["name"] + f"（{len(pool['items'])} 条）")
-                action.setData("pool:" + pool["id"])
+        for identifier, name in voice_choices(self.pool_state):
+            action = pool_menu.addAction(name)
+            action.setData("pool:" + identifier)
         task = menu.addAction("沿用任务人声")
         none = menu.addAction("不使用人声")
         menu.addSeparator()

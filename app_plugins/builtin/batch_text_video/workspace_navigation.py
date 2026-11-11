@@ -58,7 +58,7 @@ class WorkspaceNavigation:
         self.pool_use_menu.aboutToShow.connect(self._populate_pool_use_menu)
         self.resources.setCornerWidget(None)
         self.new_pool_button.setText('新建池…')
-        for button in (self.pool_add_button, self.pool_use_button, self.new_pool_button):
+        for button in (self.pool_add_button, self.pool_use_button, self.pool_order_button, self.new_pool_button):
             actions.addWidget(button)
         self.new_pool_button.show()
         actions.addStretch()
@@ -128,6 +128,7 @@ class WorkspaceNavigation:
         count, selected = table.rowCount(), len(table.identifiers())
         self.pool_count_label.setText(f'{count} 项 · 已选 {selected} 项' if count else '此池为空，点击上方按钮添加素材。')
         self.pool_use_button.setEnabled(count > 0)
+        self.pool_order_button.setEnabled(count > 0 and not self.is_batch_busy())
 
     def _pool_command(self, key, callback):
         if self.is_batch_busy(): return

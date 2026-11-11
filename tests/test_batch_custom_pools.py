@@ -53,7 +53,7 @@ class CustomPoolTests(unittest.TestCase):
     def test_voice_import_is_independent_of_music_copies_and_jobs(self):
         with tempfile.TemporaryDirectory() as root:
             state, pool = self.state_with_voice(root)
-            added = add_pool_paths(pool, [pool["items"][0]["path"], self.fixture(root, "wrong.mp4"), "missing.wav"])
+            added = add_pool_paths(pool, [pool["items"][0]["path"], self.fixture(root, "wrong.exe"), "missing.wav"])
             self.assertEqual(added, 0)
             self.assertEqual(len(pool["items"]), 2)
             self.assertEqual((state["music"], state["copy_pool"], state["jobs"]), ([], [], []))
@@ -178,7 +178,7 @@ class CustomPoolTests(unittest.TestCase):
 
     def test_wizard_types_and_menu_are_user_accessible(self):
         wizard = NewPoolDialog()
-        self.assertEqual([wizard.kind.itemData(i) for i in range(wizard.kind.count())], ["image", "video", "visual"])
+        self.assertEqual([wizard.kind.itemData(i) for i in range(wizard.kind.count())], ["visual"])
         wizard.category.setCurrentIndex(1)
         self.assertEqual([wizard.kind.itemData(i) for i in range(wizard.kind.count())], ["music", "voice"])
         wizard.kind.setCurrentIndex(1)

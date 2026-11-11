@@ -14,7 +14,7 @@ VISUAL_SUFFIXES = ANIMATED_SUFFIXES | {".png", ".jpg", ".jpeg", ".jfif", ".webp"
 VISUAL_FILTER = "图片 / 视频 / GIF (" + " ".join("*" + item for item in sorted(VISUAL_SUFFIXES)) + ")"
 DEFAULTS = {"blend_mode": "normal", "key_mode": "none", "key_similarity": .15,
             "key_softness": .08, "key_despill": False, "media_loop": True, "use_saved_matte": True,
-            "media_loop_transition": "none", "media_loop_fade": .3, "media_loop_regions": [], "matting_enabled": True,
+            "media_audio_enabled": False, "media_audio_volume": 100., "media_loop_transition": "none", "media_loop_fade": .3, "media_loop_regions": [], "matting_enabled": True,
             "position_reference": "canvas", "media_crop_alpha": False, "media_crop_alpha_threshold": 1, "media_crop_alpha_padding": 2,
             **MATTE_DEFAULTS, **ANIMATION_DEFAULTS, **KEY_DEFAULTS, **SHOW_DEFAULTS}
 
@@ -29,6 +29,10 @@ def normalize_visual(layer):
     for key, value in DEFAULTS.items():
         if key not in layer: layer[key] = copy.deepcopy(value)
     normalize_key(layer)
+    if type(layer["media_audio_enabled"]) is not bool: raise ValueError("素材音频开关无效。")
+    amount = layer["media_audio_volume"]
+    if type(amount) not in (int, float) or not math.isfinite(amount) or not 0 <= amount <= 200:
+        raise ValueError("素材音量必须为0–200%。")
     if not isinstance(layer["position_reference"], str) or layer["position_reference"] not in {"canvas", "face"}: raise ValueError("视觉控件的定位基准无效。")
     if type(layer["media_crop_alpha"]) is not bool: raise ValueError("裁切透明空白开关无效。")
     for field, high in (("media_crop_alpha_threshold", 255), ("media_crop_alpha_padding", 100)):
@@ -186,7 +190,7 @@ def preview_planes(title, body, width, height, settings, cache):
             result.append(("normal", image))
     return result
 
-def add_plane(args, filters, layer, input_index, background, label, width, height, duration, fps, *, timing=None, ffmpeg='', cancel=None):
+def add_plane(args, filters, layer, input_index, background, label, width, height, duration, fps, *, timing=None, ffmpeg='', cancel=None, audio_specs=None):
     """Alpha-correct normal/add/screen, with transparent clipping at canvas edges."""
     from .matting_switch import original
     layer = original(layer)
@@ -236,6 +240,8 @@ def add_plane(args, filters, layer, input_index, background, label, width, heigh
         math.ceil(box_w*alpha_box['width']/alpha_box['w']), math.ceil(box_h*alpha_box['height']/alpha_box['h']))
     loop_source = LoopInput(layer, local_duration, fps, executable, loop_box) if candidate else None
     live_loop = loop_source is not None and (loop_source.overlap > 0 or region is not None)
+    if audio_specs is not None and layer.get("media_audio_enabled"):
+        audio_specs.append((copy.deepcopy(layer), timing, float(loop_source.overlap/loop_source.fps) if live_loop else 0.))
     if dynamic(layer) or live_loop:
         source = (loop_source if live_loop else
                   StreamInput(layer['_matting_binding'], local_duration, layer['media_loop'], fps, executable))
@@ -428,6 +434,15 @@ class VisualProperties(QtWidgets.QWidget):
             control.toggled.connect(self.edit)
             self.controls[key] = control
             (self.basic_form if key == 'media_loop' else form).addRow(control)
+        audio = QtWidgets.QCheckBox('使用素材音频')
+        audio.setToolTip('此控件的视频原音；图片、GIF或没有音轨的视频保持静音。同一文件已用作人声时不重复叠加。')
+        audio.toggled.connect(self.edit); self.controls['media_audio_enabled'] = audio
+        self.basic_form.addRow(audio)
+        audio_volume = QtWidgets.QDoubleSpinBox(); audio_volume.setRange(0, 200); audio_volume.setSuffix(' %')
+        audio_volume.setDecimals(1); audio_volume.valueChanged.connect(self.edit)
+        self.controls['media_audio_volume'] = audio_volume
+        self.basic_form.addRow('素材音量', audio_volume)
+        audio.toggled.connect(audio_volume.setEnabled)
         alpha_crop = QtWidgets.QCheckBox('自动裁切透明空白')
         alpha_crop.setToolTip('按整段视频所有帧的透明通道确定固定边界，再按控件大小缩放居中；不逐帧改变大小，不改原文件。首次预览需检测，之后复用边界。')
         alpha_crop.toggled.connect(self.edit); self.controls['media_crop_alpha'] = alpha_crop
@@ -484,7 +499,7 @@ class VisualProperties(QtWidgets.QWidget):
         self.edge_preset.setAutoDefault(False); self.edge_preset.clicked.connect(self._apply_edge_preset)
         self.edge_preset.setToolTip('同时调整抠像遮罩与颜色修正：抠像遮罩收缩0.5px、边缘去色85%、范围4px、亮度补偿75%、过渡柔和70%。不改变抠像算法或来源；可撤销后继续微调。')
         form.addRow(self.edge_preset)
-        basic.setToolTip("支持图片、视频和GIF；保留原比例，不加入素材自身音轨。播放预览与成品使用相同抠像和叠加。")
+        basic.setToolTip("支持图片、视频和GIF；保留原比例，可独立启用素材音频。播放预览与成品使用相同抠像和叠加。")
         appearance = self._page('入场与退场')
         self.appearance_toggle = QtWidgets.QCheckBox('启用入场／退场动画')
         self.controls['visual_timing_enabled'] = self.appearance_toggle
@@ -693,6 +708,7 @@ class VisualProperties(QtWidgets.QWidget):
             self.matte_levels.set_levels(self.layer["key_alpha_low"], self.layer["key_alpha_high"])
             self.appearance_editor.set_values(self.layer['visual_timing'])
         self.loading = False
+        self.controls["media_audio_volume"].setEnabled(self.controls["media_audio_enabled"].isChecked())
         self._update_motion_controls()
         self._update_key_controls()
     def _edit_loop_region(self):

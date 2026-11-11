@@ -2,7 +2,7 @@
 import math
 
 
-def audio_graph(settings, duration, voice_index=None, music_index=None, music=None, original_audio=False, *, original_speed=None, voice_ir_index=None, music_input=None, music_start=None, original_input=None):
+def audio_graph(settings, duration, voice_index=None, music_index=None, music=None, original_audio=False, *, original_speed=None, voice_ir_index=None, music_input=None, music_start=None, original_input=None, extra_sources=()):
     from .voice_effects import active, append_effect
     graph, sources = [], []
     voice = voice_index is not None
@@ -48,6 +48,7 @@ def audio_graph(settings, duration, voice_index=None, music_index=None, music=No
             chain += f",apad=whole_dur={duration:.9f},atrim=duration={duration:.9f}"
         graph.append(chain+"[original]")
         sources.append("[original]")
+    sources.extend(extra_sources)
     if not sources:
         return graph, False
     if len(sources) > 1:

@@ -34,7 +34,8 @@ class PoolController(CustomPoolController, MattingController):
         self.new_pool_button.setToolTip("新建资源池")
         self.new_pool_button.setAccessibleName("新建资源池")
         self.new_pool_button.clicked.connect(self.new_resource_pool)
-        self.resources.setCornerWidget(self.new_pool_button, QtCore.Qt.Corner.TopRightCorner)
+        from .pool_order_ui import install
+        install(self)
         for page, key in ((self.video_pool, "backgrounds"), (self.copy_pool, "copy_pool"),
                           (self.image_pool, "image_pool"), (music_page, "music")):
             page.setProperty("resource_key", key)
@@ -84,6 +85,12 @@ class PoolController(CustomPoolController, MattingController):
             if shortcut:
                 action.setShortcut(shortcut)
         resources.addSeparator()
+        order_menu = resources.addMenu("当前池使用顺序")
+        from .pool_order_ui import add_actions as order_actions
+        def rebuild_order_menu():
+            order_menu.clear()
+            order_actions(self, order_menu, self.visible_pool_key())
+        order_menu.aboutToShow.connect(rebuild_order_menu)
         self.remove_action = resources.addAction("移出所选（不删除原文件）", self.remove_active)
         resources.addAction("清空当前池 / 队列…", self.clear_active)
         resources.addAction("全选", self.select_all_active)
@@ -139,6 +146,9 @@ class PoolController(CustomPoolController, MattingController):
         if item and not item.isSelected():
             table.selectRow(item.row())
         menu = QtWidgets.QMenu(table)
+        from .pool_order_ui import add_actions as order_actions
+        order_actions(self, menu, key)
+        if key != "jobs": menu.addSeparator()
         from .background_trim_ui import add_actions
         add_actions(self, menu, key)
         if key == 'jobs':

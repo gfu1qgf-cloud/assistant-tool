@@ -7,19 +7,50 @@ VOICE_MODES = (("沿用任务人声", "task"), ("不使用人声", "none"),
                ("池内依次轮换", "rotate"), ("共用池内第一条", "single"))
 AUDIO_ROLES = {
     "voice": {"title": "人声控件", "pool_key": "voice_pool_id", "color": "#5088b5",
-              "default": "选择自建人声池…", "note": "从头完整播放，成品长度跟随人声。"},
+              "default": "选择人声／视频音轨池…", "note": "从头完整播放，成品长度跟随人声。"},
     "music": {"title": "背景音乐控件", "pool_key": "music_pool_id", "color": "#ac8441",
               "default": "默认音乐池", "note": "编码前固定音乐分配并预留续播位置；失败重试沿用。"},
 }
 
 
+def video_audio_candidate(path):
+    from .matching import VIDEO_EXTENSIONS
+    return Path(path).suffix.casefold() in VIDEO_EXTENSIONS
+
+
+def voice_library(state, identifier):
+    if identifier == 'builtin:background':
+        pool = dict(name='默认背景池', kind='visual', items=[{'id': path, 'path': path} for path in state.get('backgrounds', [])])
+    elif identifier == 'builtin:image':
+        pool = dict(name='默认图片池', kind='visual', items=state.get('image_pool', []))
+    else:
+        pool = get_pool(state, identifier)
+    if pool['kind'] not in {'voice', 'image', 'video', 'visual'}:
+        raise ValueError('人声来源必须是人声池或含视频的素材池。')
+    items = pool['items'] if pool['kind'] == 'voice' else [item for item in pool['items'] if video_audio_candidate(item['path'])]
+    return pool, items
+
+
+def voice_choices(state):
+    result = []
+    for identifier in ('builtin:background', 'builtin:image'):
+        pool, items = voice_library(state, identifier)
+        if items: result.append((identifier, pool['name']+' · 视频音轨'))
+    for pool in state.get('resource_pools', []):
+        if pool['kind'] == 'voice':
+            result.append((pool['id'], pool['name']))
+        elif pool['kind'] in {'image', 'video', 'visual'} and any(video_audio_candidate(i['path']) for i in pool['items']):
+            result.append((pool['id'], pool['name']+' · 视频音轨'))
+    return result
+
+
 def pool_voice(state, identifier, index=0, mode="rotate"):
     if mode not in {"rotate", "single"}:
         raise ValueError("人声池使用方式无效。")
-    pool = get_pool(state, identifier, "voice")
-    if not pool["items"]:
-        raise ValueError(f"人声池“{pool['name']}”为空，请先添加音频。")
-    item = pool["items"][0 if mode == "single" else index % len(pool["items"])]
+    pool, items = voice_library(state, identifier)
+    if not items:
+        raise ValueError(f"人声池“{pool['name']}”为空或没有视频／音频，请先添加素材。")
+    item = items[0 if mode == "single" else index % len(items)]
     if not Path(item["path"]).is_file():
         raise FileNotFoundError(f"人声池“{pool['name']}”的文件不存在：{Path(item['path']).name}")
     return item["path"]

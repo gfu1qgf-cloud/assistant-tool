@@ -208,6 +208,7 @@ class Inputs:
         try:
             expanded = []
             from .dnx_alpha import MaskInput, mask
+            from .visual_audio import AudioInput, AudioFeed
             from .visual_loop_region import PlaylistInput, playlist
             for value in self.args:
                 if isinstance(value, PlaylistInput):
@@ -217,6 +218,11 @@ class Inputs:
                     from .render_progress import stage
                     report = self.report or (lambda text: stage(self.progress, text))
                     expanded.append(self.stack.enter_context(mask(value.info, self.cancel, report)))
+                elif isinstance(value, AudioInput):
+                    if not expanded or expanded.pop() != "-i": raise ValueError("素材音频输入参数无效。")
+                    feed = AudioFeed(value); self.feeds.append(feed)
+                    expanded += value.options() + ["-i", feed.pipe.name]
+                    feed.start()
                 elif isinstance(value, StreamInput):
                     if not expanded or expanded.pop() != '-i': raise ValueError('内存抠像输入参数无效。')
                     feed = Feed(value); self.feeds.append(feed)
@@ -230,7 +236,7 @@ class Inputs:
 
     def check(self):
         for feed in self.feeds:
-            if feed.error: raise RuntimeError('内存AI抠像失败：'+str(feed.error)) from feed.error
+            if feed.error: raise RuntimeError(getattr(feed, 'error_prefix', '内存AI抠像失败：')+str(feed.error)) from feed.error
 
     def __exit__(self, kind, error, traceback):
         for feed in self.feeds: feed.cancel.set()
