@@ -57,6 +57,10 @@ class ComponentPropertyPanel(PropertySections):
         self.mode, self.layer, self.loading = mode, None, False
         self.bindings = []
         self.geometry_editor = None
+        from .layer_timing_ui import LayerTimingEditor
+        self.timing_editor = self.add_bound('timing', '', LayerTimingEditor(),
+            fields={'show_start', 'show_end'}, section=False)
+        self.targets['timing'] = self.timing_editor
 
     def add_bound(self, key, title, editor, *, fields=None, expanded=False, patch=None, section=True):
         self.bindings.append((key, editor))

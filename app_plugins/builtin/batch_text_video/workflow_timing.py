@@ -102,7 +102,9 @@ def caption_plane(operation, name, filter_name, style, context, video_info, timi
         inputs+=tuple(tuple(args[i:i+2]) for i in range(0,len(args),2));plane='caption_cursor'
     timed = (add_timed_plane(filters, plane, "caption_timed", width, height, duration, fps, timing, center=center)
              if timing is not None else plane)
-    filters.append(f"[input][{timed}]overlay=0:0:format=auto:eof_action=pass[output]")
+    from .layer_timing import active, expression
+    enable = f":enable='{expression(clip_layer, duration)}'" if clip_layer and active(clip_layer) else ''
+    filters.append(f"[input][{timed}]overlay=0:0:format=auto:eof_action=pass{enable}[output]")
     context.check_canceled()
     return (VideoFilterFragment(operation.video, inputs, tuple(filters)),)
 

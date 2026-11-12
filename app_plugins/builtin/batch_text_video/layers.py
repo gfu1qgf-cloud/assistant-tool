@@ -76,6 +76,8 @@ def normalize_layers(value=None):
             from .visual_media import normalize_visual
             normalize_visual(layer)
         layer.setdefault("enabled", True)
+        from .layer_timing import normalize as normalize_visibility
+        normalize_visibility(layer)
         if not isinstance(layer["enabled"], bool):
             raise ValueError("图层显示开关必须为true或false。")
         layer.setdefault("opacity", 100)
@@ -267,6 +269,9 @@ def compose_layers(text_images, layers, width, height, darkness, cache=None,tint
             painter.fillRect(image.rect(),color)
         for layer in layers:
             if not layer["enabled"] or layer["opacity"] == 0:
+                continue
+            from .layer_timing import visible
+            if not visible(layer, editor_timing):
                 continue
             if layer["kind"] == "node_effect":
                 continue  # Computed by the shared FFmpeg operation compiler.

@@ -113,6 +113,9 @@ def expand_watermarks(layers):
             child["_watermark_corner"] = key
             child["enabled"] = bool(layer["enabled"] and child["enabled"] and (child["source"] != "fixed" or child["text"].strip()))
             child["opacity"] *= layer["opacity"]/100
+            from .layer_timing import active
+            if active(layer):
+                child['_show_parent'] = {key: layer.get(key, 0.) for key in ('show_start', 'show_end')}
             expanded.append(child)
     return expanded
 

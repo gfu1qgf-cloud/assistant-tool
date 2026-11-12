@@ -25,7 +25,7 @@ def control(settings):
 
 
 def values(layer):
-    return {key: copy.deepcopy(layer[key]) for key in ('name', *DEFAULTS)}
+    return {key: copy.deepcopy(layer[key]) for key in ('name', 'show_start', 'show_end', *DEFAULTS)}
 
 
 def background_job(job, state):

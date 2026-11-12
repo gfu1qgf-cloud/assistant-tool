@@ -21,6 +21,9 @@ class TimingNodeEditor(QtWidgets.QWidget):
         self.controls["end"].setSpecialValueText("直到视频末尾")
         self.note(form, "开始前隐藏；结束是退场完成时刻。" + (
             "\n连接时间输入端时，端口数值优先。" if mode == 'node' else ''))
+        if mode == 'layer':
+            # The component's common timing editor owns visibility independently.
+            form.parentWidget().hide()
         form = self.group(root, "入场与退场")
         self.choice(form, "enter", "入场方式", ENTER_CHOICES)
         self.number(form, "enter_duration", "入场用时", 60, " 秒")

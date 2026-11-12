@@ -104,7 +104,8 @@ def needs_plane(layer):
     layer = original(layer)
     return layer["kind"] == "image" and (layer.get("position_reference") == "face" or layer.get("_matting_binding", {}).get("mode") == "dynamic" or is_animated(layer.get("path", "")) or
         layer.get("blend_mode", "normal") != "normal" or layer.get("key_mode", "none") != "none" or
-        layer.get("visual_animation", "none") != "none" or layer.get('visual_timing_enabled', False))
+        layer.get("visual_animation", "none") != "none" or layer.get('visual_timing_enabled', False) or
+        layer.get('show_start', 0.) or layer.get('show_end', 0.))
 
 def keyed_image(image, layer):
     from .matting_switch import enabled
@@ -177,6 +178,9 @@ def preview_planes(title, body, width, height, settings, cache):
     for kind, value in static_planes(title, body, width, height, settings, cache):
         if kind == "node_effect":
             continue  # Editing poster is not a graph execution side effect.
+        if kind == 'timed_image':
+            result.append(('normal', value[0]))
+            continue
         if kind == "image":
             result.append(("normal", value))
         elif kind == "visual":
@@ -198,6 +202,9 @@ def add_plane(args, filters, layer, input_index, background, label, width, heigh
     # An explicit timing node owns the window; never apply a native one twice.
     if timing is None:
         timing = show_window(layer, duration)
+    if timing is not None and timing.end <= timing.start:
+        filters.append(f'[{background}]null[{label}]')
+        return 0
     local_duration = timing.source_duration(duration) if timing else duration
     path = layer["path"]
     if not Path(path).is_file() or Path(path).suffix.casefold() not in VISUAL_SUFFIXES:

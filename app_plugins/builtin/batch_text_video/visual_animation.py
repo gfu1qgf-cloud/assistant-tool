@@ -21,6 +21,8 @@ def normalize_animation(layer):
     if type(layer['visual_timing_enabled']) is not bool:
         raise ValueError('出入场动画开关无效。')
     layer['visual_timing'] = normalize_timing(layer['visual_timing'])
+    from .layer_timing import normalize as normalize_visibility
+    normalize_visibility(layer)
     for key, value in DEFAULTS.items():
         layer.setdefault(key, value)
     if layer["visual_animation"] not in {value for _, value in CHOICES}:
@@ -47,9 +49,12 @@ def timing(layer, duration):
 
 def show_window(layer, duration):
     """The node timing adapter and native visual layer use the same compiler."""
-    if not layer.get('visual_timing_enabled', False):
+    from .layer_timing import active, window, normalize
+    normalize(layer)
+    if not layer.get('visual_timing_enabled', False) and not active(layer):
         return None
-    return resolve_window(layer['visual_timing'], duration, automatic_clock='restart')
+    return window(layer, duration, transitions=layer['visual_timing'] if layer.get('visual_timing_enabled') else None,
+                  clock='restart')
 
 
 def preview_transform(layer, width, height, editor_timing, *, object_size=None):

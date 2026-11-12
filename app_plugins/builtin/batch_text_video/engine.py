@@ -519,20 +519,30 @@ def _prepare_static_text(job, state, directory, cancel=None, progress=None, repo
         target = temporary / "video.mp4"
         from .visual_media import needs_plane, add_plane
         from .scrolling_text import is_scrolling, prepare_scroll_plane, add_scroll_plane
+        from . import layer_timing
         planes = static_planes(job["title"], job["body"], width, height, settings, _LAYER_CACHE.images) if captions or any(
-            (needs_plane(layer) or is_scrolling(layer) or layer['kind'] == 'node_effect') and layer["enabled"] and layer["opacity"] for layer in settings["layers"]) else [("image", overlay)]
+            (needs_plane(layer) or is_scrolling(layer) or layer['kind'] == 'node_effect' or layer_timing.active(layer)) and layer["enabled"] and layer["opacity"] for layer in settings["layers"]) else [("image", overlay)]
         prepared = []
+        display_layers = {}
         for index, (kind, value) in enumerate(planes):
             if cancel and cancel.is_set():
                 raise Cancelled("已取消。")
             if kind in {"visual", 'node_effect'}:
+                display_layers[index] = value
                 prepared.append((kind, value))
                 continue
             if kind == "scroll":
-                prepared.append((kind, prepare_scroll_plane(value, width, height, duration, temporary)))
+                display_layers[index] = value
+                show = layer_timing.window(value, duration, clock='restart') if layer_timing.active(value) else None
+                assets = prepare_scroll_plane(value, width, height, show.source_duration(duration) if show and show.end > show.start else duration, temporary)
+                assets.update(canvas_width=width, canvas_height=height)
+                prepared.append((kind, assets))
                 continue
+            if kind == 'timed_image':
+                value, display_layers[index] = value
             path = temporary / f"layer-{index}.{'ass' if kind == 'caption' else 'png'}"
             if kind == "caption":
+                display_layers[index] = value
                 stage(progress, '准备字幕')
                 words = task_word_timings(job,voice_path,value,job["title"],job["body"],duration,directory,cancel,report)
                 stage(progress, '生成字幕')
@@ -607,9 +617,20 @@ def _prepare_static_text(job, state, directory, cancel=None, progress=None, repo
         # when finite reverb/ducking branches finish, despite output -t.
         filters.append(f"[{background}]trim=duration={duration:.9f},format=rgba[composition_background]")
         background = 'composition_background'
+        bottom = background_control(settings)
+        if layer_timing.active(bottom):
+            filters += [f'color=c=black:s={width}x{height}:r={FPS}:d={duration:.9f},format=rgba[bottom_blank]',
+                f"[bottom_blank][{background}]overlay=0:0:format=auto:eof_action=pass:repeatlast=0:"
+                f"enable='{layer_timing.expression(bottom, duration)}'[bottom_timed]"]
+            background = 'bottom_timed'
         visual_audio_specs = []
         for index, (kind, path) in enumerate(prepared):
             label = f"layer{index}"
+            control = display_layers.get(index, {})
+            output_label = label
+            gated = False
+            if kind in {'caption', 'node_effect'}:
+                background, label, gated = layer_timing.begin_gate(filters, background, label, control, duration)
             if kind == "caption":
                 path,caption_layer=path
                 from .caption_clip import append_caption
@@ -624,12 +645,19 @@ def _prepare_static_text(job, state, directory, cancel=None, progress=None, repo
             elif kind == "visual":
                 next_index += add_plane(args, filters, path, next_index, background, label, width, height, duration, source_fps(media), ffmpeg=ffmpeg, cancel=cancel, audio_specs=visual_audio_specs)
             elif kind == "scroll":
-                next_index += add_scroll_plane(args, filters, path, next_index, background, label, duration, source_fps(media))
+                show = layer_timing.window(control, duration, clock='restart') if layer_timing.active(control) else None
+                if show and show.end <= show.start:
+                    filters.append(f'[{background}]null[{label}]')
+                else:
+                    next_index += add_scroll_plane(args, filters, path, next_index, background, label, duration, source_fps(media), timing=show)
             else:
                 args += ["-loop", "1", "-i", str(path)]
-                filters.append(f"[{background}][{next_index}:v]overlay=0:0:shortest=1:format=auto[{label}]")
+                enabled = f":enable='{layer_timing.expression(control, duration)}'" if kind == 'timed_image' else ''
+                filters.append(f"[{background}][{next_index}:v]overlay=0:0:shortest=1:format=auto{enabled}[{label}]")
                 next_index += 1
-            background = label
+            if gated:
+                layer_timing.end_gate(filters, output_label, control, duration)
+            background = output_label
         downscale = f"scale={encoded_width}:{encoded_height}:flags=lanczos," if (encoded_width, encoded_height) != (width, height) else ""
         filters.append(f"[{background}]{downscale}{sdr_output_filter()}[v]")
         from .visual_audio import append as append_visual_audio

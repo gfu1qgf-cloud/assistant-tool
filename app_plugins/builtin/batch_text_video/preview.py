@@ -210,7 +210,7 @@ class Preview(QtWidgets.QWidget):
         """The polygon editor reuses the actual composition without selection guides."""
         painter.fillRect(canvas, QtCore.Qt.GlobalColor.black)
         painter.setRenderHint(QtGui.QPainter.RenderHint.SmoothPixmapTransform)
-        if not self.background.isNull():
+        if not self.background.isNull() and getattr(self, 'background_visible', True):
             size = QtCore.QSizeF(self.background.size())
             size.scale(canvas.size(), QtCore.Qt.AspectRatioMode.KeepAspectRatioByExpanding if self.cover
                        else QtCore.Qt.AspectRatioMode.KeepAspectRatio)

@@ -586,11 +586,12 @@ def static_planes(title, body, width, height, settings, image_cache):
     from .components import resolve_sources
     from .visual_media import needs_plane
     from .scrolling_text import is_scrolling
+    from .layer_timing import active as timed
     layers, _ = resolve_sources(layers, title, body)
     from .text_colors import resolve_colors
     layers = resolve_colors(layers, settings.get("_color_scope", "design"))
     result, group, first = [], [], True
-    def flush():
+    def flush(timing_layer=None):
         nonlocal group, first
         if not group and not first:
             return
@@ -604,7 +605,7 @@ def static_planes(title, body, width, height, settings, image_cache):
         else:
             image = compose_layers({}, [], width, height, settings["darkness"], image_cache,
                 settings.get("background_tint_color", "#000000"), settings.get("background_tint_strength", 0))
-        result.append(("image", image))
+        result.append(('timed_image', (image, timing_layer)) if timing_layer else ("image", image))
         group, first = [], False
     for layer in layers:
         if not layer["enabled"] or not layer["opacity"]:
@@ -621,6 +622,10 @@ def static_planes(title, body, width, height, settings, image_cache):
         elif needs_plane(layer):
             flush()
             result.append(("visual", layer))
+        elif timed(layer):
+            flush()
+            group.append(layer)
+            flush(layer)
         else:
             group.append(layer)
     flush()

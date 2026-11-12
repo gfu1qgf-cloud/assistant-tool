@@ -96,11 +96,24 @@ def compile_caption(operation, directory, context, video_info, *, timing=None):
     from .caption_clip import geometry as clip_geometry
     soft_clip=clip_geometry(layer,width,height) is not None
     cursor=path.with_suffix('.cursor.json').is_file()
+    from .layer_timing import active
+    if active(layer) and not (timing or soft_clip or cursor):
+        # Keep libass blending onto the original canvas. Rendering semi-opaque
+        # text onto a new transparent plane would change its coverage/brightness.
+        from model.node_workflow.contracts import VideoFilterFragment
+        from .captions import filter_path
+        from .layer_timing import begin_gate, end_gate
+        filters=[]
+        source, output, _ = begin_gate(filters, 'input', 'output', layer, video_info['duration'])
+        format_filter = 'format=rgba,' if uses_style_renderer(layer) else ''
+        filters.append(f'[{source}]{format_filter}ass=filename={filter_path(path)}[{output}]')
+        end_gate(filters, 'output', layer, video_info['duration'])
+        return (VideoFilterFragment(operation.video, (), tuple(filters)),)
     if timing or soft_clip or cursor:
         from .workflow_timing import caption_plane
         return caption_plane(operation, name, "ass", "", context, video_info, timing,
                              center=(width*layer['x']/100, height*layer['y']/100),
-                             clip_layer=layer if soft_clip or cursor else None,directory=directory)
+                             clip_layer=layer if soft_clip or cursor or active(layer) else None,directory=directory)
     native = (FilterOperation(operation.title, operation.video, "ass", (("filename", name),)),)
     # Exactly the full-chroma blending used by the existing batch renderer.
     return ((FilterOperation("字幕全色彩混合", operation.video, "format", (("pix_fmts", "rgba"),)),) + native

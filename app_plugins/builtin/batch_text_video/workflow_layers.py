@@ -163,13 +163,26 @@ def compile_layer(operation, directory, context, video_info, *, timing=None):
     fps = Fraction(stream.get("avg_frame_rate", "25/1"))
     if fps <= 0: fps = Fraction(25)
     duration = video_info["duration"]
+    from . import layer_timing
+    from .scrolling_text import is_scrolling
+    if timing is None and layer_timing.active(layer) and is_scrolling(layer):
+        timing = layer_timing.window(layer, duration, clock='restart')
     local_duration = timing.source_duration(duration) if timing else duration
+    if local_duration <= 0:
+        return (VideoFilterFragment(operation.video, (), ('[input]null[output]',)),)
     settings = {**copy.deepcopy(DEFAULTS), "darkness": 0, "background_tint_strength": 0,
                 "layers": [layer] + [dict(item, enabled=False) for item in DEFAULT_LAYERS]}
     planes = static_planes("", "", width, height, settings, ImageCache())
     args, filters, background, input_index = [], [], "input", 0
+    if layer_timing.active(layer):
+        filters.append('[input]split=2[timing_before][timing_input]')
+        background = 'timing_input'
     for index, (kind, plane) in enumerate(planes):
         label = "output" if index == len(planes)-1 else "plane" + str(index)
+        if label == 'output' and layer_timing.active(layer):
+            label = 'timing_visible'
+        if kind == 'timed_image':
+            kind, plane = 'image', plane[0]
         if kind == "visual":
             input_index += add_plane(args, filters, plane, input_index, background, label, width, height, duration, fps,
                                      timing=timing, ffmpeg=getattr(context, 'ffmpeg', ''))-1
@@ -197,6 +210,9 @@ def compile_layer(operation, directory, context, video_info, *, timing=None):
             raise ValueError("静态／视觉节点不能生成字幕层。")
         input_index += 1
         background = label
+    if layer_timing.active(layer):
+        filters.append(f"[timing_before][timing_visible]overlay=0:0:format=auto:eof_action=pass:"
+                       f"repeatlast=0:enable='{layer_timing.expression(layer, duration)}'[output]")
     from .dnx_alpha import MaskInput
     from .visual_loop_region import PlaylistInput
     if any(isinstance(value, (MaskInput, PlaylistInput)) for value in args):

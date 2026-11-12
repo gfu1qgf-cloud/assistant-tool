@@ -969,6 +969,9 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
             self._sync_preview_layers()
             self.preview.cover = settings["fit"] == "cover"
             self.preview.background_zoom = 1.0 if empty else scale_at(settings, timing["time"] if timing else 0, duration)
+            from .background_visual import control as background_control
+            from .layer_timing import visible
+            self.preview.background_visible = visible(background_control(settings), timing)
             request = (self.title.toPlainText(), self.body.toPlainText(), width, height, settings)
             self._overlay_request = request
             if self.overlay_worker:

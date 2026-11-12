@@ -94,6 +94,7 @@ def component_graph(layer, settings, registry):
             graph['connections'].append([operation['id'], 'operations', output['id'], 'operations'])
     effect = new_effect()
     effect.update(id=original['id'], name=original['name'] + ' · 节点', enabled=original.get('enabled', True))
+    effect.update({key: original.get(key, 0.) for key in ('show_start', 'show_end')})
     # Opacity is already preserved inside every operation (watermarks expanded
     # with parent opacity). Do not multiply it again at the outer effect.
     return graph, effect

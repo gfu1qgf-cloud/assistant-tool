@@ -41,6 +41,10 @@ def _render_component(layer, width, height, settings):
         except ValueError as error:
             raise CaptionPreviewError(str(error)) from error
     if timing is not None and is_scrolling(layer):
+        from .layer_timing import active, bounds
+        if active(layer):
+            start, end = bounds(layer, timing['duration'])
+            timing = dict(timing, duration=max(.001, end-start), time=max(0., timing['time']-start))
         return render_scroll_preview(layer, width, height, duration=timing['duration'], time=timing['time'])
     return render_text_box(layer, width, height)
 

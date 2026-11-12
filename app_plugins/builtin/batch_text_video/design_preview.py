@@ -69,6 +69,9 @@ def design_layers(settings, job, bundle, registry, width, height, directory, can
         # Keep a harmless node-effect marker so an intentionally empty result
         # remains a valid empty canvas, rather than a "no text" layout error.
         result.append(copy.deepcopy(layer))
+        from .layer_timing import visible
+        if not visible(layer, value):
+            continue
         if runtime is None:
             notices.append(settings.get('_design_notice') or '节点快览尚未准备，请读取背景和成品时长后重试。')
             continue
@@ -89,6 +92,9 @@ def design_layers(settings, job, bundle, registry, width, height, directory, can
                     # The node's builder already resolved task text, pool item,
                     # random colours and source paths; do not resolve them twice.
                     item.update(source='fixed', source_file='', sequence_items=[], sequence_cursor=0)
+                    from .layer_timing import active
+                    if active(layer):
+                        item['_show_parent'] = {key: layer.get(key, 0.) for key in ('show_start', 'show_end')}
                     local.append(item)
                 result.extend(local)
         except Exception as error:

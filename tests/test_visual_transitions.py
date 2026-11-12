@@ -114,6 +114,8 @@ class VisualTransitionTests(unittest.TestCase):
 
     def test_short_window_keeps_hold_and_invalid_values_are_rejected(self):
         layer = self.layer()
+        # Visibility now belongs to the control, independently of its motion.
+        layer.update(show_start=0, show_end=0)
         layer['visual_timing'].update(start=0, end=0, enter_duration=2, exit_duration=2)
         window = show_window(layer, .5)
         self.assertLess(window.enter_duration+window.exit_duration, .5)
