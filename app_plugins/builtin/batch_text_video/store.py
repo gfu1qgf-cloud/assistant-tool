@@ -96,26 +96,8 @@ class Store:
             state = managed.read_json()
             if state.get("version") != 1 or not isinstance(state.get("jobs"), list) or not isinstance(state.get("music"), list):
                 raise ValueError("批量文案视频记录格式异常，未清空或覆盖；请检查 state.json。")
-            old_settings = state.get('settings', {})
-            if 'background_visual' not in old_settings and 'image_background_motion' in old_settings:
-                old_settings.update(normalize_image_background(old_settings))
-            state["settings"] = {**copy.deepcopy(DEFAULTS), **old_settings}
-            if 'color_rules' in state['settings']:
-                from .palette_rules import normalize
-                state['settings']['color_rules']=normalize(state['settings']['color_rules'])
-            state['settings'].update(normalize_destination(state['settings']))
-            state['settings'].update(normalize_canvas(state['settings']))
-            state['settings'].update(normalize_voice_fx(state['settings']))
-            state['settings'].update(normalize_image_background(state['settings']))
-            from .adaptation import normalize_duration
-            normalize_duration(state["settings"])
-            from model.MediaEncoding import normalize_export_settings
-            normalize_export_settings(state['settings'])
-            state["settings"]["background_blur"] = blur_strength(state["settings"])
-            state["settings"]["layers"] = normalize_layers(state["settings"].get("layers"))
-            state.setdefault("backgrounds", [])
-            from .pools import migrate_pools
-            migrate_pools(state)
+            from .project_migration import normalize_project
+            normalize_project(state, DEFAULTS)
             if "profiles" not in state:
                 state.update(active_profile="default", profiles=[{"id": "default", "name": "默认配置", "data": None}])
             state.setdefault("render_plans", [])
@@ -164,18 +146,9 @@ class Store:
                 state['render_plans'] = copy.deepcopy(current.get('render_plans', []))
             state = copy.deepcopy(state)
             apply_global(state, DEFAULTS)
-            from .adaptation import normalize_duration
-            state['settings'].update(normalize_destination(state['settings']))
-            state['settings'].update(normalize_canvas(state['settings']))
-            state['settings'].update(normalize_voice_fx(state['settings']))
-            state['settings'].update(normalize_image_background(state['settings']))
-            normalize_duration(state["settings"])
-            from model.MediaEncoding import normalize_export_settings
-            normalize_export_settings(state['settings'])
-            state["settings"]["background_blur"] = blur_strength(state["settings"])
-            state["settings"]["layers"] = normalize_layers(state["settings"].get("layers"))
-            from .pools import migrate_pools, snapshot
-            migrate_pools(state)
+            from .project_migration import normalize_project
+            from .pools import snapshot
+            normalize_project(state, DEFAULTS)
             state.setdefault("active_profile", "default")
             state.setdefault("profiles", [{"id": "default", "name": "默认配置", "data": None}])
             profile = next(item for item in state["profiles"] if item["id"] == state["active_profile"])
@@ -196,27 +169,23 @@ class Store:
             profile = next((p for p in state['profiles'] if p['id'] == identifier), None)
             if profile is None:
                 raise ValueError('渲染配置已不存在，请重新加入队列。')
-            if identifier != state['active_profile']:
-                if not isinstance(profile.get('data'), dict):
-                    raise ValueError('渲染配置尚无保存内容。')
-                state.update(copy.deepcopy(profile['data']))
+            from .project_migration import profile_data
+            state.update(profile_data(state, identifier, DEFAULTS))
             state['active_profile'] = identifier
             state['revision'] = profile.get('revision', 0)
-            state['settings'].update(normalize_destination(state['settings']))
-            state['settings'].update(normalize_canvas(state['settings']))
-            from .render_settings import apply_global
-            apply_global(state, DEFAULTS)
             return state
 
     def save_profile(self, state, expected_revision, identifier):
         """Commit only this profile; never replace the editor's active project."""
-        from .pools import snapshot
+        from .pools import snapshot, RESOURCE_KEYS
+        from .project_migration import normalize_project
         with _LOCK:
             current = Store.load(self)
             profile = next((p for p in current['profiles'] if p['id'] == identifier), None)
             if profile is None or profile.get('revision', 0) != expected_revision:
                 raise ValueError('此项目在排队期间被修改，已停止该项目导出；其他项目不受影响。')
-            data = snapshot(state)
+            data = {key: copy.deepcopy(state[key]) for key in RESOURCE_KEYS if key in state}
+            data = snapshot(normalize_project(data, DEFAULTS))
             data['settings'].update(copy.deepcopy(current['render_settings']))
             profile['data'] = copy.deepcopy(data)
             profile['revision'] = expected_revision + 1
@@ -374,19 +343,13 @@ class Store:
 
     def read_profile(self, identifier=""):
         """Read one saved project/profile without switching or saving anything."""
-        from .pools import snapshot, migrate_pools
+        from .project_migration import profile_data
         state = self.load()
-        identifier = identifier or state["active_profile"]
-        selected = next((item for item in state["profiles"] if item["id"] == identifier), None)
+        identifier = identifier or state['active_profile']
+        selected = next((p for p in state['profiles'] if p['id'] == identifier), None)
         if selected is None:
-            raise ValueError("文案视频配置已不存在，请重新选择。")
-        data = snapshot(state) if identifier == state["active_profile"] else copy.deepcopy(selected["data"])
-        if not isinstance(data, dict):
-            raise ValueError("所选配置尚无保存内容。")
-        data.setdefault("resource_pools", [])
-        data['settings'].update(copy.deepcopy(state['render_settings']))
-        migrate_pools(data)
-        return selected["name"], data
+            raise ValueError('文案视频配置已不存在，请重新选择。')
+        return selected['name'], profile_data(state, identifier, DEFAULTS)
 
     def select_profile(self, state, identifier):
         from .pools import snapshot
@@ -396,13 +359,9 @@ class Store:
         selected = next(item for item in state["profiles"] if item["id"] == identifier)
         if not selected.get("data"):
             raise ValueError("配置没有内容，原配置未更改。")
-        selected_data = copy.deepcopy(selected["data"])
-        # Older profiles must not inherit the custom pools of the current profile.
-        selected_data.setdefault("resource_pools", [])
+        from .project_migration import profile_data
+        selected_data = profile_data(state, identifier, DEFAULTS)
         state.update(selected_data, active_profile=identifier)
-        state["settings"] = {**copy.deepcopy(DEFAULTS), **state["settings"]}
-        from .render_settings import apply_global
-        apply_global(state, DEFAULTS)
         return self.save(state, state["revision"], touch_profile=False)
 
     def create_profile(self, state, name, clone=False):
@@ -443,7 +402,9 @@ class Store:
                 replacement = state['profiles'][0]
                 if not isinstance(replacement.get('data'), dict):
                     raise ValueError('其他项目的保存内容异常，未删除当前项目。')
-                state.update(copy.deepcopy(replacement['data']), active_profile=replacement['id'])
+                from .project_migration import normalize_project
+                data = snapshot(normalize_project(copy.deepcopy(replacement['data']), DEFAULTS))
+                state.update(data, active_profile=replacement['id'])
             apply_global(state, DEFAULTS)
             state['revision'] += 1
             data_file(self.path).write_json(state, indent=2)

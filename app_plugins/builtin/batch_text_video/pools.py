@@ -211,9 +211,23 @@ def bind_pool_layers(layers, state):
     return attach(result, state)
 
 
+def migrate_resource_fields(state):
+    """Fill only historical optional libraries, without decoding any media."""
+    if not isinstance(state.get('settings'), dict) or not isinstance(state.get('jobs'), list) or not isinstance(state.get('music'), list):
+        raise ValueError('项目资源记录格式异常，未覆盖原记录。')
+    state.setdefault('backgrounds', [])
+    if any(key not in state for key in ('copy_pool', 'image_pool', 'resource_pools')):
+        from .layers import DEFAULT_LAYERS
+        state['settings'].setdefault('layers', copy.deepcopy(DEFAULT_LAYERS))
+        migrate_pools(state)
+    state.setdefault('resource_orders', {})
+    return state
+
+
 def snapshot(state):
-    # Inactive projects saved before pool shuffling have no order metadata.
-    # Snapshotting them must not require switching/migrating the whole project.
+    # Queue operations can access inactive snapshots older than named pools.
+    if any(key not in state for key in ('backgrounds', 'copy_pool', 'image_pool', 'resource_pools')):
+        state = migrate_resource_fields(copy.deepcopy(state))
     result = {key: copy.deepcopy(state[key]) for key in RESOURCE_KEYS if key != 'resource_orders'}
     result['resource_orders'] = copy.deepcopy(state.get('resource_orders', {}))
     return result

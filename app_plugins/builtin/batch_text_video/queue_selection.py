@@ -21,6 +21,8 @@ def remove_jobs(state, selections, expected=None):
         if any(p['profile_id'] == identifier and p['status'] in ACTIVE for p in result['render_plans']):
             raise ValueError('正在渲染的项目不能删除任务，请先停止该项目。')
         data = result if result['active_profile'] == identifier else profile.get('data') or {}
+        from .pools import migrate_resource_fields
+        migrate_resource_fields(data)
         if not ids <= {j['id'] for j in data.get('jobs', [])}:
             raise ValueError('任务记录已变化，请刷新后再删除。')
         data['jobs'] = [j for j in data['jobs'] if j['id'] not in ids]
@@ -52,6 +54,8 @@ def apply_checks(state, changes, expected=None):
         if any(p['profile_id'] == identifier and p['status'] in ACTIVE for p in result['render_plans']):
             raise ValueError('正在渲染的项目暂时不能更改勾选；其他项目可以继续添加。')
         data = result if result['active_profile'] == identifier else profile.get('data') or {}
+        from .pools import migrate_resource_fields
+        migrate_resource_fields(data)
         jobs = data.get('jobs', [])
         by_id = {j['id']: j for j in jobs}
         if not isinstance(values, dict) or not set(values) <= set(by_id) or any(type(v) is not bool for v in values.values()):

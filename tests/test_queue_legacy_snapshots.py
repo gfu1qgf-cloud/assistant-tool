@@ -52,7 +52,7 @@ class LegacySnapshotTests(unittest.TestCase):
 
     def test_required_resource_field_still_fails_without_partial_mutation(self):
         state=self.legacy();state['profiles'][1]['data'].pop('music');before=copy.deepcopy(state)
-        with self.assertRaises(KeyError):remove_jobs(state,{'default':['one'],'old':['one']})
+        with self.assertRaises(ValueError):remove_jobs(state,{'default':['one'],'old':['one']})
         self.assertEqual(state,before)
 
 

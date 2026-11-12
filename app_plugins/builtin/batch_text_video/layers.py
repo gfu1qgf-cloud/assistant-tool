@@ -42,6 +42,13 @@ def normalize_layers(value=None):
     layers = migrate_watermarks(layers)
     if not isinstance(layers, list) or len(layers) > MAX_IMAGES + MAX_TEXT_BOXES + 15:
         raise ValueError(f"图层格式不正确，最多允许{MAX_IMAGES}个图片图层。")
+    # Restore historical title/body slots before validation so they are fully
+    # normalized on the first load, rather than changing again on the next one.
+    for default in DEFAULT_LAYERS:
+        converted = any(isinstance(item, dict) and item.get('kind') == 'node_effect' and item.get('id') == default['id'] for item in layers)
+        present = any(isinstance(item, dict) and item.get('kind') == default['kind'] for item in layers)
+        if not present and not converted:
+            layers.append(copy.deepcopy(default))
     ids, kinds = set(), set()
     for layer in layers:
         if not isinstance(layer, dict) or layer.get("kind") not in {"title", "body", "image", "text", "watermark", "caption", "node_effect"}:
@@ -145,12 +152,6 @@ def normalize_layers(value=None):
             normalize_scroll(layer)
             from .text_wrap import normalize_wrap
             normalize_wrap(layer)
-    for default in DEFAULT_LAYERS:
-        # A converted title/body owns that original slot; do not resurrect a
-        # second drawing of the same text. Removing the effect restores defaults.
-        converted = any(item['kind'] == 'node_effect' and item['id'] == default['id'] for item in layers)
-        if default["kind"] not in kinds and not converted:
-            layers.append(copy.deepcopy(default))
     if sum(layer["kind"] == "image" for layer in layers) > MAX_IMAGES:
         raise ValueError(f"最多允许{MAX_IMAGES}个图片图层。")
     if sum(layer["kind"] == "text" for layer in layers) > MAX_TEXT_BOXES:
