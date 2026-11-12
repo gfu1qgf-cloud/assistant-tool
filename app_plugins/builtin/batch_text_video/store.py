@@ -292,6 +292,14 @@ class Store:
                 data_file(self.path).write_json(updated, indent=2)
             return updated
 
+    def stage_failed_retries(self,selections,*,expected_profile_revisions=None):
+        from .queue_selection import stage_failed_retries
+        with _LOCK:
+            current=Store.load(self)
+            updated,changed=stage_failed_retries(current,selections,expected_profile_revisions)
+            if changed:data_file(self.path).write_json(updated,indent=2)
+            return updated
+
     def clear_render_selection(self, identifier):
         with _LOCK:
             state=Store.load(self)

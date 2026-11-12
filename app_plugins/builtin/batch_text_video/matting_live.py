@@ -109,6 +109,7 @@ class Feed:
     def __init__(self, spec):
         from .matting_pipe import MemoryPipe
         self.spec, self.cancel, self.error = spec, threading.Event(), None
+        self.error_prefix = ('内存AI抠像失败：' if spec.binding.get('mode') == 'dynamic' else '视频循环叠化失败：')
         self.pipe = MemoryPipe(self.cancel)
         self.decoder, self._process_lock = None, threading.Lock()
         self.thread = threading.Thread(target=self._run, name='matting-frame-feed', daemon=True)
@@ -149,7 +150,7 @@ class Feed:
                 check_cancel(self.cancel)
                 # Temporal state belongs to this material and one loop only.
                 predictor = render.Predictor(p['model'], p['device'], p['quality'], cancel=self.cancel)
-                process = None; stack = ExitStack()
+                process = None; stack = ExitStack(); diagnostics=None
                 try:
                     with self._process_lock:
                         check_cancel(self.cancel)
@@ -161,28 +162,34 @@ class Feed:
                     inputs = stack.enter_context(Inputs(native or args, cancel=self.cancel))
                     with self._process_lock:
                         check_cancel(self.cancel)
-                        process = subprocess.Popen(inputs.args, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                        process = subprocess.Popen(inputs.args, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                             creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
                         self.decoder = process
+                        from .decoder_log import DecoderLog
+                        diagnostics=DecoderLog(process)
                     frames = 0; needed = spec.width*spec.height*4
                     while written < count:
                         check_cancel(self.cancel)
                         data = process.stdout.read(needed)
                         if not data: break
-                        if len(data) != needed: raise ValueError('AI抠像素材帧解码不完整。')
+                        if len(data) != needed:
+                            process.wait(timeout=15);diagnostics.check(process,'AI抠像素材解码失败')
+                            raise ValueError('AI抠像素材帧解码不完整。')
                         source = np.frombuffer(data, np.uint8).reshape(spec.height, spec.width, 4)
                         rgb, alpha = predictor.predict(source[:, :, :3])
                         result = refine(rgb, alpha, source[:, :, 3], p, source_rgb=source[:, :, :3]).tobytes()
                         frames += 1; written += 1
                         yield result
                     check_cancel(self.cancel)
-                    if written < count and process.wait(timeout=15): raise RuntimeError('AI抠像素材解码失败。')
+                    if written < count:
+                        process.wait(timeout=15);diagnostics.check(process,'AI抠像素材解码失败')
                     if not frames: raise ValueError('AI抠像素材没有可解码的帧。')
                 finally:
                     with self._process_lock:
                         render._stop(process)
                         if process and process.stdout: process.stdout.close()
                         self.decoder = None
+                    if diagnostics:diagnostics.close()
                     stack.close()
                 if not spec.loop: break
         verify_file(spec.binding['source'], '原素材')
@@ -235,8 +242,11 @@ class Inputs:
             self.__exit__(None, None, None); raise
 
     def check(self):
+        from .media_errors import MediaMemoryError, memory_failure, describe
         for feed in self.feeds:
-            if feed.error: raise RuntimeError(getattr(feed, 'error_prefix', '内存AI抠像失败：')+str(feed.error)) from feed.error
+            if feed.error:
+                error_type = MediaMemoryError if memory_failure(feed.error) else RuntimeError
+                raise error_type(getattr(feed, 'error_prefix', '视频输入处理失败：')+describe(feed.error)) from feed.error
 
     def __exit__(self, kind, error, traceback):
         for feed in self.feeds: feed.cancel.set()

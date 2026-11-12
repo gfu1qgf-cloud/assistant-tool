@@ -82,3 +82,22 @@ def apply_checks(state, changes, expected=None):
             changed = True
     if changed: result['revision'] += 1
     return result, changed
+
+
+def stage_failed_retries(state,selections,expected=None):
+    changes={}
+    for pid,ids in selections.items():
+        profile=next((p for p in state['profiles'] if p['id']==pid),None)
+        data=state if state['active_profile']==pid else (profile or {}).get('data') or {}
+        failed={j['id'] for j in data.get('jobs',[]) if j.get('status')=='需处理'}
+        if not ids or len(ids)!=len(set(ids)) or not set(ids)<=failed:
+            raise ValueError('失败任务已变化，请刷新后重试。')
+        changes[pid]=dict.fromkeys(ids,True)
+    result,changed=apply_checks(state,changes,expected)
+    edited=False
+    for pid,ids in selections.items():
+        plan=next(p for p in result['render_plans'] if p['profile_id']==pid and p['status']=='staged')
+        if plan['ids']!=list(ids) or not plan.get('retry_only'):
+            plan.update(ids=list(ids),retry_only=True);edited=True
+    if edited and not changed:result['revision']+=1
+    return result,changed or edited

@@ -55,20 +55,28 @@ def execute_parallel_batch(store, state, ids, cancel, progress, message, done, p
     error = ''
     workers = min(pipeline_workers(state['settings'], node_effects), max(1, len(ids)))
     started = time.monotonic()
+    from .memory_pressure import ADMISSION,estimate
+    from .media_errors import memory_failure
+    from .render_progress import stage,bind
+    prepare_memory=estimate(settings=state['settings'])
+    memory_waiting=False
+    memory_retries={}
     message(f'本批导出：本项目最多{workers}路最终编码；原生任务编码前固定分配、完成即保存，失败重试沿用原分配；节点轮换保留原安全顺序。')
 
     def fail(job_id, exc, prepared=None):
         nonlocal state, failed
+        from .media_errors import describe
+        detail = describe(exc)
         job = next(item for item in state['jobs'] if item['id'] == job_id)
-        job.update(status='需处理', error=str(exc))
+        job.update(status='需处理', error=detail)
         from .render_timing import save_item_timing
         save_item_timing(state, job_id, progress, '需处理', getattr(prepared, 'duration', None))
         state = store.save(state, state['revision'])
         failed += 1
-        failures.append(f"{Path(job['path']).name}：{exc}")
+        failures.append(f"{Path(job['path']).name}：{detail}")
         progress(job_id, 100)
         done(job_id, '需处理')
-        message(f"[{job_id}] 导出失败：{exc}\n{''.join(traceback.format_exception(type(exc), exc, exc.__traceback__))}")
+        message(f"[{job_id}] 导出失败：{detail}\n{''.join(traceback.format_exception(type(exc), exc, exc.__traceback__))}")
 
     def drain(entries):
         for entry in entries:
@@ -96,14 +104,20 @@ def execute_parallel_batch(store, state, ids, cancel, progress, message, done, p
             try:
                 while remaining or pending or preparation.pending:
                     if remaining and preparation.pending is None and len(pending) < workers and not cancel.is_set():
-                        index, job_id = remaining.popleft()
-                        job = copy.deepcopy(next(item for item in speculative['jobs'] if item['id'] == job_id))
-                        token = ExportToken(cancel)
-                        progress(job_id, 0)
-                        message(f"[{index+1}/{len(ids)}] 准备 {Path(job['path']).name}")
-                        # Keep the GLOBAL policy even for a one-video project;
-                        # local pipeline width is not the shared encode budget.
-                        preparation.start(index, job, copy.deepcopy(speculative), token)
+                        ready,detail=ADMISSION.request(prepare_memory*(1+memory_retries.get(remaining[0][1],0)))
+                        if ready:
+                            memory_waiting=False
+                            index, job_id = remaining.popleft()
+                            job = copy.deepcopy(next(item for item in speculative['jobs'] if item['id'] == job_id))
+                            token = ExportToken(cancel)
+                            progress(job_id, 0)
+                            message(f"[{index+1}/{len(ids)}] 准备 {Path(job['path']).name}")
+                            preparation.start(index, job, copy.deepcopy(speculative), token)
+                        elif not memory_waiting:
+                            memory_waiting=True
+                            waiting_id=remaining[0][1]
+                            progress(waiting_id,0);stage(bind(progress,waiting_id),'等待内存释放')
+                            message(detail)
                     if preparation.ready():
                         preparing = preparation.pending
                         job_id, index, token = preparing['job_id'], preparing['index'], preparing['token']
@@ -137,15 +151,23 @@ def execute_parallel_batch(store, state, ids, cancel, progress, message, done, p
                             if entry is not None: preparation.cleanup(entry)
                             if cancel.is_set():
                                 break
+                            if memory_failure(exc) and node_effects is None and memory_retries.get(job_id,0)<3:
+                                memory_retries[job_id]=memory_retries.get(job_id,0)+1
+                                ADMISSION.failed();memory_waiting=True
+                                remaining.appendleft((index,job_id))
+                                stage(bind(progress,job_id),'等待内存释放')
+                                message(f'[{job_id}] 准备时内存不足，等待释放后按原任务重试。')
+                                continue
                             fail(job_id, exc, entry['prepared'] if entry else None)
                             if not pending:
                                 speculative = copy.deepcopy(state)
                     if cancel.is_set():
                         break
-                    if remaining and preparation.pending is None and len(pending) < workers:
+                    if remaining and preparation.pending is None and len(pending) < workers and not memory_waiting:
                         continue  # Fill the next preparation slot before waiting for an encode.
                     if not pending:
-                        preparation.wait_for()
+                        if preparation.pending is None and memory_waiting:time.sleep(.2)
+                        else:preparation.wait_for()
                         continue
                     # Independent outputs can commit immediately. Resource-based
                     # reservations retain ordered commits and failure rollback.

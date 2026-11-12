@@ -30,16 +30,17 @@ def configure(scope, limit, *, replace=True):
 
 
 @contextmanager
-def render_slot(scope, limit, cancel=None, report=None):
+def render_slot(scope, limit, cancel=None, report=None, *, memory_bytes=0, progress=None):
     gate = configure(scope, limit, replace=False)
-    if gate is None:
+    if gate is None and not memory_bytes:
         yield
         return
+    if gate is None:gate=_Gate(1)
     ticket = object()
     with gate.condition:
         gate.waiters.append(ticket)
     acquired = False
-    notified = False
+    notified = ''
     try:
         while not acquired:
             if cancel is not None and cancel.is_set():
@@ -47,14 +48,24 @@ def render_slot(scope, limit, cancel=None, report=None):
                 raise Cancelled('已取消等待全局渲染名额。')
             with gate.condition:
                 if gate.waiters[0] is ticket and gate.active < gate.limit:
-                    gate.waiters.popleft()
-                    gate.active += 1
-                    acquired = True
-                    gate.condition.notify_all()
+                    from .memory_pressure import ADMISSION
+                    ready,detail=ADMISSION.request(memory_bytes) if memory_bytes else (True,'')
+                    if ready:
+                        gate.waiters.popleft()
+                        gate.active += 1
+                        acquired = True
+                        gate.condition.notify_all()
+                    else:
+                        if notified!='memory':
+                            if report:report(detail)
+                            from .render_progress import stage
+                            stage(progress,'等待内存释放')
+                            notified='memory'
+                        gate.condition.wait(.2)
                 else:
                     if not notified and report:
                         report('等待全局渲染名额；其他项目正在编码。')
-                        notified = True
+                        notified = 'slot'
                     gate.condition.wait(.1)
         yield
     finally:

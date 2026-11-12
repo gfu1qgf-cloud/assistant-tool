@@ -35,10 +35,27 @@ class PreparedExport:
     def encode(self):
         from .render_slots import render_slot
         from .render_progress import stage
-        stage(self.progress, '等待编码名额')
-        with render_slot(self.render_scope, self.workers, self.cancel, self.report):
-            stage(self.progress, '编码中')
-            return self._encode()
+        from .memory_pressure import ADMISSION,estimate
+        from .media_errors import memory_failure,describe,MediaMemoryError
+        amount=estimate(self.args)
+        for attempt in range(4):
+            stage(self.progress, '等待编码名额')
+            try:
+                with render_slot(self.render_scope,self.workers,self.cancel,self.report,
+                                 memory_bytes=amount*(attempt+1),progress=self.progress):
+                    stage(self.progress,'编码中')
+                    return self._encode()
+            except Exception as error:
+                if not memory_failure(error):raise
+                if self.cancel and self.cancel.is_set():
+                    from .engine import Cancelled
+                    raise Cancelled('已取消等待内存释放。') from error
+                if attempt==3:
+                    raise MediaMemoryError('释放资源后连续重试仍无法分配内存。'+describe(error)) from error
+                ADMISSION.failed()
+                stage(self.progress,'等待内存释放')
+                if self.progress:self.progress(0)
+                if self.report:self.report('内存分配失败，已回收本次编码进程；等待内存释放后按原素材重试，不标记失败。')
 
     def _encode(self):
         from .engine import _run, probe, Cancelled
@@ -49,6 +66,9 @@ class PreparedExport:
             _run(self.args, self.cancel, self.progress, self.duration,
                  timeout=max(600, self.duration*30), cwd=self.cwd)
         except RuntimeError as error:
+            from .media_errors import MediaMemoryError, memory_failure, describe
+            if memory_failure(error):
+                raise MediaMemoryError(describe(error)) from error
             stalled = isinstance(error, EncodingStalled)
             if not self.encoder_fallback or (not stalled and (self.encoder == 'cpu' or not hardware_error(error))):
                 raise

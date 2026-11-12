@@ -112,20 +112,24 @@ def cycle(feed, start=None, end=None):
         filters.append(f'[{label}]fps={float(spec.fps):.9f}{segment},format=rgba,scale={w}:{h},setsar=1[decoded]')
     args += ['-filter_complex', ';'.join(filters), '-map', '[decoded]', '-an', '-sn', '-f', 'rawvideo',
              '-threads', '1', '-pix_fmt', 'rgba', 'pipe:1']
-    process = None; frames = 0; stack = ExitStack()
+    process = None; frames = 0; stack = ExitStack(); diagnostics=None
     try:
         from .matting_live import Inputs
         inputs = stack.enter_context(Inputs(args, cancel=feed.cancel))
         with feed._process_lock:
             check_cancel(feed.cancel)
-            process = subprocess.Popen(inputs.args, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            process = subprocess.Popen(inputs.args, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
             feed.decoder = process
+            from .decoder_log import DecoderLog
+            diagnostics=DecoderLog(process)
         while True:
             check_cancel(feed.cancel)
             data = process.stdout.read(w*h*4)
             if not data: break
-            if len(data) != w*h*4: raise ValueError('循环素材帧解码不完整。')
+            if len(data) != w*h*4:
+                process.wait(timeout=15);diagnostics.check(process,'循环素材解码失败')
+                raise ValueError('循环素材帧解码不完整。')
             if ai:
                 source = np.frombuffer(data, np.uint8).reshape(h, w, 4)
                 rgb, alpha = predictor.predict(source[:, :, :3])
@@ -135,13 +139,14 @@ def cycle(feed, start=None, end=None):
                 data = result.tobytes()
             frames += 1; yield data
         check_cancel(feed.cancel)
-        if process.wait(timeout=15): raise RuntimeError('循环素材解码／抠像失败，请检查素材和辅助遮罩。')
+        process.wait(timeout=15);diagnostics.check(process,'循环素材解码失败')
         if not frames: raise ValueError('循环素材没有可解码的画面。')
     finally:
         with feed._process_lock:
             render._stop(process)
             if process and process.stdout: process.stdout.close()
             feed.decoder = None
+        if diagnostics:diagnostics.close()
         stack.close()
 
 

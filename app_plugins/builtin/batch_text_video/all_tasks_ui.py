@@ -30,12 +30,14 @@ class AllTasksPanel(QtWidgets.QWidget):
         self.unfinished = QtWidgets.QPushButton('勾选未完成');self.unfinished.clicked.connect(lambda:self.bulk('unfinished'))
         self.uncheck = QtWidgets.QPushButton('取消所选勾选');self.uncheck.clicked.connect(lambda:self.bulk('none'))
         self.stop = QtWidgets.QPushButton('停止全部');self.stop.clicked.connect(self.stop_all)
+        self.retry = QtWidgets.QPushButton('重试失败');self.retry.clicked.connect(self.retry_failed)
+        self.retry.setToolTip('仅重试当前筛选范围内的失败任务；保留原素材分配和其他任务勾选。运行中的项目需等本批结束。')
         self.delete = QtWidgets.QPushButton('删除所选');self.delete.clicked.connect(self.delete_selected)
         self.delete.setToolTip('删除选中任务的队列记录；保留原素材和已导出视频。快捷键：Delete')
-        row.addWidget(self.stop);row.addWidget(self.jump);row.addStretch();layout.addLayout(row)
+        row.addWidget(self.retry);row.addWidget(self.stop);row.addWidget(self.jump);row.addStretch();layout.addLayout(row)
         row = QtWidgets.QHBoxLayout()
         for button in (self.unfinished,self.uncheck,self.delete):row.addWidget(button)
-        for button in (panel.start_button,self.unfinished,self.uncheck,self.stop,self.delete,self.jump):button.setAutoDefault(False)
+        for button in (panel.start_button,self.unfinished,self.uncheck,self.stop,self.delete,self.jump,self.retry):button.setAutoDefault(False)
         row.addStretch();layout.addLayout(row)
         self.summary = QtWidgets.QLabel();self.summary.setWordWrap(True);layout.addWidget(self.summary)
         self.table = QtWidgets.QTableWidget(0,5)
@@ -172,16 +174,20 @@ class AllTasksPanel(QtWidgets.QWidget):
         self.table.item(row,1).setText(entry['profile']['name'])
         text=self.status(key);self.table.item(row,2).setText(text)
         self.table.item(row,2).setToolTip(self.error(key) or text)
+        failed=text.startswith('需') or text=='匹配失败'
+        self.table.item(row,2).setForeground(QtGui.QBrush(QtGui.QColor('#b91c1c')) if failed else QtGui.QBrush())
         percent=self.owner._render_progress.get(pid,{}).get(jid)
         if text=='已完成':percent=100
-        elif text in {'待开始（重新导出）','待生成','待匹配','匹配失败'}:percent=None
+        elif failed or text in {'待开始（重新导出）','待生成','待匹配','已取消'}:percent=None
         elif percent is not None:percent=min(99,percent)
         set_row_progress(self.table,row,percent,column=3)
         self.update_time(key)
 
     def error(self,key):
         job=self.entries[key]['job']
-        if job.get('error'):return job['error']
+        if job.get('error'):
+            if job['error'].strip()=='内存AI抠像失败：':return '视频处理失败；旧记录未保存详细原因，请查看日志或重试。'
+            return job['error']
         return next((p['error'] for p in reversed(self.state.get('render_plans',[]))
             if p['profile_id']==key[0] and key[1] in p['ids'] and p.get('error') and p['status']=='staged'),'')
 
@@ -222,6 +228,7 @@ class AllTasksPanel(QtWidgets.QWidget):
         self.uncheck.setEnabled(any(not self.locked(k[0]) for k in self.selected_keys()) and not self.local_busy())
         deletable = bool(self.selected_keys()) and all(not self.locked(k[0]) for k in self.selected_keys())
         self.delete.setEnabled(deletable);self.delete_action.setEnabled(deletable)
+        self.retry.setEnabled(any(not self.locked(k[0]) and self.entries[k]['job'].get('status')=='需处理' for k in self.visible))
 
     def apply_filter(self,*_):
         self.visible.clear()
@@ -309,6 +316,29 @@ class AllTasksPanel(QtWidgets.QWidget):
         if changes and not self.commit(changes):return
         self.owner.start_staged_plans()
 
+    def retry_failed(self):
+        selections={}
+        for key in self.rows:
+            if key in self.visible and not self.locked(key[0]) and self.entries[key]['job'].get('status')=='需处理':
+                selections.setdefault(key[0],[]).append(key[1])
+        if not selections:return
+        owner=self.owner
+        try:
+            owner.edit_timer.stop()
+            if not owner.save_render_settings():return
+            if not owner.is_batch_busy() and not owner.persist():return
+            current=owner.store.load()
+            expected={p['id']:p.get('revision',0) for p in self.state['profiles'] if p['id'] in selections}
+            active=next(p for p in current['profiles'] if p['id']==current['active_profile'])
+            if active['id'] in expected:expected[active['id']]=active.get('revision',0)
+            owner.state=owner.store.stage_failed_retries(selections,expected_profile_revisions=expected)
+            plans=[p for p in owner.state['render_plans'] if p['profile_id'] in selections and p['status']=='staged']
+            for plan in plans:owner._launch_batch(plan['ids'],plan=plan)
+            self.panel.refresh()
+        except Exception as error:
+            owner.status.setText('重试未开始：'+str(error))
+            QtWidgets.QMessageBox.warning(self,'未开始重试',str(error))
+
     def stop_all(self):
         for handle in list(self.owner._host_plans.values()):handle.requestInterruption()
         active=any(handle.isRunning() for handle in self.owner._host_plans.values())
@@ -352,6 +382,7 @@ class AllTasksPanel(QtWidgets.QWidget):
         key=self.current_key()
         edit.setEnabled(key is not None and not self.locked(key[0]))
         menu.addAction('取消所选勾选',lambda:self.bulk('none'))
+        retry=menu.addAction('重试失败',self.retry_failed);retry.setEnabled(self.retry.isEnabled())
         menu.addSeparator()
         action=menu.addAction('删除所选',self.delete_selected);action.setEnabled(self.delete.isEnabled())
         menu.exec(self.table.viewport().mapToGlobal(pos))
