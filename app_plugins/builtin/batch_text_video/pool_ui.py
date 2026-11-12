@@ -12,6 +12,8 @@ class ResourceTable(QtWidgets.QTableWidget):
     removeRequested = QtCore.pyqtSignal()
     moveRequested = QtCore.pyqtSignal(int)
     filesDropped = QtCore.pyqtSignal(object)
+    copyRequested = QtCore.pyqtSignal()
+    pasteRequested = QtCore.pyqtSignal()
 
     def dragEnterEvent(self, event):
         if not self.read_only and self.acceptDrops() and event.mimeData().hasUrls() and any(url.isLocalFile() for url in event.mimeData().urls()):
@@ -45,6 +47,14 @@ class ResourceTable(QtWidgets.QTableWidget):
                 for row in sorted({index.row() for index in self.selectedIndexes()})]
 
     def keyPressEvent(self, event):
+        if event.matches(QtGui.QKeySequence.StandardKey.Copy):
+            self.copyRequested.emit()
+            event.accept()
+            return
+        if event.matches(QtGui.QKeySequence.StandardKey.Paste):
+            self.pasteRequested.emit()
+            event.accept()
+            return
         if self.read_only and (event.key() in (QtCore.Qt.Key.Key_Delete, QtCore.Qt.Key.Key_Space) or
                 event.modifiers() == QtCore.Qt.KeyboardModifier.AltModifier and
                 event.key() in (QtCore.Qt.Key.Key_Up, QtCore.Qt.Key.Key_Down)):

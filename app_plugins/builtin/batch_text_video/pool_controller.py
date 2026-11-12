@@ -49,6 +49,9 @@ class PoolController(CustomPoolController, MattingController):
         self.video_pool.currentCellChanged.connect(self.select_video)
         for table, key in ((self.video_pool, "backgrounds"), (self.copy_pool, "copy_pool"),
                            (self.image_pool, "image_pool"), (self.music, "music"), (self.jobs, "jobs")):
+            if key != 'jobs':
+                from .pool_copy_ui import attach
+                attach(self, table, key)
             table.itemSelectionChanged.connect(lambda k=key: self._remember_resource(k))
             table.cellPressed.connect(lambda _row, _column, k=key: self._remember_resource(k))
             table.removeRequested.connect(lambda k=key: self.remove_resource(k))
@@ -74,6 +77,8 @@ class PoolController(CustomPoolController, MattingController):
         resources.addAction("添加文件到当前池…", self.choose_custom_files)
         resources.addAction("重命名当前池…", self.rename_resource_pool)
         resources.addAction("删除当前池…", self.delete_resource_pool)
+        from .pool_copy_ui import install_menu
+        install_menu(self, resources)
         resources.addSeparator()
         for name, callback in (("从当前任务导入文案（含人声 / 字幕）…", self.import_sheet_text), ("新增文案", self.add_manual_copy),
                                ("添加背景视频／图片…", self.add_videos), ("添加图片…", self.choose_pool_images),
@@ -146,6 +151,8 @@ class PoolController(CustomPoolController, MattingController):
         if item and not item.isSelected():
             table.selectRow(item.row())
         menu = QtWidgets.QMenu(table)
+        from .pool_copy_ui import add_actions as copy_actions
+        copy_actions(self, menu, key)
         from .pool_order_ui import add_actions as order_actions
         order_actions(self, menu, key)
         if key != "jobs": menu.addSeparator()

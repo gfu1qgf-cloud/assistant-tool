@@ -126,6 +126,8 @@ class CustomPoolController:
                 page.setProperty("resource_key", key)
                 layout = QtWidgets.QVBoxLayout(page)
                 table = ResourceTable(["文件", "续用位置", "上次使用"] if kind == "music" else ["文件"])
+                from .pool_copy_ui import attach
+                attach(self, table, key)
                 table.setAcceptDrops(True)
                 table.removeRequested.connect(lambda k=key: self.remove_resource(k))
                 table.moveRequested.connect(lambda direction, k=key: self.move_resource(k, direction))

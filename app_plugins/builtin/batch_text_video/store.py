@@ -108,6 +108,32 @@ class Store:
             from .render_settings import apply_global
             return apply_global(state, DEFAULTS)
 
+    def paste_pool_records(self, identifier, target, payload, *, expected_profile_revision):
+        """Commit one pool paste against the latest state, with the render guard locked."""
+        from .pool_copy import paste_records, rebind
+        from .project_migration import profile_data, normalize_project
+        from .pools import snapshot
+        from .queue_selection import ACTIVE
+        with _LOCK:
+            current = Store.load(self)
+            profile = next((p for p in current['profiles'] if p['id'] == identifier), None)
+            if current['active_profile'] != identifier or profile is None or profile.get('revision', 0) != expected_profile_revision:
+                raise ValueError('当前项目已被其他窗口修改，请重新载入后再粘贴。')
+            if any(p['profile_id'] == identifier and p['status'] in ACTIVE for p in current['render_plans']):
+                raise ValueError('当前项目正在渲染，请结束后再粘贴。')
+            data = profile_data(current, identifier, DEFAULTS)
+            data['active_profile'] = identifier
+            updated, result = paste_records(data, target, payload)
+            if result['added']:
+                updated['settings']['layers'] = rebind(updated['settings']['layers'], updated, target)
+                updated = snapshot(normalize_project(updated, DEFAULTS))
+                profile['data'] = copy.deepcopy(updated)
+                profile['revision'] = profile.get('revision', 0) + 1
+                current.update(updated)
+                current['revision'] += 1
+                data_file(self.path).write_json(current, indent=2)
+            return current, result
+
     def current_revision(self):
         """Publish guard: read the saved token without rebuilding every layer."""
         with _LOCK:
