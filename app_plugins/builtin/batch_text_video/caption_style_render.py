@@ -323,15 +323,14 @@ def make_primitives(words, layer, width, height, duration):
             add_foreground(add,path,x,y,a,b,color,base_opacity,layer,scale,
                 {**phase,'gradient_direction':style['high_gradient_direction']
                  if color==style['color_high'] else style['text_gradient_direction']})
-        display = display_settings(layer)
-        from .caption_cursor import add_cursor
-        add_cursor(add,event,layer,scale,options,image=cursor_image)
         if style['use_underline'] and not context:
             add(rectangle(event['width'],max(1,3*scale)),x,y+event['height']+2*scale,
                 start,stop,style['color_underline'],**options)
         if mode == 'flash_highlight' and not context:
             add(path,x,y,event['start'],min(stop,event['start']+style['flash_duration']),
                 style['flash_color'],.85,motion='fade',out='fade',out_ms=style['flash_duration']*1000)
+    from .caption_cursor import add_cursors
+    add_cursors(add,draw_events,layer,scale,{'follow_track':track,'screen_clip':clip} if following else None,image=cursor_image)
     return primitives,events
 
 
@@ -416,6 +415,10 @@ def motion_at(primitive, time):
         elif primitive['out'].startswith('slide_'):
             dx += 80*progress if primitive['out']=='slide_right' else -80*progress if primitive['out']=='slide_left' else 0
             dy += 80*progress if primitive['out']=='slide_down' else -80*progress if primitive['out']=='slide_up' else 0
+    if primitive.get('cursor_track'):
+        from .caption_follow import offset_at
+        cx,cy=offset_at(primitive['cursor_track'],time)
+        dx+=cx;dy+=cy
     if primitive.get('follow_track'):
         from .caption_follow import offset_at
         fx,fy=offset_at(primitive['follow_track'],time)
@@ -481,6 +484,10 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                 points.add(primitive['end']-leave)
             times = sorted(point for point in points if primitive['start']<=point<=primitive['end'])
         positional = motion=='floating' or motion=='char_bounce' or motion.startswith('slide_') or primitive['out'].startswith('slide_')
+        if primitive.get('cursor_track'):
+            from .caption_cursor import track_times
+            positional=True
+            times=sorted(set(times)|set(track_times(primitive,primitive['start'],primitive['end'])))
         if primitive.get('follow_track'):
             positional=True
             times=sorted(set(times)|{t for t,_x,_y in primitive['follow_track']
@@ -502,7 +509,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                 from .caption_follow import visible_segment
                 if not visible_segment(primitive,start,end): continue
             sa,xa,ya,aa,ba = motion_at(primitive,start)
-            _sb,xb,yb,_ab,_bb = motion_at(primitive,max(start,end-1e-7) if primitive.get('follow_track') else end)
+            _sb,xb,yb,_ab,_bb = motion_at(primitive,max(start,end-1e-7) if primitive.get('follow_track') or primitive.get('cursor_track') else end)
             ms = max(1,round((end-start)*1000))
             opacity = primitive['opacity']*layer['opacity']/100
             alpha = lambda value:f'&H{round(255*(1-opacity*value)):02X}&'

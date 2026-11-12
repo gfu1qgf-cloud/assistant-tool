@@ -47,14 +47,17 @@ class CursorTests(unittest.TestCase):
             with patch.object(caption_cursor,'read_image',wraps=caption_cursor.read_image) as load:
                 primitives,events=make_primitives(words,layer,540,960,36)
             self.assertLessEqual(load.call_count,1)
-            cursors=[p for p in primitives if p['z']==2]
-            self.assertGreater(len(cursors),300)
-            last=next(p for p in cursors if p['start']>30)
+            cursors=[p for p in primitives if p.get('cursor_track')]
+            self.assertLess(len(cursors),10)
+            moment=30.05
+            last=next(p for p in cursors if p['start']<=moment<p['end'])
             self.assertIn('follow_track',last);self.assertIn('screen_clip',last)
-            offset=offset_at(last['follow_track'],last['start'])
+            offset=offset_at(last['follow_track'],moment)
             self.assertGreater(abs(offset[1]),500)
-            self.assertLess(last['y']+offset[1],960)
-            self.assertGreater(last['y']+offset[1],0)
+            from app_plugins.builtin.batch_text_video.caption_style_render import motion_at
+            position=motion_at(last,moment)
+            self.assertLess(last['y']+position[2],960)
+            self.assertGreater(last['y']+position[2],0)
 
     def test_image_ui_roundtrip_and_quiet_help_labels(self):
         panel=CaptionProperties();self.addCleanup(panel.deleteLater);panel.set_layer(self.layer())
@@ -164,7 +167,8 @@ class CursorTests(unittest.TestCase):
             def bounds(image):
                 image=image.convertToFormat(QtGui.QImage.Format.Format_RGBA8888)
                 data=np.frombuffer(image.constBits().asstring(image.sizeInBytes()),np.uint8).reshape(960,540,4)
-                ys,xs=np.where((data[:,:,1]>80)&(data[:,:,2]>80)&(data[:,:,0]<30)&(data[:,:,3]>80))
+                color=data[:,:,:3].astype(np.int16)
+                ys,xs=np.where((color[:,:,1]>60)&(color[:,:,2]>60)&(color[:,:,1]-color[:,:,0]>20)&(color[:,:,2]-color[:,:,0]>20)&(data[:,:,3]>80))
                 self.assertGreater(len(xs),1)
                 return np.array([xs.min(),ys.min(),xs.max(),ys.max()])
             self.assertLessEqual(max(abs(bounds(actual)-bounds(preview))),3)

@@ -9,12 +9,15 @@ from qt_compat import QtCore,QtGui
 
 DEFAULTS={'caption_cursor_mode':'bar','caption_cursor_image':'','caption_cursor_scale':100.,
           'caption_cursor_offset_x':0.,'caption_cursor_offset_y':0.,
-          'caption_cursor_width':2.,'caption_cursor_height':100.,'caption_cursor_opacity':100.}
+          'caption_cursor_width':2.,'caption_cursor_height':100.,'caption_cursor_opacity':100.,
+          'caption_cursor_continuous':True,'caption_cursor_move_ms':120}
 
 
 def normalize(layer):
     for key,value in DEFAULTS.items():layer.setdefault(key,value)
     if layer['caption_cursor_mode'] not in {'bar','image'}:raise ValueError('光标类型无效。')
+    if type(layer['caption_cursor_continuous']) is not bool:raise ValueError('连续光标动画开关无效。')
+    if type(layer['caption_cursor_move_ms']) is not int or not 0<=layer['caption_cursor_move_ms']<=1000:raise ValueError('光标移动时长应为0–1000毫秒。')
     path=layer['caption_cursor_image']
     if not isinstance(path,str) or len(path)>4096 or any(c in path for c in '\x00\r\n'):raise ValueError('光标图片路径无效。')
     for key,low,high in (('caption_cursor_scale',5,500),('caption_cursor_offset_x',-1000,1000),('caption_cursor_offset_y',-1000,1000),
@@ -80,6 +83,54 @@ def add_cursor(add,event,layer,scale,options=None,*,image=None):
     add(path,x,y,start,stop,display['caption_cursor_color'],opacity,z=2,**follow,**extra)
 
 
+def add_cursors(add,events,layer,scale,options=None,*,image=None):
+    """One shared, piecewise linear trajectory; text/audio times never change."""
+    from .caption_display import display_settings
+    display=display_settings(layer)
+    if not display['caption_cursor']:return
+    values=sorted((e for e in events if e.get('_character_piece') and e['start']<e['end']),key=lambda e:e['start'])
+    if not values:return
+    follow={key:options[key] for key in ('follow_track','screen_clip') if options and key in options}
+    opacity=(layer.get('caption_active_opacity',100)/100 if follow else 1)*layer.get('caption_cursor_opacity',100)/100
+    if opacity<=0:return
+    pictured=layer.get('caption_cursor_mode','bar')=='image'
+    if pictured and image is None:image=prepare_image(layer,scale)
+    anchors={}
+    for event in values:
+        width=image.width() if pictured else max(.1,layer.get('caption_cursor_width',2)*scale)
+        height=image.height() if pictured else event['height']*layer.get('caption_cursor_height',100)/100
+        x=event['x']+event['_cursor_edge']+layer.get('caption_cursor_offset_x',0)*scale
+        y=event['y']+(event['height']-height)/2+layer.get('caption_cursor_offset_y',0)*scale
+        anchors[event['start']]=(event['start'],x,y,width,height)
+    anchors=list(anchors.values());end=max(e['end'] for e in values)
+    first=anchors[0];points=[first[:3]];previous=first[1:3]
+    for index,current in enumerate(anchors[1:],1):
+        start,x,y,_w,_h=current
+        next_start=anchors[index+1][0] if index+1<len(anchors) else end
+        span=min(layer.get('caption_cursor_move_ms',120)/1000,max(0.,next_start-start)) if layer.get('caption_cursor_continuous',True) else 0.
+        points.append((start,*previous))
+        points.append((start+span,x,y));previous=(x,y)
+    if points[-1][0]<end:points.append((end,*previous))
+    track=tuple(points);times=tuple(p[0] for p in track)
+    # Usually a single primitive. Split only if the bar's glyph height changes.
+    # Sub-centisecond shape changes share a neighbouring shape, never a hole.
+    runs=[];begin=first[0];shape=first[3:]
+    for anchor in anchors[1:]:
+        if anchor[3:]!=shape and anchor[0]-begin>=.01 and end-anchor[0]>=.01:
+            runs.append((begin,anchor[0],shape));begin=anchor[0];shape=anchor[3:]
+    runs.append((begin,end,shape))
+    for start,stop,(width,height) in runs:
+        path=QtGui.QPainterPath();path.addRect(0,0,width,height)
+        extra={'cursor_image':layer['caption_cursor_image']} if pictured else {}
+        add(path,0.,0.,start,stop,display['caption_cursor_color'],opacity,z=2,
+            cursor_track=track,cursor_times=times,**follow,**extra)
+
+
+def track_times(primitive,start,end):
+    times=primitive.get('cursor_times',())
+    return times[bisect_right(times,start):bisect_right(times,end-1e-9)]
+
+
 def write_native_assets(ass_path,primitives,layer,width,height):
     """One small PNG and a seekable command track, never a rendered video."""
     cursors=[p for p in primitives if p.get('cursor_image')]
@@ -94,15 +145,19 @@ def write_native_assets(ass_path,primitives,layer,width,height):
     from .caption_follow import offset_at
     rows=[];tracks={}
     for p in cursors:
-        track=p.get('follow_track');points=[p['start'],p['end']]
-        if track:
+        motion=[p[key] for key in ('follow_track','cursor_track') if p.get(key)]
+        points={p['start'],p['end']}
+        for track in motion:
             if id(track) not in tracks:tracks[id(track)]=[v[0] for v in track]
             times=tracks[id(track)]
-            points[1:1]=times[bisect_right(times,p['start']):bisect_right(times,p['end']-1e-9)]
+            points.update(times[bisect_right(times,p['start']):bisect_right(times,p['end']-1e-9)])
+        points=sorted(points)
         for start,end in zip(points,points[1:]):
             if end-start<1e-8:continue
-            a=offset_at(track,start) if track else (0,0)
-            b=offset_at(track,max(start,end-1e-8)) if track else (0,0)
+            positions_a=[offset_at(track,start) for track in motion]
+            positions_b=[offset_at(track,max(start,end-1e-8)) for track in motion]
+            a=tuple(sum(p[i] for p in positions_a) for i in range(2))
+            b=tuple(sum(p[i] for p in positions_b) for i in range(2))
             expressions=[f'{origin+first:.9f}+({last-first:.9f})*(t-{start:.9f})/{end-start:.9f}'
                          for origin,first,last in zip((p['x'],p['y']),a,b)]
             rows.append((start,1,f"{start:.9f} overlay@{target} x '{expressions[0]}', overlay@{target} y '{expressions[1]}';"))

@@ -65,6 +65,7 @@ class CaptionProperties(QtWidgets.QWidget):
             form.addRow(label, control)
         for key,title in (('caption_accumulate','全文累积显示（不按字幕组清屏）'),
                           ('caption_cursor','显示逐字光标'),
+                          ('caption_cursor_continuous','连续动画'),
                           ('caption_first_line_emphasis','强调首行'),
                           ('caption_first_line_bold','首行加粗')):
             control=QtWidgets.QCheckBox(title,self)
@@ -72,6 +73,10 @@ class CaptionProperties(QtWidgets.QWidget):
             self.controls[key]=control
             form.addRow(control)
         self.controls['caption_accumulate'].setToolTip('保留全文直到最后；每组词数暂不参与分页。整篇放不下会提示，不会删字。')
+        self.controls['caption_cursor_continuous'].setToolTip('开启时平滑移动到新字；关闭时直接定位。两种方式均保持光标显示。')
+        move_ms=QtWidgets.QSpinBox();move_ms.setRange(0,1000);move_ms.setSuffix(' ms');move_ms.setKeyboardTracking(False)
+        move_ms.valueChanged.connect(self.edit);self.controls['caption_cursor_move_ms']=move_ms
+        form.addRow('光标移动时长',move_ms)
         self.controls['caption_first_line_emphasis'].setToolTip('只作用于实际排版后的第一行，不是前几个单词；关闭后恢复基础字号和字重。')
         first_size=QtWidgets.QDoubleSpinBox(self); first_size.setRange(.5,3); first_size.setDecimals(2)
         first_size.setSingleStep(.05); first_size.setSuffix(' ×'); first_size.valueChanged.connect(self.edit)
@@ -257,7 +262,7 @@ class CaptionProperties(QtWidgets.QWidget):
         from .property_pairs import pair_form_fields, order_form_fields
         base=self.forms['caption']
         order_form_fields(base,[self.controls[key] for key in ('caption_preset','caption_display_mode',
-            'caption_pop_ms','caption_cursor','caption_cursor_mode','caption_cursor_color','caption_cursor_image',
+            'caption_pop_ms','caption_cursor','caption_cursor_mode','caption_cursor_continuous','caption_cursor_move_ms','caption_cursor_color','caption_cursor_image',
             'caption_cursor_width','caption_cursor_height','caption_cursor_scale','caption_cursor_opacity',
             'caption_cursor_offset_x','caption_cursor_offset_y')])
         self.display_note = QtWidgets.QLabel()
@@ -362,6 +367,7 @@ class CaptionProperties(QtWidgets.QWidget):
         self.controls['caption_display_mode'].setToolTip(self.display_note.text());self.display_note.hide()
         self.random_widget.show()
         self.controls['caption_cursor'].show()
+        self.controls['caption_cursor_move_ms'].setEnabled(self.controls['caption_cursor_continuous'].isChecked())
         image=self.controls['caption_cursor_mode'].currentData()=='image'
         color=self.controls['caption_cursor_color']; color.setVisible(not image)
         self.form_for(color).labelForField(color).setVisible(not image)

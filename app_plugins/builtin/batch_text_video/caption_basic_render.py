@@ -3,7 +3,7 @@ from itertools import groupby
 from qt_compat import QtCore, QtGui
 from .caption_styles import effects, colors
 from .caption_appearance import group_colors, active_segments, add_highlight_box, add_foreground
-from .caption_display import display_settings, reveal_events, reveal_start
+from .caption_display import reveal_events, reveal_start
 
 
 def make_primitives(words, layer, width, height, duration):
@@ -47,7 +47,8 @@ def make_primitives(words, layer, width, height, duration):
                     '#ffffff',.08,z=-5)
     from .caption_cursor import prepare_image
     cursor_image=prepare_image(layer,scale)
-    for event in reveal_events(events, layer):
+    draw_events=reveal_events(events,layer)
+    for event in draw_events:
         start,stop=reveal_start(event,layer,events),event['end']; x,y=event['x'],event['y']; path=event['_native_path']
         pop=min(round(style['anim_in_duration']*1000),round((stop-start)*1000))
         options={'motion':style['anim_in_type'] if pop>=30 else 'none',
@@ -66,7 +67,6 @@ def make_primitives(words, layer, width, height, duration):
             add_foreground(add,path,x,y,a,b,color,1,layer,scale,
                 {**phase,'gradient_direction':style['high_gradient_direction']
                  if color==style['color_high'] else style['text_gradient_direction']})
-        display=display_settings(layer)
-        from .caption_cursor import add_cursor
-        add_cursor(add,event,layer,scale,image=cursor_image)
+    from .caption_cursor import add_cursors
+    add_cursors(add,draw_events,layer,scale,image=cursor_image)
     return primitives,events

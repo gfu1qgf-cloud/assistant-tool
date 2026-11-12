@@ -27,7 +27,14 @@ class AllTasksPanel(QtWidgets.QWidget):
         panel.start_button.setText('开始导出已勾选')
         panel.start_button.setToolTip('直接导出总列表里所有项目已勾选的任务；筛选和选中行不会改变勾选。')
         row.addWidget(panel.start_button)
-        self.unfinished = QtWidgets.QPushButton('勾选未完成');self.unfinished.clicked.connect(lambda:self.bulk('unfinished'))
+        self.unfinished = QtWidgets.QToolButton();self.unfinished.setText('批量勾选')
+        self.unfinished.setPopupMode(QtWidgets.QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.unfinished.setToolTip('批量修改当前筛选范围的导出勾选；运行中的项目会跳过。')
+        self.bulk_menu = QtWidgets.QMenu(self.unfinished)
+        self.bulk_actions = {}
+        for text,mode in (('仅勾选已完成','completed'),('仅勾选未完成','unfinished'),('勾选当前筛选结果','visible'),('取消当前筛选勾选','clear')):
+            self.bulk_actions[mode]=self.bulk_menu.addAction(text,lambda _=False,m=mode:self.bulk(m))
+        self.unfinished.setMenu(self.bulk_menu)
         self.uncheck = QtWidgets.QPushButton('取消所选勾选');self.uncheck.clicked.connect(lambda:self.bulk('none'))
         self.stop = QtWidgets.QPushButton('停止全部');self.stop.clicked.connect(self.stop_all)
         self.retry = QtWidgets.QPushButton('重试失败');self.retry.clicked.connect(self.retry_failed)
@@ -37,7 +44,7 @@ class AllTasksPanel(QtWidgets.QWidget):
         row.addWidget(self.retry);row.addWidget(self.stop);row.addWidget(self.jump);row.addStretch();layout.addLayout(row)
         row = QtWidgets.QHBoxLayout()
         for button in (self.unfinished,self.uncheck,self.delete):row.addWidget(button)
-        for button in (panel.start_button,self.unfinished,self.uncheck,self.stop,self.delete,self.jump,self.retry):button.setAutoDefault(False)
+        for button in (panel.start_button,self.uncheck,self.stop,self.delete,self.jump,self.retry):button.setAutoDefault(False)
         row.addStretch();layout.addLayout(row)
         self.summary = QtWidgets.QLabel();self.summary.setWordWrap(True);layout.addWidget(self.summary)
         self.table = QtWidgets.QTableWidget(0,5)
@@ -268,10 +275,14 @@ class AllTasksPanel(QtWidgets.QWidget):
             owner.status.setText('总列表未更改：'+str(error));self.panel.refresh();return False
 
     def bulk(self,mode):
+        if mode not in {'none','unfinished','completed','visible','clear'}:raise ValueError('批量勾选方式无效。')
         keys=self.selected_keys() if mode=='none' else [k for k in self.rows if not self.table.isRowHidden(self.rows[k])]
         changes={}
         for key in keys:
-            if not self.locked(key[0]):changes.setdefault(key[0],{})[key[1]]=mode!='none' and self.status(key)!='已完成'
+            if not self.locked(key[0]):
+                done=self.entries[key]['job'].get('status')=='已完成'
+                value={'none':False,'clear':False,'visible':True,'completed':done,'unfinished':not done}[mode]
+                changes.setdefault(key[0],{})[key[1]]=value
         if changes:self.commit(changes)
 
     def delete_selected(self):
