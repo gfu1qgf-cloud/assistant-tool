@@ -65,7 +65,13 @@ class TotalListTests(unittest.TestCase):
         self.assertTrue(self.flat.table.isRowHidden(0));self.assertFalse(self.flat.table.isRowHidden(1))
         self.assertEqual(self.dialog.state['active_profile'],active)
         self.assertEqual(self.store.load(),before)
-        self.assertEqual(self.dialog.splitter.sizes()[:2],[0,0])
+        self.assertTrue(all(self.dialog.splitter.sizes()))
+        sizes=self.dialog.splitter.sizes()
+        self.dialog.right_tabs.setCurrentIndex(0);self.dialog.open_global_queue();self.app.processEvents()
+        self.assertEqual(self.dialog.splitter.sizes(),sizes)
+        self.dialog.show_resources();self.app.processEvents()
+        self.assertIs(self.dialog.right_tabs.currentWidget(),self.dialog.render_queue_panel)
+        self.assertEqual(self.dialog.splitter.sizes(),sizes)
         self.dialog.show_design();self.app.processEvents();self.assertTrue(all(self.dialog.splitter.sizes()))
 
     def test_one_click_exports_checked_jobs_from_multiple_projects_without_staging_each(self):

@@ -74,7 +74,6 @@ class WorkspaceNavigation:
         self.refresh_navigation()
 
     def show_resources(self):
-        self.right_tabs.setCurrentIndex(0)
         self.tabs.setCurrentWidget(self.resources)
         key = self.visible_pool_key()
         if key: self._remember_resource(key)

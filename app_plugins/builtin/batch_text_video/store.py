@@ -314,6 +314,15 @@ class Store:
                 data_file(self.path).write_json(updated, indent=2)
             return updated
 
+    def delete_render_jobs(self, selections, *, expected_profile_revisions=None):
+        from .queue_selection import remove_jobs
+        with _LOCK:
+            current = Store.load(self)
+            updated, changed = remove_jobs(current, selections, expected_profile_revisions)
+            if changed:
+                data_file(self.path).write_json(updated, indent=2)
+            return updated
+
     def clear_render_selection(self, identifier):
         with _LOCK:
             state=Store.load(self)

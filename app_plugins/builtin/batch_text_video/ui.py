@@ -618,7 +618,6 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
             self.controls[key].currentIndexChanged.connect(self._frame_geometry_changed)
         crop_check.toggled.connect(self._frame_geometry_changed)
         self._sync_preview_layers()
-        self.right_tabs.currentChanged.connect(self._queue_view_changed)
         self.refresh_tables()
         if self.jobs.rowCount():
             self.right_tabs.setCurrentWidget(self.render_queue_panel)
@@ -1522,16 +1521,6 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
             return
         self.status.setText(f'已加入“{plan["name"]}”的 {len(ids)} 个视频；可切换配置继续添加，最后在全局队列点击开始。')
         self.open_global_queue()
-
-    def _queue_view_changed(self, index):
-        queue = self.right_tabs.widget(index) is self.render_queue_panel
-        if queue and getattr(self, '_editor_split_sizes', None) is None:
-            sizes = self.splitter.sizes()
-            self._editor_split_sizes = sizes if all(sizes) else [260,500,440]
-            self.splitter.setSizes([0,0,max(1000,sum(sizes))])
-        elif not queue and getattr(self, '_editor_split_sizes', None) is not None:
-            self.splitter.setSizes(self._editor_split_sizes)
-            self._editor_split_sizes = None
 
     def open_global_queue(self):
         self.render_queue_panel.refresh()

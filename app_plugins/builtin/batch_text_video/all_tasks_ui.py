@@ -22,7 +22,7 @@ class AllTasksPanel(QtWidgets.QWidget):
         for text,key in (('全部任务','all'),('未完成','unfinished'),('处理中','active'),('需处理','failed'),('已完成','completed')):self.filter.addItem(text,key)
         self.search = QtWidgets.QLineEdit();self.search.setPlaceholderText('搜索项目、任务或文件名');self.search.setClearButtonEnabled(True)
         self.jump = QtWidgets.QPushButton('定位处理中');self.jump.clicked.connect(self.jump_to_active)
-        row.addWidget(self.filter);row.addWidget(self.search,1);row.addWidget(self.jump);layout.addLayout(row)
+        row.addWidget(self.filter);row.addWidget(self.search,1);layout.addLayout(row)
         row = QtWidgets.QHBoxLayout()
         panel.start_button.setText('开始导出已勾选')
         panel.start_button.setToolTip('直接导出总列表里所有项目已勾选的任务；筛选和选中行不会改变勾选。')
@@ -30,7 +30,12 @@ class AllTasksPanel(QtWidgets.QWidget):
         self.unfinished = QtWidgets.QPushButton('勾选未完成');self.unfinished.clicked.connect(lambda:self.bulk('unfinished'))
         self.uncheck = QtWidgets.QPushButton('取消所选勾选');self.uncheck.clicked.connect(lambda:self.bulk('none'))
         self.stop = QtWidgets.QPushButton('停止全部');self.stop.clicked.connect(self.stop_all)
-        for button in (self.unfinished,self.uncheck,self.stop):button.setAutoDefault(False);row.addWidget(button)
+        self.delete = QtWidgets.QPushButton('删除所选');self.delete.clicked.connect(self.delete_selected)
+        self.delete.setToolTip('删除选中任务的队列记录；保留原素材和已导出视频。快捷键：Delete')
+        row.addWidget(self.stop);row.addWidget(self.jump);row.addStretch();layout.addLayout(row)
+        row = QtWidgets.QHBoxLayout()
+        for button in (self.unfinished,self.uncheck,self.delete):row.addWidget(button)
+        for button in (panel.start_button,self.unfinished,self.uncheck,self.stop,self.delete,self.jump):button.setAutoDefault(False)
         row.addStretch();layout.addLayout(row)
         self.summary = QtWidgets.QLabel();self.summary.setWordWrap(True);layout.addWidget(self.summary)
         self.table = QtWidgets.QTableWidget(0,5)
@@ -40,7 +45,8 @@ class AllTasksPanel(QtWidgets.QWidget):
         self.table.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.ExtendedSelection)
         self.table.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.horizontalHeader().setSectionResizeMode(0,QtWidgets.QHeaderView.ResizeMode.Stretch)
-        for col,width in ((1,175),(2,155),(3,70),(4,90)):self.table.setColumnWidth(col,width)
+        self.table.horizontalHeader().setMinimumSectionSize(44)
+        for col,width in ((1,72),(2,86),(3,48),(4,66)):self.table.setColumnWidth(col,width)
         self.table.verticalHeader().setVisible(False)
         install_row_progress(self.table)
         self.table.itemChanged.connect(self.changed)
@@ -49,6 +55,11 @@ class AllTasksPanel(QtWidgets.QWidget):
         self.table.itemDoubleClicked.connect(lambda _:self.open_result())
         self.table.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self.menu)
+        self.delete_action = QtGui.QAction('删除所选',self.table)
+        self.delete_action.setShortcut(QtGui.QKeySequence('Delete'))
+        self.delete_action.setShortcutContext(QtCore.Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        self.delete_action.triggered.connect(self.delete_selected)
+        self.table.addAction(self.delete_action)
         self.empty = QtWidgets.QWidget()
         empty_row = QtWidgets.QHBoxLayout(self.empty);empty_row.setContentsMargins(0,0,0,0)
         self.empty_text = QtWidgets.QLabel();empty_row.addWidget(self.empty_text,1)
@@ -88,6 +99,7 @@ class AllTasksPanel(QtWidgets.QWidget):
         self._building=True;self.table.setUpdatesEnabled(False)
         try:
             if keys!=list(self.rows):
+                self.table.clearSelection()
                 self.table.setRowCount(len(keys));self.rows={key:row for row,key in enumerate(keys)}
                 for key,row in self.rows.items():
                     for column in range(5):
@@ -208,6 +220,8 @@ class AllTasksPanel(QtWidgets.QWidget):
         self.add_tasks.setVisible(not self.entries)
         self.unfinished.setEnabled(any(not self.locked(k[0]) for k in self.visible) and not self.local_busy())
         self.uncheck.setEnabled(any(not self.locked(k[0]) for k in self.selected_keys()) and not self.local_busy())
+        deletable = bool(self.selected_keys()) and all(not self.locked(k[0]) for k in self.selected_keys())
+        self.delete.setEnabled(deletable);self.delete_action.setEnabled(deletable)
 
     def apply_filter(self,*_):
         self.visible.clear()
@@ -252,6 +266,39 @@ class AllTasksPanel(QtWidgets.QWidget):
         for key in keys:
             if not self.locked(key[0]):changes.setdefault(key[0],{})[key[1]]=mode!='none' and self.status(key)!='已完成'
         if changes:self.commit(changes)
+
+    def delete_selected(self):
+        keys=self.selected_keys()
+        if not keys:return
+        if any(self.locked(key[0]) for key in keys):
+            QtWidgets.QMessageBox.warning(self,'无法删除','所选任务包含正在渲染的项目，请先停止该项目。');return
+        answer=QtWidgets.QMessageBox.question(self,'删除任务',
+            f'删除选中的 {len(keys)} 条任务记录？\n原素材和已导出视频都会保留。',
+            QtWidgets.QMessageBox.StandardButton.Yes|QtWidgets.QMessageBox.StandardButton.No,
+            QtWidgets.QMessageBox.StandardButton.No)
+        if answer!=QtWidgets.QMessageBox.StandardButton.Yes:return
+        owner=self.owner
+        try:
+            if any(self.locked(key[0]) for key in keys):
+                raise ValueError('所选项目已开始渲染，请先停止该项目。')
+            owner.edit_timer.stop()
+            if not owner.is_batch_busy() and not owner.persist():
+                raise ValueError(owner.status.text())
+            state=owner.store.load()
+            selections={}
+            for pid,jid in keys:selections.setdefault(pid,[]).append(jid)
+            expected={p['id']:p.get('revision',0) for p in self.state['profiles'] if p['id'] in selections}
+            current=next(p for p in state['profiles'] if p['id']==state['active_profile'])
+            if current['id'] in expected:expected[current['id']]=current.get('revision',0)
+            owner.state=owner.store.delete_render_jobs(selections,expected_profile_revisions=expected)
+            if (owner.state['active_profile'],owner.current_id) in keys:
+                owner.current_id=''
+                if not owner.current_copy_id:owner.clear_editor()
+            owner.refresh_tables()
+            owner.status.setText(f'已删除 {len(keys)} 条任务记录；原素材和成品保留。')
+        except Exception as error:
+            owner.status.setText('删除失败：'+str(error));self.panel.refresh()
+            QtWidgets.QMessageBox.warning(self,'未删除任务',str(error))
 
     def start(self):
         # Explicit one-click export includes checked jobs in inactive projects,
@@ -305,6 +352,8 @@ class AllTasksPanel(QtWidgets.QWidget):
         key=self.current_key()
         edit.setEnabled(key is not None and not self.locked(key[0]))
         menu.addAction('取消所选勾选',lambda:self.bulk('none'))
+        menu.addSeparator()
+        action=menu.addAction('删除所选',self.delete_selected);action.setEnabled(self.delete.isEnabled())
         menu.exec(self.table.viewport().mapToGlobal(pos))
 
     def batch_clock(self):
