@@ -394,6 +394,9 @@ def _prepare_static_text(job, state, directory, cancel=None, progress=None, repo
     if cancel and cancel.is_set():
         raise Cancelled("已取消。")
     from .background_visual import background_job
+    if state['settings'].get('pool_exclusions'):
+        from .pool_exclusion import attach
+        state = {**state, 'settings': {**state['settings'], 'layers': attach(state['settings']['layers'], state)}}
     original_sources = source_paths(state) if job.get('render_assignment') else []
     from .render_assignment import apply as apply_assignment
     job, state = apply_assignment(job, state)
@@ -421,6 +424,8 @@ def _prepare_static_text(job, state, directory, cancel=None, progress=None, repo
     settings=resolve_settings(settings,settings['_color_scope'])
     from .components import resolve_sources
     settings["layers"], sequence_plan = resolve_sources(settings["layers"], job.get("title", ""), job.get("body", ""), job=job)
+    from .pool_exclusion import freeze_resolved
+    settings["layers"] = freeze_resolved(settings["layers"])
     report = report or (lambda _text: None)
     from .render_progress import stage, observe_report
     report = observe_report(report, progress)
@@ -485,8 +490,8 @@ def _prepare_static_text(job, state, directory, cancel=None, progress=None, repo
     inputs = original_sources + source_paths(state) + source_paths({'settings': settings})
     if voice_path:
         inputs.append(voice_path)
-    from .task_naming import output_stem
-    name = job["name"] if preview else output_stem(job, settings.get("task_naming_rules", {}))
+    from .export_destination import output_stem
+    name = job["name"] if preview else output_stem(job, routing)
     identities = frozenset(file_identity(value) for value in dict.fromkeys(inputs))
     requested_output = safe_output(folder, name, inputs, input_identities=identities)
     output = requested_output if settings['overwrite'] else OutputNames().choose(requested_output, input_identities=identities)

@@ -175,5 +175,5 @@ class QueueTools(QtWidgets.QWidget):
         if not owner.sync_render_selection(): return
         owner.refresh_tables()
         count = sum(job.get('render_checked', False) for job in owner.state['jobs'])
-        owner.status.setText(f'当前项目已勾选 {count} 个任务；点击“开始全部计划”导出。' if count else
+        owner.status.setText(f'当前项目已勾选 {count} 个任务；点击“开始导出已勾选”导出。' if count else
             '当前项目没有勾选任务；可切换“全部任务”查看已有成品。')

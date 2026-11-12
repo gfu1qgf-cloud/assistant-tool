@@ -21,6 +21,7 @@ SCHEMES = {"static_text": "静态文字版"}
 DEFAULTS = {
     "scheme": "static_text", **CANVAS_DEFAULTS, **DESTINATION_DEFAULTS, "fit": "contain",
     "auto_crop_black_bars": True,
+    "pool_exclusions": {},
     "geometry_units": "percent", "show_layer_bounds": True,
     "background_tint_color":"#000000","background_tint_strength":0,
     "background_blur":0,
@@ -303,6 +304,15 @@ class Store:
             state['revision']+=1
             data_file(self.path).write_json(state,indent=2)
             return True
+
+    def set_render_checks(self, changes, *, expected_profile_revisions=None):
+        from .queue_selection import apply_checks
+        with _LOCK:
+            current = Store.load(self)
+            updated, changed = apply_checks(current, changes, expected_profile_revisions)
+            if changed:
+                data_file(self.path).write_json(updated, indent=2)
+            return updated
 
     def clear_render_selection(self, identifier):
         with _LOCK:

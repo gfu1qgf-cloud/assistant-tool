@@ -68,7 +68,7 @@ class WorkspaceNavigationTests(unittest.TestCase):
         self.assertEqual(dialog.state['active_profile'], self.other_id)
         self.assertEqual(dialog.project_selector.currentData(), self.other_id)
         self.assertEqual(dialog.quick_export_button.text(), '导出当前1条')
-        self.assertEqual(dialog.render_queue_panel.start_button.text(), '开始全部计划')
+        self.assertEqual(dialog.render_queue_panel.start_button.text(), '开始导出已勾选')
 
     def test_pool_actions_target_the_visible_pool_after_a_queue_click(self):
         dialog = self.dialog
@@ -93,6 +93,7 @@ class WorkspaceNavigationTests(unittest.TestCase):
 
     def test_live_filter_search_and_jump_work_without_storage_reads_during_render(self):
         dialog = self.dialog; tools = dialog.render_queue_panel.tools
+        dialog.render_queue_panel.editor_section.set_expanded(True)
         current = dialog.current_id
         with patch.object(dialog, 'is_batch_busy', return_value=True), \
              patch.object(dialog.store, 'load', side_effect=AssertionError('filter must not read state')):
@@ -125,6 +126,7 @@ class WorkspaceNavigationTests(unittest.TestCase):
 
     def test_bulk_unfinished_checks_save_once_and_keep_completed_outputs(self):
         dialog = self.dialog; tools = dialog.render_queue_panel.tools
+        dialog.render_queue_panel.editor_section.set_expanded(True)
         with patch.object(dialog.store, 'save', wraps=dialog.store.save) as save:
             tools.unfinished_button.click()
         self.assertEqual(save.call_count, 1)
@@ -160,6 +162,7 @@ class WorkspaceNavigationTests(unittest.TestCase):
 
     def test_failed_bulk_save_rolls_back_and_busy_project_still_allows_project_browsing(self):
         dialog = self.dialog; tools = dialog.render_queue_panel.tools
+        dialog.render_queue_panel.editor_section.set_expanded(True)
         before = [(job['id'], job.get('render_checked')) for job in dialog.state['jobs']]
         with patch.object(dialog, 'persist', return_value=False): tools.set_checks('none')
         self.assertEqual([(job['id'], job.get('render_checked')) for job in dialog.state['jobs']], before)
@@ -178,6 +181,7 @@ class WorkspaceNavigationTests(unittest.TestCase):
 
     def test_empty_project_and_zero_search_results_offer_safe_next_steps(self):
         dialog = self.dialog; tools = dialog.render_queue_panel.tools
+        dialog.render_queue_panel.editor_section.set_expanded(True)
         before = [job.get('render_checked') for job in dialog.state['jobs']]
         tools.search.setText('a-name-that-does-not-exist')
         with patch.object(dialog, 'persist') as persist: tools.set_checks('visible')

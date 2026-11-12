@@ -1,7 +1,7 @@
 """One encoding policy shared by all saved projects in this plugin."""
 import copy
 
-KEYS = ('video_encoder', 'encoder_fallback', 'export_workers', 'export_quality', 'ffmpeg_path', 'overwrite', 'keep_media_cache')
+KEYS = ('video_encoder', 'encoder_fallback', 'export_workers', 'export_quality', 'ffmpeg_path', 'overwrite', 'keep_media_cache', 'output_project_prefix')
 
 
 def normalized(values, defaults):
@@ -9,7 +9,7 @@ def normalized(values, defaults):
     result = {key: copy.deepcopy(values.get(key, defaults[key])) for key in KEYS}
     normalize_export_settings(result)
     if (not isinstance(result['ffmpeg_path'], str) or type(result['overwrite']) is not bool
-            or type(result['keep_media_cache']) is not bool):
+            or type(result['keep_media_cache']) is not bool or type(result['output_project_prefix']) is not bool):
         raise ValueError('全局渲染路径或覆盖选项无效。')
     result['ffmpeg_path'] = result['ffmpeg_path'].strip()
     return result

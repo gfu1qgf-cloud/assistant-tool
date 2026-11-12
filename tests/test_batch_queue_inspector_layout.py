@@ -39,6 +39,7 @@ class QueueInspectorLayoutTests(unittest.TestCase):
             dialog.resize(1250, 850)
             dialog.show()
             dialog.open_global_queue()
+            dialog.render_queue_panel.editor_section.set_expanded(True)
             self.app.processEvents()
             self.assertIs(dialog.right_tabs.currentWidget(), dialog.render_queue_panel)
             self.assertTrue(dialog.render_queue_panel.isAncestorOf(dialog.jobs))
@@ -112,6 +113,7 @@ class QueueInspectorLayoutTests(unittest.TestCase):
             store.save(state, 0)
             dialog = BatchTextVideoDialog(store=store)
             dialog.resize(1250, 850); dialog.show(); dialog.open_global_queue()
+            dialog.render_queue_panel.editor_section.set_expanded(True)
             dialog.jobs.setCurrentCell(0, 0)
             initial_id = dialog.current_id
             dialog._render_progress['default'] = dict.fromkeys(map(str, range(680)), 0)

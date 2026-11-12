@@ -34,6 +34,8 @@ def migrate_pools(state):
 
     from .pool_order import normalize
     normalize(state)
+    from .pool_exclusion import attach
+    state["settings"]["layers"] = attach(state["settings"]["layers"], state)
 
 
 def add_videos(state, paths):
@@ -205,7 +207,8 @@ def bind_pool_layers(layers, state):
         layer["sequence_items"] = items
         layer["sequence_cursor"] = next((i for i, item in enumerate(items) if item["id"] == next_id),
                                         cursor % len(items) if items else 0)
-    return result
+    from .pool_exclusion import attach
+    return attach(result, state)
 
 
 def snapshot(state):

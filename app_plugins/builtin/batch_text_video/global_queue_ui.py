@@ -74,19 +74,23 @@ class GlobalRenderQueuePanel(QtWidgets.QWidget):
         row.addStretch()
         row.addWidget(refresh)
         global_layout.addLayout(row)
-        self.global_section = PropertySection('全部项目计划', global_widget, expanded=True)
-        layout.addWidget(self.global_section)
+        self.global_section = PropertySection('按项目管理计划', global_widget, expanded=False)
         self.current_label = QtWidgets.QLabel()
         self.current_label.setWordWrap(True)
-        layout.addWidget(self.current_label)
         from .render_timing_ui import RenderTimingPanel
         self.timing = RenderTimingPanel(owner, self)
-        layout.addWidget(self.timing)
         from .queue_tools import QueueTools
         self.tools = QueueTools(owner, self)
-        layout.addWidget(self.tools)
-        layout.addWidget(owner.jobs, 1)
-        layout.addWidget(self.tools.detail)
+        from .all_tasks_ui import AllTasksPanel
+        self.flat = AllTasksPanel(self)
+        layout.addWidget(self.flat, 1)
+        layout.addWidget(self.global_section)
+        editor = QtWidgets.QWidget()
+        editing = QtWidgets.QVBoxLayout(editor); editing.setContentsMargins(0,0,0,0)
+        editing.addWidget(self.current_label); editing.addWidget(self.timing)
+        editing.addWidget(self.tools); editing.addWidget(owner.jobs, 1); editing.addWidget(self.tools.detail)
+        self.editor_section = PropertySection('当前项目任务编辑', editor, expanded=False)
+        layout.addWidget(self.editor_section)
         self.refresh()
 
     def refresh(self):
@@ -137,7 +141,7 @@ class GlobalRenderQueuePanel(QtWidgets.QWidget):
         self.timing.refresh()
         self.refresh_settings_summary()
         self.tools.refresh()
-        self.start_button.setEnabled(any(plan['status'] == 'staged' for plan in plans))
+        self.flat.refresh(state)
         self.update_delete_enabled()
 
     def refresh_settings_summary(self):
@@ -202,7 +206,8 @@ class GlobalRenderQueuePanel(QtWidgets.QWidget):
         finally:
             self.pending_removals.discard(plan['id'])
 
-    def update_progress(self, profile_id):
+    def update_progress(self, profile_id, job_id=None):
+        self.flat.progress(profile_id, job_id)
         if profile_id == self.owner.state['active_profile']:
             self.refresh_current_label()
         values = self.owner._render_progress.get(profile_id, {})
@@ -246,7 +251,7 @@ class GlobalRenderQueuePanel(QtWidgets.QWidget):
             self.owner.right_tabs.setCurrentWidget(self)
 
     def start(self):
-        self.owner.start_staged_plans()
+        self.flat.start()
         self.refresh()
 
     def remove(self):

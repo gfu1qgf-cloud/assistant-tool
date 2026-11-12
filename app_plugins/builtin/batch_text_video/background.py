@@ -26,7 +26,7 @@ def validate_batch_outputs(state, ids):
     """Reject two queue rows targeting the same final file before encoding."""
     from .engine import safe_output, source_paths
     from .store import file_identity
-    from .task_naming import output_stem
+    from .export_destination import output_stem
 
     jobs = {job['id']: job for job in state['jobs']}
     inputs = source_paths(state)
@@ -44,7 +44,7 @@ def validate_batch_outputs(state, ids):
         job = jobs[job_id]
         from .background_visual import background_job
         folder = output_folder(background_job(job, state), routing)
-        name = output_stem(job, state['settings'].get('task_naming_rules', {}))
+        name = output_stem(job, routing)
         output = safe_output(folder, name, inputs, input_identities=identities)
         identity = file_identity(output)
         if identity in outputs and not state["settings"]["overwrite"]:

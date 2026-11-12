@@ -79,11 +79,17 @@ def normalize_source(component):
 def source_signature(component):
     payload = (component["kind"], component["source"], component.get("pool_id", ""),
                component.get("copy_binding", "task"), component.get("sequence_items", []))
+    exclusion = component.get('_pool_exclusion')
+    if exclusion:
+        payload += (exclusion['pool'], exclusion['peers'])
     return hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
 
 
-def resolve_sources(layers, title="", body="", *, job=None):
+def resolve_sources(layers, title="", body="", *, job=None, _selection_ready=False):
     resolved, plan = copy.deepcopy(layers), []
+    if not _selection_ready:
+        from .pool_exclusion import allocate
+        allocate(resolved, job)
     for layer in resolved:
         normalize_source(layer)
         if layer["kind"] == "node_effect":
@@ -91,7 +97,7 @@ def resolve_sources(layers, title="", body="", *, job=None):
         if layer["kind"] == "watermark":
             if layer.get("enabled", True) and layer.get("opacity", 100):
                 keys = list(layer["corners"])
-                children, steps = resolve_sources(list(layer["corners"].values()), title, body, job=job)
+                children, steps = resolve_sources(list(layer["corners"].values()), title, body, job=job, _selection_ready=True)
                 layer["corners"] = dict(zip(keys, children))
                 plan.extend({**step, "parent": layer["id"], "corner": key}
                     for key, child in zip(keys, children) for step in steps if step["id"] == child["id"])
@@ -129,12 +135,14 @@ def resolve_sources(layers, title="", body="", *, job=None):
             if not items:
                 raise ValueError(f"{layer.get('name', '组件')}：序列为空，请先添加内容。")
             cursor = layer["sequence_cursor"]
-            item = items[cursor]
+            selected_cursor = layer.pop("_pool_exclusion_selected_cursor", cursor)
+            item = items[selected_cursor]
             layer[field] = item[field]
             if field == "path":
                 layer["thumbnail"] = item.get("thumbnail", "")
             plan.append({"id": layer["id"], "cursor": cursor,
-                         "next_cursor": (cursor+1) % len(items), "signature": source_signature(layer)})
+                         "next_cursor": (selected_cursor+1) % len(items), "signature": source_signature(layer),
+                         **({"selected_cursor":selected_cursor} if selected_cursor != cursor else {})})
         if layer["kind"] == "caption" and layer["caption_timing"] != "uniform":
             layer["caption_timing"] = "file"
         if layer['kind'] == 'image':
@@ -161,10 +169,11 @@ def commit_sequences(layers, plan):
         if step.get("parent") and (not by_id[step["parent"]].get("enabled") or not by_id[step["parent"]].get("opacity")):
             raise ValueError("水印组件已停用，未推进来源位置。")
         items = layer["sequence_items"]
-        if (not items or layer["source"] not in {"sequence", "pool"} or not layer["enabled"] or not layer["opacity"]
+        selected = step.get("selected_cursor", step["cursor"])
+        if (type(selected) is not int or not 0 <= selected < len(items) or not items or layer["source"] not in {"sequence", "pool"} or not layer["enabled"] or not layer["opacity"]
                 or source_signature(layer) != step["signature"]
                 or layer["sequence_cursor"] != step["cursor"]
-                or step["next_cursor"] != (step["cursor"]+1) % len(items)):
+                or step["next_cursor"] != (selected+1) % len(items)):
             raise ValueError("序列内容或位置已改变，未消耗任何序列。")
         layer["sequence_cursor"] = step["next_cursor"]
     return result

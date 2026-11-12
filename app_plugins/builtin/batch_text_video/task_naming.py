@@ -16,7 +16,9 @@ def naming_rules(config):
 
 
 def is_task_video(path):
-    return bool(_STANDARD.fullmatch(Path(path).stem))
+    stem = Path(path).stem
+    return bool(_STANDARD.fullmatch(stem) or re.search(
+        r'(?<=_)\d{4}年\d{1,2}月\d{1,2}日-(?:reels|口播)\d*$', stem, re.I))
 
 
 @lru_cache(maxsize=128)

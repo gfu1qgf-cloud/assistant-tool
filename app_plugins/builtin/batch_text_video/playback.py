@@ -15,13 +15,16 @@ from .audio_sources import resolve_voice
 
 
 def preview_key(job, state, node_bundle=None, *, preview_limit=None):
+    if not job.get('render_assignment'):
+        from .background_visual import background_job
+        job = background_job(job, state)
     settings = copy.deepcopy(state["settings"])
     from .components import resolve_sources, walk_components
     from .pools import bind_pool_layers
     original_layers = settings["layers"]
     paths_cursor=[layer.get('caption_cursor_image') for layer in walk_components(original_layers) if layer.get('caption_cursor_image')]
     settings["layers"], _ = resolve_sources(bind_pool_layers(original_layers, state), job.get("title", ""), job.get("body", ""), job=job)
-    for field in ("output_dir", "output_destination", "output_relative_root", "overwrite", "geometry_units", "show_layer_bounds", "export_quality"):
+    for field in ("output_dir", "output_destination", "output_relative_root", "output_project_prefix", "overwrite", "geometry_units", "show_layer_bounds", "export_quality"):
         settings.pop(field, None)
     paths = [job.get("path"), resolve_voice(job, state, discover=True)]
     if paths[1] and Path(paths[1]).is_file():
@@ -72,7 +75,7 @@ def preview_key(job, state, node_bundle=None, *, preview_limit=None):
             fingerprints.append((str(path), None, None))
     from .text_colors import job_color_scope
     from .palette_rules import palette_scope
-    values = ["playback-v39-stable-filter-clock", preview_limit, job_color_scope(job), palette_scope(job), settings, job.get("title", ""), job.get("body", ""),
+    values = ["playback-v40-pool-exclusion", preview_limit, job_color_scope(job), palette_scope(job), settings, job.get("title", ""), job.get("body", ""),
               job.get("requires_title", False), job.get("voice_override", False), fingerprints, music, next_id]
     from .node_effects import cache_snapshot
     values.append(cache_snapshot(node_bundle, job.get('id')))
@@ -97,6 +100,9 @@ class PlaybackWorker(QtCore.QThread):
         self.elevenlabs_binding = elevenlabs_binding
 
     def run(self):
+        if not self.job.get('render_assignment'):
+            from .background_visual import background_job
+            self.job = background_job(self.job, self.state)
         result = {"key": self.key, "preview_limit": self.preview_limit}
         from .media_cache import MediaCacheSession
         cache_owner = MediaCacheSession()

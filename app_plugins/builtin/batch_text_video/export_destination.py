@@ -3,7 +3,7 @@ import os
 from pathlib import Path
 import re
 
-DEFAULTS = {'output_destination': 'auto', 'output_relative_root': ''}
+DEFAULTS = {'output_destination': 'auto', 'output_relative_root': '', 'output_project_prefix': False}
 
 
 def normalized(settings):
@@ -12,6 +12,8 @@ def normalized(settings):
         raise ValueError('导出位置选项无效。')
     if not isinstance(result['output_relative_root'], str):
         raise ValueError('相对目录基准无效。')
+    if type(result['output_project_prefix']) is not bool:
+        raise ValueError('项目名文件前缀选项无效。')
     result['output_relative_root'] = result['output_relative_root'].strip()
     return result
 
@@ -23,6 +25,10 @@ def source_folder(job):
 def settings_for(state):
     settings = dict(state['settings'])
     settings.update(normalized(settings))
+    settings['_output_project_name'] = next((p['name'] for p in state.get('profiles', [])
+        if p['id'] == state.get('active_profile')), '')
+    if settings['output_project_prefix'] and not settings['_output_project_name']:
+        raise ValueError('无法确定当前项目名，未生成带项目名前缀的文件。')
     if settings['output_destination'] != 'relative':
         return settings
     base = settings['output_relative_root']
@@ -68,11 +74,26 @@ def folder(job, settings):
     return str(target)
 
 
+def output_stem(job, settings):
+    from .task_naming import output_stem as task_stem
+    name = task_stem(job, settings.get('task_naming_rules', {}))
+    if settings.get('output_project_prefix', False):
+        project = re.sub(r'[<>:"/\\|?*\x00-\x1f]', '_', settings.get('_output_project_name', '')).strip(' .')
+        if not project:
+            raise ValueError('当前项目名不能用作文件名前缀。')
+        name = project+'_'+name
+        filename = re.sub(r'[<>:"/\\|?*\x00-\x1f]', '_', name).strip(' .')
+        if not filename.lower().endswith('.mp4'): filename += '.mp4'
+        if len(filename.encode('utf-16-le'))//2 > 255:
+            raise ValueError('加上项目名后的文件名过长，请缩短项目名或输出名称。')
+    return name
+
+
 def numbered(path, index):
     path = Path(path)
     if index == 1: return path
     # Keep the naming family already recognized by task delivery.
-    match = re.fullmatch(r'(\d{4}年\d{1,2}月\d{1,2}日-(?:reels|口播))(\d*)', path.stem, re.I)
+    match = re.fullmatch(r'((?:.*_)?\d{4}年\d{1,2}月\d{1,2}日-(?:reels|口播))(\d*)', path.stem, re.I)
     stem = match[1]+str(int(match[2] or 1)+index-1) if match else path.stem+'_'+str(index)
     return path.with_name(stem+path.suffix)
 

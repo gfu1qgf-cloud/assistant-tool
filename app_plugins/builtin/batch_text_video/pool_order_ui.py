@@ -7,6 +7,8 @@ from . import pool_order
 def add_actions(host, menu, key):
     if key not in pool_order.libraries(host.state):
         return
+    from .pool_exclusion_ui import add_action
+    add_action(host, menu, key)
     busy = host.is_batch_busy()
     randomized = pool_order.active(host.state, key)
     action = menu.addAction('重新随机使用顺序' if randomized else '随机使用顺序',

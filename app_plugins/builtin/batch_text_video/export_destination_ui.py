@@ -7,7 +7,7 @@ def build(host):
     widget = QtWidgets.QWidget()
     layout = QtWidgets.QVBoxLayout(widget); layout.setContentsMargins(0, 0, 0, 0)
     row = QtWidgets.QHBoxLayout(); layout.addLayout(row)
-    row.addWidget(QtWidgets.QLabel('导出到'))
+    row.addWidget(QtWidgets.QLabel('当前项目导出到'))
     mode = Combo(); mode.setObjectName('exportDestination'); mode.setMinimumWidth(220)
     mode.setAccessibleName('导出位置')
     for text, value in (('原任务目录／默认位置', 'auto'), ('指定文件夹', 'directory'),
@@ -40,6 +40,19 @@ def build(host):
         host.output.setToolTip('指定文件夹对表格、人声任务和普通视频均生效；仅改变成品位置。')
     mode.currentIndexChanged.connect(update)
     host.output.textEdited.connect(lambda _: mode.setCurrentIndex(mode.findData('directory')) if mode.currentData() == 'auto' else None)
+    naming = QtWidgets.QHBoxLayout()
+    project_prefix = QtWidgets.QCheckBox('文件名前加项目名（全部项目）')
+    project_prefix.setObjectName('exportProjectPrefix')
+    project_prefix.setChecked(host.state['settings'].get('output_project_prefix', False))
+    project_prefix.setToolTip('项目名_原文件名.mp4；按全局导出偏好保存。关闭后恢复原有文件名。任务若按固定候选名称整理，请对应调整候选文件名。')
+    host.controls['output_project_prefix'] = project_prefix
+    naming.addWidget(project_prefix)
+    example = QtWidgets.QLabel('项目名_原文件名.mp4')
+    project_prefix.toggled.connect(example.setVisible)
+    project_prefix.toggled.connect(lambda _: host.render_queue_panel.flat.refresh_names())
+    example.setVisible(project_prefix.isChecked())
+    naming.addWidget(example); naming.addStretch()
+    layout.addLayout(naming)
     update()
     host.export_destination_widget = widget
     return widget

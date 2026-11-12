@@ -99,13 +99,14 @@ class GlobalRenderQueueTests(unittest.TestCase):
         self.assertEqual(result['completed'], 0)
         self.assertIn('同一成品', result['error'])
 
-    def test_case_equivalent_names_conflict_independent_of_overwrite_switch(self):
+    def test_case_equivalent_names_are_numbered_unless_overwrite_is_enabled(self):
         state = self.store.load()
         state['jobs'] = [self.job('a', 'Same'), self.job('b', 'same')]
-        for overwrite in (False, True):
-            state['settings']['overwrite'] = overwrite
-            with self.assertRaisesRegex(ValueError, '同一成品'):
-                validate_batch_outputs(state, ['a','b'])
+        state['settings']['overwrite'] = False
+        validate_batch_outputs(state, ['a','b'])
+        state['settings']['overwrite'] = True
+        with self.assertRaisesRegex(ValueError, '同一成品'):
+            validate_batch_outputs(state, ['a','b'])
         validate_batch_outputs(state, ['a'])
 
     def test_selected_node_iterations_follow_submission_order(self):
