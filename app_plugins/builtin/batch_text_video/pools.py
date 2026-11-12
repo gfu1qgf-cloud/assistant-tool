@@ -212,4 +212,8 @@ def bind_pool_layers(layers, state):
 
 
 def snapshot(state):
-    return {key: copy.deepcopy(state[key]) for key in RESOURCE_KEYS}
+    # Inactive projects saved before pool shuffling have no order metadata.
+    # Snapshotting them must not require switching/migrating the whole project.
+    result = {key: copy.deepcopy(state[key]) for key in RESOURCE_KEYS if key != 'resource_orders'}
+    result['resource_orders'] = copy.deepcopy(state.get('resource_orders', {}))
+    return result
