@@ -351,6 +351,13 @@ def choose_music(state, duration, cache, ffmpeg, ffprobe, cancel, report):
 def source_paths(state):
     """Protect registered source media even when it has not been paired yet."""
     inputs = list(state.get('backgrounds', []))
+    for job in state.get('jobs',[]):
+        assigned=job.get('render_assignment') or {}
+        inputs.extend((assigned.get('background'),assigned.get('voice')))
+        inputs.extend(v['value'] for v in assigned.get('sources',{}).values() if v.get('field') in {'path','caption_file'})
+        inputs.extend(assigned.get('cursor_sources',{}).values())
+        music=assigned.get('music') or job.get('shared_music_assignment')
+        if music:inputs.append(music['item'].get('path'))
     inputs.extend(item['path'] for pool in state.get('shared_music_pools',[]) for item in pool['items'])
     for key in ('jobs', 'copy_pool', 'music', 'image_pool'):
         for item in state.get(key, []):
@@ -404,6 +411,8 @@ def _prepare_static_text(job, state, directory, cancel=None, progress=None, repo
     if state['settings'].get('pool_exclusions'):
         from .pool_exclusion import attach
         state = {**state, 'settings': {**state['settings'], 'layers': attach(state['settings']['layers'], state)}}
+    from .task_render_config import capture as capture_config
+    config=capture_config(job,state) if not preview else {}
     original_sources = source_paths(state) if job.get('render_assignment') else []
     from .render_assignment import apply as apply_assignment
     job, state = apply_assignment(job, state)
@@ -517,7 +526,7 @@ def _prepare_static_text(job, state, directory, cancel=None, progress=None, repo
         report("铺满画面：自动去除素材自带的稳定黑边（不修改原文件）。")
     # Keep all Qt/font work on its stable preparation thread, while independent
     # audio read-ahead overlaps background analysis, text layout and alignment.
-    if not hasattr(_LAYER_CACHE, "images"):
+    if job.get('render_cache_token') or not hasattr(_LAYER_CACHE, "images"):
         _LAYER_CACHE.images = ImageCache()
     stage(progress, '生成文字／图层')
     overlay, layout = render_overlay(job["title"], job["body"], width, height, settings, _LAYER_CACHE.images)
@@ -735,7 +744,7 @@ def _prepare_static_text(job, state, directory, cancel=None, progress=None, repo
             cwd=temporary if effects else None, timings={'prepare_seconds': time.monotonic()-started},
             quality=settings['export_quality'], render_scope='' if preview else file_identity(Path(directory)/'state.json'),
             source_paths=tuple(inputs), requested_output=requested_output, assignment=assignment,
-            caption_memory_bytes=memory_for_directory(temporary))
+            caption_memory_bytes=memory_for_directory(temporary), render_config=config)
 
 
 @contextmanager

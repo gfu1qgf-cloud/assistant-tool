@@ -32,6 +32,8 @@ def normalize_project(state, defaults):
     state.setdefault('backgrounds', [])
     from .pools import migrate_pools
     migrate_pools(state)
+    from .task_render_config import normalize as normalize_configs
+    normalize_configs(state)
     return state
 
 

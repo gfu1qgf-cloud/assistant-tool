@@ -13,11 +13,21 @@ def missing_voice(layers,job):
 
 def validate_caption_voice(state,jobs):
     from .captions import active_captions
-    layers=state['settings']['layers']
-    if not active_captions(layers):return
-    settings=state['settings']
     for job in jobs:
-        voice=resolve_voice(job,state,discover=False)
+        view=state
+        if job.get('render_from_snapshot'):
+            from .task_render_config import apply as apply_config
+            job,view=apply_config(job,{**state,'_live_settings':state['settings']})
+        if job.get('render_assignment'):
+            # Voice-only preflight: no project/pool copies or media reads.
+            from model.PrivateDataPaths import remap_path_fields
+            voice={'voice_path':job['render_assignment'].get('voice','')}
+            remap_path_fields(voice,{'voice_path'})
+            job={**job,**voice,'voice_override':True}
+            view={**view,'settings':{**view['settings'],'use_voice':bool(voice['voice_path'])}}
+        settings=view['settings'];layers=settings['layers']
+        if not active_captions(layers):continue
+        voice=resolve_voice(job,view,discover=False)
         if voice:continue
         # Task-directory discovery remains in the worker. Never scan hundreds
         # of folders on the GUI thread just to prove the absence of a file.

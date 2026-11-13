@@ -15,6 +15,8 @@ from .audio_sources import resolve_voice
 
 
 def preview_key(job, state, node_bundle=None, *, preview_limit=None):
+    from .render_assignment import apply
+    job,state=apply(job,state)
     if not job.get('render_assignment'):
         from .background_visual import background_job
         job = background_job(job, state)
@@ -75,7 +77,7 @@ def preview_key(job, state, node_bundle=None, *, preview_limit=None):
             fingerprints.append((str(path), None, None))
     from .text_colors import job_color_scope
     from .palette_rules import palette_scope
-    values = ["playback-v40-pool-exclusion", preview_limit, job_color_scope(job), palette_scope(job), settings, job.get("title", ""), job.get("body", ""),
+    values = ["playback-v41-task-config", job.get("render_cache_token"), preview_limit, job_color_scope(job), palette_scope(job), settings, job.get("title", ""), job.get("body", ""),
               job.get("requires_title", False), job.get("voice_override", False), fingerprints, music, next_id]
     from .node_effects import cache_snapshot
     values.append(cache_snapshot(node_bundle, job.get('id')))

@@ -383,6 +383,13 @@ class Store:
                 data_file(self.path).write_json(updated, indent=2)
             return updated
 
+    def stage_task_rerender(self,profile_id,job_id,edited,*,expected_profile_revision):
+        from .task_render_config import stage
+        with _LOCK:
+            result=stage(Store.load(self),profile_id,job_id,edited,expected_profile_revision)
+            data_file(self.path).write_json(result,indent=2)
+            return result
+
     def stage_failed_retries(self,selections,*,expected_profile_revisions=None):
         from .queue_selection import stage_failed_retries
         with _LOCK:
@@ -534,6 +541,7 @@ class Store:
             state["settings"]["layers"] = commit_sequences(state["settings"]["layers"],sequence_plan)
         job = next(item for item in state["jobs"] if item["id"] == job_id)
         job.update(status="已完成", output=str(output), error="", render_checked=False)
+        job.pop('render_from_snapshot',None)
         if music_plan:
             from .custom_pools import get_pool
             pool_id = music_plan.get("pool_id", "")

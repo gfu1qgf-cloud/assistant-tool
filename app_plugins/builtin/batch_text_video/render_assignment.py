@@ -29,6 +29,9 @@ def capture(job, state, layers, music, voice):
 
 
 def apply(job, state):
+    from .task_render_config import apply as apply_config
+    live=state['settings']
+    job,state=apply_config(job,{**state,'_live_settings':live})
     assignment = job.get('render_assignment')
     if not assignment:
         if job.get('shared_music_assignment'):
@@ -81,13 +84,23 @@ def apply_music(state,music):
 
 def reserve(store, state, job_id, prepared):
     assignment = getattr(prepared, 'assignment', None)
+    from .task_render_config import record
+    config=getattr(prepared,'render_config',None)
+    def save(updated,revision):
+        record(updated,job_id,config)
+        return store.save(updated,revision)
+    def ensure_config(value):
+        if config:
+            updated=copy.deepcopy(value)
+            if record(updated,job_id,config):return store.save(updated,value['revision'])
+        return value
     node_rotation = any(step.get('node_source') for step in prepared.sequence_plan)
     if node_rotation and next(job for job in state['jobs'] if job['id'] == job_id).get('render_assignment'):
         raise ValueError('工作流新增了节点资源轮换，请先重新分配此任务素材。')
     from .shared_music import reserve as reserve_shared
     state=reserve_shared(store,state,job_id,prepared)
     if not assignment or node_rotation:
-        return state, False
+        return ensure_config(state), False
     current = next(job for job in state['jobs'] if job['id'] == job_id)
     if current.get('render_assignment'):
         old=current['render_assignment'].get('cursor_sources',{})
@@ -110,7 +123,7 @@ def reserve(store, state, job_id, prepared):
             target.setdefault('caption_styles',{}).update(styles)
             for key in styles:target.setdefault('cursor_sources',{}).pop(key,None)
             target.setdefault('cursor_sources',{}).update(new)
-            state=store.save(updated,state['revision'])
+            state=save(updated,state['revision'])
     if not current.get('render_assignment'):
         reserved = store.completion_state(state, job_id, prepared.output, prepared.music, prepared.sequence_plan)
         updated = copy.deepcopy(state)
@@ -118,9 +131,9 @@ def reserve(store, state, job_id, prepared):
         for key in ('music', 'next_music_id', 'resource_pools'):
             updated[key] = reserved[key]
         next(job for job in updated['jobs'] if job['id'] == job_id)['render_assignment'] = copy.deepcopy(assignment)
-        state = store.save(updated, state['revision'])
+        state = save(updated, state['revision'])
     prepared.music, prepared.sequence_plan = None, []
-    return state, True
+    return ensure_config(state), True
 
 
 def clear_selected(owner):

@@ -6,7 +6,7 @@ import uuid
 
 from .store import file_identity
 
-RESOURCE_KEYS = ("settings", "jobs", "music", "next_music_id", "backgrounds", "copy_pool", "image_pool", "resource_pools", "resource_orders")
+RESOURCE_KEYS = ("settings", "jobs", "music", "next_music_id", "backgrounds", "copy_pool", "image_pool", "resource_pools", "resource_orders", "render_configs")
 
 
 def migrate_pools(state):
@@ -233,6 +233,7 @@ def snapshot(state):
     # Queue operations can access inactive snapshots older than named pools.
     if any(key not in state for key in ('backgrounds', 'copy_pool', 'image_pool', 'resource_pools')):
         state = migrate_resource_fields(copy.deepcopy(state))
-    result = {key: copy.deepcopy(state[key]) for key in RESOURCE_KEYS if key != 'resource_orders'}
+    result = {key: copy.deepcopy(state[key]) for key in RESOURCE_KEYS if key not in {'resource_orders','render_configs'}}
     result['resource_orders'] = copy.deepcopy(state.get('resource_orders', {}))
+    result['render_configs'] = copy.deepcopy(state.get('render_configs', {}))
     return result

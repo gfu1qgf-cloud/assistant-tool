@@ -61,7 +61,7 @@ class AllTasksPanel(QtWidgets.QWidget):
         self.table.itemChanged.connect(self.changed)
         self.table.currentCellChanged.connect(self.detail_changed)
         self.table.itemSelectionChanged.connect(self.selection_changed)
-        self.table.itemDoubleClicked.connect(lambda _:self.open_result())
+        self.table.itemDoubleClicked.connect(lambda _:self.preview_current())
         self.table.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self.menu)
         self.delete_action = QtGui.QAction('删除所选',self.table)
@@ -367,6 +367,15 @@ class AllTasksPanel(QtWidgets.QWidget):
         self.detail.setText((self.error(key) or entry['job'].get('output') or '') if entry else '')
         self.detail.setVisible(bool(self.detail.text()))
 
+    def preview_current(self,*,rerender=False):
+        key=self.current_key()
+        if not key:return
+        try:
+            from .task_preview_ui import open_task
+            open_task(self,key,rerender=rerender)
+        except Exception as error:
+            QtWidgets.QMessageBox.warning(self,'无法预览任务',str(error))
+
     def open_result(self):
         key=self.current_key();entry=self.entries.get(key)
         if not entry:return
@@ -388,6 +397,9 @@ class AllTasksPanel(QtWidgets.QWidget):
         item=self.table.itemAt(pos)
         if item and not item.isSelected():self.table.selectRow(item.row())
         menu=QtWidgets.QMenu(self)
+        menu.addAction('预览任务配置',self.preview_current)
+        rerender=menu.addAction('重新渲染／更换素材…',lambda:self.preview_current(rerender=True))
+        key=self.current_key();rerender.setEnabled(key is not None and not self.locked(key[0]))
         menu.addAction('打开成品',self.open_result)
         edit=menu.addAction('编辑此任务',self.edit_current)
         key=self.current_key()
