@@ -20,6 +20,8 @@ def build_caption(inputs, params, context):
         from .palette_rules import resolve_object,node_palette_scope
         layer=resolve_object(layer,node_palette_scope(context))
         layer = apply_color_inputs(layer, inputs)
+        from .cursor_pool import resolve_node
+        resolve_node(layer,context)
         assets=[('filename',subtitles)]
         from .caption_cursor import image_enabled
         if image_enabled(layer):

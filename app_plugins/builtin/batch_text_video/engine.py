@@ -365,6 +365,7 @@ def source_paths(state):
         if layer.get('kind') == 'image' and active_mask(layer):
             inputs.append(active_mask(layer))
         inputs.extend(item.get('path') for item in layer.get('sequence_items', []))
+        inputs.extend(item.get('path') for item in layer.get('caption_cursor_items', []))
     return [path for path in inputs if path]
 
 

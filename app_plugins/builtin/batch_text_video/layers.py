@@ -37,7 +37,7 @@ DEFAULT_LAYERS = [
 def normalize_layers(value=None):
     layers = copy.deepcopy(DEFAULT_LAYERS if value is None else value)
     from model.PrivateDataPaths import remap_path_fields
-    remap_path_fields(layers,{'path','thumbnail','source_file','caption_file','key_mask_path'})
+    remap_path_fields(layers,{'path','thumbnail','source_file','caption_file','key_mask_path','caption_cursor_image'})
     from .watermarks import migrate_watermarks, normalize_watermark
     layers = migrate_watermarks(layers)
     if not isinstance(layers, list) or len(layers) > MAX_IMAGES + MAX_TEXT_BOXES + 15:

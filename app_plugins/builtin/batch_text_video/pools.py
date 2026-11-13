@@ -163,6 +163,9 @@ def bind_pool_layers(layers, state):
     """Keep the next item by stable ID across edits/reordering of a pool."""
     result = copy.deepcopy(layers)
     for layer in result:
+        if layer['kind']=='caption':
+            from .cursor_pool import bind as bind_cursor
+            bind_cursor(layer,state)
         if layer["kind"] == "watermark":
             layer["corners"] = dict(zip(layer["corners"], bind_pool_layers(list(layer["corners"].values()), state)))
             continue

@@ -93,6 +93,16 @@ class CaptionProperties(QtWidgets.QWidget):
         action.setToolTip('选择光标图片');action.triggered.connect(self.choose_cursor_image)
         self.controls['caption_cursor_image']=cursor_path;form.addRow('光标图片',cursor_path)
         cursor_path.setToolTip('支持透明图片；保留原图颜色和透明度。')
+        cursor_source=QtWidgets.QComboBox();cursor_source.addItem('固定图片','file');cursor_source.addItem('资源池轮换','pool')
+        cursor_source.currentIndexChanged.connect(self.edit)
+        self.controls['caption_cursor_source']=cursor_source;form.addRow('图片来源',cursor_source)
+        self.cursor_pool_editor=QtWidgets.QWidget()
+        cursor_layout=QtWidgets.QVBoxLayout(self.cursor_pool_editor);cursor_layout.setContentsMargins(0,0,0,0)
+        cursor_pool=QtWidgets.QComboBox();cursor_pool.addItem('默认图片池','')
+        cursor_pool.currentIndexChanged.connect(self.edit)
+        self.controls['caption_cursor_pool_id']=cursor_pool;cursor_layout.addWidget(cursor_pool)
+        form.addRow('光标素材池',self.cursor_pool_editor)
+        self._cursor_pool_state={}
         for key,label,low,high,suffix in (('caption_cursor_scale','图片大小',5,500,' %'),
                 ('caption_cursor_width','竖线厚度',.1,100,' px'),('caption_cursor_height','竖线高度',5,300,' %'),
                 ('caption_cursor_opacity','光标不透明度',0,100,' %'),
@@ -262,7 +272,7 @@ class CaptionProperties(QtWidgets.QWidget):
         from .property_pairs import pair_form_fields, order_form_fields
         base=self.forms['caption']
         order_form_fields(base,[self.controls[key] for key in ('caption_preset','caption_display_mode',
-            'caption_pop_ms','caption_cursor','caption_cursor_mode','caption_cursor_continuous','caption_cursor_move_ms','caption_cursor_color','caption_cursor_image',
+            'caption_pop_ms','caption_cursor','caption_cursor_mode','caption_cursor_continuous','caption_cursor_move_ms','caption_cursor_color','caption_cursor_source')]+[self.cursor_pool_editor]+[self.controls[key] for key in ('caption_cursor_image',
             'caption_cursor_width','caption_cursor_height','caption_cursor_scale','caption_cursor_opacity',
             'caption_cursor_offset_x','caption_cursor_offset_y')])
         self.display_note = QtWidgets.QLabel()
@@ -312,6 +322,15 @@ class CaptionProperties(QtWidgets.QWidget):
         return next(form for form in self.forms.values() if form.labelForField(control) is not None)
 
 
+    def set_pool_state(self,state):
+        self._cursor_pool_state=state
+        control=self.controls['caption_cursor_pool_id'];current=control.currentData()
+        blocker=QtCore.QSignalBlocker(control);control.clear();control.addItem('默认图片池','')
+        for pool in state.get('resource_pools',[]):
+            if pool['kind'] in {'image','video','visual'}:control.addItem(pool['name'],pool['id'])
+        if current and control.findData(current)<0:control.addItem('原光标池已不存在（请重选）',current)
+        control.setCurrentIndex(max(0,control.findData(current)));del blocker
+
     def set_layer(self, layer):
         self.layer = copy.deepcopy(layer)
         self.setEnabled(bool(layer))
@@ -323,6 +342,9 @@ class CaptionProperties(QtWidgets.QWidget):
         normalize_display(self.layer)
         layer=self.layer
         self.loading = True
+        cursor_source=self.controls['caption_cursor_source']
+        if layer.get('caption_cursor_source')=='sequence' and cursor_source.findData('sequence')<0:
+            cursor_source.addItem('控件内轮换副本','sequence')
         style=effects(layer)
         timing = self.controls["caption_timing"]
         for index in range(timing.count()):
@@ -371,8 +393,13 @@ class CaptionProperties(QtWidgets.QWidget):
         image=self.controls['caption_cursor_mode'].currentData()=='image'
         color=self.controls['caption_cursor_color']; color.setVisible(not image)
         self.form_for(color).labelForField(color).setVisible(not image)
-        for key in ('caption_cursor_image','caption_cursor_scale'):
-            control=self.controls[key];control.setVisible(image);self.form_for(control).labelForField(control).setVisible(image)
+        pool=self.controls['caption_cursor_source'].currentData()!='file'
+        for key,visible in (('caption_cursor_source',image),('caption_cursor_image',image and not pool),('caption_cursor_scale',image)):
+            control=self.controls[key];control.setVisible(visible);self.form_for(control).labelForField(control).setVisible(visible)
+        self.cursor_pool_editor.setVisible(image and pool)
+        self.form_for(self.cursor_pool_editor).labelForField(self.cursor_pool_editor).setVisible(image and pool)
+        self.controls['caption_cursor_pool_id'].setEnabled(self.controls['caption_cursor_source'].currentData()=='pool')
+        self.controls['caption_cursor_pool_id'].setItemText(0,'控件内轮换副本' if self.controls['caption_cursor_source'].currentData()=='sequence' else '默认图片池')
         for key in ('caption_cursor_width','caption_cursor_height'):
             control=self.controls[key];control.setVisible(not image);self.form_for(control).labelForField(control).setVisible(not image)
         color.setEnabled(True)
@@ -523,8 +550,9 @@ def caption_property_panel(services=None, *, mode='batch'):
     from .component_ui import add_text_properties, TextBoxProperties
     from .captions import DEFAULTS
     from .caption_display import DEFAULTS as DISPLAY_DEFAULTS
+    from .cursor_pool import DEFAULTS as CURSOR_POOL_DEFAULTS
     from . import caption_styles
-    if (not DISPLAY_DEFAULTS.keys() <= DEFAULTS.keys() or 'caption_effects_version' not in DEFAULTS or
+    if (not DISPLAY_DEFAULTS.keys() <= DEFAULTS.keys() or not CURSOR_POOL_DEFAULTS.keys() <= DEFAULTS.keys() or 'caption_effects_version' not in DEFAULTS or
             not callable(getattr(caption_styles,'freeze_effect_parameters',None)) or
             not getattr(TextBoxProperties,'paired_font_fields',False)):
         raise RuntimeError('字幕源码已更新，请在方便时重启程序后使用新的字幕设置；当前参数未修改。')

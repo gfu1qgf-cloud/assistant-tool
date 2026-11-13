@@ -78,6 +78,9 @@ def restart_layers(layers, key):
     import copy
     result = copy.deepcopy(layers)
     for layer in result:
+        if layer.get('kind')=='caption' and layer.get('caption_cursor_source')=='pool':
+            cursor_key='pool:'+layer['caption_cursor_pool_id'] if layer.get('caption_cursor_pool_id') else 'image_pool'
+            if cursor_key==key:layer.update(caption_cursor_items=[],caption_cursor_cursor=0)
         if layer.get('kind') == 'watermark':
             layer['corners'] = dict(zip(layer['corners'], restart_layers(list(layer['corners'].values()), key)))
         elif layer.get('source') == 'pool':

@@ -27,7 +27,7 @@ def normalize_node_caption(value):
 
 def prepare_caption(_task, params, _services):
     if params.get("caption") is not None:
-        normalize_node_caption(params["caption"])
+        layer=normalize_node_caption(params["caption"])
         if QtGui.QGuiApplication.instance() is None:
             raise ValueError("动态字幕需要程序的字体环境，请从主程序执行工作流。")
         if QtCore.QThread.currentThread() != QtGui.QGuiApplication.instance().thread():
@@ -35,6 +35,8 @@ def prepare_caption(_task, params, _services):
         # Application-font registration is GUI-thread work, not worker work.
         from .layout import ensure_fonts
         ensure_fonts()
+        from .cursor_pool import prepare_node
+        return prepare_node(layer,_services)
     return {}
 
 

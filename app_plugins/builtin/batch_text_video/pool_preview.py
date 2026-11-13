@@ -68,9 +68,14 @@ class PoolPreview(QtWidgets.QWidget):
         old = self.layer_combo.currentData()
         self.layers = copy.deepcopy([layer for layer in layers
             if layer.get('kind') == 'image' and layer.get('source') == 'pool'])
+        from .cursor_pool import virtual, enabled
+        self.layers.extend(copy.deepcopy(virtual(layer)) for layer in layers
+            if enabled(layer) and layer.get('caption_cursor_source') in {'pool','sequence'})
         sources = (assignment or {}).get('sources', {})
         for layer in self.layers:
-            source = sources.get(layer['id'], {})
+            cursor_owner=layer.get('_cursor_owner')
+            source = (dict(field='path',value=assignment['cursor_sources'][cursor_owner])
+                if cursor_owner and (assignment or {}).get('cursor_sources',{}).get(cursor_owner) else sources.get(layer['id'], {}))
             if source.get('field') != 'path': continue
             from model.PrivateDataPaths import remap_path_fields
             source = {'path': source['value']}; remap_path_fields(source, {'path'})
@@ -137,6 +142,11 @@ class PoolPreview(QtWidgets.QWidget):
     def apply(self, settings):
         result = copy.deepcopy(settings)
         for layer in result['layers']:
+            if layer.get('kind')=='caption' and layer.get('caption_cursor_source') in {'pool','sequence'}:
+                from .cursor_pool import virtual
+                selected=self.choices.get(pool_key(virtual(layer)))
+                index=next((i for i,item in enumerate(layer.get('caption_cursor_items',[])) if item['id']==selected),None)
+                if index is not None:layer['caption_cursor_cursor']=index
             if layer.get('kind') != 'image' or layer.get('source') != 'pool': continue
             selected = self.choices.get(pool_key(layer))
             index = next((i for i, item in enumerate(layer.get('sequence_items', [])) if item['id'] == selected), None)
@@ -154,6 +164,11 @@ class PoolPreview(QtWidgets.QWidget):
         assignment = job.get('render_assignment')
         if assignment:
             for layer in state['settings']['layers']:
+                if layer.get('kind')=='caption' and layer.get('caption_cursor_source') in {'pool','sequence'}:
+                    from .cursor_pool import virtual
+                    selected=self.choices.get(pool_key(virtual(layer)))
+                    item=next((item for item in layer.get('caption_cursor_items',[]) if item['id']==selected),None)
+                    if item:assignment.setdefault('cursor_sources',{})[layer['id']]=item['path']
                 selected = self.choices.get(pool_key(layer))
                 if layer.get('kind') != 'image' or layer.get('source') != 'pool' or not selected: continue
                 item = next((item for item in layer.get('sequence_items', []) if item['id'] == selected), None)

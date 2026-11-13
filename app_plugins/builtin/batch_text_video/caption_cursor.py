@@ -11,10 +11,15 @@ DEFAULTS={'caption_cursor_mode':'bar','caption_cursor_image':'','caption_cursor_
           'caption_cursor_offset_x':0.,'caption_cursor_offset_y':0.,
           'caption_cursor_width':2.,'caption_cursor_height':100.,'caption_cursor_opacity':100.,
           'caption_cursor_continuous':True,'caption_cursor_move_ms':120}
+from .cursor_pool import DEFAULTS as POOL_DEFAULTS
+DEFAULTS.update(POOL_DEFAULTS)
 
 
 def normalize(layer):
-    for key,value in DEFAULTS.items():layer.setdefault(key,value)
+    import copy
+    for key,value in DEFAULTS.items():layer.setdefault(key,copy.deepcopy(value))
+    from .cursor_pool import normalize as normalize_pool
+    normalize_pool(layer)
     if layer['caption_cursor_mode'] not in {'bar','image'}:raise ValueError('光标类型无效。')
     if type(layer['caption_cursor_continuous']) is not bool:raise ValueError('连续光标动画开关无效。')
     if type(layer['caption_cursor_move_ms']) is not int or not 0<=layer['caption_cursor_move_ms']<=1000:raise ValueError('光标移动时长应为0–1000毫秒。')

@@ -784,8 +784,14 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
 
     def _sync_pool_preview(self, layers, current):
         source = self.layer_panel.content_editor if current and current.get('kind') == 'image' else None
+        selected=current['id'] if current else ''
+        if current and current.get('kind')=='caption' and current.get('caption_cursor_source') in {'pool','sequence'}:
+            from .cursor_pool import enabled
+            if enabled(current):
+                source=self.layer_panel.caption_properties.cursor_pool_editor
+                selected=current['id']+':cursor'
         self.pool_preview.attach_to_source(source)
-        self.pool_preview.sync(layers, current['id'] if current else '', scope=self.state.get('active_profile', ''),
+        self.pool_preview.sync(layers, selected, scope=self.state.get('active_profile', ''),
                                assignment=self.active_entry().get('render_assignment'))
 
     def _preview_geometry_edited(self,identifier,values):

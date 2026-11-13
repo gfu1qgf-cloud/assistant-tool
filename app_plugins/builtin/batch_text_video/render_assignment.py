@@ -20,7 +20,9 @@ def capture(job, state, layers, music, voice):
         item.update(cursor=music['start'], audio_key=music['audio_key'])
         selection = {'item': item, 'settings': {key: state['settings'][key]
             for key in ('skip_silence', 'silence_db', 'silence_seconds')}}
-    return dict(version=1, sources=sources, music=selection, background=job.get('path', ''), voice=voice)
+    from .cursor_pool import enabled
+    cursors={v['id']:v['caption_cursor_image'] for v in layers if enabled(v) and v.get('caption_cursor_source') in {'pool','sequence'}}
+    return dict(version=1, sources=sources, cursor_sources=cursors, music=selection, background=job.get('path', ''), voice=voice)
 
 
 def apply(job, state):
@@ -45,6 +47,11 @@ def apply(job, state):
             raise ValueError('已分配的控件被删除或替换，请先重新分配此任务的素材。')
         by_id[identifier].update(source='fixed', sequence_items=[], sequence_cursor=0,
                                  **{value['field']: value['value']})
+    for identifier,path in assignment.get('cursor_sources',{}).items():
+        if identifier not in by_id or by_id[identifier]['kind']!='caption':
+            raise ValueError('已分配的图片光标控件已改变，请重新分配此任务素材。')
+        portable={'path':path};remap_path_fields(portable,{'path'})
+        by_id[identifier].update(caption_cursor_source='file',caption_cursor_image=portable['path'],caption_cursor_items=[])
     job.update(path=assignment['background'], voice_path=assignment['voice'], voice_override=True)
     settings.update(background_pool_id='', use_voice=bool(assignment['voice']))
     music = assignment.get('music')
@@ -65,6 +72,18 @@ def reserve(store, state, job_id, prepared):
     if not assignment or node_rotation:
         return state, False
     current = next(job for job in state['jobs'] if job['id'] == job_id)
+    if current.get('render_assignment'):
+        old=current['render_assignment'].get('cursor_sources',{})
+        new={key:path for key,path in assignment.get('cursor_sources',{}).items() if key not in old}
+        if new:
+            from .components import commit_sequences
+            updated=copy.deepcopy(state)
+            steps=[step for step in prepared.sequence_plan if step.get('cursor_source') and step['id'] in new]
+            if {step['id'] for step in steps}!=set(new):
+                raise ValueError('新增图片光标缺少分配记录，请重新分配任务素材。')
+            updated['settings']['layers']=commit_sequences(updated['settings']['layers'],steps)
+            next(job for job in updated['jobs'] if job['id']==job_id)['render_assignment'].setdefault('cursor_sources',{}).update(new)
+            state=store.save(updated,state['revision'])
     if not current.get('render_assignment'):
         reserved = store.completion_state(state, job_id, prepared.output, prepared.music, prepared.sequence_plan)
         updated = copy.deepcopy(state)

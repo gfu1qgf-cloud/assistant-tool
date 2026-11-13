@@ -81,6 +81,10 @@ def prepare(layers, background, payload, *, profile='', scope=''):
     if same_project and not existing:
         clone['name'] = clone.get('name', '控件')+' · 副本'
     for component in walk_components([clone]):
+        if component.get('caption_cursor_source')=='pool' and not same_project:
+            component.update(caption_cursor_source='sequence',caption_cursor_pool_id='')
+            for item in component.get('caption_cursor_items',[]):item['id']=uuid.uuid4().hex
+            notices.append('光标素材池已保存为控件内轮换副本')
         if component.get('source') == 'pool' and not same_project:
             task_text = (component['kind'] in {'title','body','text'} and not component.get('pool_id')
                          and component.get('copy_binding', 'task') == 'task')

@@ -92,6 +92,10 @@ def resolve_sources(layers, title="", body="", *, job=None, _selection_ready=Fal
         allocate(resolved, job)
     for layer in resolved:
         normalize_source(layer)
+        if layer['kind']=='caption':
+            from .cursor_pool import resolve as resolve_cursor
+            step=resolve_cursor(layer)
+            if step:plan.append(step)
         if layer["kind"] == "node_effect":
             continue
         if layer["kind"] == "watermark":
@@ -154,12 +158,14 @@ def resolve_sources(layers, title="", body="", *, job=None, _selection_ready=Fal
 
 def commit_sequences(layers, plan):
     result = copy.deepcopy(layers)
+    from .cursor_pool import commit as commit_cursors
+    commit_cursors(result,[step for step in plan if step.get('cursor_source')])
     from .workflow_component_source import commit_steps
     commit_steps(result, [step for step in plan if step.get('node_source')])
     by_id = {layer["id"]: layer for layer in result}
     seen = set()
     for step in plan:
-        if step.get('node_source'): continue
+        if step.get('node_source') or step.get('cursor_source'): continue
         layer = by_id.get(step["id"]) if not step.get("parent") else by_id.get(step["parent"], {}).get("corners", {}).get(step.get("corner"))
         identifier = (step.get("parent"), step.get("corner"), step["id"])
         if not layer or layer["id"] != step["id"] or identifier in seen:
