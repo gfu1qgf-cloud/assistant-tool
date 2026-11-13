@@ -106,10 +106,21 @@ def outside_ring(path, width):
 
 
 def ass_commands(path):
-    """ASS p4 uses eighth-pixel integer coordinates, avoiding decimal bloat."""
+    """Keep the existing p4 quantization and every vertex; coalesce line commands."""
     import re
     from .captions import _path_commands
-    return re.sub(r'-?\d+\.\d+', lambda match: str(round(float(match[0])*8)), _path_commands(path))
+    return compact_commands(re.sub(r'-?\d+\.\d+',lambda m:str(round(float(m[0])*8)),_path_commands(path)))
+
+
+def compact_commands(commands):
+    """ASS permits many coordinate pairs after one l; retain all points verbatim."""
+    result=[];command=None
+    for token in commands.split():
+        if token in {'m','l','b'}:
+            if token=='l' and command=='l':continue
+            command=token
+        result.append(token)
+    return ' '.join(result)
 
 
 def layout_path(layout, *, simplify=True):

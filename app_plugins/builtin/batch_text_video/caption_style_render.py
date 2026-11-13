@@ -21,6 +21,7 @@ from .caption_display import display_settings, layout_glyphs, reveal_events, rev
 REVEAL = {'word_pop_random', 'word_pop_random_pulse', 'word_random_position',
           'scatter_pop', 'typewriter', 'char_bounce', 'letter_jump', 'metronome', 'lzx_word_pop'}
 MAX_ROWS = 80000
+MAX_ASS_BYTES = 64*1024*1024
 
 
 def rectangle(width, height, radius=0):
@@ -501,7 +502,8 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             from .text_outline import ass_commands
             commands = ass_commands(primitive['native'])
         else:
-            commands = _path_commands(primitive['native'])
+            from .text_outline import compact_commands
+            commands = compact_commands(_path_commands(primitive['native']))
         pieces=ass_gradient_pieces(primitive)
         for start,end in zip(times,times[1:]):
             if round(start*100) >= round(end*100): continue
@@ -554,8 +556,11 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                 tags+=f'\\1c{_ass_color(color)}\\p{drawing_scale}'
                 row = f'Dialogue: {primitive["z"]},{_ass_time(start)},{_ass_time(end)},Caption,,0,0,0,,{{{tags}}}{commands}{{\\p0}}'
                 rows.append(row); bytes_used += len(row.encode('utf8'))
-                if len(rows)>MAX_ROWS or bytes_used>64*1024*1024:
-                    raise ValueError('字幕效果过于复杂（动画/渐变事件过多）；请缩短视频或减少发光、渐变、漂浮效果。')
+                if len(rows)>MAX_ROWS:
+                    raise ValueError(f'字幕绘制指令超过{MAX_ROWS}条安全上限（当前{len(rows)}条）；请分段导出或简化当前字幕样式。')
+                if bytes_used>MAX_ASS_BYTES:
+                    raise ValueError(f'字幕矢量脚本超过64 MiB安全上限（当前{bytes_used/1024/1024:.2f} MiB）；'
+                        '长篇逐字／朗读跟随与复杂字形、描边会增加绘制数据。请分段导出或简化当前字幕样式。')
     data_file(Path(path)).write_text(header+'\n'.join(rows)+'\n',encoding='utf8')
     return events
 
