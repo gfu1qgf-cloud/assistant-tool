@@ -593,6 +593,8 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
         self.layer_panel.selectionChanged.connect(self._sync_preview_layers)
         self.layer_panel.background_button.clicked.connect(lambda: self.right_tabs.setCurrentIndex(0))
         self.preview.layerSelected.connect(self.layer_panel.select_layer_id)
+        self.preview.copyRequested.connect(self.layer_panel.copy_component)
+        self.preview.pasteRequested.connect(self.layer_panel.paste_component)
         self.preview.geometryEdited.connect(self._preview_geometry_edited)
         self.preview.geometryCommitted.connect(self._finish_geometry_edit)
         self.guide_checkbox.toggled.connect(self.preview.set_guides_visible)

@@ -58,6 +58,8 @@ def dragged_geometry(original,dx,dy,handle=None,*,max_size=100):
 
 
 class Preview(QtWidgets.QWidget):
+    copyRequested = QtCore.pyqtSignal()
+    pasteRequested = QtCore.pyqtSignal()
     layerSelected = QtCore.pyqtSignal(str)
     geometryEdited = QtCore.pyqtSignal(str,object)
     geometryCommitted = QtCore.pyqtSignal()
@@ -382,6 +384,10 @@ class Preview(QtWidgets.QWidget):
             self.update()
 
     def keyPressEvent(self,event):
+        if event.matches(QtGui.QKeySequence.StandardKey.Copy):
+            self.copyRequested.emit(); event.accept(); return
+        if event.matches(QtGui.QKeySequence.StandardKey.Paste):
+            self.pasteRequested.emit(); event.accept(); return
         if self._drag and event.key() == QtCore.Qt.Key.Key_Escape:
             self.cancel_drag()
             event.accept()

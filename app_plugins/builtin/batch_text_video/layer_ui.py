@@ -46,16 +46,27 @@ class LayerPanel(QtWidgets.QWidget):
 
     def _component_menu(self, position):
         item = self.list.itemAt(position)
-        if item is None or not self.isEnabled(): return
-        self.list.setCurrentItem(item)
+        if not self.isEnabled(): return
+        if item: self.list.setCurrentItem(item)
         layer = self.current()
-        if not layer: return
         menu = QtWidgets.QMenu(self.list)
-        text = '编辑节点工作流…' if layer['kind'] == 'node_effect' else '转换为节点效果…'
-        action = menu.addAction(text)
-        action.setEnabled(self.receivers(self.convertRequested) > 0)
-        action.triggered.connect(lambda: self.convertRequested.emit(layer['id']))
+        from .layer_clipboard_ui import add_actions
+        add_actions(self, menu)
+        if layer:
+            menu.addSeparator()
+            text = '编辑节点工作流…' if layer['kind'] == 'node_effect' else '转换为节点效果…'
+            action = menu.addAction(text)
+            action.setEnabled(self.receivers(self.convertRequested) > 0)
+            action.triggered.connect(lambda: self.convertRequested.emit(layer['id']))
         menu.exec(self.list.viewport().mapToGlobal(position))
+
+    def copy_component(self):
+        from .layer_clipboard_ui import copy_component
+        return copy_component(self)
+
+    def paste_component(self):
+        from .layer_clipboard_ui import paste_component
+        return paste_component(self)
 
     def __init__(self, layers, directory, parent=None, settings=None, services=None, inspector_mode="batch"):
         super().__init__(parent)
@@ -124,6 +135,8 @@ class LayerPanel(QtWidgets.QWidget):
         self.background_button.setCheckable(True)
         self.background_button.setToolTip("点击调整底层背景的动画；全局背景池在项目设置中选择。")
         self.background_button.clicked.connect(self.select_background)
+        from .layer_clipboard_ui import install
+        install(self)
         layout.addWidget(self.background_button)
         text_top = QtWidgets.QPushButton("文字置顶")
         text_top.setToolTip("把所有文本框、标题和正文移到图片上方，避免图片遮住文案。")

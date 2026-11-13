@@ -78,6 +78,9 @@ class UndoController:
         self.undo_action.setShortcut("Ctrl+Z")
         self.redo_action = menu.addAction("重做", self.redo_edit)
         self.redo_action.setShortcuts(["Ctrl+Shift+Z", "Ctrl+Y"])
+        menu.addSeparator()
+        menu.addAction('复制控件\tCtrl+C', self.layer_panel.copy_component)
+        menu.addAction('粘贴控件\tCtrl+V', self.layer_panel.paste_component)
         note = "当前预览的文字、图层和参数；导出、资源库变更及切换任务/配置后重新开始记录。"
         self.undo_action.setToolTip(note)
         self.redo_action.setToolTip(note)

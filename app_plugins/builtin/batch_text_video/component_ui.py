@@ -263,7 +263,7 @@ class ContentSourceEditor(QtWidgets.QWidget):
         choices += [("资源池：" + pool["name"], "pool:" + pool["id"]) for pool in self.pool_state.get("resource_pools", [])
                     if pool["kind"] in allowed]
         if layer and layer.get("source") == "sequence":
-            choices.append(("旧配置的自定义轮换（保留）", "sequence"))
+            choices.append(("控件内轮换素材", "sequence"))
         for title,value in choices:
             self.source.addItem(title,value)
         if layer:

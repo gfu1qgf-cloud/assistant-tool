@@ -49,6 +49,16 @@ class VisualDropArea(QtWidgets.QWidget):
 class LayerList(QtWidgets.QListWidget):
     """One list owns one drag token; drops can reorder but never copy its rows."""
     MIME = 'application/x-lzx-batch-video-layer'
+    copyRequested = QtCore.pyqtSignal()
+    pasteRequested = QtCore.pyqtSignal()
+
+    def keyPressEvent(self, event):
+        if event.matches(QtGui.QKeySequence.StandardKey.Copy):
+            self.copyRequested.emit(); event.accept()
+        elif event.matches(QtGui.QKeySequence.StandardKey.Paste):
+            self.pasteRequested.emit(); event.accept()
+        else:
+            super().keyPressEvent(event)
 
     def __init__(self, can_import, import_files, parent=None):
         super().__init__(parent)

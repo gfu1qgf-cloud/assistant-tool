@@ -134,6 +134,18 @@ class Store:
                 data_file(self.path).write_json(current, indent=2)
             return current, result
 
+    def save_controls(self, state, expected_revision):
+        """A clipboard edit cannot race a render plan submitted by another window."""
+        from .queue_selection import ACTIVE
+        with _LOCK:
+            current = Store.load(self)
+            identifier = state['active_profile']
+            if current['active_profile'] != identifier:
+                raise ValueError('当前项目已切换，请重新载入后再粘贴控件。')
+            if any(p['profile_id'] == identifier and p['status'] in ACTIVE for p in current['render_plans']):
+                raise ValueError('当前项目正在渲染，请结束后再粘贴控件。')
+            return self.save(state, expected_revision)
+
     def current_revision(self):
         """Publish guard: read the saved token without rebuilding every layer."""
         with _LOCK:
