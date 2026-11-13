@@ -137,19 +137,26 @@ def track_times(primitive,start,end):
 
 
 def write_native_assets(ass_path,primitives,layer,width,height):
-    """One small PNG and a seekable command track, never a rendered video."""
+    """One PNG and streamed commands; limits concern concurrent cursors only."""
+    from heapq import merge
+    from model.AppDataStorage import data_file
+    from .caption_ass_stream import ActiveBudget,current_check
+    check=current_check()
     cursors=[p for p in primitives if p.get('cursor_image')]
-    if len(cursors)>80000:raise ValueError('图片光标事件过多，请分段导出。')
     path=Path(ass_path)
     if not cursors:
         path.with_suffix('.cursor.json').unlink(missing_ok=True);return
+    budget=ActiveBudget(80000,32*1024*1024,ticks_per_second=10**9)
+    for p in cursors:budget.add(p['start'],p['end'],256)
+    budget.validate()
+    if check:check()
     target='cursor_'+uuid4().hex
     image=read_image(cursors[0]['cursor_image'],cursors[0]['height'])
     image_path=path.parent/(target+'.png');command_path=path.parent/(target+'.cmd')
     if not image.save(str(image_path),'PNG'):raise RuntimeError('光标图片准备失败。')
     from .caption_follow import offset_at
-    rows=[];tracks={}
-    for p in cursors:
+    tracks={}
+    def commands(p):
         motion=[p[key] for key in ('follow_track','cursor_track') if p.get(key)]
         points={p['start'],p['end']}
         for track in motion:
@@ -165,15 +172,16 @@ def write_native_assets(ass_path,primitives,layer,width,height):
             b=tuple(sum(p[i] for p in positions_b) for i in range(2))
             expressions=[f'{origin+first:.9f}+({last-first:.9f})*(t-{start:.9f})/{end-start:.9f}'
                          for origin,first,last in zip((p['x'],p['y']),a,b)]
-            rows.append((start,1,f"{start:.9f} overlay@{target} x '{expressions[0]}', overlay@{target} y '{expressions[1]}';"))
-        rows.append((p['end'],0,f"{p['end']:.9f} overlay@{target} x -100000, overlay@{target} y -100000;"))
-    if len(rows)>160000:raise ValueError('图片光标事件过多，请分段导出。')
-    commands='\n'.join(row[2] for row in sorted(rows))
-    if len(commands.encode('utf8'))>32*1024*1024:raise ValueError('图片光标轨迹过大，请分段导出。')
-    command_path.write_text(commands,encoding='utf8')
-    metadata=dict(image=str(image_path),commands=str(command_path),target=target,
+            yield start,1,f"{start:.9f} overlay@{target} x '{expressions[0]}', overlay@{target} y '{expressions[1]}';"
+        yield p['end'],0,f"{p['end']:.9f} overlay@{target} x -100000, overlay@{target} y -100000;"
+    count=0
+    with data_file(command_path).atomic_writer(encoding='utf8',newline='\n') as output:
+        for _start,_priority,command in merge(*(commands(p) for p in cursors)):
+            if check and count%1024==0:check()
+            output.write(command+'\n');count+=1
+    metadata=dict(image=str(image_path),commands=str(command_path),target=target,rows=count,
                   opacity=cursors[0]['opacity']*layer['opacity']/100)
-    path.with_suffix('.cursor.json').write_text(json.dumps(metadata),encoding='utf8')
+    data_file(path.with_suffix('.cursor.json')).write_text(json.dumps(metadata),encoding='utf8')
 
 
 def append_native(args,filters,source,output,ass_path,layer,width,height,duration,fps,index):

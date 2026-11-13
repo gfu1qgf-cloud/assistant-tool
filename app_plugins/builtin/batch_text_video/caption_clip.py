@@ -75,23 +75,26 @@ def apply_preview_mask(image, layer, width, height):
 def prepare_plane(filters, name, ass_path, layer, width, height, duration, fps, mask_input):
     """Return an optional single-frame PNG input; every video clock is finite."""
     from .captions import filter_path
+    from .caption_resources import ass_filter
     rate=f'{float(fps):.9f}'
     mask=mask_image(layer,width,height)
     if mask is None:
         filters.append(f'color=c=black@0:s={width}x{height}:r={rate}:d={duration:.9f},'
-                       f'format=rgba,ass=filename={filter_path(ass_path)}:alpha=1[{name}]')
+                       f'format=rgba,{ass_filter(ass_path,alpha=True)}[{name}]')
         return None
     from model.AppDataStorage import data_file
     # RGB rendering must not apply libass's default TV-range YCbCr mapping.
     rgb_ass=Path(ass_path).with_suffix('.clip.ass')
-    script=data_file(ass_path).read_text('utf8')
-    script=script.replace('WrapStyle: 2\n','WrapStyle: 2\nYCbCr Matrix: None\n',1)
-    data_file(rgb_ass).write_text(script,encoding='utf8')
+    with data_file(ass_path).open('r',encoding='utf8') as source, data_file(rgb_ass).atomic_writer(encoding='utf8',newline='\n') as target:
+        inserted=False
+        for line in source:
+            target.write(line)
+            if not inserted and line.strip()=='WrapStyle: 2':target.write('YCbCr Matrix: None\n');inserted=True
     # Derive true coverage from black/white RGB renders. The RGBA ass filter
     # squares translucent fill alpha; using that alpha would darken the text.
     for color in ('black','white'):
         filters.append(f'color=c={color}:s={width}x{height}:r={rate}:d={duration:.9f},'
-                       f'format=rgb24,setparams=range=full,ass=filename={filter_path(rgb_ass)}[{name}_{color}]')
+                       f'format=rgb24,setparams=range=full,{ass_filter(rgb_ass)}[{name}_{color}]')
     path=Path(ass_path).with_suffix('.clip.png')
     if not mask.save(str(path),'PNG'):
         raise RuntimeError('字幕裁切柔化遮罩保存失败。')
@@ -122,8 +125,9 @@ def append_caption(args, filters, source, output, ass_path, layer, width, height
 
 def append_caption_text(args, filters, source, output, ass_path, layer, width, height, duration, fps, next_index):
     from .captions import filter_path
+    from .caption_resources import ass_filter
     if geometry(layer,width,height) is None:
-        filters.append(f'[{source}]ass=filename={filter_path(ass_path)}[{output}]')
+        filters.append(f'[{source}]{ass_filter(ass_path)}[{output}]')
         return 0
     name=output+'_caption'
     mask=prepare_plane(filters,name,ass_path,layer,width,height,duration,fps,f'{next_index}:v')

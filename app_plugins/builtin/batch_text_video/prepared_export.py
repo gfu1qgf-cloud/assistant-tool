@@ -31,13 +31,14 @@ class PreparedExport:
     source_paths: tuple = field(default_factory=tuple)
     assignment: dict = field(default_factory=dict)
     requested_output: object = None
+    caption_memory_bytes: int = 0
 
     def encode(self):
         from .render_slots import render_slot
         from .render_progress import stage
         from .memory_pressure import ADMISSION,estimate
         from .media_errors import memory_failure,describe,MediaMemoryError
-        amount=estimate(self.args)
+        amount=estimate(self.args)+self.caption_memory_bytes
         for attempt in range(4):
             stage(self.progress, '等待编码名额')
             try:

@@ -84,6 +84,9 @@ def caption_plane(operation, name, filter_name, style, context, video_info, timi
     duration = video_info["duration"]
     local_duration = timing.source_duration(duration) if timing is not None else duration
     caption_filter = f"{filter_name}=filename='{name}':alpha=1" + (f":force_style='{style}'" if style else "")
+    if filter_name=='ass' and directory is not None:
+        from .caption_resources import ass_filter
+        caption_filter=ass_filter(Path(directory)/name,alpha=True)
     inputs=()
     if clip_layer is not None:
         from .caption_clip import prepare_plane

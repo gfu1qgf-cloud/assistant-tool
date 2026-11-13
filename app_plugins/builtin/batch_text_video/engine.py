@@ -554,7 +554,8 @@ def _prepare_static_text(job, state, directory, cancel=None, progress=None, repo
                 stage(progress, '准备字幕')
                 words = task_word_timings(job,voice_path,value,job["title"],job["body"],duration,directory,cancel,report)
                 stage(progress, '生成字幕')
-                write_caption_ass(path, words, value, width, height, duration)
+                from .caption_ass_stream import checking
+                with checking(cancel):write_caption_ass(path, words, value, width, height, duration)
             elif not value.save(str(path), "PNG"):
                 raise RuntimeError("文字图层保存失败。")
             prepared.append((kind, (path,value) if kind=='caption' else path))
@@ -724,6 +725,7 @@ def _prepare_static_text(job, state, directory, cancel=None, progress=None, repo
         if node_effects is not None:
             sequence_plan.extend(copy.deepcopy(node_effects.sequence_plan))
         from .prepared_export import PreparedExport
+        from .caption_resources import memory_for_directory
         from .render_assignment import capture as capture_assignment
         assignment = capture_assignment(job, state, settings['layers'], music, voice_path)
         stage(progress, '等待编码名额')
@@ -732,7 +734,8 @@ def _prepare_static_text(job, state, directory, cancel=None, progress=None, repo
             settings['encoder_fallback'], preview, workers, effects=node_effects if effects else None,
             cwd=temporary if effects else None, timings={'prepare_seconds': time.monotonic()-started},
             quality=settings['export_quality'], render_scope='' if preview else file_identity(Path(directory)/'state.json'),
-            source_paths=tuple(inputs), requested_output=requested_output, assignment=assignment)
+            source_paths=tuple(inputs), requested_output=requested_output, assignment=assignment,
+            caption_memory_bytes=memory_for_directory(temporary))
 
 
 @contextmanager

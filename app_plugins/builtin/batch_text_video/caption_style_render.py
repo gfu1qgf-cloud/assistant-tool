@@ -440,8 +440,12 @@ def write_style_ass(path, words, layer, width, height, duration):
     return write_primitives_ass(path,primitives,events,layer,width,height)
 
 
-def write_primitives_ass(path, primitives, events, layer, width, height):
+def write_primitives_ass(path, primitives, events, layer, width, height, *, use_resources=None, check=None, optimize_follow=True):
     from .captions import _ass_time, _ass_color, _path_commands
+    from .caption_resources import DrawingResources,DrawingCommandCache
+    from .caption_ass_stream import ActiveBudget,FollowWindows,current_check,write_metadata
+    check=check or current_check()
+    if check:check()
     from .caption_cursor import write_native_assets
     write_native_assets(path,primitives,layer,width,height)
     header = f'''[Script Info]
@@ -456,112 +460,122 @@ Style: Caption,Arial,20,&H00FFFFFF,&H00FFFFFF,&H00000000,&H00000000,0,0,0,0,100,
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 '''
-    rows,bytes_used = [],0
-    for primitive in primitives:
-        if primitive.get('cursor_image'):continue
-        motion = primitive['motion']
-        # Only positional trajectories need segments; libass interpolates each
-        # segment. Static, fading, scale, gradient and blur paths are not frames.
-        enter = primitive['motion_ms']/1000
-        leave = primitive['out_ms']/1000
-        keyframes = {primitive['start'],primitive['end']}
-        if enter and motion!='none':
-            if motion in {'pop','scatter_pop','word_random_position','word_pop_random','word_pop_random_pulse','letter_jump'}:
-                keyframes.add(primitive['start']+enter*.55)
-            if motion == 'lzx_word_pop':
-                keyframes.update(primitive['start']+enter*fraction for fraction in (.18,.55,.78))
-            keyframes.add(primitive['start']+enter)
-        if leave and primitive['out']!='none':
-            keyframes.add(primitive['end']-leave)
-        keyframes=sorted(point for point in keyframes if primitive['start']<=point<=primitive['end'])
-        if motion=='floating':
-            count = max(1,math.ceil((primitive['end']-primitive['start'])*8))
-            times = [primitive['start']+(primitive['end']-primitive['start'])*i/count for i in range(count+1)]
-        else:
-            points = {primitive['start'],primitive['end']}
+    if use_resources is None:
+        use_resources=len(events)>=32 or any(p['end']>=30 for p in primitives)
+    resources=DrawingResources(path,primitives,use_resources,check)
+    header=header.replace('[Events]\n',resources.style_lines()+'[Events]\n',1)
+    budget=ActiveBudget(MAX_ROWS,MAX_ASS_BYTES);windows=FollowWindows();command_cache=DrawingCommandCache()
+    candidate_segments=0
+    with data_file(Path(path)).atomic_writer(encoding='utf8',newline='\n') as output:
+        before_events,event_format=header.split('[Events]\n',1)
+        output.write(before_events);resources.embed(output);output.write('[Events]\n'+event_format)
+        for primitive_index,primitive in enumerate(primitives):
+            if check and primitive_index%128==0:check()
+            if primitive.get('cursor_image'):continue
+            motion = primitive['motion']
+            # Only positional trajectories need segments; libass interpolates each
+            # segment. Static, fading, scale, gradient and blur paths are not frames.
+            enter = primitive['motion_ms']/1000
+            leave = primitive['out_ms']/1000
+            keyframes = {primitive['start'],primitive['end']}
             if enter and motion!='none':
-                points.update(primitive['start']+enter*i/4 for i in range(1,5))
+                if motion in {'pop','scatter_pop','word_random_position','word_pop_random','word_pop_random_pulse','letter_jump'}:
+                    keyframes.add(primitive['start']+enter*.55)
+                if motion == 'lzx_word_pop':
+                    keyframes.update(primitive['start']+enter*fraction for fraction in (.18,.55,.78))
+                keyframes.add(primitive['start']+enter)
             if leave and primitive['out']!='none':
-                points.add(primitive['end']-leave)
-            times = sorted(point for point in points if primitive['start']<=point<=primitive['end'])
-        positional = motion=='floating' or motion=='char_bounce' or motion.startswith('slide_') or primitive['out'].startswith('slide_')
-        if primitive.get('cursor_track'):
-            from .caption_cursor import track_times
-            positional=True
-            times=sorted(set(times)|set(track_times(primitive,primitive['start'],primitive['end'])))
-        if primitive.get('follow_track'):
-            positional=True
-            times=sorted(set(times)|{t for t,_x,_y in primitive['follow_track']
-                                      if primitive['start']<t<primitive['end']})
-            times=sorted(set(times)|{t for t in primitive.get('follow_spoken',())
-                                      if primitive['start']<t<primitive['end']})
-        if not positional:
-            times=[primitive['start'],primitive['end']]
-        drawing_scale = 4 if primitive.get('outline_path') else 1
-        if primitive.get('outline_path'):
-            from .text_outline import ass_commands
-            commands = ass_commands(primitive['native'])
-        else:
-            from .text_outline import compact_commands
-            commands = compact_commands(_path_commands(primitive['native']))
-        pieces=ass_gradient_pieces(primitive)
-        for start,end in zip(times,times[1:]):
-            if round(start*100) >= round(end*100): continue
+                keyframes.add(primitive['end']-leave)
+            keyframes=sorted(point for point in keyframes if primitive['start']<=point<=primitive['end'])
+            if motion=='floating':
+                span=primitive['end']-primitive['start'];count=max(1,math.ceil(span*8))
+                low,high=windows.span(primitive) if optimize_follow else (primitive['start'],primitive['end'])
+                first=max(0,math.floor((low-primitive['start'])*count/span)-2)
+                last=min(count,math.ceil((high-primitive['start'])*count/span)+2)
+                times=sorted({primitive['start'],primitive['end']}|{primitive['start']+span*i/count for i in range(first,last+1)})
+            else:
+                points = {primitive['start'],primitive['end']}
+                if enter and motion!='none':
+                    points.update(primitive['start']+enter*i/4 for i in range(1,5))
+                if leave and primitive['out']!='none':
+                    points.add(primitive['end']-leave)
+                times = sorted(point for point in points if primitive['start']<=point<=primitive['end'])
+            positional = motion=='floating' or motion=='char_bounce' or motion.startswith('slide_') or primitive['out'].startswith('slide_')
+            if primitive.get('cursor_track'):
+                from .caption_cursor import track_times
+                positional=True
+                times=sorted(set(times)|set(track_times(primitive,primitive['start'],primitive['end'])))
             if primitive.get('follow_track'):
-                from .caption_follow import visible_segment
-                if not visible_segment(primitive,start,end): continue
-            sa,xa,ya,aa,ba = motion_at(primitive,start)
-            _sb,xb,yb,_ab,_bb = motion_at(primitive,max(start,end-1e-7) if primitive.get('follow_track') or primitive.get('cursor_track') else end)
-            ms = max(1,round((end-start)*1000))
-            opacity = primitive['opacity']*layer['opacity']/100
-            alpha = lambda value:f'&H{round(255*(1-opacity*value)):02X}&'
-            x,y = primitive['x'],primitive['y']
-            position = f'\\move({x+xa:.3f},{y+ya:.3f},{x+xb:.3f},{y+yb:.3f},0,{ms})'
-            base = (f'\\an7{position}\\org({x+primitive.get("origin_x",primitive["width"]/2):.3f},{y+primitive.get("origin_y",primitive["height"]/2):.3f})'
-                f'\\frz{primitive["rotation"]:.3f}\\bord{primitive["border"]:.3f}'
-                f'\\3c{_ass_color(primitive["border_color"])}\\3a{alpha(aa*layer["outline_opacity"]/100)}\\shad0'
-                f'\\fscx{sa*100:.3f}\\fscy{sa*100:.3f}\\blur{ba:.3f}\\1a{alpha(aa)}')
-            checkpoints=sorted({start,end}|{time for time in keyframes if start<time<end})
-            for color,clip in pieces:
-                def clip_at(time):
-                    fixed=primitive.get('screen_clip')
-                    if clip is None:
-                        return '\\clip('+','.join(str(round(v)) for v in fixed)+')' if fixed else ''
-                    factor,dx,dy,_alpha,_blur=motion_at(primitive,time)
-                    cx,cy=primitive['width']/2,primitive['height']/2
-                    values=(x+dx+cx+(clip[0]-cx)*factor,y+dy+cy+(clip[1]-cy)*factor,
-                            x+dx+cx+(clip[2]-cx)*factor,y+dy+cy+(clip[3]-cy)*factor)
-                    if fixed:
-                        values=(max(values[0],fixed[0]),max(values[1],fixed[1]),
-                                min(values[2],fixed[2]),min(values[3],fixed[3]))
-                        values=(values[0],values[1],max(values[0],values[2]),max(values[1],values[3]))
-                    rounded=[round(v) for v in values]
-                    return '\\clip('+','.join(map(str,rounded))+')'
-                color_alpha = QtGui.QColor(color).alphaF()
-                tags=base+f'\\1a{alpha(aa*color_alpha)}'+clip_at(start)
-                previous=start
-                for checkpoint in checkpoints[1:]:
-                    size,_dx,_dy,fade,blur=motion_at(primitive,checkpoint)
-                    if primitive.get('follow_spoken') and checkpoint==end:
-                        # Do not interpolate the next word's opacity backwards.
-                        fade=motion_at(primitive,max(start,end-1e-7))[3]
-                    old_size,old_dx,old_dy,old_fade,old_blur=motion_at(primitive,previous)
-                    if (size,_dx,_dy,fade,blur)==(old_size,old_dx,old_dy,old_fade,old_blur):
+                positional=True
+                times=sorted(set(times)|{t for t in (windows.times(primitive) if optimize_follow else (v[0] for v in primitive['follow_track']))
+                                          if primitive['start']<t<primitive['end']})
+                times=sorted(set(times)|{t for t in primitive.get('follow_spoken',())
+                                          if primitive['start']<t<primitive['end']})
+            if not positional:
+                times=[primitive['start'],primitive['end']]
+            drawing_scale = 4 if primitive.get('outline_path') else 1
+            resource=resources.get(primitive)
+            row_style='Caption'
+            if resource:
+                row_style,commands=resource;drawing_scale=0
+            else:
+                commands=command_cache.get(primitive)
+            pieces=ass_gradient_pieces(primitive)
+            for start,end in zip(times,times[1:]):
+                candidate_segments+=1
+                if round(start*100) >= round(end*100): continue
+                if primitive.get('follow_track'):
+                    from .caption_follow import visible_segment
+                    if not visible_segment(primitive,start,end): continue
+                sa,xa,ya,aa,ba = motion_at(primitive,start)
+                _sb,xb,yb,_ab,_bb = motion_at(primitive,max(start,end-1e-7) if primitive.get('follow_track') or primitive.get('cursor_track') else end)
+                ms = max(1,round((end-start)*1000))
+                opacity = primitive['opacity']*layer['opacity']/100
+                alpha = lambda value:f'&H{round(255*(1-opacity*value)):02X}&'
+                x,y = primitive['x'],primitive['y']
+                position = f'\\move({x+xa:.3f},{y+ya:.3f},{x+xb:.3f},{y+yb:.3f},0,{ms})'
+                base = (f'\\an7{position}\\org({x+primitive.get("origin_x",primitive["width"]/2):.3f},{y+primitive.get("origin_y",primitive["height"]/2):.3f})'
+                    f'\\frz{primitive["rotation"]:.3f}\\bord{primitive["border"]:.3f}'
+                    f'\\3c{_ass_color(primitive["border_color"])}\\3a{alpha(aa*layer["outline_opacity"]/100)}\\shad0'
+                    f'\\fscx{sa*100:.3f}\\fscy{sa*100:.3f}\\blur{ba:.3f}\\1a{alpha(aa)}')
+                checkpoints=sorted({start,end}|{time for time in keyframes if start<time<end})
+                for color,clip in pieces:
+                    def clip_at(time):
+                        fixed=primitive.get('screen_clip')
+                        if clip is None:
+                            return '\\clip('+','.join(str(round(v)) for v in fixed)+')' if fixed else ''
+                        factor,dx,dy,_alpha,_blur=motion_at(primitive,time)
+                        cx,cy=primitive['width']/2,primitive['height']/2
+                        values=(x+dx+cx+(clip[0]-cx)*factor,y+dy+cy+(clip[1]-cy)*factor,
+                                x+dx+cx+(clip[2]-cx)*factor,y+dy+cy+(clip[3]-cy)*factor)
+                        if fixed:
+                            values=(max(values[0],fixed[0]),max(values[1],fixed[1]),
+                                    min(values[2],fixed[2]),min(values[3],fixed[3]))
+                            values=(values[0],values[1],max(values[0],values[2]),max(values[1],values[3]))
+                        rounded=[round(v) for v in values]
+                        return '\\clip('+','.join(map(str,rounded))+')'
+                    color_alpha = QtGui.QColor(color).alphaF()
+                    tags=base+f'\\1a{alpha(aa*color_alpha)}'+clip_at(start)
+                    previous=start
+                    for checkpoint in checkpoints[1:]:
+                        size,_dx,_dy,fade,blur=motion_at(primitive,checkpoint)
+                        if primitive.get('follow_spoken') and checkpoint==end:
+                            # Do not interpolate the next word's opacity backwards.
+                            fade=motion_at(primitive,max(start,end-1e-7))[3]
+                        old_size,old_dx,old_dy,old_fade,old_blur=motion_at(primitive,previous)
+                        if (size,_dx,_dy,fade,blur)==(old_size,old_dx,old_dy,old_fade,old_blur):
+                            previous=checkpoint
+                            continue
+                        begin_ms=max(0,round((previous-start)*1000));end_ms=max(1,round((checkpoint-start)*1000))
+                        tags+=(f'\\t({begin_ms},{end_ms},\\fscx{size*100:.3f}\\fscy{size*100:.3f}'
+                            f'\\blur{blur:.3f}\\1a{alpha(fade*color_alpha)}\\3a{alpha(fade*layer["outline_opacity"]/100)}{clip_at(checkpoint)})')
                         previous=checkpoint
-                        continue
-                    begin_ms=max(0,round((previous-start)*1000));end_ms=max(1,round((checkpoint-start)*1000))
-                    tags+=(f'\\t({begin_ms},{end_ms},\\fscx{size*100:.3f}\\fscy{size*100:.3f}'
-                        f'\\blur{blur:.3f}\\1a{alpha(fade*color_alpha)}\\3a{alpha(fade*layer["outline_opacity"]/100)}{clip_at(checkpoint)})')
-                    previous=checkpoint
-                tags+=f'\\1c{_ass_color(color)}\\p{drawing_scale}'
-                row = f'Dialogue: {primitive["z"]},{_ass_time(start)},{_ass_time(end)},Caption,,0,0,0,,{{{tags}}}{commands}{{\\p0}}'
-                rows.append(row); bytes_used += len(row.encode('utf8'))
-                if len(rows)>MAX_ROWS:
-                    raise ValueError(f'字幕绘制指令超过{MAX_ROWS}条安全上限（当前{len(rows)}条）；请分段导出或简化当前字幕样式。')
-                if bytes_used>MAX_ASS_BYTES:
-                    raise ValueError(f'字幕矢量脚本超过64 MiB安全上限（当前{bytes_used/1024/1024:.2f} MiB）；'
-                        '长篇逐字／朗读跟随与复杂字形、描边会增加绘制数据。请分段导出或简化当前字幕样式。')
-    data_file(Path(path)).write_text(header+'\n'.join(rows)+'\n',encoding='utf8')
+                    tags+=f'\\1c{_ass_color(color)}\\p{drawing_scale}'
+                    row = f'Dialogue: {primitive["z"]},{_ass_time(start)},{_ass_time(end)},{row_style},,0,0,0,,{{{tags}}}{commands}{{\\p0}}'
+                    output.write(row+'\n');budget.add(start,end,len((row+'\n').encode('utf8')))
+        budget.validate()
+        if check:check()
+    write_metadata(path,budget,resources,layer,width,height,candidate_segments)
     return events
 
 

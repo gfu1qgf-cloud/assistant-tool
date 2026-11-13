@@ -92,7 +92,9 @@ def compile_caption(operation, directory, context, video_info, *, timing=None):
     name = "caption_" + uuid4().hex + ".ass"
     path = Path(directory) / name
     if layer["enabled"] and layer["opacity"] > 0:
-        write_caption_ass(path, words, layer, width, height, video_info["duration"])
+        from .caption_ass_stream import checking
+        with checking(context.check_canceled):
+            write_caption_ass(path, words, layer, width, height, video_info["duration"])
     else:
         return (FilterOperation("字幕已禁用", operation.video, "null"),)
     context.check_canceled()
@@ -101,6 +103,7 @@ def compile_caption(operation, directory, context, video_info, *, timing=None):
     soft_clip=clip_geometry(layer,width,height) is not None
     cursor=path.with_suffix('.cursor.json').is_file()
     from .layer_timing import active
+    from .caption_resources import ass_filter,FONT_FOLDER
     if active(layer) and not (timing or soft_clip or cursor):
         # Keep libass blending onto the original canvas. Rendering semi-opaque
         # text onto a new transparent plane would change its coverage/brightness.
@@ -110,7 +113,7 @@ def compile_caption(operation, directory, context, video_info, *, timing=None):
         filters=[]
         source, output, _ = begin_gate(filters, 'input', 'output', layer, video_info['duration'])
         format_filter = 'format=rgba,' if uses_style_renderer(layer) else ''
-        filters.append(f'[{source}]{format_filter}ass=filename={filter_path(path)}[{output}]')
+        filters.append(f'[{source}]{format_filter}{ass_filter(path)}[{output}]')
         end_gate(filters, 'output', layer, video_info['duration'])
         return (VideoFilterFragment(operation.video, (), tuple(filters)),)
     if timing or soft_clip or cursor:
@@ -118,6 +121,10 @@ def compile_caption(operation, directory, context, video_info, *, timing=None):
         return caption_plane(operation, name, "ass", "", context, video_info, timing,
                              center=(width*layer['x']/100, height*layer['y']/100),
                              clip_layer=layer if soft_clip or cursor or active(layer) else None,directory=directory)
+    if (path.parent/FONT_FOLDER).is_dir():
+        from model.node_workflow.contracts import VideoFilterFragment
+        prefix='format=rgba,' if uses_style_renderer(layer) else ''
+        return (VideoFilterFragment(operation.video,(),(f'[input]{prefix}{ass_filter(path)}[output]',)),)
     native = (FilterOperation(operation.title, operation.video, "ass", (("filename", name),)),)
     # Exactly the full-chroma blending used by the existing batch renderer.
     return ((FilterOperation("字幕全色彩混合", operation.video, "format", (("pix_fmts", "rgba"),)),) + native
