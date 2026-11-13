@@ -67,19 +67,26 @@ def resolve(layer):
     items=layer['caption_cursor_items'];cursor=layer['caption_cursor_cursor']
     if not items:raise ValueError(layer.get('name','字幕')+'：光标素材池没有可用图片，请添加图片或改用固定图片。')
     layer['caption_cursor_image']=items[cursor]['path']
-    return dict(cursor_source=True,id=layer['id'],cursor=cursor,next_cursor=(cursor+1)%len(items),signature=signature(layer))
+    return dict(cursor_source=True,id=layer['id'],cursor=cursor,next_cursor=(cursor+1)%len(items),signature=signature(layer),
+                **({'variant_id':layer['_caption_variant_id']} if layer.get('_caption_variant_id') else {}))
 
 
 def commit(layers,steps):
     by_id={v['id']:v for v in layers};seen=set()
     for step in steps:
         layer=by_id.get(step['id'])
+        entry=None
+        if layer and step.get('variant_id'):
+            from .caption_rotation import effective
+            entry=next((v for v in layer.get('caption_variants',[]) if v['id']==step['variant_id']),None)
+            layer=effective(layer,entry) if entry else None
         if (layer is None or step['id'] in seen or not enabled(layer)
                 or layer.get('caption_cursor_source') not in {'pool','sequence'}
                 or signature(layer)!=step['signature'] or layer['caption_cursor_cursor']!=step['cursor']
                 or not layer['caption_cursor_items'] or step['next_cursor']!=(step['cursor']+1)%len(layer['caption_cursor_items'])):
             raise ValueError('图片光标来源或位置已改变，未推进轮换。')
         seen.add(step['id']);layer['caption_cursor_cursor']=step['next_cursor']
+        if entry:entry['settings']['caption_cursor_cursor']=step['next_cursor']
 
 
 def virtual(layer):
@@ -103,10 +110,12 @@ def prepare_node(layer,services):
 def resolve_node(layer,context):
     if not enabled(layer) or layer.get('caption_cursor_source')=='file':return
     prepared=getattr(context,'node_prepared',{})
+    variant=layer.get('_caption_variant_id')
+    if variant:prepared=prepared.get('style_cursors',{}).get(variant,{})
     if 'cursor_source' not in prepared:raise ValueError('光标来源快照缺失，请重新提交节点。')
     layer.update(copy.deepcopy(prepared['cursor_source']))
     owner=getattr(context,'workflow_input',{}).get('effect_layer',{})
-    key=context.node_id+':cursor' if owner else ''
+    key=context.node_id+':cursor'+(':'+variant if variant else '') if owner else ''
     old=owner.get('source_rotations',{}).get(key)
     token=signature(layer);items=layer['caption_cursor_items']
     if old and old['signature']==token and items:

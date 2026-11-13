@@ -22,7 +22,10 @@ def capture(job, state, layers, music, voice):
             for key in ('skip_silence', 'silence_db', 'silence_seconds')}}
     from .cursor_pool import enabled
     cursors={v['id']:v['caption_cursor_image'] for v in layers if enabled(v) and v.get('caption_cursor_source') in {'pool','sequence'}}
-    return dict(version=1, sources=sources, cursor_sources=cursors, music=selection, background=job.get('path', ''), voice=voice)
+    from .caption_rotation import frozen
+    styles={v['id']:frozen(v) for v in layers if v.get('_caption_variant_id')}
+    return dict(version=1, sources=sources, cursor_sources=cursors, caption_styles=styles,
+                music=selection, background=job.get('path', ''), voice=voice)
 
 
 def apply(job, state):
@@ -42,6 +45,12 @@ def apply(job, state):
     settings = state['settings']
     from .components import walk_components
     by_id = {layer['id']: layer for layer in walk_components(settings['layers'])}
+    from .caption_rotation import apply_frozen
+    for identifier,value in assignment.get('caption_styles',{}).items():
+        if identifier not in by_id or by_id[identifier]['kind']!='caption':
+            raise ValueError('已分配的轮换字幕控件已改变，请重新分配此任务素材。')
+        remap_path_fields(value, {'caption_cursor_image','path'})
+        apply_frozen(by_id[identifier],value)
     for identifier, value in assignment['sources'].items():
         if identifier not in by_id or by_id[identifier]['kind'] == 'node_effect':
             raise ValueError('已分配的控件被删除或替换，请先重新分配此任务的素材。')
@@ -74,15 +83,22 @@ def reserve(store, state, job_id, prepared):
     current = next(job for job in state['jobs'] if job['id'] == job_id)
     if current.get('render_assignment'):
         old=current['render_assignment'].get('cursor_sources',{})
-        new={key:path for key,path in assignment.get('cursor_sources',{}).items() if key not in old}
-        if new:
+        styles={key:value for key,value in assignment.get('caption_styles',{}).items()
+                if key not in current['render_assignment'].get('caption_styles',{})}
+        new={key:path for key,path in assignment.get('cursor_sources',{}).items() if key not in old or key in styles}
+        if new or styles:
             from .components import commit_sequences
             updated=copy.deepcopy(state)
-            steps=[step for step in prepared.sequence_plan if step.get('cursor_source') and step['id'] in new]
-            if {step['id'] for step in steps}!=set(new):
+            steps=[step for step in prepared.sequence_plan if
+                   step.get('cursor_source') and step['id'] in new or step.get('caption_style') and step['id'] in styles]
+            if {step['id'] for step in steps if step.get('cursor_source')}!=set(new) or (
+                    {step['id'] for step in steps if step.get('caption_style')}!=set(styles)):
                 raise ValueError('新增图片光标缺少分配记录，请重新分配任务素材。')
             updated['settings']['layers']=commit_sequences(updated['settings']['layers'],steps)
-            next(job for job in updated['jobs'] if job['id']==job_id)['render_assignment'].setdefault('cursor_sources',{}).update(new)
+            target=next(job for job in updated['jobs'] if job['id']==job_id)['render_assignment']
+            target.setdefault('caption_styles',{}).update(styles)
+            for key in styles:target.setdefault('cursor_sources',{}).pop(key,None)
+            target.setdefault('cursor_sources',{}).update(new)
             state=store.save(updated,state['revision'])
     if not current.get('render_assignment'):
         reserved = store.completion_state(state, job_id, prepared.output, prepared.music, prepared.sequence_plan)

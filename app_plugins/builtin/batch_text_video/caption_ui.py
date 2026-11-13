@@ -551,8 +551,10 @@ def caption_property_panel(services=None, *, mode='batch'):
     from .captions import DEFAULTS
     from .caption_display import DEFAULTS as DISPLAY_DEFAULTS
     from .cursor_pool import DEFAULTS as CURSOR_POOL_DEFAULTS
+    from .caption_rotation import DEFAULTS as ROTATION_DEFAULTS
     from . import caption_styles
-    if (not DISPLAY_DEFAULTS.keys() <= DEFAULTS.keys() or not CURSOR_POOL_DEFAULTS.keys() <= DEFAULTS.keys() or 'caption_effects_version' not in DEFAULTS or
+    if (not DISPLAY_DEFAULTS.keys() <= DEFAULTS.keys() or not CURSOR_POOL_DEFAULTS.keys() <= DEFAULTS.keys()
+            or not ROTATION_DEFAULTS.keys() <= DEFAULTS.keys() or 'caption_effects_version' not in DEFAULTS or
             not callable(getattr(caption_styles,'freeze_effect_parameters',None)) or
             not getattr(TextBoxProperties,'paired_font_fields',False)):
         raise RuntimeError('字幕源码已更新，请在方便时重启程序后使用新的字幕设置；当前参数未修改。')
@@ -564,11 +566,11 @@ def caption_property_panel(services=None, *, mode='batch'):
         if values.get('_caption_style_apply'): fields.update(LAYER_KEYS)
         if values.get('_caption_source_apply'): fields.update(('source','source_file'))
         return {key:copy.deepcopy(values[key]) for key in fields if key in values}
-    if mode != 'node_caption':
+    if mode not in {'node_caption','variant'}:
         panel.add_source()
     panel.add_geometry()
     add_text_properties(panel)
-    panel.caption_properties = panel.add_bound('caption', '', CaptionProperties(allow_manual_file=mode != 'node_caption'), patch=patch, section=False)
+    panel.caption_properties = panel.add_bound('caption', '', CaptionProperties(allow_manual_file=mode not in {'node_caption','variant'}), patch=patch, section=False)
     panel.sections.update(panel.caption_properties.sections.sections)
     typography=panel.caption_properties.typography_widget
     panel.caption_properties.layout().removeWidget(typography)
@@ -585,4 +587,6 @@ def caption_property_panel(services=None, *, mode='batch'):
     panel.sections.update(panel.caption_background.sections.sections)
     from .caption_basics_ui import compose_basics
     compose_basics(panel)
+    from .caption_rotation_ui import install
+    install(panel,services,mode)
     return panel

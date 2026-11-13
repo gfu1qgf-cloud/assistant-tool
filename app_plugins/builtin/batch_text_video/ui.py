@@ -785,7 +785,7 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
     def _sync_pool_preview(self, layers, current):
         source = self.layer_panel.content_editor if current and current.get('kind') == 'image' else None
         selected=current['id'] if current else ''
-        if current and current.get('kind')=='caption' and current.get('caption_cursor_source') in {'pool','sequence'}:
+        if current and current.get('kind')=='caption' and not current.get('caption_rotation_enabled') and current.get('caption_cursor_source') in {'pool','sequence'}:
             from .cursor_pool import enabled
             if enabled(current):
                 source=self.layer_panel.caption_properties.cursor_pool_editor

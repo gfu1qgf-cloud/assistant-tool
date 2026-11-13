@@ -366,6 +366,9 @@ def source_paths(state):
             inputs.append(active_mask(layer))
         inputs.extend(item.get('path') for item in layer.get('sequence_items', []))
         inputs.extend(item.get('path') for item in layer.get('caption_cursor_items', []))
+        for entry in layer.get('caption_variants',[]):
+            style=entry['settings'];inputs.append(style.get('caption_cursor_image'))
+            inputs.extend(item.get('path') for item in style.get('caption_cursor_items',[]))
     return [path for path in inputs if path]
 
 
@@ -425,6 +428,7 @@ def _prepare_static_text(job, state, directory, cancel=None, progress=None, repo
     settings=resolve_settings(settings,settings['_color_scope'])
     from .components import resolve_sources
     settings["layers"], sequence_plan = resolve_sources(settings["layers"], job.get("title", ""), job.get("body", ""), job=job)
+    settings=resolve_settings(settings,settings['_color_scope'])
     from .pool_exclusion import freeze_resolved
     settings["layers"] = freeze_resolved(settings["layers"])
     report = report or (lambda _text: None)

@@ -17,11 +17,14 @@ def build_caption(inputs, params, context):
         from .workflow_caption import normalize_node_caption
         import json
         layer = normalize_node_caption(params["caption"])
+        from .caption_rotation import resolve_node as resolve_style,single
+        resolve_style(layer,context)
         from .palette_rules import resolve_object,node_palette_scope
         layer=resolve_object(layer,node_palette_scope(context))
         layer = apply_color_inputs(layer, inputs)
         from .cursor_pool import resolve_node
         resolve_node(layer,context)
+        layer=single(layer)
         assets=[('filename',subtitles)]
         from .caption_cursor import image_enabled
         if image_enabled(layer):

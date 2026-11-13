@@ -34,6 +34,8 @@ from .caption_display import DEFAULTS as DISPLAY_DEFAULTS
 DEFAULTS.update(copy.deepcopy(DISPLAY_DEFAULTS))
 from .caption_cursor import DEFAULTS as CURSOR_DEFAULTS
 DEFAULTS.update(copy.deepcopy(CURSOR_DEFAULTS))
+from .caption_rotation import DEFAULTS as ROTATION_DEFAULTS
+DEFAULTS.update(copy.deepcopy(ROTATION_DEFAULTS))
 
 
 def new_caption():
@@ -82,6 +84,8 @@ def normalize_caption(layer):
                           ("caption_seed", 0, 999999)):
         if type(layer[key]) is not int or not low <= layer[key] <= high:
             raise ValueError(f"动态字幕的 {key} 超出允许范围。")
+    from .caption_rotation import normalize as normalize_rotation
+    normalize_rotation(layer)
 
 
 def active_captions(layers):
@@ -100,6 +104,9 @@ def design_layers(layers, title, body):
     values = copy.deepcopy(layers)
     for layer in values:
         if layer["kind"] == "caption":
+            from .caption_rotation import resolve as resolve_style
+            from .cursor_pool import resolve as resolve_cursor
+            resolve_style(layer);resolve_cursor(layer)
             text = caption_text(layer, title, body) or "字幕 预览"
             from .caption_display import display_settings
             tokens = re.findall(r"\S+", text)

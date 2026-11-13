@@ -15,8 +15,8 @@ def normalize_node_caption(value):
     if not isinstance(value, dict) or value.get("kind") != "caption":
         raise ValueError("节点的字幕设置必须是字幕组件。")
     encoded = json.dumps(value, ensure_ascii=False, allow_nan=False)
-    if len(encoded.encode("utf-8")) > 65536:
-        raise ValueError("字幕组件设置超过64KB。")
+    if len(encoded.encode("utf-8")) > 524288:
+        raise ValueError("字幕组件设置超过512KB。")
     layer = copy.deepcopy(value)
     if layer.get("caption_timing", "task") not in {"task", "uniform"}:
         raise ValueError("字幕节点只使用输入字幕；请选择原时间戳或匀速动画。")
@@ -35,6 +35,8 @@ def prepare_caption(_task, params, _services):
         # Application-font registration is GUI-thread work, not worker work.
         from .layout import ensure_fonts
         ensure_fonts()
+        from .caption_rotation import active,prepare_node as prepare_rotation
+        if active(layer):return prepare_rotation(layer,_services)
         from .cursor_pool import prepare_node
         return prepare_node(layer,_services)
     return {}
