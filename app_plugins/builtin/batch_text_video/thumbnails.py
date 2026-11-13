@@ -143,6 +143,19 @@ class ThumbnailService(QtCore.QObject):
         self.wanted.clear()
         for cancel in self.running.values(): cancel.set()
 
+    def invalidate(self,paths):
+        keys={os.path.normcase(os.path.abspath(str(p))) for p in paths if p}
+        def matches(payload):return any(p and os.path.normcase(os.path.abspath(p)) in keys for p in payload)
+        for payload in list(set(self.items)|set(self.running)|self.tried):
+            if not matches(payload):continue
+            cancel=self.running.get(payload)
+            if cancel:cancel.set()
+            found=self.items.pop(payload,None)
+            if found:self.bytes-=found[1]
+            self.tried.discard(payload);self.failures.pop(payload,None)
+            self.changed.emit(payload)
+        self._pump()
+
     def icon(self, payload):
         key = tuple(payload) if payload else None
         if key in self.failures and time.monotonic() >= self.failures[key]:

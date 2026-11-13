@@ -158,6 +158,8 @@ class PoolController(CustomPoolController, MattingController):
         from .pool_order_ui import add_actions as order_actions
         order_actions(self, menu, key)
         if key != "jobs": menu.addSeparator()
+        from .asset_replace_ui import add_actions as replace_actions
+        replace_actions(self,menu,key)
         from .background_trim_ui import add_actions
         add_actions(self, menu, key)
         if key == 'jobs':

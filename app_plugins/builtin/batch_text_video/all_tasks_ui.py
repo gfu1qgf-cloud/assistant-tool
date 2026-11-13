@@ -19,7 +19,7 @@ class AllTasksPanel(QtWidgets.QWidget):
         layout = QtWidgets.QVBoxLayout(self);layout.setContentsMargins(0,0,0,0)
         row = QtWidgets.QHBoxLayout()
         self.filter = QtWidgets.QComboBox()
-        for text,key in (('全部任务','all'),('未完成','unfinished'),('处理中','active'),('需处理','failed'),('已完成','completed')):self.filter.addItem(text,key)
+        for text,key in (('全部任务','all'),('未完成','unfinished'),('待重新渲染','dirty'),('处理中','active'),('需处理','failed'),('已完成','completed')):self.filter.addItem(text,key)
         self.search = QtWidgets.QLineEdit();self.search.setPlaceholderText('搜索项目、任务或文件名');self.search.setClearButtonEnabled(True)
         self.jump = QtWidgets.QPushButton('定位处理中');self.jump.clicked.connect(self.jump_to_active)
         row.addWidget(self.filter);row.addWidget(self.search,1);layout.addLayout(row)
@@ -167,6 +167,7 @@ class AllTasksPanel(QtWidgets.QWidget):
         if any(p.get('error') and p['status']=='staged' for p in plans):return '需处理'
         if any(p['status']=='staged' for p in plans) and self.is_checked(key) and job.get('status')=='已完成':
             return '待开始（重新导出）'
+        if job.get('render_dirty') and job.get('status')=='待生成':return '待重新渲染'
         return job.get('status','待生成')
 
     def update_row(self,key):
@@ -180,11 +181,12 @@ class AllTasksPanel(QtWidgets.QWidget):
         item.setCheckState(QtCore.Qt.CheckState.Checked if self.is_checked(key) else QtCore.Qt.CheckState.Unchecked)
         self.table.item(row,1).setText(entry['profile']['name'])
         text=self.status(key);self.table.item(row,2).setText(text)
-        self.table.item(row,2).setToolTip(self.error(key) or text)
+        self.table.item(row,2).setToolTip(self.error(key) or entry['job'].get('render_dirty_reason') or text)
         failed=text.startswith('需') or text=='匹配失败'
         self.table.item(row,2).setForeground(QtGui.QBrush(QtGui.QColor('#b91c1c')) if failed else QtGui.QBrush())
         percent=self.owner._render_progress.get(pid,{}).get(jid)
-        if text=='已完成':percent=100
+        if text=='待重新渲染':percent=0
+        elif text=='已完成':percent=100
         elif failed or text in {'待开始（重新导出）','待生成','待匹配','已取消'}:percent=None
         elif percent is not None:percent=min(99,percent)
         set_row_progress(self.table,row,percent,column=3)
@@ -215,6 +217,7 @@ class AllTasksPanel(QtWidgets.QWidget):
         text=self.status(key);mode=self.filter.currentData()
         done=text=='已完成';failed=text.startswith('需') or text=='匹配失败'
         active=key[0] in self.owner._host_plans and text not in {'已完成','需处理','已取消','排队中'}
+        if mode=='dirty' and not self.entries[key]['job'].get('render_dirty'):return False
         if (mode=='unfinished' and done or mode=='completed' and not done or mode=='failed' and not failed or mode=='active' and not active):return False
         query=self.search.text().strip().casefold();entry=self.entries[key]
         return not query or query in ' '.join((entry['profile']['name'],entry['job'].get('name',''),entry['job'].get('title',''),self.table.item(self.rows[key],0).text())).casefold()
@@ -364,7 +367,7 @@ class AllTasksPanel(QtWidgets.QWidget):
 
     def detail_changed(self,*_):
         key=self.current_key();entry=self.entries.get(key)
-        self.detail.setText((self.error(key) or entry['job'].get('output') or '') if entry else '')
+        self.detail.setText((self.error(key) or entry['job'].get('render_dirty_reason') or entry['job'].get('output') or '') if entry else '')
         self.detail.setVisible(bool(self.detail.text()))
 
     def preview_current(self,*,rerender=False):

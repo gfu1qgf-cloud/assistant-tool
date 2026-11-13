@@ -66,6 +66,7 @@ class RenderTimingPanel(QtWidgets.QLabel):
 
     def item_value(self, profile, job):
         run = self.runs.get(profile)
+        if job.get('render_dirty') and job.get('status')=='待生成' and (not run or run['ended'] is not None):return None
         if run and job['id'] in run['ids']:
             if run['result'] is not None and job['id'] in run['result'].get('items', {}):
                 return run['result']['items'][job['id']]

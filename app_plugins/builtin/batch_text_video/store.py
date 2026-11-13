@@ -383,6 +383,13 @@ class Store:
                 data_file(self.path).write_json(updated, indent=2)
             return updated
 
+    def replace_visual_asset(self,profile_id,key,identifier,path,*,expected_profile_revision,expected_source=None):
+        from .asset_replace import replace
+        with _LOCK:
+            result,info=replace(Store.load(self),profile_id,key,identifier,path,expected_revision=expected_profile_revision,expected_source=expected_source)
+            data_file(self.path).write_json(result,indent=2)
+            return result,info
+
     def stage_task_rerender(self,profile_id,job_id,edited,*,expected_profile_revision):
         from .task_render_config import stage
         with _LOCK:
@@ -542,6 +549,7 @@ class Store:
         job = next(item for item in state["jobs"] if item["id"] == job_id)
         job.update(status="已完成", output=str(output), error="", render_checked=False)
         job.pop('render_from_snapshot',None)
+        job.pop('render_dirty',None);job.pop('render_dirty_reason',None)
         if music_plan:
             from .custom_pools import get_pool
             pool_id = music_plan.get("pool_id", "")
