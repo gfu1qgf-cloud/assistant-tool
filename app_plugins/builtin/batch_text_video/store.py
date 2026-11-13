@@ -53,7 +53,8 @@ def fresh_state():
     from .render_settings import KEYS
     settings = copy.deepcopy(DEFAULTS)
     settings['export_workers'] = 2
-    return {"version": 1, "revision": 0, "settings": settings,
+    from .shared_music import fresh
+    return {"version": 1, "revision": 0, "settings": settings, 'shared_music_pools':[fresh()],
             'render_settings': {key: copy.deepcopy(settings[key]) for key in KEYS},
             "jobs": [], "music": [], "next_music_id": "", "backgrounds": [],
             "copy_pool": [], "image_pool": [], "resource_pools": [], "resource_orders": {}, "active_profile": "default",
@@ -98,6 +99,8 @@ class Store:
                 raise ValueError("批量文案视频记录格式异常，未清空或覆盖；请检查 state.json。")
             from .project_migration import normalize_project
             normalize_project(state, DEFAULTS)
+            from .shared_music import normalize as normalize_shared
+            normalize_shared(state)
             if "profiles" not in state:
                 state.update(active_profile="default", profiles=[{"id": "default", "name": "默认配置", "data": None}])
             state.setdefault("render_plans", [])
@@ -167,6 +170,8 @@ class Store:
             if changed_globals and baseline != current['render_settings']:
                 raise ValueError('全局渲染设置已被其他窗口修改，请重新载入后再调整。')
             state = copy.deepcopy(state)
+            from .shared_music import merge as merge_shared
+            merge_shared(state,current)
             state['render_settings'] = requested if changed_globals else copy.deepcopy(current['render_settings'])
             if current["revision"] != expected_revision:
                 # A background render may have committed another profile while
@@ -225,6 +230,9 @@ class Store:
             data = {key: copy.deepcopy(state[key]) for key in RESOURCE_KEYS if key in state}
             data = snapshot(normalize_project(data, DEFAULTS))
             data['settings'].update(copy.deepcopy(current['render_settings']))
+            from .shared_music import merge as merge_shared
+            requested=copy.deepcopy(state)
+            current['shared_music_pools']=merge_shared(requested,current)
             profile['data'] = copy.deepcopy(data)
             profile['revision'] = expected_revision + 1
             if current['active_profile'] == identifier:
@@ -232,8 +240,53 @@ class Store:
             current['revision'] += 1
             data_file(self.path).write_json(current, indent=2)
             result = copy.deepcopy(state)
+            result['shared_music_pools']=copy.deepcopy(current['shared_music_pools']);result.pop('_shared_music_dirty',None)
             result['revision'] = profile['revision']
             return result
+
+    def save_shared_music(self, pool, expected_revision, *, additions=None):
+        """Only global music changes; every project's settings/resources stay intact."""
+        from .shared_music import normalize,normalize_pool,get,SharedMusicChanged
+        with _LOCK:
+            current=Store.load(self)
+            live=get(current,pool['id'])
+            if additions is not None:
+                from .shared_music import MAX_ITEMS
+                value=copy.deepcopy(live);known={file_identity(v['path']) for v in value['items']}
+                for item in additions:
+                    identity=file_identity(item['path'])
+                    if identity not in known:value['items'].append(copy.deepcopy(item));known.add(identity)
+                if len(value['items'])>MAX_ITEMS:raise ValueError(f'共享音乐池最多{MAX_ITEMS}首，未添加本批文件。')
+                expected_revision=live['revision']
+            elif live['revision']!=expected_revision:
+                raise SharedMusicChanged('共享音乐池已更新，请刷新后重试。')
+            else:value=copy.deepcopy(pool)
+            normalize_pool(value)
+            value['revision']=expected_revision+1
+            current['shared_music_pools']=[value if p['id']==value['id'] else p for p in current['shared_music_pools']]
+            normalize(current);current['revision']+=1
+            data_file(self.path).write_json(current,indent=2)
+            return copy.deepcopy(value)
+
+    def create_shared_music(self,name):
+        from .shared_music import fresh,normalize
+        with _LOCK:
+            current=Store.load(self);name=str(name).strip()
+            pool=fresh(name,'shared:music:'+uuid.uuid4().hex)
+            current['shared_music_pools'].append(pool);normalize(current)
+            current['revision']+=1;data_file(self.path).write_json(current,indent=2)
+            return copy.deepcopy(pool)
+
+    def delete_shared_music(self,identifier,expected_revision):
+        from .shared_music import get,SharedMusicChanged
+        from .project_migration import profile_data
+        with _LOCK:
+            current=Store.load(self);pool=get(current,identifier)
+            if pool['revision']!=expected_revision:raise SharedMusicChanged('共享音乐库已更新，请刷新后重试。')
+            used=[p['name'] for p in current['profiles'] if profile_data(current,p['id'],DEFAULTS)['settings'].get('music_pool_id')==identifier]
+            if used:raise ValueError('以下项目仍在使用此库，请先更换音乐来源：'+'、'.join(used[:8]))
+            current['shared_music_pools']=[p for p in current['shared_music_pools'] if p['id']!=identifier]
+            current['revision']+=1;data_file(self.path).write_json(current,indent=2)
 
     def save_render_settings(self, values, *, expected=None):
         from .render_settings import normalized, apply_global
@@ -395,7 +448,9 @@ class Store:
         selected = next((p for p in state['profiles'] if p['id'] == identifier), None)
         if selected is None:
             raise ValueError('文案视频配置已不存在，请重新选择。')
-        return selected['name'], profile_data(state, identifier, DEFAULTS)
+        data=profile_data(state, identifier, DEFAULTS)
+        data['shared_music_pools']=copy.deepcopy(state['shared_music_pools'])
+        return selected['name'],data
 
     def select_profile(self, state, identifier):
         from .pools import snapshot
@@ -413,10 +468,18 @@ class Store:
     def create_profile(self, state, name, clone=False):
         from .pools import snapshot
         name = str(name).strip()
-        if not name or len(name) > 80 or any(item["name"] == name for item in state["profiles"]):
-            raise ValueError("配置名称不能为空、重复或超过80字。")
+        if not name:raise ValueError('项目名称不能为空。')
+        if len(name)>80:raise ValueError('项目名称不能超过80字。')
+        if any(item['name']==name for item in state['profiles']):raise ValueError('项目“'+name+'”已存在，请换一个名称。')
         state = copy.deepcopy(state)
         data = snapshot(state) if clone else snapshot(fresh_state())
+        from .shared_music import is_shared
+        if clone and is_shared(data['settings'].get('music_pool_id')):
+            for job in data['jobs']:
+                job.pop('shared_music_assignment',None)
+                if job.get('render_assignment'):
+                    job['render_assignment']['music']=None
+                    job['render_assignment']['music_pending']=True
         identifier = uuid.uuid4().hex
         state["profiles"].append({"id": identifier, "name": name, "data": data})
         return self.select_profile(state, identifier)
@@ -483,6 +546,8 @@ class Store:
             next_id = items[(index + 1) % len(items)]["id"]
             if pool:
                 pool["next_id"] = next_id
+                from .shared_music import is_shared
+                if is_shared(pool_id):state['_shared_music_dirty']=pool_id
             else:
                 state["next_music_id"] = next_id
         return state

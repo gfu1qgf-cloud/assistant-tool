@@ -42,6 +42,7 @@ def pipeline_workers(settings, effects=None):
 def execute_parallel_batch(store, state, ids, cancel, progress, message, done, preparer,
                            *, node_effects=None, elevenlabs_binding=None):
     from .engine import Cancelled
+    from .shared_music import SharedMusicChanged,KEY as SHARED_MUSIC,is_shared
     state = copy.deepcopy(state)
     speculative = copy.deepcopy(state)
     remaining = deque(enumerate(ids))
@@ -106,6 +107,10 @@ def execute_parallel_batch(store, state, ids, cancel, progress, message, done, p
                     if remaining and preparation.pending is None and len(pending) < workers and not cancel.is_set():
                         ready,detail=ADMISSION.request(prepare_memory*(1+memory_retries.get(remaining[0][1],0)))
                         if ready:
+                            if is_shared(speculative['settings'].get('music_pool_id')):
+                                live=store.load()
+                                state[SHARED_MUSIC]=copy.deepcopy(live[SHARED_MUSIC])
+                                speculative[SHARED_MUSIC]=copy.deepcopy(live[SHARED_MUSIC])
                             memory_waiting=False
                             index, job_id = remaining.popleft()
                             job = copy.deepcopy(next(item for item in speculative['jobs'] if item['id'] == job_id))
@@ -133,9 +138,9 @@ def execute_parallel_batch(store, state, ids, cancel, progress, message, done, p
                                 base = getattr(prepared, 'requested_output', None) or prepared.output
                                 prepared.output = output_names.choose(base, getattr(prepared, 'source_paths', ()))
                                 identity = file_identity(prepared.output)
-                            output_names.claimed.add(identity)
                             from .render_assignment import reserve
                             state, reserved = reserve(store, state, job_id, prepared)
+                            output_names.claimed.add(identity)
                             reservation = copy.deepcopy(state) if reserved else store.completion_state(speculative, job_id, prepared.output,
                                 prepared.music, prepared.sequence_plan)
                             outputs[identity] = job_id
@@ -151,6 +156,14 @@ def execute_parallel_batch(store, state, ids, cancel, progress, message, done, p
                             if entry is not None: preparation.cleanup(entry)
                             if cancel.is_set():
                                 break
+                            if isinstance(exc,SharedMusicChanged):
+                                live=store.load()
+                                state[SHARED_MUSIC]=copy.deepcopy(live[SHARED_MUSIC])
+                                speculative[SHARED_MUSIC]=copy.deepcopy(live[SHARED_MUSIC])
+                                remaining.appendleft((index,job_id))
+                                stage(bind(progress,job_id),'重新分配共享音乐')
+                                message(f'[{job_id}] 其他项目刚取用了共享音乐，自动重新分配本条；不记为失败。')
+                                continue
                             if memory_failure(exc) and node_effects is None and memory_retries.get(job_id,0)<3:
                                 memory_retries[job_id]=memory_retries.get(job_id,0)+1
                                 ADMISSION.failed();memory_waiting=True

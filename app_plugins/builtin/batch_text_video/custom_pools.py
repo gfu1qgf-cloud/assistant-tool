@@ -46,6 +46,10 @@ def normalize_pools(state):
 
 
 def get_pool(state, identifier, kind=None):
+    from .shared_music import is_shared,get
+    if is_shared(identifier):
+        if kind not in (None,'music'):raise ValueError('共享音乐池只能用作背景音乐。')
+        return get(state,identifier)
     pool = next((pool for pool in state.get("resource_pools", []) if pool["id"] == identifier), None)
     if pool is None or kind is not None and pool["kind"] != kind:
         raise ValueError("所选资源池不存在或类型不匹配，请重新选择。")
@@ -98,7 +102,8 @@ def pool_choices(state, kind, default_label=None):
     if kind == "voice":
         from .audio_sources import voice_choices
         return ([("", default_label)] if default_label else []) + voice_choices(state)
-    return ([('', default_label)] if default_label else []) + [
+    from .shared_music import normalize
+    return ([('', default_label)] if default_label else []) + ([(p['id'],p['name']+'（共享）') for p in normalize(state)] if kind=='music' else []) + [
         (pool["id"], pool["name"]) for pool in state.get("resource_pools", []) if pool["kind"] == kind]
 
 

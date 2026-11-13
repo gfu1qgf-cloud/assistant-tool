@@ -1429,6 +1429,12 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
             return
         from .custom_pools import music_source
         self._commit_edit()
+        from .shared_music import is_shared
+        if is_shared(self.controls['music_pool_id'].currentData()):
+            from .shared_music_ui import reset_from_owner
+            try:reset_from_owner(self)
+            except Exception as error:self.status.setText(str(error))
+            return
         items, _next_id, pool = music_source(self.state)
         if pool:
             pool["next_id"] = ""

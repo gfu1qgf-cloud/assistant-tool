@@ -402,7 +402,8 @@ class CustomPoolTests(unittest.TestCase):
             with patch.object(QtWidgets.QMessageBox, "question", return_value=QtWidgets.QMessageBox.StandardButton.Yes):
                 dialog.delete_resource_pool()
             self.assertEqual(store.load()["settings"]["music_pool_id"], "")
-            self.assertEqual(dialog.controls["music_pool_id"].count(), 1)
+            self.assertEqual({dialog.controls['music_pool_id'].itemData(i) for i in range(dialog.controls['music_pool_id'].count())},
+                             {'','shared:music'})
             dialog.close()
             dialog.deleteLater()
 

@@ -47,7 +47,13 @@ class AudioSourceCard(QtWidgets.QFrame):
             self.mode.setCurrentIndex(max(0, self.mode.findData(state["settings"].get("voice_pool_mode", "task"))))
             form.addRow("来源方式", self.mode)
             self.mode.currentIndexChanged.connect(self.update_note)
-        form.addRow("来源", self.pool)
+        if kind=='music':
+            row=QtWidgets.QWidget();line=QtWidgets.QHBoxLayout(row);line.setContentsMargins(0,0,0,0);line.addWidget(self.pool,1)
+            self.shared_button=QtWidgets.QPushButton('共享池…');self.shared_button.setAutoDefault(False)
+            self.shared_button.setToolTip('管理跨项目共用的音乐列表、顺序和续播位置。')
+            from .shared_music_ui import open_manager
+            self.shared_button.clicked.connect(lambda:open_manager(self));line.addWidget(self.shared_button);form.addRow('来源',row)
+        else:form.addRow("来源", self.pool)
         self.file_button = QtWidgets.QPushButton("来自文件…")
         self.file_button.setToolTip("固定使用一个文件；不移动源文件。人声整批共用，音乐仍保留续用位置。")
         self.file_button.clicked.connect(self.choose_file)
@@ -121,6 +127,10 @@ class AudioSourceCard(QtWidgets.QFrame):
     def update_note(self, *_args):
         identifier = self.pool.currentData()
         pool = next((p for p in self._state.get("resource_pools", []) if p["id"] == identifier), None)
+        from .shared_music import is_shared,get
+        if self.kind=='music' and is_shared(identifier):
+            try:pool=get(self._state,identifier)
+            except ValueError:pool=None
         if self.kind == "voice" and identifier:
             from .audio_sources import voice_library
             try: pool, voice_items = voice_library(self._state, identifier)

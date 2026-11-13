@@ -31,6 +31,8 @@ def capture(job, state, layers, music, voice):
 def apply(job, state):
     assignment = job.get('render_assignment')
     if not assignment:
+        if job.get('shared_music_assignment'):
+            state=copy.deepcopy(state);apply_music(state,job['shared_music_assignment'])
         return job, state
     if assignment.get('version') != 1:
         raise ValueError('任务素材分配版本不支持，请重新分配所选任务素材。')
@@ -63,14 +65,18 @@ def apply(job, state):
         by_id[identifier].update(caption_cursor_source='file',caption_cursor_image=portable['path'],caption_cursor_items=[])
     job.update(path=assignment['background'], voice_path=assignment['voice'], voice_override=True)
     settings.update(background_pool_id='', use_voice=bool(assignment['voice']))
-    music = assignment.get('music')
+    if not assignment.get('music_pending'):apply_music(state,assignment.get('music'))
+    return job, state
+
+
+def apply_music(state,music):
+    settings=state['settings']
     settings.update(music_enabled=bool(music), music_pool_id='')
     state['music'] = [copy.deepcopy(music['item'])] if music else []
     state['next_music_id'] = music['item']['id'] if music else ''
     if music:
         settings.update(music['settings'])
         state['_assigned_music_start'] = float(music['item']['cursor'])
-    return job, state
 
 
 def reserve(store, state, job_id, prepared):
@@ -78,6 +84,8 @@ def reserve(store, state, job_id, prepared):
     node_rotation = any(step.get('node_source') for step in prepared.sequence_plan)
     if node_rotation and next(job for job in state['jobs'] if job['id'] == job_id).get('render_assignment'):
         raise ValueError('工作流新增了节点资源轮换，请先重新分配此任务素材。')
+    from .shared_music import reserve as reserve_shared
+    state=reserve_shared(store,state,job_id,prepared)
     if not assignment or node_rotation:
         return state, False
     current = next(job for job in state['jobs'] if job['id'] == job_id)
@@ -86,7 +94,8 @@ def reserve(store, state, job_id, prepared):
         styles={key:value for key,value in assignment.get('caption_styles',{}).items()
                 if key not in current['render_assignment'].get('caption_styles',{})}
         new={key:path for key,path in assignment.get('cursor_sources',{}).items() if key not in old or key in styles}
-        if new or styles:
+        pending_music=current['render_assignment'].get('music_pending',False)
+        if new or styles or pending_music:
             from .components import commit_sequences
             updated=copy.deepcopy(state)
             steps=[step for step in prepared.sequence_plan if
@@ -96,6 +105,8 @@ def reserve(store, state, job_id, prepared):
                 raise ValueError('新增图片光标缺少分配记录，请重新分配任务素材。')
             updated['settings']['layers']=commit_sequences(updated['settings']['layers'],steps)
             target=next(job for job in updated['jobs'] if job['id']==job_id)['render_assignment']
+            if pending_music:
+                target['music']=copy.deepcopy(assignment.get('music'));target.pop('music_pending',None)
             target.setdefault('caption_styles',{}).update(styles)
             for key in styles:target.setdefault('cursor_sources',{}).pop(key,None)
             target.setdefault('cursor_sources',{}).update(new)
@@ -115,12 +126,13 @@ def reserve(store, state, job_id, prepared):
 def clear_selected(owner):
     if owner.is_batch_busy(): return
     selected = set(owner.selected_ids())
-    old = {job['id']: copy.deepcopy(job['render_assignment']) for job in owner.state['jobs']
-           if job['id'] in selected and job.get('render_assignment')}
+    old = {job['id']: {key:copy.deepcopy(job[key]) for key in ('render_assignment','shared_music_assignment') if key in job}
+           for job in owner.state['jobs'] if job['id'] in selected and (job.get('render_assignment') or job.get('shared_music_assignment'))}
     for job in owner.state['jobs']:
-        if job['id'] in old: job.pop('render_assignment', None)
+        if job['id'] in old:
+            job.pop('render_assignment', None);job.pop('shared_music_assignment',None)
     if not owner.persist():
         for job in owner.state['jobs']:
-            if job['id'] in old: job['render_assignment'] = old[job['id']]
+            if job['id'] in old:job.update(old[job['id']])
         return
     owner.status.setText(f'已清除{len(old)}条任务的固定分配，下次导出重新分配；池位置不回退，原成品保留。')

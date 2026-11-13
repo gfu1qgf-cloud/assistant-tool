@@ -73,6 +73,8 @@ class PoolController(CustomPoolController, MattingController):
         self.canvas_settings_action = self.settings_menu.addAction('画布比例与尺寸…', lambda: edit_canvas(self))
         self.canvas_settings_action.setToolTip('当前项目：常用画面比例、跟随原素材或自定义宽高。')
         resources = self.menu_bar.addMenu("资源")
+        from .shared_music_ui import open_manager
+        resources.addAction('共享背景音乐池…',lambda:open_manager(self))
         resources.addAction("新建资源池…", self.new_resource_pool)
         resources.addAction("添加文件到当前池…", self.choose_custom_files)
         resources.addAction("重命名当前池…", self.rename_resource_pool)
@@ -582,12 +584,18 @@ class PoolController(CustomPoolController, MattingController):
         name, ok = QtWidgets.QInputDialog.getText(self, "复制项目" if clone else "新建项目", "名称（例如：祷告词 / 管理员姓名）")
         if ok:
             self.preview.cancel_drag()
-        if ok and self.persist():
+        if ok and not self.persist():
+            from .export_results_ui import show_action_error
+            show_action_error(self,'未创建项目',self.status.text());return
+        if ok:
             try:
                 self.state = self.store.create_profile(self.state, name, clone)
                 self.apply_profile_widgets()
             except Exception as error:
                 self._log("项目创建失败："+str(error))
+                self.status.setText('项目创建失败：'+str(error))
+                from .export_results_ui import show_action_error
+                show_action_error(self,'未创建项目',error)
 
     def switch_profile(self, identifier):
         if identifier == self.state["active_profile"]:
@@ -599,6 +607,8 @@ class PoolController(CustomPoolController, MattingController):
             return
         self.preview.cancel_drag()
         if not host_rendering and not self.persist():
+            from .export_results_ui import show_action_error
+            show_action_error(self,'未切换项目',self.status.text())
             return
         try:
             # The running profile is already saved and its controls are locked.
@@ -612,6 +622,9 @@ class PoolController(CustomPoolController, MattingController):
             self.progress_bar.setValue(int(sum(values.values()) / len(values)) if values else 0)
         except Exception as error:
             self._log("切换配置失败："+str(error))
+            self.status.setText('项目切换失败：'+str(error))
+            from .export_results_ui import show_action_error
+            show_action_error(self,'未切换项目',error)
 
     def rename_profile(self):
         if self.is_batch_busy():
@@ -622,6 +635,8 @@ class PoolController(CustomPoolController, MattingController):
             return
         if not name.strip() or len(name.strip()) > 80 or any(p["name"] == name.strip() and p["id"] != profile["id"] for p in self.state["profiles"]):
             self.status.setText("配置名称不能为空、重复或超过80字。")
+            from .export_results_ui import show_action_error
+            show_action_error(self,'未重命名项目','项目名称不能为空或超过80字，也不能与已有项目重名。')
             return
         if self.persist():
             profile = next(item for item in self.state["profiles"] if item["id"] == self.state["active_profile"])
@@ -678,6 +693,8 @@ class PoolController(CustomPoolController, MattingController):
             self.status.setText('已删除项目记录；素材、音频、字幕和视频成品均保留。')
         except (ValueError, OSError) as error:
             self.status.setText('项目未删除：'+str(error))
+            from .export_results_ui import show_action_error
+            show_action_error(self,'未删除项目',error)
 
     def apply_profile_widgets(self):
         self._batch_after_preview = None

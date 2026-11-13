@@ -315,6 +315,7 @@ def choose_music(state, duration, cache, ffmpeg, ffprobe, cancel, report):
     if not state["settings"].get("music_enabled", True):
         return None
     from .custom_pools import music_source
+    from .shared_music import is_shared
     items, next_id, pool = music_source(state)
     if not items:
         return None
@@ -335,6 +336,7 @@ def choose_music(state, duration, cache, ffmpeg, ffprobe, cancel, report):
             if '_assigned_music_start' in state:
                 cursor = float(state['_assigned_music_start']) % total
             return {"id": item["id"], "path": str(path), "start": cursor, "pool_id": pool["id"] if pool else "",
+                    **({'shared_revision':pool['revision']} if pool and is_shared(pool['id']) else {}),
                     "cursor": (cursor + duration) % total, "audio_key": key,
                     "name": Path(item["path"]).name, "duration": total,
                     'source_ranges': getattr(analysis, 'ranges', ()),
@@ -349,6 +351,7 @@ def choose_music(state, duration, cache, ffmpeg, ffprobe, cancel, report):
 def source_paths(state):
     """Protect registered source media even when it has not been paired yet."""
     inputs = list(state.get('backgrounds', []))
+    inputs.extend(item['path'] for pool in state.get('shared_music_pools',[]) for item in pool['items'])
     for key in ('jobs', 'copy_pool', 'music', 'image_pool'):
         for item in state.get(key, []):
             inputs.extend(item.get(field) for field in (
