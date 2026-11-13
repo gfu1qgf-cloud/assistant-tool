@@ -4,6 +4,8 @@ import time
 from qt_compat import QtCore, QtGui, QtWidgets
 from .prompts import MODELS, SIZES, innovation_note, validate_spec
 from .store import Store, summary
+from .skill_rules import SKILL_ID, SKILL_TITLE, load_snapshot
+from .reference_inputs import recent_reference_items
 
 LABELS = {'ready': '等待提交', 'submitting': '正在提交', 'unknown': '提交待核对',
           'running': '云端处理中', 'collecting': '正在收取', 'cancelling': '取消确认中',
@@ -26,7 +28,7 @@ def thumbnail(path, size):
 class RemixDialog(QtWidgets.QDialog):
     def __init__(self, plugin, parent=None):
         super().__init__(parent)
-        if getattr(plugin, 'submission_api_version', 0) < 4:
+        if getattr(plugin, 'submission_api_version', 0) < 5:
             raise RuntimeError('图片翻版已更新，请重启软件后使用；已阻止新旧提交代码混用。')
         self.plugin = plugin
         self.draft_loaded = False
@@ -37,11 +39,18 @@ class RemixDialog(QtWidgets.QDialog):
         self.setWindowFlag(QtCore.Qt.WindowType.WindowMaximizeButtonHint, True)
         outer = QtWidgets.QVBoxLayout(self)
         split = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal, self)
-        left = QtWidgets.QWidget(split); form = QtWidgets.QVBoxLayout(left)
+        left = QtWidgets.QWidget(split)
+        left_outer = QtWidgets.QVBoxLayout(left); left_outer.setContentsMargins(0,0,0,0)
+        scroll = QtWidgets.QScrollArea(left); scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+        body = QtWidgets.QWidget(scroll); scroll.setWidget(body); left_outer.addWidget(scroll)
+        form = QtWidgets.QVBoxLayout(body)
         form.setContentsMargins(0, 0, 8, 0)
-        form.addWidget(QtWidgets.QLabel('图片提示词', left))
+        form.addWidget(QtWidgets.QLabel('文字需求／原始图片提示词', left))
         self.prompt = QtWidgets.QPlainTextEdit(left)
-        self.prompt.setPlaceholderText('描述要生成的画面。GPT会按照创新程度自行设计不同版本。')
+        self.prompt.setPlaceholderText('直接写文字需求即可，参考图可选。GPT按SKILL规范和创新程度构思，不随意推翻人物、故事阶段与明确要求。')
+        self.prompt.setMinimumHeight(110)
+        self.prompt.setMaximumHeight(150)
         form.addWidget(self.prompt, 1)
         fields = QtWidgets.QFormLayout()
         fields.setLabelAlignment(QtCore.Qt.AlignmentFlag.AlignRight | QtCore.Qt.AlignmentFlag.AlignVCenter)
@@ -50,6 +59,20 @@ class RemixDialog(QtWidgets.QDialog):
         self.mode.addItem('即时生成 · 标准价，不等Batch排队', 'instant')
         self.mode.addItem('Batch · 优惠价，24小时处理窗口', 'batch')
         fields.addRow('提交方式', self.mode)
+        self.prompt_skill = QtWidgets.QComboBox(left)
+        self.prompt_skill.addItem('不使用SKILL · 通用创新', 'none')
+        self.prompt_skill.addItem(SKILL_TITLE, SKILL_ID); self.prompt_skill.setCurrentIndex(1)
+        skill_row=QtWidgets.QWidget(left); skill_bar=QtWidgets.QHBoxLayout(skill_row); skill_bar.setContentsMargins(0,0,0,0)
+        view_skill=QtWidgets.QPushButton('查看规则',left); view_skill.clicked.connect(self.view_skill)
+        skill_bar.addWidget(self.prompt_skill,1);skill_bar.addWidget(view_skill)
+        fields.addRow('提示词SKILL',skill_row)
+        self.skill_note=QtWidgets.QLabel('文字为主，图片可选；SKILL规范文字创新，点击生成后才继续生图。',left)
+        self.skill_note.setWordWrap(True);fields.addRow('',self.skill_note)
+        self.reference_mode=QtWidgets.QComboBox(left)
+        self.reference_mode.addItem('整图参考 · 理解构图、动作和服装','scene')
+        self.reference_mode.addItem('仅人物形象 · 场景和动作可创新','identity')
+        fields.addRow('有图时的用途',self.reference_mode)
+        self.prompt_skill.currentIndexChanged.connect(self.update_skill)
         self.rewrite_model = QtWidgets.QComboBox(left); self.rewrite_model.setEditable(True)
         self.rewrite_model.addItem('gpt-5-mini')
         self.rewrite_model.setToolTip('先由此文字模型批量改写提示词，再调用图片模型。可填写账号支持Responses与结构化输出的模型ID。')
@@ -88,23 +111,28 @@ class RemixDialog(QtWidgets.QDialog):
         model_hint.setWordWrap(True); fields.addRow('', model_hint)
         form.addLayout(fields)
         reference_bar = QtWidgets.QHBoxLayout()
-        reference_bar.addWidget(QtWidgets.QLabel('人物参考图（可选，最多4张）', left))
+        reference_bar.addWidget(QtWidgets.QLabel('参考图（可选，最多4张）', left))
         add = QtWidgets.QPushButton('添加…', left); add.clicked.connect(self.add_references)
-        reference_bar.addWidget(add); form.addLayout(reference_bar)
+        reference_bar.addWidget(add)
+        self.recent_references=QtWidgets.QPushButton('最近使用…',left)
+        self.recent_references.setToolTip('复用最近提交任务已保存的参考图副本，不额外复制缓存。')
+        self.recent_references.clicked.connect(self.choose_recent_references)
+        reference_bar.addWidget(self.recent_references)
         self.references = QtWidgets.QListWidget(left)
         self.references.setViewMode(QtWidgets.QListView.ViewMode.IconMode)
-        self.references.setIconSize(QtCore.QSize(90, 90)); self.references.setMaximumHeight(135)
+        self.references.setIconSize(QtCore.QSize(90, 90)); self.references.setMaximumHeight(105)
         self.references.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.ExtendedSelection)
         self.references.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
         self.references.customContextMenuRequested.connect(self.reference_menu)
         self.references.itemDoubleClicked.connect(lambda item: self.preview(item.data(QtCore.Qt.ItemDataRole.UserRole)))
-        form.addWidget(self.references)
         output_bar = QtWidgets.QHBoxLayout()
         self.output = QtWidgets.QLineEdit(left); self.output.setPlaceholderText('选择结果保存目录；每批创建独立子目录')
         choose = QtWidgets.QPushButton('目录…', left); choose.clicked.connect(self.choose_output)
         output_bar.addWidget(self.output, 1); output_bar.addWidget(choose); form.addLayout(output_bar)
         right = QtWidgets.QWidget(split); preview_layout = QtWidgets.QVBoxLayout(right)
         preview_layout.setContentsMargins(4, 0, 0, 0)
+        preview_layout.addLayout(reference_bar)
+        preview_layout.addWidget(self.references)
         self.image = QtWidgets.QLabel('选择参考图或生成结果查看完整画面', right)
         self.image.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
         self.image.setMinimumSize(300, 260)
@@ -144,11 +172,32 @@ class RemixDialog(QtWidgets.QDialog):
         self.status = QtWidgets.QLabel(plugin.message, self); self.status.setWordWrap(True)
         self.status.setTextFormat(QtCore.Qt.TextFormat.PlainText); outer.addWidget(self.status)
         self.refresh(plugin.jobs, plugin.message, plugin.handle is not None)
+        self.update_skill()
 
     def update_innovation(self):
         value = self.innovation.value()
         self.innovation_number.setText(str(value))
-        self.innovation_hint.setText(innovation_note(value))
+        note=innovation_note(value)
+        if hasattr(self,'prompt_skill') and self.prompt_skill.currentData()!='none':
+            note+=' SKILL约束始终有效：人物身份、故事阶段、人体受力和明确要求不因高创新而放宽。'
+        self.innovation_hint.setText(note)
+
+    def update_skill(self, *_args):
+        enabled=self.prompt_skill.currentData()!='none'
+        self.reference_mode.setEnabled(enabled)
+        self.skill_note.setVisible(enabled)
+        self.update_innovation()
+
+    def view_skill(self):
+        try:
+            snapshot=load_snapshot(self.prompt_skill.currentData())
+            if snapshot is None:
+                self.status.setText('当前不使用SKILL，按通用创新规则处理。');return
+            dialog=QtWidgets.QDialog(self);dialog.setWindowTitle(SKILL_TITLE+' · 文字创新规则');dialog.resize(780,650)
+            layout=QtWidgets.QVBoxLayout(dialog);text=QtWidgets.QPlainTextEdit(dialog);text.setReadOnly(True)
+            text.setPlainText('\n\n'.join('--- '+name+' ---\n'+body for name,body in snapshot['documents'].items()))
+            layout.addWidget(text);dialog.exec()
+        except Exception as error:self.status.setText(str(error))
 
     def update_mode(self):
         instant = self.mode.currentData() == 'instant'
@@ -169,6 +218,8 @@ class RemixDialog(QtWidgets.QDialog):
 
     def spec(self):
         return {'rewrite_enabled': True, 'rewrite_model': self.rewrite_model.currentText().strip(),
+                'prompt_skill':self.prompt_skill.currentData(),
+                'reference_mode':self.reference_mode.currentData() if self.prompt_skill.currentData()!='none' else 'identity',
                 'mode': self.mode.currentData(), 'prompt': self.prompt.toPlainText(), 'count': self.count.value(),
                 'innovation': self.innovation.value(), 'size': self.size.currentData(),
                 'quality': self.quality.currentData(), 'model': self.model.currentText().strip(),
@@ -176,11 +227,16 @@ class RemixDialog(QtWidgets.QDialog):
                 'references': [self.references.item(i).data(QtCore.Qt.ItemDataRole.UserRole)
                                for i in range(self.references.count())]}
 
-    def load_draft(self, draft):
+    def load_draft(self, draft, *, preserve_legacy=False):
         self.draft_loaded = True
         if self.prompt.toPlainText().strip() or not draft:
             return
         self.prompt.setPlainText(str(draft.get('prompt', '')))
+        profile=draft.get('prompt_skill','none' if preserve_legacy else SKILL_ID)
+        index=self.prompt_skill.findData(profile)
+        if index>=0:self.prompt_skill.setCurrentIndex(index)
+        index=self.reference_mode.findData(draft.get('reference_mode','identity'))
+        if index>=0:self.reference_mode.setCurrentIndex(index)
         self.rewrite_model.setCurrentText(str(draft.get('rewrite_model') or 'gpt-5-mini'))
         for key in ('count', 'innovation'):
             if type(draft.get(key)) is int:
@@ -208,7 +264,7 @@ class RemixDialog(QtWidgets.QDialog):
             widget.setCurrentText(selected); widget.blockSignals(False)
 
     def add_references(self):
-        files, _ = QtWidgets.QFileDialog.getOpenFileNames(self, '添加人物参考图', '', '图片 (*.png *.jpg *.jpeg *.webp)')
+        files, _ = QtWidgets.QFileDialog.getOpenFileNames(self, '添加参考图', '', '图片 (*.png *.jpg *.jpeg *.webp)')
         for path in files:
             if self.references.count() >= 4: break
             if path not in self.spec()['references']: self.add_reference(path)
@@ -217,6 +273,33 @@ class RemixDialog(QtWidgets.QDialog):
         item = QtWidgets.QListWidgetItem(QtGui.QIcon(thumbnail(path, QtCore.QSize(90, 90))), Path(path).name)
         item.setData(QtCore.Qt.ItemDataRole.UserRole, path); item.setToolTip(path)
         self.references.addItem(item)
+
+    def choose_recent_references(self):
+        rows=recent_reference_items(self.jobs,self.plugin.context.storage.path)
+        if not rows:
+            self.status.setText('还没有已提交任务的可用参考图；添加并提交一次后就能在这里找回。');return
+        dialog=QtWidgets.QDialog(self);dialog.setWindowTitle('最近使用的参考图');dialog.resize(650,440)
+        layout=QtWidgets.QVBoxLayout(dialog)
+        tip=QtWidgets.QLabel('选择最近提交使用过的图片；复用原快照，不要求原文件仍在。最多选择到合计4张。',dialog)
+        tip.setWordWrap(True);layout.addWidget(tip)
+        images=QtWidgets.QListWidget(dialog);images.setViewMode(QtWidgets.QListView.ViewMode.IconMode)
+        images.setIconSize(QtCore.QSize(110,110));images.setResizeMode(QtWidgets.QListView.ResizeMode.Adjust)
+        images.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.ExtendedSelection)
+        for row in rows:
+            item=QtWidgets.QListWidgetItem(QtGui.QIcon(thumbnail(row['path'],QtCore.QSize(110,110))),row['name'])
+            item.setData(QtCore.Qt.ItemDataRole.UserRole,row['path']);item.setToolTip(row['name'])
+            images.addItem(item)
+        layout.addWidget(images)
+        buttons=QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.StandardButton.Ok|QtWidgets.QDialogButtonBox.StandardButton.Cancel,dialog)
+        buttons.button(QtWidgets.QDialogButtonBox.StandardButton.Ok).setText('使用所选')
+        buttons.accepted.connect(dialog.accept);buttons.rejected.connect(dialog.reject);layout.addWidget(buttons)
+        images.itemDoubleClicked.connect(lambda _item:dialog.accept())
+        if dialog.exec()==QtWidgets.QDialog.DialogCode.Accepted:
+            for item in images.selectedItems():
+                path=item.data(QtCore.Qt.ItemDataRole.UserRole)
+                if self.references.count()>=4:break
+                if path not in self.spec()['references']:self.add_reference(path)
+            if images.selectedItems():self.preview(images.selectedItems()[0].data(QtCore.Qt.ItemDataRole.UserRole))
 
     def reference_menu(self, position):
         menu = QtWidgets.QMenu(self)
@@ -242,7 +325,8 @@ class RemixDialog(QtWidgets.QDialog):
                 raise ValueError('请先选择有效的结果保存目录。')
             answer = QtWidgets.QMessageBox.question(self, '提交付费图片批次',
                 f'生成 {spec["count"]} 张，创新程度 {spec["innovation"]}，{self.quality.currentText()}质量。\n'
-                f'模型：{spec["model"]}\n人物参考图：{len(spec["references"])} 张（会上传给OpenAI）。\n' +
+                f'模型：{spec["model"]}\n参考图：{len(spec["references"])} 张（会上传给OpenAI）。\n' +
+                ('SKILL：'+SKILL_TITLE+'；有图时文字模型也会读取缩略图，产生图片输入费用。\n' if spec['prompt_skill']!='none' else '') +
                 f'先用 {spec["rewrite_model"]} 创新提示词（另有文字费用），完成并校验后才生图。\n' +
                 ('即时生成：使用普通API标准价格，不享受Batch折扣。逐张提交，按实际用量计费。确认提交？'
                  if spec['mode'] == 'instant' else '两步使用Batch优惠价，可能需要两轮24小时处理窗口。确认提交？'),
@@ -292,6 +376,7 @@ class RemixDialog(QtWidgets.QDialog):
 
     def show_results(self):
         job = self.selected_job(); self.results.clear()
+        self.results.setVisible(False)
         self.stop_button.setEnabled(bool(job and job['spec'].get('mode', 'batch') == 'instant'
                                         and job['status'] in ('ready', 'running', 'submitting', 'planning')))
         if not job: return
@@ -299,6 +384,7 @@ class RemixDialog(QtWidgets.QDialog):
             if result['status'] == 'done':
                 item = QtWidgets.QListWidgetItem(f'{result["index"] + 1:04d}.png')
                 item.setData(QtCore.Qt.ItemDataRole.UserRole, result['path']); self.results.addItem(item)
+        self.results.setVisible(self.results.count()>0)
         if self.results.count() and self.preview_path not in [self.results.item(i).data(QtCore.Qt.ItemDataRole.UserRole)
                                                             for i in range(self.results.count())]:
             self.preview(self.results.item(0).data(QtCore.Qt.ItemDataRole.UserRole))
@@ -339,10 +425,11 @@ class RemixDialog(QtWidgets.QDialog):
                 layout = QtWidgets.QVBoxLayout(dialog); text = QtWidgets.QPlainTextEdit(dialog); text.setReadOnly(True)
                 content = ['原始提示词：', job['spec']['prompt'], '\n批次：', *[a.get('batch_id') or a['state'] for a in job['attempts']],
                            '\n最近提示：', job.get('error', '')]
+                if job.get('skill'):content += ['\nSKILL快照：',job['skill']['id'],job['skill']['version'],job['skill']['sha256']]
                 content += [f'\n{i["index"] + 1:04d} · {i["status"]}\n{i["prompt"]}\n{i["error"]}' for i in job['items']]
                 text.setPlainText('\n'.join(content)); layout.addWidget(text); dialog.exec()
             elif chosen == reuse:
-                self.prompt.clear(); self.references.clear(); self.load_draft(job['spec'])
+                self.prompt.clear(); self.references.clear(); self.load_draft(job['spec'],preserve_legacy=True)
                 # Prefer persistent snapshots when original reference files moved.
                 self.references.clear()
                 for ref in job['references']:

@@ -22,7 +22,7 @@ class Store:
         self.lock = threading.RLock()
         with self.connection() as db:
             version = db.execute('PRAGMA user_version').fetchone()[0]
-            if version not in (0, 1, 2, 3):
+            if version not in (0, 1, 2, 3, 4):
                 raise ValueError('图片翻版记录来自更新版本，不能覆盖。')
             db.executescript('''CREATE TABLE IF NOT EXISTS jobs (
                 id TEXT PRIMARY KEY, value TEXT NOT NULL, created REAL NOT NULL);
@@ -78,7 +78,7 @@ class Store:
 
     def save(self, job):
         with self.connection() as db:
-            target_version = 3 if job.get('planning') else 2 if job['spec'].get('mode', 'batch') == 'instant' else 1
+            target_version = 4 if job.get('skill') else 3 if job.get('planning') else 2 if job['spec'].get('mode', 'batch') == 'instant' else 1
             if target_version > db.execute('PRAGMA user_version').fetchone()[0]:
                 # Old 0.1 clients reject version 2 rather than interpreting a
                 # queued instant intent as a new Batch on downgrade.
@@ -109,6 +109,8 @@ class Store:
             return self.get(identifier)
         except ValueError:
             pass
+        from .skill_rules import load_snapshot
+        skill=load_snapshot(spec.get('prompt_skill','none'))
         destination = output.resolve() / ('图片翻版_' + time.strftime('%Y%m%d_%H%M%S') + '_' + identifier[:8])
         data_directory(destination).ensure(exist_ok=False)
         refs = []
@@ -125,6 +127,9 @@ class Store:
                'status': 'ready', 'error': '', 'attempts': [], 'cancel_requested': False,
                'items': [{'id': f'{identifier}-{i:04d}', 'index': i, 'prompt': '' if defer_snapshot else variant_prompt(spec, i),
                           'status': 'pending', 'error': '', 'path': ''} for i in range(spec['count'])]}
+        if skill:
+            job['skill']=skill
+            job['schema']=4
         if spec.get('rewrite_enabled'):
             from .planning import initial_plan
             job['planning'] = initial_plan(spec['count'], spec['rewrite_model'])

@@ -36,6 +36,15 @@ def validate_spec(value):
     if not isinstance(references, list) or len(references) > 4 or any(not isinstance(p, str) for p in references):
         raise ValueError('人物参考图最多4张，请选择本地图片。')
     spec.update(prompt=prompt, references=references)
+    from .skill_rules import SKILL_ID
+    if spec.get('prompt_skill', 'none') not in ('none', SKILL_ID):
+        raise ValueError('请选择有效的图片提示词SKILL。')
+    if spec.get('reference_mode', 'identity') not in ('identity', 'scene'):
+        raise ValueError('参考图用途格式不正确。')
+    if spec.get('prompt_skill', 'none') != 'none' and not spec.get('rewrite_enabled'):
+        raise ValueError('SKILL用于文字改写阶段，不能绕过提示词改写。')
+    if spec.get('prompt_skill', 'none') == 'none' and spec.get('reference_mode', 'identity') != 'identity':
+        raise ValueError('整图参考需要启用提示词SKILL；通用旧流程只使用人物参考。')
     return spec
 
 

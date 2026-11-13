@@ -43,6 +43,17 @@ for data_file in waste_data.rglob("*"):
         destination = data_file.parent.relative_to(project_root).as_posix()
         datas.append((str(data_file), destination))
 
+# Prompt SKILL is runtime data, not developer documentation. Bundle only its
+# reviewed text resources; never collect private jobs/reference snapshots.
+image_skill = project_root / 'app_plugins/builtin/image_remix/skills/lzx4-biblical-image-prompts'
+for relative in ('SKILL.md', 'agents/openai.yaml', 'references/jesus-appearance.md',
+                 'references/biblical-continuity.md', 'references/scene-playbook.md',
+                 'references/reference-fidelity.md', 'references/output-examples.md'):
+    resource = image_skill / relative
+    if not resource.is_file():
+        raise SystemExit('Missing image prompt SKILL resource: ' + relative)
+    datas.append((str(resource), resource.parent.relative_to(project_root).as_posix()))
+
 # Preserve all real Poppins weights (including italic) and their OFL notice.
 font_data = project_root / "app_plugins" / "builtin" / "batch_text_video" / "fonts" / "poppins"
 for style in ("Thin", "ThinItalic", "ExtraLight", "ExtraLightItalic", "Light", "LightItalic",
