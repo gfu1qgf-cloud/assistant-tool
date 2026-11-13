@@ -12,11 +12,11 @@ from .store import Store
 from .tasks import spreadsheet_id
 from .notice_data import directory_key
 from .sheet_profiles import task_kind, completed as status_completed, archive_value, ARCHIVED,needs_user_segments
-from .receipt_plan import delivery_plan, check_parts, handoff_files, HANDOFF_POLICY
+from .receipt_plan import delivery_plan, check_parts, completed_files, handoff_files, HANDOFF_POLICY
 from .review import cache_review
 
 DONE = {'已完成', '完成', '制作完成', '生成完成', 'completed', 'complete', 'done'}
-DISCOVERY_SCOPE = 'recursive-v1'
+DISCOVERY_SCOPE = 'recursive-v2-supplemental'
 RECEIPT_PROGRESS_PREFIX = 'Agent收取进度：'
 
 
@@ -207,19 +207,35 @@ def run_receipts(payload, run, *, sheets=None, drive=None, fetch=download_file, 
                     files = collect_files(links, drive, leased)
                     plan = delivery_plan(kind, _cell(row, mapping, 'spoken'))
                     selection_problem = ''
+                    selection_note = ''
+                    supplemental = []
                     if user_fill:
                         files, selection_problem = handoff_files(files, plan, job['payload']['task_id'], records)
+                    elif cloud_done:
+                        planned, selection_note = completed_files(files, plan, job['payload']['task_id'], records)
+                        selected_ids = {item['id'] for item in planned}
+                        supplemental = [item for item in files if item['id'] not in selected_ids]
+                        files = planned
                     plan_problem = check_parts(files, plan, job['payload']['task_id'], records)
-                    expected_total = max(len(files), plan['count'] if plan else 0)
+                    planned_files = list(files)
+                    files = planned_files + supplemental
+                    supplemental_ids = sorted(item['id'] for item in supplemental)
+                    supplemental_set = set(supplemental_ids)
+                    supplemental_directory = output_directory(job, supplemental=True) if supplemental else None
+                    def item_directory(item):
+                        return supplemental_directory if item['id'] in supplemental_set else directory
+                    expected_total = max(len(files), (plan['count'] if plan else 0) + len(supplemental))
                     active_ids = sorted(item['id'] for item in files)
                     if (discovery.get('state') != 'checked' or discovery.get('source') != signature or
                             discovery.get('scope') != DISCOVERY_SCOPE or
                             bool(discovery.get('handoff'))!=user_fill or
                             user_fill and discovery.get('handoff_policy') != HANDOFF_POLICY or
-                            discovery.get('total') != expected_total or discovery.get('file_ids') != active_ids):
+                            discovery.get('total') != expected_total or discovery.get('file_ids') != active_ids or
+                            discovery.get('supplemental_ids', []) != supplemental_ids):
                         store.save_delivery(job['id'], '@discovery', {'state': 'checked', 'source': signature, 'scope': DISCOVERY_SCOPE,'handoff':user_fill,
                             'handoff_policy': HANDOFF_POLICY if user_fill else None,
-                            'total': expected_total, 'file_ids': active_ids})
+                            'total': expected_total, 'file_ids': active_ids, 'selection_note': selection_note,
+                            'supplemental_ids': supplemental_ids})
                     # Missing segments are a delivery warning, not a download
                     # embargo. Wrong task IDs/duplicate/out-of-range ordinals
                     # still raise above; every transferred file stays verified.
@@ -229,7 +245,7 @@ def run_receipts(payload, run, *, sheets=None, drive=None, fetch=download_file, 
                         leased.report(RECEIPT_PROGRESS_PREFIX+leased.progress_count)
                     for item in files:
                         leased.check_canceled(); record = records.get(item['id'], {})
-                        if not record.get('force_download') and cached_file(record, directory) and (not item.get('md5Checksum') or record.get('md5') == item['md5Checksum']):
+                        if not record.get('force_download') and cached_file(record, item_directory(item)) and (not item.get('md5Checksum') or record.get('md5') == item['md5Checksum']):
                             completed += 1; continue
                         if record.get('retry_at', 0) > clock(): pending = True; continue
                         if budget <= 0 or attempted >= 8: pending = True; continue
@@ -237,8 +253,9 @@ def run_receipts(payload, run, *, sheets=None, drive=None, fetch=download_file, 
                         store.delivery_note(job['id'], '正在下载', f'已收取 {completed}/{expected_total} 个视频')
                         report_count()
                         try:
-                            value = fetch(job, item, directory, drive, leased)
-                            if not cached_file(value, directory): raise ValueError('下载器未返回完整的原任务目录成品。')
+                            value = fetch(job, item, item_directory(item), drive, leased)
+                            if not cached_file(value, item_directory(item)): raise ValueError('下载器未返回完整的原任务目录成品。')
+                            if item['id'] in supplemental_set: value['category'] = 'supplemental'
                             store.save_delivery(job['id'], item['id'], value)
                             completed += 1; downloaded += 1
                             report_count()
@@ -249,7 +266,7 @@ def run_receipts(payload, run, *, sheets=None, drive=None, fetch=download_file, 
                                 'retry_at': clock() + min(3600, 60 * 2 ** min(attempts - 1, 6)), 'detail': error_message(error)})
                             failed += 1; pending = True
                     if completed == len(files):
-                        plan_problem = check_parts(files, plan, job['payload']['task_id'], store.delivery_files(job['id']))
+                        plan_problem = check_parts(planned_files, plan, job['payload']['task_id'], store.delivery_files(job['id']))
                         plan_problem = '\n'.join(value for value in (plan_problem, selection_problem) if value)
                         if plan_problem or not cloud_done:
                             verified=store.delivery_files(job['id'])
@@ -268,7 +285,7 @@ def run_receipts(payload, run, *, sheets=None, drive=None, fetch=download_file, 
                         verified=store.delivery_files(job['id'])
                         proof={'state':'received','source':signature,'total':len(files),
                             'versions':{item['id']:verified[item['id']]['sha256'] for item in files},
-                            'archived':_cell(row,mapping,'archive') in ARCHIVED}
+                            'archived':_cell(row,mapping,'archive') in ARCHIVED, 'selection_note':selection_note}
                         store.save_delivery(job['id'],'@received',proof)
                         try:
                             if _cell(row, mapping, 'archive') not in ARCHIVED or attempted:
@@ -279,7 +296,8 @@ def run_receipts(payload, run, *, sheets=None, drive=None, fetch=download_file, 
                                 acknowledge(sheets, identifier, name, info, job, link_text, leased, expected_plan=plan, review_store=store)
                             cloud_note = _cell(row, mapping, 'notes')
                             store.save_delivery(job['id'],'@received',{**proof,'archived':True})
-                            store.delivery_note(job['id'], '已下载', f'{completed} 个视频已校验归档到原任务的 result 目录。' +
+                            store.delivery_note(job['id'], '已下载', f'{len(planned_files)} 个视频已校验归档到原任务的 result 目录。' +
+                                ('\n' + selection_note if selection_note else '') +
                                 ('\n云端交付备注（不代表已通过用户终审）：' + cloud_note if cloud_note else ''))
                         except Exception as error:
                             leased.check_canceled(); store.delivery_note(job['id'], '已下载·待回写', error_message(error))
@@ -296,7 +314,7 @@ def run_receipts(payload, run, *, sheets=None, drive=None, fetch=download_file, 
                         # pass's budget. Failures/reviews wait for the next poll
                         # or an explicit manual retry, never a tight poll loop.
                         if any((current.get(item['id'], {}).get('force_download') or
-                                not cached_file(current.get(item['id'], {}), directory) or
+                                not cached_file(current.get(item['id'], {}), item_directory(item)) or
                                 item.get('md5Checksum') and item['md5Checksum'] != current.get(item['id'], {}).get('md5')) and
                                current.get(item['id'], {}).get('retry_at', 0) <= clock() for item in files):
                             continue_ids.append(job['id'])

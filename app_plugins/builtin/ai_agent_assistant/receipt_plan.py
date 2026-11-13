@@ -72,6 +72,29 @@ def delivery_plan(kind, text):
     return {'count': len(segments), 'segments': segments} if segments else None
 
 
+def completed_files(files, plan, task_id, records=None):
+    """Separate unnumbered extras after proving the complete planned set.
+
+    This is not a loose filename filter or a version-selection heuristic.
+    Missing, repeated, out-of-range, and wrong-owner segments keep the strict
+    validation path. Image/unplanned/public unnamed deliveries are unchanged.
+    """
+    if not plan or plan.get('kind') == 'image': return files, ''
+    numbered, extras = [], []
+    for item in files:
+        name = item.get('name') or Path(str((records or {}).get(item['id'], {}).get('path') or '')).name
+        if part_number(name, task_id) is None:
+            extras.append(name or item['id'])
+        else:
+            numbered.append(item)
+    if not extras or len(numbered) != plan['count']: return files, ''
+    # Raises on ambiguity; never pick a version based on order/name/mtime.
+    if check_parts(numbered, plan, task_id, records): return files, ''
+    note = f'计划内{plan["count"]}段已唯一对应；另有{len(extras)}个未标段号的附加视频，单独收取到“Agent附加素材”（不计为口播段落）：' + '、'.join(extras[:20])
+    if len(extras) > 20: note += f'，另有{len(extras)-20}个。'
+    return numbered, note
+
+
 def check_parts(files, plan, task_id, records=None):
     if not plan: return ''
     expected = plan['count']; found = []

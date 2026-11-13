@@ -99,12 +99,12 @@ def collect_files(links, drive, run, *, root_only=False):
     return list(files.values())
 
 
-def output_directory(job):
+def output_directory(job, *, supplemental=False):
     raw = Path(str(job['payload'].get('target_dir') or ''))
     if not raw.is_absolute(): raise ValueError('原任务目录不是绝对路径，未下载到其他目录。')
     root = no_reparse(raw, Path(raw.anchor))
     if not root.is_dir(): raise ValueError('提交时的原任务目录不可用；请恢复磁盘／目录，任务会自动重试。')
-    directory = no_reparse(root/'result', root)
+    directory = no_reparse(root/('Agent附加素材' if supplemental else 'result'), root)
     data_directory(directory).ensure()
     return directory
 
