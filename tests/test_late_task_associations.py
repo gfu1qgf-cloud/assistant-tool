@@ -152,6 +152,17 @@ class LateAssociationTests(unittest.TestCase):
 
     @unittest.skipUnless(FFMPEG,'explicit FFmpeg required')
     def test_selected_task_rechecks_on_use_not_while_idle_or_via_file_watch(self):
+        self.selected_task_late_files('cached')
+
+    @unittest.skipUnless(FFMPEG,'explicit FFmpeg required')
+    def test_manual_refresh_button_immediately_finds_late_files_and_reports_completion(self):
+        self.selected_task_late_files('button')
+
+    @unittest.skipUnless(FFMPEG,'explicit FFmpeg required')
+    def test_manual_refresh_menu_reuses_the_same_check_and_exposes_f5(self):
+        self.selected_task_late_files('menu')
+
+    def selected_task_late_files(self,trigger):
         from app_plugins.builtin.batch_text_video.ui import BatchTextVideoDialog
         store=Store(self.root/'private');state=copy.deepcopy(self.state);state['settings'].update(ffmpeg_path=FFMPEG,layers=[]);store.save(state,0)
         with patch.object(BatchTextVideoDialog,'_start_overlay'):
@@ -175,11 +186,32 @@ class LateAssociationTests(unittest.TestCase):
                 end=time.monotonic()+.7
                 while time.monotonic()<end:self.app.processEvents();time.sleep(.01)
                 self.assertFalse(owner.state['jobs'][0].get('task_voice_path'))
-                # Ordinary cached preview request must check first, even without force.
-                owner.request_background(owner.active_entry()['path'])
-                wait(lambda:owner.state['jobs'][0].get('task_voice_path')==str(path) and owner._voice_duration is not None)
+                if trigger=='cached':
+                    # Ordinary cached preview also checks, without a forced refresh.
+                    owner.request_background(owner.active_entry()['path'])
+                elif trigger=='button':
+                    self.assertEqual(owner.refresh_preview_button.text(),'刷新关联 / 预览')
+                    owner.refresh_preview_button.click()
+                    self.assertIn('正在重新检查',owner.status.text())
+                else:
+                    self.assertEqual(owner.refresh_associations_action.shortcut().toString(),'F5')
+                    owner.refresh_associations_action.trigger()
+                wait(lambda:owner.import_worker is None and owner.state['jobs'][0].get('task_voice_path')==str(path) and owner._voice_duration is not None)
                 self.assertEqual(owner.state['jobs'][0]['task_subtitle_path'],str(subtitle));self.assertIn(path.name,owner.voice_label.text())
                 self.assertEqual(store.load()['jobs'][0]['task_voice_path'],str(path))
+                if trigger!='cached':
+                    self.assertIn('刷新完成',owner.status.text())
+                    wait(lambda:owner.preview_worker is None)
+                    owner.refresh_preview_button.click()
+                    self.assertIsNotNone(owner.import_worker,'Manual refresh must rescan the project even when the poster is cached')
+                    wait(lambda:owner.import_worker is None and owner.preview_worker is None)
+                    with patch.object(owner,'is_batch_busy',return_value=True):
+                        owner._set_work_controls(True)
+                        self.assertFalse(owner.refresh_preview_button.isEnabled())
+                        self.assertFalse(owner.refresh_associations_action.isEnabled())
+                        owner.refresh_associations()
+                        self.assertIn('正在渲染',owner.status.text())
+                        self.assertIsNone(owner.preview_worker)
             finally:
                 owner.close();end=time.monotonic()+10
                 while owner.has_local_work() and time.monotonic()<end:self.app.processEvents();time.sleep(.01)

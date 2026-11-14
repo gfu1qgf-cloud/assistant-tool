@@ -308,9 +308,9 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
         self.duration_status = QtWidgets.QLabel("成品长度按“时长适配”设置；启用人声时跟随人声。")
         self.duration_status.setWordWrap(True)
         preview_layout.addWidget(self.duration_status)
-        self.refresh_preview_button = QtWidgets.QPushButton("刷新预览")
-        self.refresh_preview_button.setToolTip("保留动画快览时间，重新读取当前视频背景／已保存节点，并更新图层；不生成视频。")
-        self.refresh_preview_button.clicked.connect(self.refresh_preview)
+        self.refresh_preview_button = QtWidgets.QPushButton("刷新关联 / 预览")
+        self.refresh_preview_button.setToolTip("立即重新检查当前项目全部文案、任务的关联文件，并刷新预览（F5）。")
+        self.refresh_preview_button.clicked.connect(self.refresh_associations)
         preview_tools = QtWidgets.QHBoxLayout()
         self.show_bounds_checkbox = QtWidgets.QCheckBox("显示框边界")
         self.show_bounds_checkbox.setChecked(self.state["settings"]["show_layer_bounds"])
@@ -926,7 +926,7 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
         self.name.setToolTip("任务成品按主程序整理规则命名，按下方“导出到”保存。手动改名后使用自定义名称，可能不再被整理规则识别。" if job.get("task_dir") else "自定义成品文件名。")
         try:
             voice = self.active_voice(job)
-            displayed = voice or (job.get("voice_path", "") if not self.controls["use_voice"].isChecked() else "")
+            displayed = voice or ((job.get("voice_path") or job.get('task_voice_path','')) if not self.controls["use_voice"].isChecked() else "")
             self.voice_label.setText("当前人声：" + (Path(displayed).name if displayed else "无") +
                                      ("（未启用）" if displayed and not self.controls["use_voice"].isChecked() else ""))
             self.voice_label.setToolTip(displayed)
@@ -975,7 +975,7 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
             if timing is not None:
                 settings['_editor_timing'] = timing
                 settings['_preview_voice'] = voice
-            displayed = voice or (job.get("voice_path", "") if not settings["use_voice"] else "")
+            displayed = voice or ((job.get("voice_path") or job.get('task_voice_path','')) if not settings["use_voice"] else "")
             self.voice_label.setText("当前人声：" + (Path(displayed).name if displayed else "无") +
                                      ("（未启用）" if displayed and not settings["use_voice"] else ""))
             self.voice_label.setToolTip(displayed)
@@ -1123,6 +1123,10 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
 
     def _update_preview_status(self):
         self.preview_status.setText("\n".join(part for part in (self._background_error,self._framing_status,self._overlay_status) if part))
+
+    def refresh_associations(self):
+        from .association_refresh import start
+        start(self)
 
     def refresh_preview(self):
         if self.is_batch_busy():
@@ -1949,6 +1953,8 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
 
     def _set_work_controls(self, busy):
         was_read_only = self.jobs.read_only
+        self.refresh_preview_button.setEnabled(not busy)
+        self.refresh_associations_action.setEnabled(not busy)
         self.animation_timeline.setEnabled(not busy)
         if getattr(self, 'pool_preview', None) is not None:
             self.pool_preview.setEnabled(not busy)

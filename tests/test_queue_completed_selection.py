@@ -61,6 +61,26 @@ class CompletedSelectionTests(TotalListTests):
         if os.environ.get('LZX_TOTAL_LIST_QA'):
             self.assertTrue(self.dialog.grab().save(str(Path(os.environ['LZX_TOTAL_LIST_QA'])/'completed-selection.png')))
 
+    def test_visible_select_all_and_clear_buttons_include_completed_without_starting_export(self):
+        self.mixed();self.flat.check_all.click()
+        self.assertEqual(self.flags(),{'done':True,'pending':True,'failed':True})
+        self.assertEqual(self.flags(self.other),{'other-done':True,'other-pending':True})
+        self.flat.clear_all.click()
+        self.assertTrue(all(v is False for v in self.flags().values()))
+        self.assertTrue(all(v is False for v in self.flags(self.other).values()))
+        self.assertFalse(self.manager.records())
+        self.assertTrue(self.flat.check_all.isVisible());self.assertTrue(self.flat.clear_all.isVisible())
+
+    def test_select_all_buttons_respect_search_and_skip_running_projects(self):
+        self.mixed();self.flat.clear_all.click()
+        self.flat.search.setText('项目乙');self.flat.check_all.click()
+        self.assertTrue(all(v is False for v in self.flags().values()))
+        self.assertTrue(all(v is True for v in self.flags(self.other).values()))
+        self.flat.start();before=self.flags(self.other)
+        self.flat.search.clear();self.flat.clear_all.click()
+        self.assertEqual(self.flags(self.other),before)
+        self.assertTrue(all(v is False for v in self.flags().values()))
+
 
 def load_tests(loader,tests,pattern):
     suite=unittest.TestSuite()
