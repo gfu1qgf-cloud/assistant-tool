@@ -45,7 +45,8 @@ def unique_jobs(targets):
 def run_reference_job(payload, context):
     """One independently managed task; commit its cache even if the view closed."""
     job, settings = payload["job"], payload["settings"]
-    existing = cached_sheets(job.folder, job.url)
+    separate=bool(settings.get('separate',False))
+    existing = cached_sheets(job.folder, job.url,separate=separate)
     if existing:
         context.report("已缓存，跳过下载", 99)
         return {"paths": [str(path) for path in existing], "cached": True}
@@ -68,24 +69,25 @@ def run_reference_job(payload, context):
             context.report("生成大图中", 75)
             sheets = render_contact_sheets(
                 video, duration, cuts, job.folder, title=f"{title}_{identifier}",
+                separate=separate,filename_prefix='FB_'+reference_key(job.url),
                 progress=lambda percent: context.report("生成大图中", 75 + int(percent * .24)),
                 canceled=context.is_canceled,
             )
             context.check_canceled()
-            remember_sheets(job.folder, job.url, sheets)
+            remember_sheets(job.folder, job.url, sheets,separate=separate)
             return {"paths": [str(path) for path in sheets], "cached": False}
     except (DownloadCanceled, AnalysisCanceled) as error:
         raise BackgroundTaskCanceled("操作已取消。") from error
 
 
 def run_batch(jobs, *, browser="", profile="", sensitivity=5, min_scene_seconds=0.8,
-              max_interval=15, progress=None, canceled=None):
+              max_interval=15, progress=None, canceled=None,separate=False):
     """Return per-job outcomes; one bad URL never aborts the rest of the queue."""
     canceled = canceled or (lambda: False)
     progress = progress or (lambda _index, _status: None)
     outcomes = []
     settings = dict(browser=browser, profile=profile, sensitivity=sensitivity,
-                    min_scene_seconds=min_scene_seconds, max_interval=max_interval)
+                    min_scene_seconds=min_scene_seconds, max_interval=max_interval,separate=bool(separate))
     for index, job in enumerate(jobs):
         if canceled(): break
         class Context:

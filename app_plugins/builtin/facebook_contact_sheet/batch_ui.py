@@ -3,7 +3,7 @@
 from qt_compat import QtCore, QtGui, QtWidgets
 
 from .batch import run_batch, run_reference_job
-from .task_cache import cached_sheets
+from .task_cache import cached_sheets,reference_key
 from model.BackgroundTasks import BackgroundTaskManager, directory_resource, ACTIVE
 from .background import bind_reference_result
 
@@ -59,6 +59,11 @@ class BatchContactSheetDialog(QtWidgets.QDialog):
         options.addWidget(self.max_interval)
         layout.addLayout(options)
 
+        self.separate_images=QtWidgets.QCheckBox('分别保存图片（每个镜头一张，不合成大图）',self)
+        self.separate_images.setToolTip('所有结果直接放在任务的Facebook参考大图中，用文件名区分来源；合成大图与独立图片的缓存互不混用。')
+        self.separate_images.toggled.connect(self._refresh_cached)
+        layout.addWidget(self.separate_images)
+
         self.table = QtWidgets.QTableWidget(0, 3, self)
         self.table.setHorizontalHeaderLabels(["任务", "Facebook 链接", "状态"])
         self.table.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -101,7 +106,7 @@ class BatchContactSheetDialog(QtWidgets.QDialog):
         self.table.setRowCount(len(self._jobs))
         cached_count = 0
         for index, job in enumerate(self._jobs):
-            cached = bool(cached_sheets(job.folder, job.url))
+            cached = bool(cached_sheets(job.folder, job.url,separate=self.separate_images.isChecked()))
             cached_count += cached
             for column, value in enumerate((job.label, job.url, "已缓存" if cached else "待生成")):
                 item = QtWidgets.QTableWidgetItem(value)
@@ -124,6 +129,7 @@ class BatchContactSheetDialog(QtWidgets.QDialog):
             "sensitivity": self.sensitivity.value(),
             "min_scene_seconds": self.min_scene.value(),
             "max_interval": self.max_interval.value(),
+            "separate": self.separate_images.isChecked(),
         }
         self._active_settings = settings
         self._submit_rows(range(len(self._jobs)), settings)
@@ -135,7 +141,8 @@ class BatchContactSheetDialog(QtWidgets.QDialog):
                 self._handles[index] = self._manager.submit(
                     owner="facebook_contact_sheet", title="FB 参考大图 · " + job.label,
                     runner=run_reference_job, payload={"job": job, "settings": settings}, kind="media",
-                    resources=[directory_resource(job.folder)], dedup_key="batch:" + directory_resource(job.folder),
+                    resources=[directory_resource(job.folder)+':'+reference_key(job.url)],
+                    dedup_key="batch:"+directory_resource(job.folder)+':'+reference_key(job.url)+':'+str(settings.get('separate',False)),
                     retryable=True,
                 )
                 bind_reference_result(self._handles[index], self)
@@ -165,6 +172,7 @@ class BatchContactSheetDialog(QtWidgets.QDialog):
                 item.setToolTip(record["error"] or record["stage"])
         self.start_button.setEnabled(bool(self._jobs) and not active)
         self.cancel_button.setEnabled(bool(active))
+        self.separate_images.setEnabled(not active)
         if self._handles:
             self.summary.setText(f"共 {len(self._jobs)} 个 · 运行/等待 {active} · 完成 {done} · 失败 {failed} · 取消 {canceled}")
         if self._was_busy and not active:
@@ -175,14 +183,18 @@ class BatchContactSheetDialog(QtWidgets.QDialog):
         if row >= len(self._jobs):
             return
         job = self._jobs[row]
-        sheets = cached_sheets(job.folder, job.url)
+        sheets = cached_sheets(job.folder, job.url,separate=self.separate_images.isChecked())
         if not sheets:
             QtWidgets.QMessageBox.information(self, "尚未生成", "这条参考大图尚未生成成功。")
             return
-        local = sheets[0] if len(sheets) == 1 else job.folder
+        local = sheets[0] if len(sheets) == 1 else sheets[0].parent
         handle = self._handles.get(row)
-        if handle is not None and handle.has_result_handler(): handle.show_result()
+        if handle is not None and handle.isRunning():return
+        if handle is not None and handle.has_result_handler() and self._active_settings and self._active_settings.get('separate',False)==self.separate_images.isChecked(): handle.show_result()
         else: QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(str(local)))
+
+    def _refresh_cached(self):
+        if self._jobs and not self.is_busy():self.set_jobs(self._jobs)
 
     def cancel_work(self):
         if self.is_busy():

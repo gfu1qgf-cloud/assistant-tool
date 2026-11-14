@@ -1,5 +1,5 @@
 """Shot-change analysis and contact-sheet rendering for short/medium videos."""
-from model.AppDataStorage import data_directory
+from model.AppDataStorage import data_directory, data_file
 
 from dataclasses import dataclass
 from pathlib import Path
@@ -227,7 +227,8 @@ def _representative_frame(capture, start, end, *, opening=False, canceled=None):
     return best
 
 
-def render_contact_sheets(video_path, duration, cuts, output_dir, *, title="视频", progress=None, canceled=None):
+def render_contact_sheets(video_path, duration, cuts, output_dir, *, title="视频", progress=None, canceled=None,
+                          separate=False, filename_prefix=""):
     """Render all shots, splitting only when one image would become unwieldy."""
     import cv2
     from PIL import Image, ImageDraw, ImageOps
@@ -242,12 +243,30 @@ def render_contact_sheets(video_path, duration, cuts, output_dir, *, title="视�
     capture = cv2.VideoCapture(str(video_path))
     if not capture.isOpened():
         raise ValueError("无法重新读取视频画面。")
+    prefix=re.sub(r'[^A-Za-z0-9_-]', '_', str(filename_prefix))[:40]
+    prefix=(prefix+'_') if prefix else ''
+    stem = re.sub(r'[<>:"/\\|?*\x00-\x1f]+', "_", str(title)).strip(" ._")[:58] or "视频"
+    paths = []
+    if separate:
+        try:
+            for index in range(shot_count):
+                if canceled and canceled():raise AnalysisCanceled("已取消生成分镜图。")
+                start,end=boundaries[index:index+2]
+                frame=_representative_frame(capture,start,end,opening=index==0,canceled=canceled)
+                if frame is None:raise ValueError(f"第{index+1}个镜头无法读取画面，未标记生成完成。")
+                timestamp=format_timestamp(start).replace(':','-')
+                path=output_dir/f'{prefix}{stem}_分镜{index+1:03d}_{timestamp}.jpg'
+                image=Image.fromarray(cv2.cvtColor(frame,cv2.COLOR_BGR2RGB))
+                with data_file(path).atomic_writer(binary=True) as stream:
+                    image.save(stream,'JPEG',quality=95,optimize=True)
+                paths.append(path)
+                if progress:progress(int((index+1)/shot_count*100))
+        finally:capture.release()
+        return paths
     portrait = capture.get(cv2.CAP_PROP_FRAME_HEIGHT) > capture.get(cv2.CAP_PROP_FRAME_WIDTH)
     columns, cell_width, cell_height = 4, 310, 465 if portrait else 255
     margin, label_height, per_page = 14, 36, 80 if portrait else 120
     font = _font(16)
-    stem = re.sub(r'[<>:"/\\|?*\x00-\x1f]+', "_", str(title)).strip(" ._")[:58] or "视频"
-    paths = []
     try:
         for page_start in range(0, shot_count, per_page):
             page_end = min(shot_count, page_start + per_page)
@@ -275,8 +294,9 @@ def render_contact_sheets(video_path, duration, cuts, output_dir, *, title="视�
                 if progress:
                     progress(int((shot_index + 1) / shot_count * 100))
             suffix = f"_{len(paths) + 1:02d}" if shot_count > per_page else ""
-            path = output_dir / f"{stem}_分镜速览{suffix}.jpg"
-            sheet.save(path, "JPEG", quality=90, optimize=True)
+            path = output_dir / f"{prefix}{stem}_分镜速览{suffix}.jpg"
+            with data_file(path).atomic_writer(binary=True) as stream:
+                sheet.save(stream, "JPEG", quality=90, optimize=True)
             paths.append(path)
     finally:
         capture.release()

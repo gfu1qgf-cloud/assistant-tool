@@ -60,15 +60,37 @@ def reference_key(url):
 
 
 def cache_directory(task_dir, url):
-    return Path(task_dir) / _CACHE_FOLDER_NAME / reference_key(url)
+    reference_key(url)  # Validate the declared source without nesting output folders.
+    return Path(task_dir) / _CACHE_FOLDER_NAME
 
 
-def cached_sheets(folder, url):
+def manifest_path(folder,url,separate=False):
+    return Path(folder)/f'FB_{reference_key(url)}_{"frames" if separate else "sheet"}.json'
+
+
+def cached_sheets(folder, url, *, separate=None):
     folder = Path(folder)
+    modes=(False,True) if separate is None else (bool(separate),)
+    manifests=[(manifest_path(folder,url,mode),folder,2,mode) for mode in modes]
+    if separate is None:
+        def modified(item):
+            try:return item[0].stat().st_mtime_ns
+            except OSError:return 0
+        manifests.sort(key=modified,reverse=True)
+    if separate is not True:
+        manifests.extend((parent/'manifest.json',parent,1,False) for parent in (folder/reference_key(url),folder))
+    for manifest,parent,version,mode in manifests:
+        paths=_cached_manifest(manifest,parent,url,version,mode)
+        if paths:return paths
+    return []
+
+
+def _cached_manifest(manifest_path,folder,url,version,mode):
     try:
-        manifest = json.loads(data_file(folder / "manifest.json").read_text(encoding="utf-8"))
-        if manifest.get("version") != 1 or manifest.get("key") != reference_key(url):
+        manifest = json.loads(data_file(manifest_path).read_text(encoding="utf-8"))
+        if manifest.get("version") != version or manifest.get("key") != reference_key(url):
             return []
+        if version==2 and manifest.get('separate') is not mode:return []
         if manifest.get("analysis_version") != ANALYSIS_VERSION:
             return []
         names = manifest.get("files")
@@ -87,7 +109,7 @@ def cached_sheets(folder, url):
         return []
 
 
-def remember_sheets(folder, url, sheets):
+def remember_sheets(folder, url, sheets, *, separate=False):
     folder = Path(folder)
     data_directory(folder).ensure(parents=True, exist_ok=True)
     names = []
@@ -98,12 +120,12 @@ def remember_sheets(folder, url, sheets):
         names.append(path.name)
     if not names:
         raise ValueError("没有可缓存的分镜大图。")
-    payload = {"version": 1, "analysis_version": ANALYSIS_VERSION,
-               "key": reference_key(url), "files": names}
+    payload = {"version": 2, "analysis_version": ANALYSIS_VERSION,
+               "key": reference_key(url), "files": names, "separate":bool(separate)}
     temporary = folder / (".manifest-" + uuid4().hex + ".tmp")
     try:
         data_file(temporary).write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-        data_io.replace(temporary, folder / "manifest.json")
+        data_io.replace(temporary, manifest_path(folder,url,separate))
     finally:
         if temporary.exists():
             data_file(temporary).remove()

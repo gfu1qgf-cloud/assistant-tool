@@ -10,7 +10,7 @@ from model.BackgroundTasks import BackgroundTaskManager, BackgroundTaskCanceled,
 
 from .download import DownloadCanceled, download_facebook_video, is_facebook_video_url
 from .engine import AnalysisCanceled, Cut, add_overview_frames, detect_cuts, format_timestamp, render_contact_sheets
-from .task_cache import remember_sheets
+from .task_cache import remember_sheets, reference_key
 from .background import bind_reference_result
 
 
@@ -52,6 +52,7 @@ class _JobRunner:
         self.previous = payload['previous']
         self.context = context
         self.task_reference = payload.get('task_reference')
+        self.separate=bool(payload.get('separate',False))
         self.phase = 0
 
     def report(self, message, percent):
@@ -100,20 +101,23 @@ class _JobRunner:
                 cuts = self.previous["cuts"]
             identifier = hashlib.sha256(self.source.encode("utf-8")).hexdigest()[:8]
             self.phase = 2
-            self.report("正在拼接分镜大图", 0)
+            message="正在分别保存分镜图片" if self.separate else "正在拼接分镜大图"
+            self.report(message, 0)
+            prefix='FB_'+reference_key(self.source) if is_facebook_video_url(self.source) else 'Local_'+hashlib.sha256(self.source.encode('utf-8')).hexdigest()[:16]
             paths = render_contact_sheets(
                 video, duration, cuts, self.output_dir,
                 title=f"{title}_{identifier}",
-                progress=lambda percent: self.report("正在拼接分镜大图", percent),
+                separate=self.separate,filename_prefix=prefix,
+                progress=lambda percent: self.report(message, percent),
                 canceled=self.isInterruptionRequested,
             )
             self.context.check_canceled()
             if self.task_reference:
                 url, folder = self.task_reference
-                remember_sheets(folder, url, paths)
+                remember_sheets(folder, url, paths,separate=self.separate)
                 self.context.log(f"任务参考大图已缓存到：{folder}")
             return {"source": self.source, "video": str(video), "title": title, "duration": duration,
-                    "cuts": cuts, "paths": [str(path) for path in paths]}
+                    "cuts": cuts, "paths": [str(path) for path in paths],"separate":self.separate}
         except (AnalysisCanceled, DownloadCanceled) as error:
             raise BackgroundTaskCanceled("操作已取消。") from error
 
@@ -207,6 +211,10 @@ class ContactSheetDialog(QtWidgets.QDialog):
         detection_options.addStretch(1)
         layout.addLayout(detection_options)
 
+        self.separate_images=QtWidgets.QCheckBox('分别保存图片（每个镜头一张，不合成大图）',self)
+        self.separate_images.setToolTip('保留各镜头画面的完整尺寸，不裁切、不叠加标签；取消勾选则拼成分镜大图。两种输出均直接保存在所选目录，任务参考统一放在Facebook参考大图。')
+        layout.addWidget(self.separate_images)
+
         run_row = QtWidgets.QHBoxLayout()
         self.run_button = QtWidgets.QPushButton("读取视频并生成分镜图", self)
         self.run_button.clicked.connect(self._analyze)
@@ -267,7 +275,7 @@ class ContactSheetDialog(QtWidgets.QDialog):
         scroll.setWidget(self.preview)
         right_layout.addWidget(scroll, 1)
         open_row = QtWidgets.QHBoxLayout()
-        self.open_image = QtWidgets.QPushButton("打开大图", right)
+        self.open_image = QtWidgets.QPushButton("打开图片", right)
         self.open_image.clicked.connect(self._open_image)
         open_row.addWidget(self.open_image)
         self.open_folder = QtWidgets.QPushButton("打开导出目录", right)
@@ -371,13 +379,15 @@ class ContactSheetDialog(QtWidgets.QDialog):
             browser=self.browser_combo.currentData(), profile=self.profile_edit.text().strip(),
             sensitivity=self.sensitivity.value(), min_scene_seconds=self.min_scene.value(),
             max_interval=self.max_interval.value(),
+            separate=self.separate_images.isChecked(),
             previous=previous, task_reference=self._task_reference,
         )
         try:
+            resource=directory_resource(output)+(':'+reference_key(self._source) if is_facebook_video_url(self._source) else '')
             self._worker = self._manager.submit(
                 owner="facebook_contact_sheet", title="FB 参考大图 · " + (getattr(self, "task_label", "") or Path(self._source).name),
-                runner=_run_job, payload=payload, kind="media", resources=[directory_resource(output)],
-                dedup_key="single:" + directory_resource(output), retryable=True)
+                runner=_run_job, payload=payload, kind="media", resources=[resource],
+                dedup_key="single:" + resource+':'+str(payload['separate']), retryable=True)
         except (RuntimeError, ValueError, TypeError) as error:
             self._log(f"无法提交参考大图任务：{error}")
             QtWidgets.QMessageBox.information(self, "无法提交任务", str(error))
@@ -390,6 +400,7 @@ class ContactSheetDialog(QtWidgets.QDialog):
         self.run_button.setEnabled(False)
         self.reexport_button.setEnabled(False)
         self.cancel_button.setEnabled(True)
+        self.separate_images.setEnabled(False)
         self.progress.setValue(0)
         self.status.setText("开始处理…")
 
@@ -405,13 +416,13 @@ class ContactSheetDialog(QtWidgets.QDialog):
         count = len(result["cuts"]) + 1
         self.summary.setText(
             f"共 {count} 个镜头 · 视频 {format_timestamp(result['duration'])} · "
-            f"已导出 {len(result['paths'])} 张大图\n" + "\n".join(result["paths"])
+            f"已导出 {len(result['paths'])} 张{'独立图片' if result.get('separate') else '大图'}\n" + "\n".join(result["paths"])
         )
         self.status.setText("完成。可修正切点后重新生成。")
         self.progress.setRange(0, 100)
         self.progress.setValue(100)
         self._show_preview(result["paths"][0])
-        self._log(f"分镜生成完成：{count} 个镜头，{len(result['paths'])} 张大图。")
+        self._log(f"分镜生成完成：{count} 个镜头，{len(result['paths'])} 张{'独立图片' if result.get('separate') else '大图'}。")
         if self._task_reference is not None:
             url, folder = self._task_reference
             if result.get("source") == url and all(
@@ -429,6 +440,7 @@ class ContactSheetDialog(QtWidgets.QDialog):
     def _on_finished(self):
         self.run_button.setEnabled(True)
         self.cancel_button.setEnabled(False)
+        self.separate_images.setEnabled(True)
         self.reexport_button.setEnabled(self._result is not None)
 
     def _fill_cuts(self, cuts):

@@ -167,6 +167,7 @@ class FacebookLinkTests(unittest.TestCase):
             self.assertTrue(image.is_file())
             task_cache.remember_sheets(folder, url, [image])
             self.assertEqual(task_cache.cached_sheets(folder, url), [image])
+            manifest=task_cache.manifest_path(folder,url)
             payload = json.loads(manifest.read_text(encoding="utf-8"))
             payload["analysis_version"] += 1
             manifest.write_text(json.dumps(payload), encoding="utf-8")

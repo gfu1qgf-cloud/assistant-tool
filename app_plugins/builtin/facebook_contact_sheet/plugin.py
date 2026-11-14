@@ -7,7 +7,7 @@ from .task_cache import cache_directory, cached_sheets, extract_facebook_referen
 class FacebookContactSheetPlugin:
     plugin_id = "facebook_contact_sheet"
     display_name = "Facebook 视频分镜速览"
-    version = "1.4"
+    version = "1.5"
     required_api_version = 1
 
     def __init__(self):
@@ -30,7 +30,7 @@ class FacebookContactSheetPlugin:
             title="Facebook 视频分镜速览…",
             callback=lambda _rows: self.open_dialog(),
             locations=frozenset({MAIN_MENU}),
-            tooltip="粘贴 Facebook 链接或选择本地视频，自动检测换镜头并导出分镜大图",
+            tooltip="粘贴 Facebook 链接或选择本地视频，可合成大图或分别保存各镜头图片",
             order=18,
         ))
         context.register_command(PluginCommand(
@@ -155,7 +155,7 @@ class FacebookContactSheetPlugin:
                 self.context.log(f"任务 {target['label']}：未找到参考大图，正在后台自动生成；完成后自动打开。")
                 return dialog
             return None
-        local = sheets[0] if len(sheets) == 1 else cache_directory(target["target_dir"], url)
+        local = sheets[0] if len(sheets) == 1 else sheets[0].parent
         QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(str(local)))
         self.context.log(f"任务 {target['label']}：参考大图命中本地缓存，未访问 Facebook。")
         return sheets
