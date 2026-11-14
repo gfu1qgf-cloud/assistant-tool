@@ -17,6 +17,9 @@ DEFAULTS = {
 }
 MAX_STRIP_PIXELS = 16_777_216
 MAX_STRIP_HEIGHT = 32768
+START_ANCHORS=(('首行居中','first_center'),('首行贴顶','first_top'),('首行贴底','first_bottom'),('从框外进入','outside'))
+END_ANCHORS=(('尾行居中','last_center'),('尾行贴顶','last_top'),('尾行贴底','last_bottom'),('滚出框外','outside'))
+LEGACY_ANCHORS={'top':'旧版：首端贴顶','center':'旧版：整段居中','bottom':'旧版：末端贴底'}
 
 
 def normalize_scroll(layer):
@@ -27,9 +30,9 @@ def normalize_scroll(layer):
     if layer["scroll_offset_units"] not in {"percent", "pixels"}:
         raise ValueError("文字动画位置单位无效。")
     for key in ('scroll_start_anchor', 'scroll_end_anchor'):
-        if layer[key] not in {'outside', 'top', 'center', 'bottom'}:
+        if layer[key] not in ({v for _label,v in (START_ANCHORS if key=='scroll_start_anchor' else END_ANCHORS)}|set(LEGACY_ANCHORS)):
             raise ValueError('文字滚动起点／终点位置无效。')
-    for key, low, high in (("scroll_start_delay", 0, 86400), ("scroll_end_early", 0, 86400),
+    for key, low, high in (("scroll_start_delay", -86400, 86400), ("scroll_end_early", -86400, 86400),
                            ("scroll_start_offset", -10000, 10000), ("scroll_end_offset", -10000, 10000),
                            ("scroll_edge_fade", 0, 50)):
         try:
@@ -48,7 +51,7 @@ def is_scrolling(layer):
 def new_scrolling_component():
     from .components import new_text_component
     layer = new_text_component()
-    layer.update(DEFAULTS, name="滚动文字框", text_animation="up", scroll_start_anchor="top")
+    layer.update(DEFAULTS, name="滚动文字框", text_animation="up", scroll_start_anchor="first_top")
     return layer
 
 
@@ -60,26 +63,37 @@ def box_geometry(layer, width, height):
             max(1, round(width*layer["width"]/100)), max(1, round(height*layer["height"]/100)))
 
 
-def scroll_endpoints(layer, box_height, text_height):
+def scroll_endpoints(layer, box_height, text_height, *, line_bounds=None):
     first, last = (box_height, -text_height) if layer["text_animation"] == "up" else (-text_height, box_height)
     positions = {'top': 0., 'center': (box_height-text_height)/2, 'bottom': box_height-text_height}
-    first = positions.get(layer.get('scroll_start_anchor', 'outside'), first)
-    last = positions.get(layer.get('scroll_end_anchor', 'outside'), last)
+    def position(anchor,outside):
+        if anchor in positions:return positions[anchor]
+        if anchor=='outside':return outside
+        if line_bounds is None:
+            # Historic height-only callers can still request the first strip edge.
+            if anchor=='first_top':return 0.
+            raise ValueError('首尾行定位需要实际排版的行边界，请先生成滚动文字图层。')
+        top,bottom=line_bounds[0 if anchor.startswith('first_') else 1]
+        if anchor.endswith('_top'):return -top
+        if anchor.endswith('_bottom'):return box_height-bottom
+        return (box_height-top-bottom)/2
+    first = position(layer.get('scroll_start_anchor', 'outside'), first)
+    last = position(layer.get('scroll_end_anchor', 'outside'), last)
     return (first + layer['scroll_start_offset']*box_height/100,
             last + layer['scroll_end_offset']*box_height/100)
 
 
-def scroll_timing(layer, duration, box_height, text_height):
+def scroll_timing(layer, duration, box_height, text_height, *, line_bounds=None):
     duration = float(duration)
     start, finish = layer["scroll_start_delay"], duration-layer["scroll_end_early"]
     if not math.isfinite(duration) or duration <= 0 or finish-start < .001:
-        raise ValueError(f"{layer['name']}：开始延迟＋提前结束必须小于最终视频时长（{duration:.3f} 秒）。")
-    first, last = scroll_endpoints(layer, box_height, text_height)
+        raise ValueError(f"{layer['name']}：起始偏移后的开始时刻必须早于结束偏移后的终点时刻（最终视频时长 {duration:.3f} 秒）。")
+    first, last = scroll_endpoints(layer, box_height, text_height,line_bounds=line_bounds)
     return start, finish, first, last
 
 
-def scroll_position(layer, duration, box_height, text_height, time):
-    start, finish, first, last = scroll_timing(layer, duration, box_height, text_height)
+def scroll_position(layer, duration, box_height, text_height, time, *, line_bounds=None):
+    start, finish, first, last = scroll_timing(layer, duration, box_height, text_height,line_bounds=line_bounds)
     fraction = max(0., min(1., (float(time)-start)/(finish-start)))
     return first+(last-first)*fraction
 
@@ -90,6 +104,25 @@ def _image(width, height):
         raise ValueError("滚动文字图层分配失败，请降低字号或缩短文案。")
     image.fill(QtCore.Qt.GlobalColor.transparent)
     return image
+
+
+def rendered_line_bounds(groups,padding,text_height):
+    """Laid-out visual rows, including the same effect margin as the strip."""
+    rows=[];vertical=False
+    for layout,offset in groups:
+        if hasattr(layout,'placements'):  # Upright vertical columns share row Y positions.
+            vertical=True
+            for cell,_x,y in layout.placements:
+                for i in range(cell.lineCount()):
+                    line=cell.lineAt(i);top=offset+y+line.y()
+                    rows.append((top,top+line.height()+2*padding))
+        else:
+            for i in range(layout.lineCount()):
+                line=layout.lineAt(i);top=offset+line.y()
+                rows.append((top,top+line.height()+2*padding))
+    if not rows:return ((0.,float(text_height)),)*2
+    if vertical:return min(rows,key=lambda row:row[0]),max(rows,key=lambda row:row[1])
+    return rows[0],rows[-1]
 
 
 def render_scroll_assets(layer, width, height):
@@ -143,7 +176,8 @@ def render_scroll_assets(layer, width, height):
             painter.end()
     return {"strip": strip, "background": background, "x": x, "y": y,
             "width": bw, "height": bh, "text_height": th, "font_size": size,
-            "strip_left":bleed[0],"strip_top":bleed[2]}
+            "strip_left":bleed[0],"strip_top":bleed[2],
+            "line_bounds":rendered_line_bounds(groups,padding,th)}
 
 
 def render_scroll_preview(layer, width, height, *, duration=None, time=None):
@@ -152,9 +186,9 @@ def render_scroll_preview(layer, width, height, *, duration=None, time=None):
     if duration is None:
         # Show the actual start, including its anchor and offset. A hardcoded
         # y=0 previously made every position edit appear to have no effect.
-        y = scroll_endpoints(layer, bh, th)[0]
+        y = scroll_endpoints(layer, bh, th,line_bounds=assets['line_bounds'])[0]
     else:
-        y = scroll_position(layer, duration, bh, th, 0 if time is None else time)
+        y = scroll_position(layer, duration, bh, th, 0 if time is None else time,line_bounds=assets['line_bounds'])
     viewport = _image(bw, bh)
     painter = QtGui.QPainter(viewport)
     try:
@@ -182,7 +216,7 @@ def render_scroll_preview(layer, width, height, *, duration=None, time=None):
 
 def prepare_scroll_plane(layer, width, height, duration, directory):
     assets = render_scroll_assets(layer, width, height)
-    timing = scroll_timing(layer, duration, assets["height"], assets["text_height"])
+    timing = scroll_timing(layer, duration, assets["height"], assets["text_height"],line_bounds=assets['line_bounds'])
     token = "scroll_"+uuid4().hex
     for key in ("strip", "background"):
         path = Path(directory)/(token+"_"+key+".png")
@@ -198,7 +232,7 @@ def add_scroll_plane(args, filters, assets, input_index, background, label, dura
     """Shared batch/node backend. Consumes two PNG inputs; returns their count."""
     bw, bh = assets["width"], assets["height"]
     start, finish, first, last = assets["timing"]
-    expression = f"{first:.9f}+({last-first:.9f})*clip((t-{start:.9f})/{finish-start:.9f},0,1)"
+    expression = f"{first:.9f}+({last-first:.9f})*clip((t-({start:.9f}))/{finish-start:.9f},0,1)"
     if assets.get("strip_top",0): expression += f"-{assets['strip_top']}"
     rate = f"{fps.numerator}/{fps.denominator}" if hasattr(fps, "numerator") else str(fps)
     local_duration = timing.source_duration(duration) if timing else duration

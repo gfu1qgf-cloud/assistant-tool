@@ -52,7 +52,7 @@ class ScrollTextTests(unittest.TestCase):
         self.assertFalse(is_scrolling(caption))
 
     def test_parameter_validation_and_nonfinite_values(self):
-        for key, bad in (("text_animation", "bad"), ("scroll_start_delay", -1),
+        for key, bad in (("text_animation", "bad"), ("scroll_start_delay", float("nan")),
                          ("scroll_end_early", float("nan")), ("scroll_start_offset", float("inf")),
                          ("scroll_edge_fade", 51), ("scroll_offset_units", "bad")):
             with self.subTest(key=key), self.assertRaises(ValueError):
@@ -184,7 +184,7 @@ class ScrollTextTests(unittest.TestCase):
             args, filters = [], []
             self.assertEqual(add_scroll_plane(args, filters, assets, 4, "input", "output", 6, Fraction(25)), 2)
             self.assertEqual(args.count("-i"), 2)
-            self.assertIn("(t-1.000000000)/3.000000000", "\n".join(filters))
+            self.assertIn("(t-(1.000000000))/3.000000000", "\n".join(filters))
             self.assertIn("[5:v]", "\n".join(filters))
             self.assertIn("d=6.000000000", "\n".join(filters))
 

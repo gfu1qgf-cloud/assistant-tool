@@ -2,7 +2,7 @@
 import copy
 from qt_compat import QtCore, QtWidgets
 from .component_ui import Combo
-from .scrolling_text import DEFAULTS, normalize_scroll
+from .scrolling_text import DEFAULTS, normalize_scroll, START_ANCHORS, END_ANCHORS, LEGACY_ANCHORS
 
 
 class MotionSpin(QtWidgets.QDoubleSpinBox):
@@ -29,14 +29,13 @@ class ScrollTextProperties(QtWidgets.QWidget):
             self.mode.addItem(label, value)
         form.addRow("文字动画", self.mode)
         self.start_anchor, self.end_anchor = Combo(), Combo()
-        for widget, outside_label in ((self.start_anchor, '从框外进入'), (self.end_anchor, '滚出框外')):
-            for label, value in ((outside_label,'outside'), ('首行贴顶','top'), ('整段居中','center'), ('末行贴底','bottom')):
-                widget.addItem(label, value)
+        for widget, choices in ((self.start_anchor,START_ANCHORS),(self.end_anchor,END_ANCHORS)):
+            self._anchor_options(widget,choices,'outside')
             widget.currentIndexChanged.connect(self._edit)
         form.addRow('起点位置', self.start_anchor)
         form.addRow('终点位置', self.end_anchor)
-        self.start_anchor.setToolTip('先选起点，再用起点偏移微调。向上滚动的框外起点在下方，向下滚动则在上方。')
-        self.end_anchor.setToolTip('按实际文案高度计算终点；选择末行贴底可在最后一段仍可见时结束滚动。')
+        self.start_anchor.setToolTip('按自动换行后的首行定位，含描边／阴影留白；文字偏移可继续微调。')
+        self.end_anchor.setToolTip('按自动换行后的尾行定位，含描边／阴影留白；不以整段文字中心代替尾行。')
         self.units = Combo()
         self.units.addItem("框高度百分比 %", "percent")
         self.units.addItem("像素 px", "pixels")
@@ -44,8 +43,8 @@ class ScrollTextProperties(QtWidgets.QWidget):
         form.addRow("位置偏移单位", self.units)
         self.controls = {}
         for key, label, low, high, suffix in (
-            ("scroll_start_delay", "开始延迟", 0, 86400, " 秒"),
-            ("scroll_end_early", "提前结束", 0, 86400, " 秒"),
+            ("scroll_start_delay", "起始偏移", -86400, 86400, " 秒"),
+            ("scroll_end_early", "结束偏移", -86400, 86400, " 秒"),
             ("scroll_start_offset", "文字起点偏移", -10000, 10000, " %"),
             ("scroll_end_offset", "文字终点偏移", -10000, 10000, " %"),
             ("scroll_edge_fade", "边缘渐隐范围", 0, 50, " %"),
@@ -58,15 +57,15 @@ class ScrollTextProperties(QtWidgets.QWidget):
             self.controls[key] = spin
             form.addRow(label, spin)
             spin.valueChanged.connect(self._edit)
-        self.controls["scroll_start_delay"].setToolTip("先停在起点，再开始滚动。按最终视频时长计算。")
+        self.controls["scroll_start_delay"].setToolTip("相对动画开始：正数延后，负数提前；负数时视频开头已在滚动。")
         self.controls['scroll_start_offset'].setToolTip('相对“起点位置”微调；正数向下、负数向上。100%等于一个文字框高度，动画快览选择“开头”可检查实际起点。')
         self.controls['scroll_end_offset'].setToolTip('相对“终点位置”微调；正数向下、负数向上。文案视频画面下方点击动画快览“结尾”即可检查终点，不必先渲染视频。')
-        self.controls["scroll_end_early"].setToolTip("提前到达终点，余下时间停在终点。两项之和必须小于最终视频时长。")
+        self.controls["scroll_end_early"].setToolTip("相对动画结束：负数提前到达并停留，正数延后到达；正数时视频结尾可能尚未滚到终点。")
         self.controls["scroll_edge_fade"].setToolTip("框顶部和底部各占框高度的此比例；0 = 硬裁切。只渐隐文字，不渐隐背景底板。")
         from .property_pairs import pair_form_fields
         pair_form_fields(form,'滚动位置',[('start','起点',self.start_anchor),('end','终点',self.end_anchor)])
-        pair_form_fields(form,'动画时间',[('start','延迟',self.controls['scroll_start_delay']),
-            ('end','提前结束',self.controls['scroll_end_early'])])
+        pair_form_fields(form,'动画时间',[('start','起始偏移',self.controls['scroll_start_delay']),
+            ('end','结束偏移',self.controls['scroll_end_early'])])
         pair_form_fields(form,'文字偏移',[('start','起点',self.controls['scroll_start_offset']),
             ('end','终点',self.controls['scroll_end_offset'])])
         root.addLayout(form)
@@ -75,12 +74,12 @@ class ScrollTextProperties(QtWidgets.QWidget):
         self.info.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored, QtWidgets.QSizePolicy.Policy.Preferred)
         root.addWidget(self.info)
         note = QtWidgets.QLabel(
-            "起点／终点可选框外、首行贴顶、整段居中或末行贴底；偏移在所选位置上继续微调。\n"
+            "起点按首行、终点按尾行，可选居中、贴顶、贴底或框外；文字偏移继续微调。\n"
             "选择框外时，向上＝框下方→框上方；向下反向。正数向下，负数向上。\n"
             "自定义起终点后，实际运动方向由两者位置决定。\n"
             "框外文字始终裁切。字号使用“样式”的最大字号，不因长文缩小；横向对齐仍有效。\n"
             "竖排时每次换行开始新列，各列整段上下滚动；列宽放不下会提示调整框宽或字号。\n"
-            "运动覆盖最终成品时长（启用人声时跟随人声），扣除开始延迟和提前结束。\n"
+            "时间偏移正数向后、负数向前。起始相对开头，结束相对片尾；以最终成品／控件时长为准。\n"
             "文案视频画面下方拖动动画快览可检查中途／结尾；默认在开头，框外起点可能看不到文字。\n"
             "快览背景保持首帧；节点文字使用已保存工作流。复杂视频／字幕效果用播放预览核对。")
         note.setWordWrap(True)
@@ -91,6 +90,14 @@ class ScrollTextProperties(QtWidgets.QWidget):
         self.mode.currentIndexChanged.connect(self._edit)
         self.units.currentIndexChanged.connect(self._units_changed)
         self.set_layer(None)
+
+    @staticmethod
+    def _anchor_options(widget,choices,value):
+        blocker=QtCore.QSignalBlocker(widget);widget.clear()
+        for label,key in choices:widget.addItem(label,key)
+        if value in LEGACY_ANCHORS:widget.addItem(LEGACY_ANCHORS[value],value)
+        widget.setCurrentIndex(widget.findData(value))
+        del blocker
 
     def set_layer(self, layer, canvas_height=1920):
         self.loading = True
@@ -103,12 +110,12 @@ class ScrollTextProperties(QtWidgets.QWidget):
             blocker = QtCore.QSignalBlocker(self.enable_control)
             self.enable_control.setChecked(self.layer['text_animation'] != 'none')
             del blocker
-            self.start_anchor.setCurrentIndex(self.start_anchor.findData(self.layer['scroll_start_anchor']))
-            self.end_anchor.setCurrentIndex(self.end_anchor.findData(self.layer['scroll_end_anchor']))
+            self._anchor_options(self.start_anchor,START_ANCHORS,self.layer['scroll_start_anchor'])
+            self._anchor_options(self.end_anchor,END_ANCHORS,self.layer['scroll_end_anchor'])
             self.units.setCurrentIndex(self.units.findData(self.layer["scroll_offset_units"]))
             for key, spin in self.controls.items():
                 if key not in {"scroll_start_offset", "scroll_end_offset"}:
-                    spin.setValue(self.layer[key])
+                    spin.setValue(-self.layer[key] if key=='scroll_end_early' else self.layer[key])
             self._refresh_offsets()
             self._enabled()
         self.loading = False
@@ -158,7 +165,7 @@ class ScrollTextProperties(QtWidgets.QWidget):
             return
         factor = self._factor()
         for key, spin in self.controls.items():
-            self.layer[key] = spin.value()/factor if key in {"scroll_start_offset", "scroll_end_offset"} else spin.value()
+            self.layer[key] = spin.value()/factor if key in {"scroll_start_offset", "scroll_end_offset"} else -spin.value() if key=='scroll_end_early' else spin.value()
         self.layer["text_animation"] = self.mode.currentData()
         self.layer['scroll_start_anchor'] = self.start_anchor.currentData()
         self.layer['scroll_end_anchor'] = self.end_anchor.currentData()
