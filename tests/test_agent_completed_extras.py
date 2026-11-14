@@ -55,20 +55,24 @@ class CompletedExtrasTests(unittest.TestCase):
         self.assertEqual(self.drive.listed,[])
         self.assertEqual(self.store.delivery_files(self.job['id'])['@discovery']['scope'],DISCOVERY_SCOPE)
 
-    def test_duplicate_formal_segment_still_blocks_every_transfer(self):
+    def test_duplicate_formal_segment_is_saved_separately_not_selected(self):
         self.prepared(2);self.drive.video('deeper',1,identifier='duplicate_1')
-        result=self.receive();self.fetch.assert_not_called()
-        self.assertEqual(result['failed'],1);self.assertEqual(self.api.writes,[])
+        result=self.receive();self.assertEqual(result['downloaded'],4)
+        self.assertEqual(result['failed'],0);self.assertEqual(len(self.api.writes),1)
+        records=self.store.delivery_files(self.job['id'])
+        for key in ('video_1','duplicate_1'):self.assertEqual(records[key]['category'],'review')
 
     def test_out_of_range_segment_is_not_treated_as_auxiliary(self):
         self.prepared(2);self.drive.video('deeper',3)
-        result=self.receive();self.fetch.assert_not_called()
-        self.assertEqual(result['failed'],1);self.assertEqual(self.api.writes,[])
+        result=self.receive();self.assertEqual(result['downloaded'],4)
+        self.assertEqual(result['failed'],0);self.assertEqual(len(self.api.writes),1)
+        self.assertEqual(self.store.delivery_files(self.job['id'])['video_3']['category'],'review')
 
     def test_other_task_segment_is_not_treated_as_auxiliary(self):
         self.prepared(2);self.drive.video('deeper',3,name='任务OTHER_第03段.mp4')
-        result=self.receive();self.fetch.assert_not_called()
-        self.assertEqual(result['failed'],1);self.assertEqual(self.api.writes,[])
+        result=self.receive();self.assertEqual(result['downloaded'],4)
+        self.assertEqual(result['failed'],0);self.assertEqual(len(self.api.writes),1)
+        self.assertEqual(self.store.delivery_files(self.job['id'])['video_3']['category'],'review')
 
     def test_unknown_clips_cannot_replace_missing_segments_or_archive(self):
         self.prepared(2)

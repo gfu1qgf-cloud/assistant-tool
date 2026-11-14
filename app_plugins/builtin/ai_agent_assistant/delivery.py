@@ -6,17 +6,17 @@ import time
 from uuid import uuid4
 
 from app_plugins.api import load_google_service
-from .delivery_drive import result_links, collect_files, output_directory, download_file, cached_file, error_message
+from .delivery_drive import result_links, collect_files, output_directory, download_file, cached_file, relocate_cached_file, error_message
 from .sheets import inspect, a1, column, _execute
 from .store import Store
 from .tasks import spreadsheet_id
 from .notice_data import directory_key
 from .sheet_profiles import task_kind, completed as status_completed, archive_value, ARCHIVED,needs_user_segments
-from .receipt_plan import delivery_plan, check_parts, completed_files, handoff_files, HANDOFF_POLICY
+from .receipt_plan import delivery_plan, receipt_selection, HANDOFF_POLICY
 from .review import cache_review
 
 DONE = {'已完成', '完成', '制作完成', '生成完成', 'completed', 'complete', 'done'}
-DISCOVERY_SCOPE = 'recursive-v2-supplemental'
+DISCOVERY_SCOPE = 'recursive-v3-download-all'
 RECEIPT_PROGRESS_PREFIX = 'Agent收取进度：'
 
 
@@ -66,12 +66,11 @@ def acknowledge(api, identifier, name, info, job, expected_link, run, expected_p
         raise ValueError('成品已在本地；云端任务或链接已变化，未给新结果误标已下载。')
     if expected_plan is not None and delivery_plan(info.get('kind', 'oral'), _cell(row, mapping, 'spoken')) != expected_plan:
         raise ValueError('成品已在本地，但云端分段计划已改变，未给新计划误标归档。')
-    if info.get('kind') == 'image' and _cell(row, mapping, 'quality') not in {'通过', '轻微损失已披露'}:
-        raise ValueError('成品已在本地，但云端质检状态已改变，未回写下载完成。')
     if review_store is not None:
         cache_review(review_store, job['id'], _cell(row, mapping, 'ai_review'), available='ai_review' in mapping,
             records=review_store.delivery_files(job['id']))
     if _cell(row, mapping, 'archive') in ARCHIVED: return
+    if 'archive' not in mapping:raise ValueError('成品已收取到本地；表格没有归档状态列，未回填其他列。')
     target = a1(name, column(mapping['archive'] + 1) + str(number))
     rule = _execute(api.spreadsheets().get(spreadsheetId=identifier, ranges=[target], includeGridData=True,
         fields='sheets(data(rowData(values(dataValidation))))'))
@@ -137,7 +136,7 @@ def run_receipts(payload, run, *, sheets=None, drive=None, fetch=download_file, 
             spreadsheet_id('https://docs.google.com/spreadsheets/d/' + identifier + '/edit')
             try:
                 info = inspect(sheets, identifier, name, leased)
-                if not {'result', 'archive'}.issubset(info['mapping']): raise ValueError('缺少“成品Drive链接”或“归档状态”列；未修改表格。')
+                if 'result' not in info['mapping']: raise ValueError('缺少成品Drive链接列，无法确定下载来源；未修改表格。')
                 rows = read_rows(sheets, identifier, name, info, leased)
             except Exception as error:
                 leased.check_canceled()
@@ -164,7 +163,10 @@ def run_receipts(payload, run, *, sheets=None, drive=None, fetch=download_file, 
                 cloud_status=_cell(row,mapping,'status')
                 cloud_done=status_completed(kind,cloud_status)
                 user_fill=needs_user_segments(kind,cloud_status)
-                cloud_plan=delivery_plan(kind,_cell(row,mapping,'spoken'))
+                plan_warning=''
+                try:cloud_plan=delivery_plan(kind,_cell(row,mapping,'spoken'))
+                except ValueError as error:
+                    cloud_plan=None;plan_warning='分段计划需核对，仍收取现有视频：'+str(error)
                 cloud_link=_cell(row,mapping,'result')
                 cloud={'status':cloud_status,'completed':cloud_done,'needs_user_segments':user_fill,
                     'source':hashlib.sha256(cloud_link.encode()).hexdigest() if cloud_link else '',
@@ -183,8 +185,6 @@ def run_receipts(payload, run, *, sheets=None, drive=None, fetch=download_file, 
                             ('\n云端备注：'+_cell(row,mapping,'notes') if _cell(row,mapping,'notes') else ''))
                         continue
                     store.delivery_note(job['id'], '等待制作完成', '云端状态：' + _cell(row, mapping, 'status')); continue
-                if kind == 'image' and _cell(row, mapping, 'quality') not in {'通过', '轻微损失已披露'}:
-                    store.delivery_note(job['id'], '需核对质检', '已交付但未明确通过画面质检，未自动收取。'); continue
                 link_text = _cell(row, mapping, 'result')
                 if not link_text:
                     store.delivery_note(job['id'], '等待成品链接', '成品Drive链接为空；需提供该作业正确的成品链接，不会猜测其他目录或改用素材链接。'); continue
@@ -199,53 +199,46 @@ def run_receipts(payload, run, *, sheets=None, drive=None, fetch=download_file, 
                     directory = output_directory(job)
                     if drive_error: raise ValueError('Drive授权暂不可用：' + drive_error)
                     links = result_links(link_text)
-                    if kind == 'image' and (len(links) != 1 or '/folders/' in links[0]):
-                        raise ValueError('图片任务需一个直接视频链接，不能使用整批成品文件夹；未猜测收取其他任务。')
-                    # The declared result folder is the delivery boundary,
-                    # including nested folders. Validate all segment identities
-                    # before downloading; never select an arbitrary duplicate.
-                    files = collect_files(links, drive, leased)
-                    plan = delivery_plan(kind, _cell(row, mapping, 'spoken'))
-                    selection_problem = ''
-                    selection_note = ''
-                    supplemental = []
-                    if user_fill:
-                        files, selection_problem = handoff_files(files, plan, job['payload']['task_id'], records)
-                    elif cloud_done:
-                        planned, selection_note = completed_files(files, plan, job['payload']['task_id'], records)
-                        selected_ids = {item['id'] for item in planned}
-                        supplemental = [item for item in files if item['id'] not in selected_ids]
-                        files = planned
-                    plan_problem = check_parts(files, plan, job['payload']['task_id'], records)
-                    planned_files = list(files)
-                    files = planned_files + supplemental
-                    supplemental_ids = sorted(item['id'] for item in supplemental)
-                    supplemental_set = set(supplemental_ids)
-                    supplemental_directory = output_directory(job, supplemental=True) if supplemental else None
+                    # Only the exact row's declared links are enumerated.
+                    # Business inconsistencies classify/warn, never embargo bytes.
+                    collected = collect_files(links, drive, leased, lenient=True)
+                    plan = cloud_plan
+                    files,plan_problem,selection_note,expected_total=receipt_selection(collected,plan,job['payload']['task_id'],records)
+                    collection_issues=getattr(collected,'issues',[])
+                    if collection_issues:plan_problem='\n'.join(filter(None,(plan_problem,'部分目录／文件未能列出：'+'；'.join(collection_issues))))
+                    quality_note=('云端画面质检：'+(_cell(row,mapping,'quality') or '未填写')+'；已收取，不代表内容审核通过。'
+                        if kind=='image' and _cell(row,mapping,'quality') not in {'通过','轻微损失已披露'} else '')
+                    selection_note='\n'.join(filter(None,(selection_note,plan_warning,quality_note)))
+                    planned_files=[item for item in files if item['_receipt_role']=='segment']
+                    supplemental_ids=sorted(item['id'] for item in files if item['_receipt_role']=='supplemental')
+                    review_ids=sorted(item['id'] for item in files if item['_receipt_role']=='review')
                     def item_directory(item):
-                        return supplemental_directory if item['id'] in supplemental_set else directory
-                    expected_total = max(len(files), (plan['count'] if plan else 0) + len(supplemental))
+                        role=item['_receipt_role']
+                        return directory if role=='segment' else directory.parent/('Agent待选版本' if role=='review' else 'Agent附加素材')
+                    def is_cached(record,item):
+                        try:return cached_file(record,item_directory(item))
+                        except (OSError,ValueError):return False
                     active_ids = sorted(item['id'] for item in files)
                     if (discovery.get('state') != 'checked' or discovery.get('source') != signature or
                             discovery.get('scope') != DISCOVERY_SCOPE or
                             bool(discovery.get('handoff'))!=user_fill or
                             user_fill and discovery.get('handoff_policy') != HANDOFF_POLICY or
                             discovery.get('total') != expected_total or discovery.get('file_ids') != active_ids or
-                            discovery.get('supplemental_ids', []) != supplemental_ids):
+                            discovery.get('supplemental_ids', []) != supplemental_ids or discovery.get('review_ids',[])!=review_ids):
                         store.save_delivery(job['id'], '@discovery', {'state': 'checked', 'source': signature, 'scope': DISCOVERY_SCOPE,'handoff':user_fill,
                             'handoff_policy': HANDOFF_POLICY if user_fill else None,
                             'total': expected_total, 'file_ids': active_ids, 'selection_note': selection_note,
-                            'supplemental_ids': supplemental_ids})
-                    # Missing segments are a delivery warning, not a download
-                    # embargo. Wrong task IDs/duplicate/out-of-range ordinals
-                    # still raise above; every transferred file stays verified.
+                            'supplemental_ids': supplemental_ids,'review_ids':review_ids,'download_total':expected_total})
+                    # Missing segments and ambiguous filenames are warnings,
+                    # not download embargoes. Every transferred file still
+                    # passes safe-path and byte-integrity verification.
                     completed, attempted = 0, 0
                     def report_count():
                         leased.progress_count=f'任务 {job["payload"]["task_id"]} · {completed}/{expected_total}'
                         leased.report(RECEIPT_PROGRESS_PREFIX+leased.progress_count)
                     for item in files:
                         leased.check_canceled(); record = records.get(item['id'], {})
-                        if not record.get('force_download') and cached_file(record, item_directory(item)) and (not item.get('md5Checksum') or record.get('md5') == item['md5Checksum']):
+                        if not record.get('force_download') and is_cached(record,item) and (not item.get('md5Checksum') or record.get('md5') == item['md5Checksum']):
                             completed += 1; continue
                         if record.get('retry_at', 0) > clock(): pending = True; continue
                         if budget <= 0 or attempted >= 8: pending = True; continue
@@ -253,9 +246,15 @@ def run_receipts(payload, run, *, sheets=None, drive=None, fetch=download_file, 
                         store.delivery_note(job['id'], '正在下载', f'已收取 {completed}/{expected_total} 个视频')
                         report_count()
                         try:
-                            value = fetch(job, item, item_directory(item), drive, leased)
+                            output_directory(job,supplemental=item['_receipt_role']=='supplemental',review=item['_receipt_role']=='review')
+                            value=None
+                            if (not record.get('force_download') and
+                                    (not item.get('md5Checksum') or record.get('md5')==item['md5Checksum'])):
+                                value=relocate_cached_file(record,item_directory(item),leased)
+                            if value is None:value = fetch(job, item, item_directory(item), drive, leased)
                             if not cached_file(value, item_directory(item)): raise ValueError('下载器未返回完整的原任务目录成品。')
-                            if item['id'] in supplemental_set: value['category'] = 'supplemental'
+                            if item['_receipt_role']!='segment':value['category']=item['_receipt_role']
+                            else:value.pop('category',None)
                             store.save_delivery(job['id'], item['id'], value)
                             completed += 1; downloaded += 1
                             report_count()
@@ -266,15 +265,14 @@ def run_receipts(payload, run, *, sheets=None, drive=None, fetch=download_file, 
                                 'retry_at': clock() + min(3600, 60 * 2 ** min(attempts - 1, 6)), 'detail': error_message(error)})
                             failed += 1; pending = True
                     if completed == len(files):
-                        plan_problem = check_parts(planned_files, plan, job['payload']['task_id'], store.delivery_files(job['id']))
-                        plan_problem = '\n'.join(value for value in (plan_problem, selection_problem) if value)
                         if plan_problem or not cloud_done:
                             verified=store.delivery_files(job['id'])
                             store.save_delivery(job['id'],'@partial',{'state':'partial','source':signature,'total':expected_total,
                                 'versions':{item['id']:verified[item['id']]['sha256'] for item in files},
-                                'detail':plan_problem or '现有片段已收取，等待云端确认制作完成。'})
+                                'detail':'\n'.join(filter(None,(plan_problem,selection_note))) or '现有片段已收取，等待云端确认制作完成。'})
                             detail=f'已收取现有 {completed}/{expected_total} 个视频到原任务result目录。\n'
                             detail+=plan_problem or '当前已有视频已收取；云端任务尚未确认完成，不回写整项归档。'
+                            if selection_note:detail+='\n'+selection_note
                             detail+='\n云端执行状态：'+cloud_status
                             cloud_note=_cell(row,mapping,'notes')
                             if cloud_note: detail+='\n云端备注：'+cloud_note
@@ -285,7 +283,8 @@ def run_receipts(payload, run, *, sheets=None, drive=None, fetch=download_file, 
                         verified=store.delivery_files(job['id'])
                         proof={'state':'received','source':signature,'total':len(files),
                             'versions':{item['id']:verified[item['id']]['sha256'] for item in files},
-                            'archived':_cell(row,mapping,'archive') in ARCHIVED, 'selection_note':selection_note}
+                            'archived':_cell(row,mapping,'archive') in ARCHIVED, 'selection_note':selection_note,
+                            'review_required':bool(review_ids or plan_warning or quality_note)}
                         store.save_delivery(job['id'],'@received',proof)
                         try:
                             if _cell(row, mapping, 'archive') not in ARCHIVED or attempted:
@@ -311,10 +310,10 @@ def run_receipts(payload, run, *, sheets=None, drive=None, fetch=download_file, 
                             detail += f'下载尝试累计 {error.get("attempts", 0)} 次，稍后自动重试；' + error.get('detail', '')
                         store.delivery_note(job['id'], '下载待重试' if errors else '等待继续下载', detail)
                         # Continue only known, eligible transfers held by this
-                        # pass's budget. Failures/reviews wait for the next poll
+                        # pass's budget. Transfer failures wait for the next poll
                         # or an explicit manual retry, never a tight poll loop.
                         if any((current.get(item['id'], {}).get('force_download') or
-                                not cached_file(current.get(item['id'], {}), item_directory(item)) or
+                                not is_cached(current.get(item['id'], {}),item) or
                                 item.get('md5Checksum') and item['md5Checksum'] != current.get(item['id'], {}).get('md5')) and
                                current.get(item['id'], {}).get('retry_at', 0) <= clock() for item in files):
                             continue_ids.append(job['id'])

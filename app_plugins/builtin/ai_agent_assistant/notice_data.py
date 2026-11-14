@@ -89,6 +89,7 @@ def receipt_badge(current, *, unread, seen_versions):
     if manually_seen and not pending:
         text='已查看'
         if not current['missing'] and received>=total and status=='收取待重试': tone='muted'
+    if text in {'已收取','已查看'} and current.get('review_required'):tone='warning'
     if text not in {'已收取','已查看'} and (pending or received or total):
         target=str(total) if total>0 and current.get('total_known',True) else '?'
         text+=f' {received}/{target}'
@@ -124,7 +125,7 @@ def notice_snapshot(store, *, announce=True):
             active_ids=set()
         for file_id, record in files.items():
             if record.get('state') != 'downloaded': continue
-            local_folder = 'Agent附加素材' if record.get('category') == 'supplemental' else 'result'
+            local_folder = 'Agent待选版本' if record.get('category') == 'review' else 'Agent附加素材' if record.get('category') == 'supplemental' else 'result'
             try: exists = cached_file(record, Path(directory)/local_folder)
             except (OSError, ValueError): exists = False
             if not exists:
@@ -151,6 +152,9 @@ def notice_snapshot(store, *, announce=True):
                 and isinstance(supplemental_ids, list)
                 and all(isinstance(value, str) for value in supplemental_ids)):
             expected += len(set(supplemental_ids))
+        if (discovery.get('source')==source and isinstance(discovery.get('download_total'),int)
+                and (cloud.get('completed') is not False or isinstance(cloud.get('expected'),int) and cloud['expected']>0)
+                and discovery['download_total']>0):expected=discovery['download_total']
         total_known=isinstance(expected,int) and expected>0
         if not total_known:
             expected=discovery.get('total') if not source or discovery.get('source')==source else None
@@ -159,6 +163,7 @@ def notice_snapshot(store, *, announce=True):
             expected = sum(record.get('state') in {'downloaded', 'retry'} for file_id, record in files.items()
                 if active_ids is None or file_id in active_ids)
         current = {'status': status, 'detail': detail, 'received': valid, 'total': expected, 'missing': missing,
+            'review_required':bool(files.get('@received',{}).get('review_required')),
             'ai_review':files.get('@ai_review',{}).get('text',''), 'cloud_complete':cloud.get('completed'),
             'needs_user_segments':needs_user_segments(task_kind(payload),cloud.get('status')),
             'total_known':total_known or not cloud and expected>0,

@@ -170,7 +170,7 @@ class SchemaV2Tests(unittest.TestCase):
         self.assertEqual([item['id'] for item in files],['passed']); self.assertEqual(files[0]['_depth'],0)
         self.assertEqual(api.files.return_value.list.call_count,1)
 
-    def test_image_receipt_requires_delivered_quality_and_direct_video(self):
+    def test_image_receipt_downloads_before_user_final_review(self):
         value=image_snapshot(self.target,IMAGE_LINK); job=self.job(value)
         self.store.mark([job['id']],'submitted',spreadsheet_id(URL)+':图片转动画')
         values={'job_id':job['id'],'task_id':value['task_id'],'status':'已交付','quality':'待用户终审','result':VIDEO_LINK,'reference':IMAGE_LINK}
@@ -181,7 +181,7 @@ class SchemaV2Tests(unittest.TestCase):
         download=Mock(side_effect=fetch)
         with patch('app_plugins.builtin.ai_agent_assistant.delivery.collect_files',return_value=[{'id':'one','name':'any.mp4','url':VIDEO_LINK}]):
             run_receipts({'root':str(self.store.root.path)},self.run,sheets=api,drive=object(),fetch=download)
-            download.assert_not_called(); self.assertEqual(api.writes,[])
+            download.assert_called_once(); self.assertEqual(len(api.writes),1)
             api.rows[0][IMAGE_COLS['quality']]='通过'
             run_receipts({'root':str(self.store.root.path)},self.run,sheets=api,drive=object(),fetch=download)
         download.assert_called_once(); self.assertEqual(api.writes[0]['body']['values'],[['已下载']])

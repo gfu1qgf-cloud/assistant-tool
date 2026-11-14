@@ -11,7 +11,7 @@ from urllib.request import HTTPCookieProcessor, build_opener
 from uuid import uuid4
 
 from model.AppDataStorage import data_directory, data_file, data_io
-from model.GoogleDriveDownloader import (GoogleDriveRedirectHandler, allowed_download_url, parse_drive_link,
+from model.GoogleDriveDownloader import (DownloadError, GoogleDriveRedirectHandler, allowed_download_url, parse_drive_link,
     export_url, open_download_response, filename_from_headers, safe_filename)
 from model.PrivateDataCatalog import no_reparse
 
@@ -46,12 +46,28 @@ def _id(link):
     return (match.group(1), True) if match else (parse_drive_link(link).file_id, False)
 
 
-def collect_files(links, drive, run, *, root_only=False):
+class CollectedFiles(list):
+    def __init__(self, values, issues):super().__init__(values);self.issues=issues
+
+
+def collect_files(links, drive, run, *, root_only=False, lenient=False):
     files, visited = {}, set()
+    issues=[];exhausted=False
+    class EnumerationLimit(ValueError):pass
+    def safe_visit(*args):
+        nonlocal exhausted
+        try:visit(*args)
+        except Exception as error:
+            run.check_canceled()
+            if not lenient:raise
+            issues.append(error_message(error))
+            if isinstance(error,EnumerationLimit):exhausted=True
     def visit(file_id, link, depth=0, known=None):
         run.check_canceled()
-        if depth > 5 or len(visited) >= 1000: raise ValueError('成品文件夹过深或项目超过1000个，已停止本任务以免无限遍历。')
+        if exhausted:return
+        if depth > 5:raise ValueError('成品文件夹深度超过5层，该子目录待核对，其他目录继续。')
         if file_id in visited: return
+        if len(visited)>=1000:raise EnumerationLimit('成品目录项目超过1000个，先收取已检索视频，其余待核对，避免无限遍历。')
         visited.add(file_id)
         if drive is None:
             if _id(link)[1]: raise ValueError('文件夹成品需要 Drive 读取授权，请在 Google账号中分配“AI Agent · 成品下载”。')
@@ -74,37 +90,50 @@ def collect_files(links, drive, run, *, root_only=False):
             while True:
                 run.check_canceled()
                 if token in pages: raise ValueError('Drive 返回重复分页，已停止本任务。')
+                if len(pages)>=100:raise EnumerationLimit('单目录超过100页，先收取已检索视频，其余待核对。')
                 pages.add(token)
                 page = drive.files().list(q=f"'{file_id}' in parents and trashed=false", pageSize=100,
                     pageToken=token, supportsAllDrives=True, includeItemsFromAllDrives=True, orderBy='name',
                     fields='nextPageToken,incompleteSearch,files(id,name,mimeType,size,md5Checksum,trashed,capabilities(canDownload))').execute(num_retries=0)
-                if page.get('incompleteSearch'): raise ValueError('Drive文件夹检索结果不完整，稍后重试，未把部分结果当作全部成品。')
+                if page.get('incompleteSearch'):
+                    message='Drive文件夹检索结果不完整，稍后重试，未把部分结果当作全部成品。'
+                    if not lenient:raise ValueError(message)
+                    issues.append(message)
                 for child in page.get('files', []):
                     child_id = str(child.get('id') or '')
-                    if not re.fullmatch(r'[A-Za-z0-9_-]+', child_id): raise ValueError('Drive 返回无效成品ID。')
-                    visit(child_id, f'https://drive.google.com/file/d/{child_id}/view', depth + 1, child)
+                    if not re.fullmatch(r'[A-Za-z0-9_-]+', child_id):
+                        if not lenient:raise ValueError('Drive 返回无效成品ID。')
+                        issues.append('Drive 返回无效成品ID，已略过该项，其他文件继续收取。');continue
+                    safe_visit(child_id, f'https://drive.google.com/file/d/{child_id}/view', depth + 1, child)
+                    if exhausted:return
                 token = page.get('nextPageToken')
                 if not token: break
         elif metadata.get('mimeType') == 'application/vnd.google-apps.shortcut':
             raise ValueError('成品文件夹包含Drive快捷方式，请提供实际视频文件或其直接链接，未静默漏掉该项。')
         elif str(metadata.get('mimeType', '')).startswith('video/') or Path(metadata.get('name', '')).suffix.lower() in VIDEO:
-            if metadata.get('capabilities', {}).get('canDownload') is False: raise ValueError('成品禁止下载，请调整文件共享／下载权限。')
+            if metadata.get('capabilities', {}).get('canDownload') is False and not lenient: raise ValueError('成品禁止下载，请调整文件共享／下载权限。')
+            if len(files)>=500:raise EnumerationLimit('单任务超过500个视频，先收取已检索视频，其余待核对。')
             files[file_id] = {**metadata, 'url': link, '_depth': max(0, depth - 1)}
-        if len(files) > 500: raise ValueError('单任务超过500个视频，请拆分成品文件夹。')
     for link in links:
-        file_id, folder = _id(link)
-        if folder and drive is None: raise ValueError('文件夹成品需要 Drive 读取授权，请在 Google账号中分配“AI Agent · 成品下载”。')
-        visit(file_id, link)
+        if exhausted:break
+        try:
+            file_id, folder = _id(link)
+            if folder and drive is None: raise ValueError('文件夹成品需要 Drive 读取授权，请在 Google账号中分配“AI Agent · 成品下载”。')
+        except (ValueError,DownloadError) as error:
+            if not lenient:raise
+            issues.append(error_message(error));continue
+        safe_visit(file_id, link)
+    if not files and issues:raise ValueError('；'.join(issues[:5]))
     if not files: raise ValueError('成品文件夹暂时没有可下载的视频，稍后自动重试。')
-    return list(files.values())
+    return CollectedFiles(list(files.values()),issues)
 
 
-def output_directory(job, *, supplemental=False):
+def output_directory(job, *, supplemental=False, review=False):
     raw = Path(str(job['payload'].get('target_dir') or ''))
     if not raw.is_absolute(): raise ValueError('原任务目录不是绝对路径，未下载到其他目录。')
     root = no_reparse(raw, Path(raw.anchor))
     if not root.is_dir(): raise ValueError('提交时的原任务目录不可用；请恢复磁盘／目录，任务会自动重试。')
-    directory = no_reparse(root/('Agent附加素材' if supplemental else 'result'), root)
+    directory = no_reparse(root/('Agent待选版本' if review else 'Agent附加素材' if supplemental else 'result'), root)
     data_directory(directory).ensure()
     return directory
 
@@ -125,6 +154,7 @@ def verify_video(path):
 def download_file(job, item, directory, drive, run, *, verify=verify_video):
     """Publish only complete verified bytes; existing unrelated files never replaced."""
     response = None
+    if item.get('capabilities',{}).get('canDownload') is False:raise ValueError('此文件禁止下载；其他文件继续收取，请核对该文件下载权限。')
     size = int(item['size']) if item.get('size') is not None else None
     if size is not None and (size <= 0 or size > 20 * 1024**3): raise ValueError('成品大小无效或超过20GiB，未下载。')
     if shutil.disk_usage(directory).free < (size or 0) + 64 * 1024**2: raise OSError('任务磁盘空间不足，稍后重试。')
@@ -208,3 +238,28 @@ def cached_file(record, directory):
     if path.parent != directory: return False
     no_reparse(path, directory)
     return path.is_file() and path.stat().st_size == record.get('size') and record.get('size', 0) > 0
+
+
+def relocate_cached_file(record, directory, run):
+    """Reuse verified bytes when a version changes classification; no overwrite."""
+    source=Path(str(record.get('path') or ''))
+    root=directory.parent
+    if source.parent not in {root/'result',root/'Agent附加素材',root/'Agent待选版本'}:return None
+    if not cached_file(record,source.parent) or not record.get('sha256'):return None
+    if _digest(source,run)!=record['sha256']:return None
+    target=no_reparse(directory/source.name,directory)
+    if target.is_file():
+        if _digest(target,run)!=record['sha256']:raise ValueError('本地分类目标已有不同文件，未覆盖。')
+        return {**record,'path':str(target)}
+    pending=directory/('.receipt-cache-'+uuid4().hex+source.suffix)
+    try:
+        data_io.copy2(source,pending)
+        if _digest(pending,run)!=record['sha256']:raise ValueError('本地参考副本校验失败。')
+        try:
+            if os.name=='nt':data_io.rename(pending,target)
+            else:data_io.link(pending,target);data_file(pending).remove()
+        except FileExistsError:
+            if not target.is_file() or _digest(target,run)!=record['sha256']:raise ValueError('本地分类目标出现冲突，未覆盖。') from None
+        return {**record,'path':str(target)}
+    finally:
+        if pending.exists():data_file(pending).remove()

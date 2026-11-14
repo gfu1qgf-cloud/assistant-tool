@@ -11,7 +11,7 @@ from .lifecycle import reclaim, watch_finished, stop_watch
 class AIAgentAssistantPlugin(QtCore.QObject):
     plugin_id = 'ai_agent_assistant'
     display_name = 'AI Agent 助手'
-    version = '0.5.15'
+    version = '0.5.16'
     required_api_version = 2
 
     def __init__(self):

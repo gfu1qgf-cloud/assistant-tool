@@ -95,14 +95,15 @@ class NestedReceiptTests(unittest.TestCase):
         self.prepare(2);self.drive.video('result_root',1)
         self.drive.video('deeper',1,identifier='other_version')
         result=self.receive()
-        self.assertEqual(result['downloaded'],0);self.assertEqual(result['failed'],1)
-        self.fetch.assert_not_called();self.assertEqual(self.api.writes,[])
+        self.assertEqual(result['downloaded'],2);self.assertEqual(result['failed'],0)
+        self.assertEqual(self.fetch.call_count,2);self.assertEqual(self.api.writes,[])
         self.assertIn('重复',self.store.delivery_statuses()[self.job['id']]['detail'])
 
-    def test_wrong_task_in_nested_folder_still_blocks_transfer(self):
+    def test_wrong_task_filename_is_kept_separate_without_blocking_transfer(self):
         self.prepare(2);self.drive.video('nested',1)
         self.drive.video('deeper',2,name='任务OTHER_第02段.mp4')
-        self.receive();self.fetch.assert_not_called();self.assertEqual(self.api.writes,[])
+        self.receive();self.assertEqual(self.fetch.call_count,2);self.assertEqual(self.api.writes,[])
+        self.assertEqual(self.store.delivery_files(self.job['id'])['video_2']['category'],'review')
         self.assertIn('其他任务',self.store.delivery_statuses()[self.job['id']]['detail'])
 
     def test_old_root_only_discovery_backoff_does_not_delay_fixed_enumeration(self):

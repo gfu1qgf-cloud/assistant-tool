@@ -32,55 +32,57 @@ class HandoffIsolationTests(unittest.TestCase):
             if not result['continue_ids']:return results
         self.fail('handoff continuation did not finish')
 
-    def test_real_folder_shape_19_formal_plus_three_candidates_collects_19_not_zero_or_22(self):
+    def test_formal_and_candidate_videos_all_download_without_being_auto_adopted(self):
         self.handoff()
         for number in range(1,23):
             if number not in {8,12,17}:self.add(number)
         for number,suffix in ((2,'_候选ASR'),(17,'_候选ASR'),(18,'_候选_ASR待验')):
             self.add(number,suffix,identifier=f'candidate_{number}')
         results=self.drain()
-        self.assertEqual([r['downloaded'] for r in results],[8,8,3])
-        self.assertEqual(results[-1]['task_badges']['items'][0]['text'],'需用户补段 19/22')
-        self.assertEqual({c.args[1]['id'] for c in self.fetch.call_args_list},{f'video_{n}' for n in range(1,23) if n not in {8,12,17}})
+        self.assertEqual([r['downloaded'] for r in results],[8,8,6])
+        self.assertEqual(results[-1]['task_badges']['items'][0]['text'],'需用户补段 22/24')
+        expected={f'video_{n}' for n in range(1,23) if n not in {8,12,17}}|{'candidate_2','candidate_17','candidate_18'}
+        self.assertEqual({c.args[1]['id'] for c in self.fetch.call_args_list},expected)
         self.assertEqual(self.api.writes,[])
         self.assertIn('候选',results[-1]['task_badges']['items'][0]['tooltip'])
         self.assertNotIn('@received',self.store.delivery_files(self.job['id']))
-        self.drain();self.assertEqual(self.fetch.call_count,19)
+        self.drain();self.assertEqual(self.fetch.call_count,22)
 
-    def test_two_formal_versions_block_only_their_ordinal(self):
+    def test_two_formal_versions_are_both_saved_for_selection(self):
         self.handoff(3);self.add(1);self.add(2);self.add(3)
         self.add(2,'_另版',identifier='other_2')
         result=self.receive()
-        self.assertEqual({c.args[1]['id'] for c in self.fetch.call_args_list},{'video_1','video_3'})
-        self.assertEqual(result['task_badges']['items'][0]['text'],'需用户补段 2/3')
+        self.assertEqual({c.args[1]['id'] for c in self.fetch.call_args_list},{'video_1','video_2','other_2','video_3'})
+        self.assertEqual(result['task_badges']['items'][0]['text'],'需用户补段 4/4')
         self.assertIn('第2段存在重复版本',result['task_badges']['items'][0]['tooltip'])
         self.assertEqual(self.api.writes,[])
 
-    def test_ambiguous_wrong_owner_and_out_of_range_never_download_but_good_part_does(self):
+    def test_filename_problems_do_not_prevent_any_video_from_downloading(self):
         self.handoff(3);self.add(1);self.add(9)
         self.drive.video('result_root',2,name='任务OTHER_第02段.mp4')
         self.drive.video('result_root',3,name='unidentified.mp4')
         result=self.receive()
-        self.fetch.assert_called_once();self.assertEqual(self.fetch.call_args.args[1]['id'],'video_1')
+        self.assertEqual(self.fetch.call_count,4)
         tooltip=result['task_badges']['items'][0]['tooltip']
-        for text in ('其他任务','越界','未能确认段号'):self.assertIn(text,tooltip)
+        for text in ('其他任务','越界','无段号'):self.assertIn(text,tooltip)
         self.assertEqual(self.api.writes,[])
 
     def test_candidate_without_formal_is_not_promoted_and_empty_selection_does_not_loop(self):
         self.handoff(2);self.add(1,'_候选ASR')
-        result=self.receive();self.fetch.assert_not_called()
+        result=self.receive();self.fetch.assert_called_once()
+        self.assertEqual(self.store.delivery_files(self.job['id'])['video_1']['category'],'review')
         self.assertEqual(result['continue_ids'],[])
-        self.assertEqual(result['task_badges']['items'][0]['text'],'需用户补段 0/2')
+        self.assertEqual(result['task_badges']['items'][0]['text'],'需用户补段 1/2')
         self.assertEqual(self.api.writes,[])
 
     def test_later_formal_replacement_only_downloads_the_new_part(self):
         self.handoff(2);self.add(1);self.add(2,'_候选ASR',identifier='candidate_2')
         self.receive();self.add(2)
-        self.receive();self.assertEqual(self.fetch.call_count,2)
+        self.receive();self.assertEqual(self.fetch.call_count,3)
         self.api.rows[0][fixture.COLS['status']]='已完成'
         self.drive.children['result_root']=[v for v in self.drive.children['result_root'] if v['id']!='candidate_2']
         result=self.receive();self.assertEqual(result['task_badges']['items'][0]['text'],'已收取')
-        self.assertEqual(self.fetch.call_count,2);self.assertEqual(len(self.api.writes),1)
+        self.assertEqual(self.fetch.call_count,3);self.assertEqual(len(self.api.writes),1)
 
     def test_old_handoff_validation_backoff_is_invalidated_once_then_real_failure_backs_off(self):
         self.handoff(2);self.add(1)
@@ -94,8 +96,10 @@ class HandoffIsolationTests(unittest.TestCase):
 
     def test_strict_completed_delivery_still_never_guesses_between_formal_versions(self):
         self.prepare(2);self.add(1);self.add(1,'_另版',identifier='other_1')
-        result=self.receive();self.fetch.assert_not_called()
-        self.assertEqual(result['failed'],1);self.assertEqual(self.api.writes,[])
+        result=self.receive();self.assertEqual(self.fetch.call_count,2)
+        self.assertEqual(result['failed'],0);self.assertEqual(self.api.writes,[])
+        records=self.store.delivery_files(self.job['id'])
+        for key in ('video_1','other_1'):self.assertEqual(records[key]['category'],'review')
 
 
 class HandoffMonitorPipelineTests(unittest.TestCase):
@@ -128,6 +132,6 @@ class HandoffMonitorPipelineTests(unittest.TestCase):
                 downloaded.append(result['downloaded'])
                 self.handle.completed.emit(result);self.handle.finished.emit()
                 if batch==0:self.plugin.receipts.tick()
-        self.assertEqual(downloaded,[8,1]);self.assertEqual(api.writes,[])
-        self.assertEqual(result['task_badges']['items'][0]['text'],'需用户补段 9/10')
+        self.assertEqual(downloaded,[8,2]);self.assertEqual(api.writes,[])
+        self.assertEqual(result['task_badges']['items'][0]['text'],'需用户补段 10/11')
         self.plugin.receipts.stop()

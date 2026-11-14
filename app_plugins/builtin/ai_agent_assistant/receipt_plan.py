@@ -1,4 +1,4 @@
-"""Check declared segment identities before accepting a complete delivery."""
+"""Classify all declared videos without blocking receipt on business warnings."""
 from pathlib import Path
 import re
 from .segmentation import existing_segments
@@ -8,6 +8,53 @@ TASK = re.compile(r'任务(.+?)[_\s-]+第\s*\d+\s*段')
 LOCAL_PREFIX = re.compile(r'^Agent_[a-f0-9]{12}_[a-f0-9]{12}_', re.IGNORECASE)
 SHORT_PART = re.compile(r'(?:(\d+)[_\s-]+)?S0*(\d+)', re.IGNORECASE)
 HANDOFF_POLICY = 'isolated-segments-v1'
+
+
+def receipt_selection(files, plan, task_id, records=None):
+    """Download all declared videos; classify uncertainty instead of embargoing it.
+
+    Repeated versions are all retained for the user, never ranked by filename,
+    modification time or an assumed v2 preference. Only uniquely identified
+    planned segments go to result; extras and unresolved versions stay separate.
+    """
+    selected=[dict(item) for item in files];groups={};covered=set();problems=[]
+    if not plan or plan.get('kind')=='image':
+        for item in selected:item['_receipt_role']='segment'
+        if plan and len(selected)>1:problems.append('图片任务有多个视频，全部收取，不自动选择采用版本。')
+        return selected,'', '\n'.join(problems),len(selected)
+    for item in selected:
+        name=item.get('name') or Path(str((records or {}).get(item['id'],{}).get('path') or '')).name
+        item['_receipt_role']='review'
+        try:number=part_number(name,task_id)
+        except ValueError as error:
+            problems.append(str(error).replace('未收取或归档','已单独收取待核对').replace('未猜测顺序','已单独收取待核对'))
+            continue
+        if number is None:
+            if not name and len(selected)==1 and plan['count']==1:
+                item['_receipt_role']='segment';covered.add(1)
+            else:
+                item['_receipt_role']='supplemental'
+                problems.append('无段号附加视频，单独收取：'+(name or item['id']))
+        elif not 1<=number<=plan['count']:
+            problems.append('段号越界，已单独收取待核对：'+name)
+        else:
+            covered.add(number);groups.setdefault(number,[]).append(item)
+            if any(marker in name for marker in ('候选','待验','待审核','未通过')):
+                problems.append('候选／待验视频，已单独收取，不自动采用：'+name)
+            else:item['_receipt_role']='segment'
+    for number,versions in groups.items():
+        if len(versions)>1:
+            for item in versions:item['_receipt_role']='review'
+            problems.append(f'第{number}段存在重复版本（{len(versions)}个），全部保留到“Agent待选版本”，未选择采用：'+
+                            '、'.join(item.get('name') or item['id'] for item in versions))
+    missing=sorted(set(range(1,plan['count']+1))-covered)
+    incomplete=(f'应交付{plan["count"]}段，尚未核实段号：'+ '、'.join(map(str,missing))+'；已有文件先收取，缺段不标整项归档。') if missing else ''
+    if any(item['_receipt_role']=='supplemental' for item in selected):
+        problems.append('无段号附加视频保存到“Agent附加素材”，不计作口播段落。')
+    if any(item['_receipt_role']=='review' for item in selected):
+        problems.append('待核对／重复版本保存到“Agent待选版本”，不混入result，不自动采用。')
+    detail='\n'.join(problems[:35])
+    return selected,incomplete,detail,len(selected)+len(missing)
 
 
 def handoff_files(files, plan, task_id, records=None):

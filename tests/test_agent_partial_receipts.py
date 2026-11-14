@@ -68,7 +68,8 @@ class PartialReceiptTests(unittest.TestCase):
         self.assertEqual(notice_snapshot(self.store,announce=False)['items'][0]['unread'],1)
     def test_wrong_owner_duplicate_or_out_of_range_still_do_not_guess(self):
         self.prepare(3,{2}); self.items[0]['name']='任务OTHER_第01段.mp4'
-        self.receipt(allow_incomplete=True); self.fetch.assert_not_called(); self.assertEqual(self.api.writes,[])
+        self.receipt(allow_incomplete=True); self.assertEqual(self.fetch.call_count,2); self.assertEqual(self.api.writes,[])
+        self.assertEqual(self.store.delivery_files(self.job['id'])['video_1']['category'],'review')
 
 
 class PartialMonitorTests(unittest.TestCase):
