@@ -45,9 +45,41 @@ def prepare_paths(pool,paths,cancel):
     return pool,count
 
 
-class SharedMusicDialog(QtWidgets.QDialog):
+class LocalMusicDropTarget:
+    """Dialog and table share one local-file drop contract, with no GUI I/O."""
+    def _music_drop_paths(self,event):
+        owner=self._music_drop_owner
+        if (not owner.pool or owner.future or owner.cancel.is_set()
+                or not event.possibleActions() & QtCore.Qt.DropAction.CopyAction):return []
+        return list(dict.fromkeys(url.toLocalFile() for url in event.mimeData().urls() if url.isLocalFile()))
+
+    def dragEnterEvent(self,event):
+        if self._music_drop_paths(event):
+            event.setDropAction(QtCore.Qt.DropAction.CopyAction);event.accept()
+        else:event.ignore()
+
+    def dragMoveEvent(self,event):self.dragEnterEvent(event)
+
+    def dropEvent(self,event):
+        paths=self._music_drop_paths(event)
+        if paths and self._music_drop_owner.import_paths(paths):
+            # Register references only; never report a move of the source files.
+            event.setDropAction(QtCore.Qt.DropAction.CopyAction);event.accept()
+        else:event.ignore()
+
+
+class MusicDropTable(LocalMusicDropTarget,QtWidgets.QTableView):
+    def __init__(self,owner):
+        super().__init__(owner);self._music_drop_owner=owner
+        self.setDragDropMode(QtWidgets.QAbstractItemView.DragDropMode.DropOnly)
+        self.setAcceptDrops(True);self.viewport().setAcceptDrops(True)
+        self.setToolTip('可直接拖入音频文件或文件夹，加入当前选中的共享音乐库。')
+
+
+class SharedMusicDialog(LocalMusicDropTarget,QtWidgets.QDialog):
     def __init__(self,owner):
         super().__init__(owner);self.owner=owner;self.store=owner.store
+        self._music_drop_owner=self;self.setAcceptDrops(True)
         self.setWindowTitle('共享背景音乐池 · 所有项目共用');self.resize(820,560)
         pools=shared.normalize(self.store.load());selected=owner.state['settings'].get('music_pool_id')
         self.pool=copy.deepcopy(next((p for p in pools if p['id']==selected),pools[0] if pools else None));self.cancel=threading.Event()
@@ -62,7 +94,7 @@ class SharedMusicDialog(QtWidgets.QDialog):
                                ('从当前音乐池加入',self.import_current),('移除所选',self.remove),('打乱顺序',self.shuffle),('重置进度',self.reset)):
             button=QtWidgets.QPushButton(title);button.setAutoDefault(False);button.clicked.connect(callback);row.addWidget(button);self.mutations.append(button)
             if title=='打乱顺序':self.shuffle_button=button
-        self.table=QtWidgets.QTableView();self.model=MusicModel(self);self.table.setModel(self.model)
+        self.table=MusicDropTable(self);self.model=MusicModel(self);self.table.setModel(self.model)
         self.table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.ExtendedSelection)
         self.table.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -78,7 +110,7 @@ class SharedMusicDialog(QtWidgets.QDialog):
 
     def display(self,message=''):
         self.model.set_pool(self.pool or shared.fresh())
-        self.note.setText(message or (f'{len(self.pool["items"])} 首 · 项目共用顺序和续播位置；只保存路径，不复制音乐文件。' if self.pool else '请先新建一个共享音乐库。'))
+        self.note.setText(message or (f'{len(self.pool["items"])} 首 · 可拖入音频或文件夹；所有项目共用顺序和续播位置。' if self.pool else '请先新建一个共享音乐库。'))
         for button in self.mutations:button.setEnabled(bool(self.pool) and not self.future)
         for button in self.library_buttons[1:]:button.setEnabled(bool(self.pool) and not self.future)
         self.shuffle_button.setText('恢复原顺序' if self.pool and self.pool.get('original_order') else '随机顺序')
@@ -130,12 +162,13 @@ class SharedMusicDialog(QtWidgets.QDialog):
         except Exception as error:self.error('未保存音乐库',error);return False
 
     def import_paths(self,paths):
-        if self.future or not paths or not self.pool:return
+        if self.future or not paths or not self.pool or self.cancel.is_set():return False
         self.future=self.executor.submit(prepare_paths,copy.deepcopy(self.pool),list(paths),self.cancel)
         for button in self.mutations:button.setEnabled(False)
         for button in self.library_buttons:button.setEnabled(False)
         self.libraries.setEnabled(False)
         self.note.setText('正在登记音乐文件…');self.poll.start()
+        return True
 
     def finish_import(self):
         if not self.future or not self.future.done():return
