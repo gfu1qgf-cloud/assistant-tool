@@ -21,10 +21,19 @@ def validate_caption_voice(state,jobs):
         if job.get('render_assignment'):
             # Voice-only preflight: no project/pool copies or media reads.
             from model.PrivateDataPaths import remap_path_fields
-            voice={'voice_path':job['render_assignment'].get('voice','')}
-            remap_path_fields(voice,{'voice_path'})
-            job={**job,**voice,'voice_override':True}
-            view={**view,'settings':{**view['settings'],'use_voice':bool(voice['voice_path'])}}
+            from .task_associations import explicit_voice
+            assignment=job['render_assignment']
+            pending=(not assignment.get('voice') and assignment.get('voice_origin','task')=='task'
+                and not explicit_voice(job) and state['settings'].get('use_voice')
+                and state['settings'].get('voice_pool_mode','task')=='task')
+            if pending:
+                job={**job,'voice_override':False}
+                view={**view,'settings':{**view['settings'],'use_voice':True}}
+            else:
+                voice={'voice_path':assignment.get('voice','')}
+                remap_path_fields(voice,{'voice_path'})
+                job={**job,**voice,'voice_override':True}
+                view={**view,'settings':{**view['settings'],'use_voice':bool(voice['voice_path'])}}
         settings=view['settings'];layers=settings['layers']
         if not active_captions(layers):continue
         voice=resolve_voice(job,view,discover=False)
@@ -32,6 +41,6 @@ def validate_caption_voice(state,jobs):
         # Task-directory discovery remains in the worker. Never scan hundreds
         # of folders on the GUI thread just to prove the absence of a file.
         unknown=(settings.get('use_voice') and settings.get('voice_pool_mode','task')=='task'
-                 and not job.get('voice_override') and not job.get('task_voice_optional')
+                 and not job.get('voice_override')
                  and (job.get('task_dir') or job.get('path')))
         if not unknown:raise missing_voice(layers,job)

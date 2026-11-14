@@ -24,7 +24,11 @@ def capture(job, state, layers, music, voice):
     cursors={v['id']:v['caption_cursor_image'] for v in layers if enabled(v) and v.get('caption_cursor_source') in {'pool','sequence'}}
     from .caption_rotation import frozen
     styles={v['id']:frozen(v) for v in layers if v.get('_caption_variant_id')}
-    return dict(version=1, sources=sources, cursor_sources=cursors, caption_styles=styles,
+    from .task_associations import explicit_voice
+    previous=job.get('render_assignment') or {}
+    origin=previous.get('voice_origin') or ('task' if state['settings'].get('voice_pool_mode','task')=='task' and not explicit_voice(job) else 'fixed')
+    background_origin=previous.get('background_origin') or ('task' if not state['settings'].get('background_pool_id') and not job.get('background_override') and (not job.get('path') or job.get('path')==job.get('task_background_path')) else 'fixed')
+    return dict(version=1, voice_origin=origin, background_origin=background_origin, sources=sources, cursor_sources=cursors, caption_styles=styles,
                 music=selection, background=job.get('path', ''), voice=voice)
 
 
@@ -66,6 +70,8 @@ def apply(job, state):
             raise ValueError('已分配的图片光标控件已改变，请重新分配此任务素材。')
         portable={'path':path};remap_path_fields(portable,{'path'})
         by_id[identifier].update(caption_cursor_source='file',caption_cursor_image=portable['path'],caption_cursor_items=[])
+    from .task_associations import explicit_voice
+    job.setdefault('_voice_override_before_assignment',explicit_voice(job))
     job.update(path=assignment['background'], voice_path=assignment['voice'], voice_override=True)
     settings.update(background_pool_id='', use_voice=bool(assignment['voice']))
     if not assignment.get('music_pending'):apply_music(state,assignment.get('music'))
@@ -86,13 +92,19 @@ def reserve(store, state, job_id, prepared):
     assignment = getattr(prepared, 'assignment', None)
     from .task_render_config import record
     config=getattr(prepared,'render_config',None)
+    proposal=getattr(prepared,'association_updates',{})
+    from .task_associations import apply as apply_associations
+    def apply_links(value):
+        return apply_associations(next(j for j in value['jobs'] if j['id']==job_id),proposal) if proposal else False
     def save(updated,revision):
+        apply_links(updated)
         record(updated,job_id,config)
         return store.save(updated,revision)
     def ensure_config(value):
-        if config:
+        if config or proposal:
             updated=copy.deepcopy(value)
-            if record(updated,job_id,config):return store.save(updated,value['revision'])
+            changed=apply_links(updated)
+            if record(updated,job_id,config) or changed:return store.save(updated,value['revision'])
         return value
     node_rotation = any(step.get('node_source') for step in prepared.sequence_plan)
     if node_rotation and next(job for job in state['jobs'] if job['id'] == job_id).get('render_assignment'):

@@ -100,7 +100,7 @@ def merge_sheet_entries(state, entries):
         if existing:
             fields = {field: entry.get(field, "") for field in (
                 "title","body","task_id","task_type","source_sheet","source_row","text_source","requires_title",
-                "task_voice_path","task_subtitle_path","task_voice_optional","match_error")}
+                "task_voice_path","task_subtitle_path","task_voice_optional","task_audio_name","task_audio_auto","task_background_path","match_error")}
             for field in ("task_date", "task_year", "task_filename_auto"):
                 if field in entry and not (field == "task_filename_auto" and existing.get(field) is False):
                     fields[field] = entry[field]

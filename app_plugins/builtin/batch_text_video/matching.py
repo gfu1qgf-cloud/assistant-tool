@@ -52,6 +52,7 @@ def folder_entry(folder, metadata=None, explicit_voice=None):
     stem = (folder.name + "_" + Path(voice).stem) if voice else folder.name
     return {"id": uuid.uuid4().hex, "path": background, "voice_path": voice,
             "task_voice_path": voice, "task_subtitle_path": subtitle,
+            "task_audio_name": str(audio_name or ""), "task_audio_auto": not bool(explicit_voice), "task_background_path": background,
             "task_dir": str(folder.resolve()), "label": label,
             "title": str(metadata.get("title") or ""), "body": str(metadata.get("body") or ""),
             "name": stem + "_文字版", "status": "待生成" if voice or metadata.get("text_only") else "需配置",
@@ -103,6 +104,28 @@ def merge_entries(state, entries):
     count = 0
     for entry in entries:
         key = file_identity(entry.get("voice_path") or entry["task_dir"])
+        # A later audio file changes the old voice-or-directory identity. Match
+        # automatic task imports by their stable task directory before that key.
+        by_folder=[job for job in state['jobs'] if entry.get('task_audio_auto') is not False
+            and job.get('task_audio_auto') is not False and job.get('task_dir') and entry.get('task_dir')
+            and file_identity(job['task_dir'])==file_identity(entry['task_dir'])]
+        by_voice=[job for job in state['jobs'] if entry.get('voice_path') and job.get('voice_path')
+            and file_identity(job['voice_path'])==file_identity(entry['voice_path'])]
+        matching=by_folder if len(by_folder)==1 else by_voice if len(by_voice)==1 else []
+        if matching:
+            job=matching[0];before=dict(job)
+            for field in ('task_voice_path','task_subtitle_path','task_audio_name','task_background_path'):
+                if entry.get(field):job[field]=entry[field]
+            if not job.get('voice_override') and entry.get('voice_path'):job['voice_path']=entry['voice_path']
+            if not job.get('path') and entry.get('path'):job['path']=entry['path']
+            for field in ('title','body'):
+                if not job.get(field) and entry.get(field):job[field]=entry[field]
+            if job.get('task_voice_path') or not entry.get('match_error'):job['match_error']=''
+            elif entry.get('match_error'):job['match_error']=entry['match_error']
+            if before!=job:
+                job.update(status='待生成' if not job.get('match_error') else '需配置',error=job.get('match_error',''));count+=1
+            known.add(key)
+            continue
         if key in known:
             continue
         entry = dict(entry)

@@ -112,13 +112,14 @@ class BatchWorker(QtCore.QThread):
 class PreviewWorker(QtCore.QThread):
     ready = QtCore.pyqtSignal(object)
 
-    def __init__(self, path, configured, parent=None, voice_path="", blur=0, frame_settings=None, cache_directory=None):
+    def __init__(self, path, configured, parent=None, voice_path="", blur=0, frame_settings=None, cache_directory=None, association_context=None):
         super().__init__(parent)
         self.path, self.configured = path, configured
         self.voice_path = voice_path
         self.blur = blur
         self.frame_settings = frame_settings
         self.cache_directory = cache_directory
+        self.association_context = association_context
         self.cancel = threading.Event()
 
     def run(self):
@@ -128,6 +129,16 @@ class PreviewWorker(QtCore.QThread):
         try:
             if self.cancel.is_set():
                 raise Cancelled("背景预览已取消。")
+            if self.association_context:
+                from .task_associations import refresh as refresh_associations
+                from .render_assignment import apply as apply_assignment
+                context=self.association_context
+                discovered=refresh_associations(context['job'],context['settings'],cancel=self.cancel)
+                refreshed,bound=apply_assignment(discovered['job'],dict(settings=context['settings'],music=[],render_configs=context.get('render_configs',{})))
+                if refreshed.get('render_assignment') or not self.path:self.path=refreshed.get('path','')
+                if refreshed.get('render_assignment') or context['settings'].get('voice_pool_mode','task')=='task':
+                    self.voice_path=resolve_voice(refreshed,bound,discover=False)
+                identity.update(path=self.path,voice_path=self.voice_path,associations=discovered,association_context=context)
             ffmpeg, ffprobe = resolve_tools(self.configured)
             voice_duration = probe(self.voice_path, ffprobe, audio_only=True)["duration"] if self.voice_path else None
             if not self.path:
@@ -580,6 +591,8 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
         self.animation_preview_timer.setSingleShot(True)
         self.animation_preview_timer.setInterval(80)
         self.animation_preview_timer.timeout.connect(self.update_preview)
+        from .task_association_ui import AssociationAccess
+        self.association_access=AssociationAccess(self)
         self.title.textChanged.connect(self.schedule_edit)
         self.body.textChanged.connect(self.schedule_edit)
         self.name.textChanged.connect(self.schedule_edit)
@@ -1174,6 +1187,7 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
         from .background_trim import selected as selected_trim
         trim_rule = selected_trim(frame_settings, path)
         if trim_rule: request += (repr(trim_rule),)
+        request+=(self.association_access.request_token(job,voice),)
         if not force:
             cancel = getattr(self.preview_worker, "cancel", None)
             if self._preview_pending == request or (self._preview_path == request and not (cancel and cancel.is_set())):
@@ -1190,14 +1204,17 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
                 self.preview_worker.cancel.set()
             return
         same_media = self._preview_path and self._preview_path[:3] == request[:3]
-        if not same_media or force:
+        if not same_media or force or self._preview_path[-1]!=request[-1]:
+            from .layers import ImageCache
+            self._image_cache=ImageCache()
             self.invalidate_playback()
         self._preview_path = request
         if not same_media:
             self._media = self._voice_duration = None
             self.preview.background = QtGui.QImage()
         self._background_error = ""
-        self.preview_worker = PreviewWorker(path, self.ffmpeg.text().strip(), self, voice_path=voice, blur=request[6], frame_settings=frame_settings, cache_directory=self.store.directory)
+        self.preview_worker = PreviewWorker(path, self.ffmpeg.text().strip(), self, voice_path=voice, blur=request[6], frame_settings=frame_settings, cache_directory=self.store.directory,
+            association_context=self.association_access.context(job,self.read_settings()))
         self.preview_worker.ready.connect(self._background_ready, QtCore.Qt.ConnectionType.QueuedConnection)
         connect_thread_finished(self.preview_worker, self, 'preview_worker', self._background_finished)
         self.preview_worker.start()
@@ -1205,6 +1222,10 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
     def _background_ready(self, result):
         if result.get("cancelled"):
             return
+        if not self.association_access.accept(result):return
+        if result.get('associations') and self._preview_path:
+            self._preview_path=(result['path'],result.get('voice_path',''),*self._preview_path[2:-1],
+                self.association_access.request_token(self.active_entry(),result.get('voice_path','')))
         for key in ('canvas_width', 'canvas_height'):
             if result.get(key, self.controls[key].value()) != self.controls[key].value(): return
         job = self.active_entry()
@@ -2020,6 +2041,8 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
 
     def showEvent(self, event):
         super().showEvent(event)
+        if hasattr(self,'association_access') and not self.is_batch_busy():
+            QtCore.QTimer.singleShot(0,self.refresh_preview)
         if getattr(self, '_overlay_request', None) is None:
             self.update_preview()
 

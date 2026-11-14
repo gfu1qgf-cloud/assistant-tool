@@ -74,6 +74,9 @@ def resolve_voice(job, state, *, discover=False):
     if not settings.get("use_voice"):
         return ""
     if job.get("voice_override"):
+        if discover and not job.get('voice_path') and job.get('_voice_override_before_assignment') is False:
+            from .task_associations import refresh
+            job=refresh(job,settings)['job']
         return str(job.get("voice_path") or "")
     mode = settings.get("voice_pool_mode", "task")
     if mode not in {value for _label, value in VOICE_MODES}:
@@ -85,15 +88,17 @@ def resolve_voice(job, state, *, discover=False):
     path = str(job.get("task_voice_path", job.get("voice_path")) or "")
     # Table-copy imports can mix tasks with and without existing narration.
     # Do not turn a valid text-only task into a failed mandatory-voice job.
-    if not path and job.get("task_voice_optional") and not job.get("match_error"):
+    if not path and not discover and job.get("task_voice_optional") and not job.get("match_error"):
         return ""
-    if not path and discover:
+    if discover and (not path or job.get('task_audio_auto') is not False and not Path(path).is_file()):
         from .matching import folder_entry
         folder = job.get("task_dir") or (Path(job['path']).parent if job.get('path') else None)
         if not folder:
             return ""
-        match = folder_entry(folder)
+        from .task_associations import sheet_audio_name
+        name=job.get('task_audio_name') or sheet_audio_name(job)
+        match = folder_entry(folder,dict(text_only=bool(job.get('task_voice_optional')),audio_name=name))
         if match["match_error"]:
             raise ValueError(match["match_error"])
-        path = match["voice_path"]
+        path = match["voice_path"] or path
     return path

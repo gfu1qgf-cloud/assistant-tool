@@ -15,6 +15,8 @@ from .audio_sources import resolve_voice
 
 
 def preview_key(job, state, node_bundle=None, *, preview_limit=None):
+    from .task_associations import for_state as refresh_associations
+    job=refresh_associations(job,state)['job']
     from .render_assignment import apply
     job,state=apply(job,state)
     if not job.get('render_assignment'):
@@ -102,13 +104,15 @@ class PlaybackWorker(QtCore.QThread):
         self.elevenlabs_binding = elevenlabs_binding
 
     def run(self):
-        if not self.job.get('render_assignment'):
-            from .background_visual import background_job
-            self.job = background_job(self.job, self.state)
         result = {"key": self.key, "preview_limit": self.preview_limit}
         from .media_cache import MediaCacheSession
         cache_owner = MediaCacheSession()
         try:
+            from .task_associations import for_state as refresh_associations
+            self.job=refresh_associations(self.job,self.state,cancel=self.cancel)['job']
+            if not self.job.get('render_assignment'):
+                from .background_visual import background_job
+                self.job = background_job(self.job, self.state)
             from model.MediaStorage import media_cache_root
             root = media_cache_root(self.directory, anchors=(self.job.get('task_dir'), self.state['settings'].get('output_dir'),
                 Path(self.job['path']).parent if self.job.get('path') else None), namespace='batch-text-video')
@@ -151,6 +155,7 @@ class PlaybackWorker(QtCore.QThread):
                     if path is not None:
                         frozen_subtitles[layer['id']] = str(path)
                 self.job['caption_subtitles'] = frozen_subtitles
+                self.job['_associations_frozen']=True
                 self.job.update(name=self.key, task_dir=str(cache))
                 self.state["settings"].update(output_destination="directory", output_dir=str(cache), output_relative_root="")
                 self.state["settings"]["overwrite"] = True
@@ -290,11 +295,13 @@ class PlaybackController:
             return
         try:
             job = copy.deepcopy(self.active_entry())
-            if job.get("path") and not Path(job["path"]).is_file():
-                raise ValueError("请先选择一个有效的背景视频或图片。")
             job.update(title=self.title.toPlainText(), body=self.body.toPlainText())
             state = copy.deepcopy(self.state)
             state["settings"] = self.read_settings()
+            from .task_associations import for_state as refresh_associations
+            job=refresh_associations(job,state)['job']
+            if job.get("path") and not Path(job["path"]).is_file():
+                raise ValueError("请先选择一个有效的背景视频或图片。")
             if getattr(self, 'pool_preview', None) is not None:
                 job, state = self.pool_preview.prepare(job, state)
             from .export_validation import validate_caption_voice

@@ -125,9 +125,9 @@ def apply_pairs(state, pairs):
             existing = next((job for job in state["jobs"] if job.get("id") == source["id"]
                              and (file_identity(job["path"]) if job.get("path") else "") == key[1]), None)
         fields = {field: copy.deepcopy(source.get(field, "")) for field in
-                  ("title", "body", "voice_path", "task_subtitle_path", "task_dir", "task_id", "task_type", "label", "text_source")}
+                  ("title", "body", "voice_path", "task_subtitle_path", "task_audio_name", "task_background_path", "task_dir", "task_id", "task_type", "label", "text_source")}
         fields.update(path=pair["path"], copy_id=key[0], pair_key=list(key),
-                      requires_title=bool(source.get("requires_title")),
+                      requires_title=bool(source.get("requires_title")), task_audio_auto=source.get("task_audio_auto") is not False,
                       task_voice_optional=bool(source.get("task_voice_optional")), match_error=source.get("match_error", ""))
         if pair.get('quantity_key'): fields['quantity_key'] = copy.deepcopy(pair['quantity_key'])
         for field in ("task_date", "task_year", "task_filename_auto"):

@@ -141,16 +141,22 @@ class TaskPreviewDialog(QtWidgets.QDialog):
             from .audio_sources import resolve_voice
             from .ui import PreviewWorker
             settings=self.view_state['settings']
+            from .task_render_config import apply as apply_config
+            _,association_state=apply_config({**self.job,'_use_render_config':True},self.state)
             self.status.setText('正在读取任务画面…')
             worker=PreviewWorker(self.view_job.get('path',''),settings['ffmpeg_path'],self,
                 voice_path=resolve_voice(self.view_job,self.view_state),blur=settings.get('background_blur',0),
-                frame_settings=settings,cache_directory=self.directory)
+                frame_settings=settings,cache_directory=self.directory,association_context=dict(job=self.job,
+                    settings=association_state['settings'],render_configs=self.state.get('render_configs',{}),profile=self.state.get('active_profile','')))
             self.start_worker('frame_worker',worker,self.frame_ready)
         except Exception as error:self.status.setText(str(error))
 
     def frame_ready(self,result):
         if self.closing or self.pending or result.get('cancelled'):return
         if result.get('error'):self.status.setText(result['error']);return
+        if result.get('associations'):
+            self.job=result['associations']['job'];self.view_job,self.view_state=bound(self.job,self.state)
+            self.populate()
         settings=copy.deepcopy(self.view_state['settings']);job=self.view_job
         from .engine import output_size
         from .preview_timeline import editor_duration
@@ -184,13 +190,10 @@ class TaskPreviewDialog(QtWidgets.QDialog):
     def play_preview(self):
         if self.play_worker:self.play_worker.cancel.set();return
         if self.workers():self.status.setText('画面正在准备，请稍后播放。');return
-        if self.surface:
-            self.stack.setCurrentWidget(self.surface)
-            if self.surface.is_playing():self.surface.pause()
-            else:self.surface.play()
-            self.play.setText('暂停' if self.surface.is_playing() else '播放预览')
-            return
         try:
+            from .task_associations import for_state as refresh_associations
+            self.job=refresh_associations({**self.job,'_use_render_config':True},self.state)['job']
+            self.job.pop('_use_render_config',None)
             job,state=bound(self.job,self.state)
             from .playback import PlaybackWorker,preview_key
             from .node_effects import prepare_preview_bundle
@@ -198,7 +201,15 @@ class TaskPreviewDialog(QtWidgets.QDialog):
             from .export_validation import validate_caption_voice
             validate_caption_voice(state,[job]);binding=prepare_binding(state['settings'],self.services)
             bundle,registry=prepare_preview_bundle(state,job,self.services)
-            worker=PlaybackWorker(job,state,self.directory,preview_key(job,state,bundle),self,node_bundle=bundle,node_registry=registry,elevenlabs_binding=binding)
+            key=preview_key(job,state,bundle)
+            if self.surface and key==getattr(self,'play_key',None):
+                self.stack.setCurrentWidget(self.surface)
+                if self.surface.is_playing():self.surface.pause()
+                else:self.surface.play()
+                self.play.setText('暂停' if self.surface.is_playing() else '播放预览')
+                return
+            self.release_playback();self.play_key=key
+            worker=PlaybackWorker(job,state,self.directory,key,self,node_bundle=bundle,node_registry=registry,elevenlabs_binding=binding)
             self.play.setText('取消准备');self.status.setText('正在准备完整播放预览…')
             self.start_worker('play_worker',worker,self.play_ready)
         except Exception as error:self.status.setText(str(error))

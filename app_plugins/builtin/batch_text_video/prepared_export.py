@@ -33,6 +33,7 @@ class PreparedExport:
     requested_output: object = None
     caption_memory_bytes: int = 0
     render_config: dict = field(default_factory=dict)
+    association_updates: dict = field(default_factory=dict)
 
     def encode(self):
         from .render_slots import render_slot

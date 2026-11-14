@@ -411,6 +411,11 @@ def _prepare_static_text(job, state, directory, cancel=None, progress=None, repo
     if state['settings'].get('pool_exclusions'):
         from .pool_exclusion import attach
         state = {**state, 'settings': {**state['settings'], 'layers': attach(state['settings']['layers'], state)}}
+    from .task_associations import for_state as refresh_associations
+    discovered=refresh_associations(job,state,cancel=cancel)
+    job=discovered['job']
+    from .task_render_config import apply as apply_config
+    _,association_state=apply_config(job,state)
     from .task_render_config import capture as capture_config
     config=capture_config(job,state) if not preview else {}
     original_sources = source_paths(state) if job.get('render_assignment') else []
@@ -505,6 +510,7 @@ def _prepare_static_text(job, state, directory, cancel=None, progress=None, repo
     routing = settings_for({**state, "settings": settings})
     folder = output_folder(job, routing)
     inputs = original_sources + source_paths(state) + source_paths({'settings': settings})
+    if job.get('path'):inputs.append(job['path'])
     if voice_path:
         inputs.append(voice_path)
     from .export_destination import output_stem
@@ -737,6 +743,13 @@ def _prepare_static_text(job, state, directory, cancel=None, progress=None, repo
         from .caption_resources import memory_for_directory
         from .render_assignment import capture as capture_assignment
         assignment = capture_assignment(job, state, settings['layers'], music, voice_path)
+        from .task_associations import dependencies
+        effective_assignment=copy.deepcopy(discovered['job'].get('render_assignment') or assignment)
+        effective_assignment.setdefault('cursor_sources',{}).update(assignment.get('cursor_sources',{}))
+        final_signature=dependencies({**discovered['job'],'render_assignment':effective_assignment},association_state['settings'])[0]
+        change=discovered['proposal']['fields'].setdefault('association_signature',dict(
+            present='association_signature' in discovered['job'],before=discovered['job'].get('association_signature')))
+        change['after']=final_signature
         stage(progress, '等待编码名额')
         yield PreparedExport(args, target, output, ffprobe, encoded_duration, has_audio, music,
             sequence_plan, cancel, progress, report, settings['overwrite'], encoder,
@@ -744,7 +757,7 @@ def _prepare_static_text(job, state, directory, cancel=None, progress=None, repo
             cwd=temporary if effects else None, timings={'prepare_seconds': time.monotonic()-started},
             quality=settings['export_quality'], render_scope='' if preview else file_identity(Path(directory)/'state.json'),
             source_paths=tuple(inputs), requested_output=requested_output, assignment=assignment,
-            caption_memory_bytes=memory_for_directory(temporary), render_config=config)
+            caption_memory_bytes=memory_for_directory(temporary), render_config=config, association_updates=discovered['proposal'])
 
 
 @contextmanager

@@ -116,6 +116,7 @@ class PoolController(CustomPoolController, MattingController):
         view.addAction("渲染队列", self.open_global_queue)
         view.addAction("图层与文字设置", self.edit_text_components)
         view.addAction("刷新预览", self.refresh_preview)
+        view.addAction("重新识别关联资料", self.refresh_preview)
         view.addAction("打开当前成品目录", self.open_output_directory)
         self.layer_panel.copyRequested.connect(self.pick_layer_copy)
         self.layer_panel.imagePoolRequested.connect(self.pick_image_pool)
@@ -266,7 +267,8 @@ class PoolController(CustomPoolController, MattingController):
     def _active_background(self, source):
         if source.get('render_assignment'):
             value = source['render_assignment']
-            return dict(source, path=value['background'], voice_path=value['voice'], voice_override=True)
+            return dict(source, path=value['background'], voice_path=value['voice'], voice_override=True,
+                _voice_override_before_assignment=source.get('voice_override',False))
         from .background_visual import background_job
         settings = dict(self.state["settings"])
         if "background_pool_id" in getattr(self, "controls", {}):
