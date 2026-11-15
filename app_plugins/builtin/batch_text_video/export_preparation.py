@@ -21,16 +21,18 @@ class PreparationWorker:
     def __enter__(self):
         return self
 
-    def start(self, index, job, state, token):
+    def start(self, index, job, state, token, *, ahead=False):
         if self.pending is not None:
             raise RuntimeError('上一条准备任务尚未回收。')
         entry = dict(index=index, job_id=job['id'], token=token)
-        entry['future'] = self.executor.submit(self.prepare, job, state, token)
+        entry['future'] = self.executor.submit(self.prepare, job, state, token,ahead)
         self.pending = entry
 
-    def prepare(self, job, state, token):
+    def prepare(self, job, state, token, ahead=False):
         scope = ExitStack()
         progress = bind(self.progress, job['id'])
+        normal_stage=getattr(progress,'stage',None)
+        if ahead and normal_stage is not None:progress.stage=lambda text:normal_stage('预准备 · '+text)
         report = lambda text: self.message(f'[{job["id"]}] {text}')
         try:
             if job.get('requires_title') and not str(job.get('title', '')).strip():
@@ -49,6 +51,8 @@ class PreparationWorker:
         except BaseException:
             scope.close()
             raise
+        finally:
+            if ahead and normal_stage is not None:progress.stage=normal_stage
 
     def ready(self):
         return self.pending is not None and self.pending['future'].done()
@@ -59,6 +63,8 @@ class PreparationWorker:
         return entry
 
     def cleanup(self, entry):
+        from .preparation_budget import release
+        release(entry)
         timing = getattr(self.progress, 'timing', None)
         if timing is not None and entry.get('job_id'):
             timing.pause(entry['job_id'])
@@ -75,6 +81,7 @@ class PreparationWorker:
         if self.pending is None:
             return []
         entry, self.pending = self.pending, None
+        from .preparation_budget import release
         entry['token'].set()
         # Do not cancel the future: it must enter/leave its owned context itself.
         while True:
@@ -84,8 +91,10 @@ class PreparationWorker:
             except TimeoutError:
                 if not entry['future'].done():
                     continue
+                release(entry)
                 return [(entry['index'], entry['job_id'])]
             except Exception:
+                release(entry)
                 return [(entry['index'], entry['job_id'])]
         self.cleanup({**entry, **value})
         return [(entry['index'], entry['job_id'])]

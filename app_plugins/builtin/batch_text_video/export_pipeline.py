@@ -60,9 +60,22 @@ def execute_parallel_batch(store, state, ids, cancel, progress, message, done, p
     from .media_errors import memory_failure
     from .render_progress import stage,bind
     prepare_memory=estimate(settings=state['settings'])
+    from .preparation_budget import BUFFER,MAX_AHEAD,release as release_buffer
+    # Paid alignment and node workflows retain their existing work boundary.
+    read_ahead=node_effects is None and elevenlabs_binding is None
+    pending_limit=workers+(MAX_AHEAD if read_ahead else 0)
     memory_waiting=False
+    buffer_notified=False
+    unclaimed_ticket=None
     memory_retries={}
     message(f'本批导出：本项目最多{workers}路最终编码；原生任务编码前固定分配、完成即保存，失败重试沿用原分配；节点轮换保留原安全顺序。')
+    if read_ahead:message('原生任务启用独立预准备缓冲；编码满额后仍可提前准备，跨项目共用内存及缓存盘预算。')
+
+    def encode(entry):
+        # A queued future starts only when an existing encoder thread is free.
+        # Releasing the extra buffer never grants an extra encoding slot.
+        release_buffer(entry)
+        return entry['prepared'].encode()
 
     def fail(job_id, exc, prepared=None):
         nonlocal state, failed
@@ -104,25 +117,46 @@ def execute_parallel_batch(store, state, ids, cancel, progress, message, done, p
                 PreparationWorker(preparer, store.directory, progress, message, node_effects, elevenlabs_binding, music) as preparation:
             try:
                 while remaining or pending or preparation.pending:
-                    if remaining and preparation.pending is None and len(pending) < workers and not cancel.is_set():
-                        ready,detail=ADMISSION.request(prepare_memory*(1+memory_retries.get(remaining[0][1],0)))
+                    buffer_waiting=False
+                    if remaining and preparation.pending is None and len(pending) < pending_limit and not cancel.is_set():
+                        ahead_ticket=None
+                        if len(pending)>=workers:
+                            held_memory=max(prepare_memory,max((getattr(v['prepared'],'caption_memory_bytes',0) for v in pending),default=0))
+                            anchor=getattr(pending[-1]['prepared'],'target',store.directory)
+                            ahead_ticket,detail=BUFFER.request(held_memory,Path(anchor).parent)
+                            unclaimed_ticket=ahead_ticket
+                            buffer_waiting=ahead_ticket is None
+                            if buffer_waiting and not buffer_notified:
+                                stage(bind(progress,remaining[0][1]),'等待预准备资源')
+                                message(detail);buffer_notified=True
+                        ready,detail=(False,'') if buffer_waiting else ADMISSION.request(prepare_memory*(1+memory_retries.get(remaining[0][1],0)))
                         if ready:
                             if is_shared(speculative['settings'].get('music_pool_id')):
                                 live=store.load()
                                 state[SHARED_MUSIC]=copy.deepcopy(live[SHARED_MUSIC])
                                 speculative[SHARED_MUSIC]=copy.deepcopy(live[SHARED_MUSIC])
                             memory_waiting=False
+                            buffer_notified=False
                             index, job_id = remaining.popleft()
                             job = copy.deepcopy(next(item for item in speculative['jobs'] if item['id'] == job_id))
                             token = ExportToken(cancel)
                             progress(job_id, 0)
                             message(f"[{index+1}/{len(ids)}] 准备 {Path(job['path']).name}")
-                            preparation.start(index, job, copy.deepcopy(speculative), token)
-                        elif not memory_waiting:
-                            memory_waiting=True
-                            waiting_id=remaining[0][1]
-                            progress(waiting_id,0);stage(bind(progress,waiting_id),'等待内存释放')
-                            message(detail)
+                            try:
+                                preparation.start(index, job, copy.deepcopy(speculative), token,ahead=ahead_ticket is not None)
+                                if ahead_ticket is not None:preparation.pending['ahead_ticket']=ahead_ticket
+                                unclaimed_ticket=None
+                            except BaseException:
+                                if ahead_ticket is not None:ahead_ticket.release()
+                                raise
+                        elif not buffer_waiting:
+                            if ahead_ticket is not None:ahead_ticket.release()
+                            unclaimed_ticket=None
+                            if not memory_waiting:
+                                memory_waiting=True
+                                waiting_id=remaining[0][1]
+                                progress(waiting_id,0);stage(bind(progress,waiting_id),'等待内存释放')
+                                message(detail)
                     if preparation.ready():
                         preparing = preparation.pending
                         job_id, index, token = preparing['job_id'], preparing['index'], preparing['token']
@@ -144,15 +178,18 @@ def execute_parallel_batch(store, state, ids, cancel, progress, message, done, p
                             reservation = copy.deepcopy(state) if reserved else store.completion_state(speculative, job_id, prepared.output,
                                 prepared.music, prepared.sequence_plan)
                             outputs[identity] = job_id
-                            entry['future'] = executor.submit(prepared.encode)
+                            stage(bind(progress,job_id),'已准备待渲染')
+                            entry['future'] = executor.submit(encode,entry)
                             pending.append(entry)
                             speculative = reservation
                         except Cancelled:
+                            release_buffer(preparing)
                             if entry is not None: preparation.cleanup(entry)
                             if cancel.is_set():
                                 break
                             raise
                         except Exception as exc:
+                            release_buffer(preparing)
                             if entry is not None: preparation.cleanup(entry)
                             if cancel.is_set():
                                 break
@@ -176,7 +213,9 @@ def execute_parallel_batch(store, state, ids, cancel, progress, message, done, p
                                 speculative = copy.deepcopy(state)
                     if cancel.is_set():
                         break
-                    if remaining and preparation.pending is None and len(pending) < workers and not memory_waiting:
+                    if (remaining and preparation.pending is None and len(pending) < pending_limit
+                            and not memory_waiting and not buffer_waiting
+                            and not any(item['future'].done() for item in pending)):
                         continue  # Fill the next preparation slot before waiting for an encode.
                     if not pending:
                         if preparation.pending is None and memory_waiting:time.sleep(.2)
@@ -247,6 +286,7 @@ def execute_parallel_batch(store, state, ids, cancel, progress, message, done, p
                     finally:
                         preparation.cleanup(entry)
             finally:
+                if unclaimed_ticket is not None:unclaimed_ticket.release()
                 preparation.discard()
                 drain(pending)
                 pending.clear()

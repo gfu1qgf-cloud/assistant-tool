@@ -4,7 +4,7 @@ import math
 import threading
 import time
 
-PHASES = {'prepare': '准备', 'wait_memory': '等内存', 'wait_encode': '等编码名额', 'encode': '编码',
+PHASES = {'prepare': '准备', 'wait_prepare': '等预准备资源', 'wait_memory': '等内存', 'wait_encode': '等编码名额', 'encode': '编码',
           'verify': '校验', 'wait_save': '等保存', 'save': '保存', 'replay': '等重排'}
 
 
@@ -20,6 +20,8 @@ def clock_text(value):
 
 
 def phase(text):
+    if text=='等待预准备资源':return 'wait_prepare'
+    if text=='已准备待渲染':return 'wait_encode'
     if '等待内存' in text:return 'wait_memory'
     if '编码名额' in text: return 'wait_encode'
     if text == '编码中' or text.startswith('编码等待') or 'CPU重试' in text: return 'encode'
