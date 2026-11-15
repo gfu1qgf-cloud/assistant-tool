@@ -42,6 +42,7 @@ from app_plugins.builtin import (
     TaskAudioSubtitlePlugin,
     TaskDeliveryPlugin,
     WasteReminderPlugin,
+    TemporaryTotpPlugin,
 )
 from PYUI.main_setting_pyui import MainSettingDialog
 from PYUI.main_workspace_layout import MainWorkspaceLayout, PluginPanelScrollArea
@@ -302,6 +303,7 @@ class MainDialog(QtWidgets.QDialog, Ui_MainDialog):
         )
         self.script_segmenter_plugin = self.plugin_host.install(ScriptSegmenterPlugin())
         self.document_formatter_plugin = self.plugin_host.install(DocumentFormatterPlugin())
+        self.temporary_totp_plugin = self.plugin_host.install(TemporaryTotpPlugin())
         self.ai_agent_assistant_plugin = self.plugin_host.install(AIAgentAssistantPlugin())
         self.google_drive_browser_plugin = self.plugin_host.install(GoogleDriveBrowserPlugin())
         self.sheet_monitor_plugin = self.plugin_host.install(SheetMonitorPlugin())

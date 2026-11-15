@@ -42,6 +42,7 @@ from .video_sorter import VideoSorterPlugin
 from .task_audio_subtitle import TaskAudioSubtitlePlugin
 from .task_delivery import TaskDeliveryPlugin
 from .waste_reminder import WasteReminderPlugin
+from .temporary_totp import TemporaryTotpPlugin
 
 __all__ = [
     "AIAgentAssistantPlugin",
@@ -72,4 +73,5 @@ __all__ = [
     "TaskAudioSubtitlePlugin",
     "TaskDeliveryPlugin",
     "WasteReminderPlugin",
+    "TemporaryTotpPlugin",
 ]

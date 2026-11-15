@@ -497,7 +497,7 @@ class PluginHostTests(unittest.TestCase):
 
         self.assertEqual(
             [action.text() for action in plugin_menu.actions()],
-            ["插件管理…", "", "Chrome 启动器", "浏览器书签库…"],
+            ["插件管理…", "", "Chrome 启动器", "浏览器书签库…", "Firefox容器批量创建…"],
         )
         self.assertEqual(tabs.tabText(0), "Chrome 插件")
 
