@@ -61,6 +61,12 @@ class GeometryEditor(QtWidgets.QWidget):
             self.properties[key] = spin
         self.position_pair = FieldPair([(key,key.upper(),self.properties[key]) for key in ('x','y')])
         self.position_label = QtWidgets.QLabel('中心'); form.addRow(self.position_label,self.position_pair)
+        from .size_modes import MODES
+        self.size_mode=UnitCombo()
+        for label,value in MODES:self.size_mode.addItem(label,value)
+        self.size_mode.setToolTip('铺满按整个视频画布适配；文字仅扩展文字框，保持正常排版和换行。切回固定比例恢复原宽高与位置。')
+        self.size_mode.currentIndexChanged.connect(self._size_mode_changed)
+        form.addRow('尺寸方式',self.size_mode)
         self.size_pair = FieldPair([('width','宽',self.properties['width']),('height','高',self.properties['height'])])
         form.addRow('尺寸', self.size_pair)
         self.geometry_labels.update(self.position_pair.labels); self.geometry_labels.update(self.size_pair.labels)
@@ -79,14 +85,21 @@ class GeometryEditor(QtWidgets.QWidget):
         self.layer = copy.deepcopy(layer) if layer else None
         if canvas_size is not None: self.canvas_size = QtCore.QSize(canvas_size)
         self.loading = True
+        from .size_modes import effective,is_full
+        full=is_full(layer or {})
+        self.size_mode.setCurrentIndex(max(0,self.size_mode.findData((layer or {}).get('size_mode','fixed'))))
+        if layer:layer=effective(layer)
         face = bool(layer and layer.get('kind') == 'image' and layer.get('position_reference') == 'face')
         face_index = self.units.findData('face')
         if layer and layer.get('kind') == 'image':
             if face_index < 0: self.units.addItem('人脸定位', 'face')
         elif face_index >= 0: self.units.removeItem(face_index)
         requested = 'face' if face else (unit if unit is not None else self.units.currentData())
+        if full and requested=='face':requested='percent'
         self.units.setCurrentIndex(max(0, self.units.findData(requested)))
-        self.anchor_pair.setEnabled(not face)
+        if self.units.findData('face')>=0:self.units.model().item(self.units.findData('face')).setEnabled(not full)
+        self.anchor_pair.setEnabled(not face and not full)
+        self.position_pair.setEnabled(not full);self.size_pair.setEnabled(not full);self.snap_button.setEnabled(not full)
         self.anchor_pair.setVisible(not face)
         anchor_label = self.layout().labelForField(self.anchor_pair)
         if anchor_label: anchor_label.setVisible(not face)
@@ -128,6 +141,11 @@ class GeometryEditor(QtWidgets.QWidget):
         if not self.loading:
             unit = self.units.currentData()
             if not self.layer: return
+            from .size_modes import is_full
+            if is_full(self.layer):
+                self.bind(self.layer)
+                if unit!='face':self.unitChanged.emit(unit)
+                return
             face = self.layer.get('position_reference') == 'face'
             if unit == 'face':
                 candidate = dict(self.layer, position_reference='face', x=50., y=50.,
@@ -145,7 +163,7 @@ class GeometryEditor(QtWidgets.QWidget):
             self.bind(self.layer)
             self.message.emit('位置调整未应用：'+str(error))
             return
-        values = {key: normalized[key] for key in (*GEOMETRY_KEYS, 'position_anchor_x', 'position_anchor_y') if key in normalized}
+        values = {key: normalized[key] for key in (*GEOMETRY_KEYS, 'position_anchor_x', 'position_anchor_y','size_mode') if key in normalized}
         if normalized.get('position_reference','canvas') != self.layer.get('position_reference','canvas'):
             values['position_reference'] = normalized.get('position_reference','canvas')
         self.layer.update(values)
@@ -154,6 +172,8 @@ class GeometryEditor(QtWidgets.QWidget):
 
     def _geometry_changed(self, key):
         if self.loading or not self.layer: return
+        from .size_modes import is_full
+        if is_full(self.layer):return
         candidate = copy.deepcopy(self.layer)
         extent = self.canvas_size.width() if key in {'x','width'} else self.canvas_size.height()
         value = self.properties[key].value()
@@ -174,6 +194,8 @@ class GeometryEditor(QtWidgets.QWidget):
 
     def snap_to_edges(self, horizontal=None, vertical=None):
         if not self.layer: return
+        from .size_modes import is_full
+        if is_full(self.layer):return
         candidate = copy.deepcopy(self.layer)
         for axis, side in (('x', horizontal), ('y', vertical)):
             if side is not None:
@@ -183,3 +205,7 @@ class GeometryEditor(QtWidgets.QWidget):
                     candidate['position_anchor_' + axis] = side
                     candidate[axis] = 50 if side == 'center' else center(candidate, axis, 0)
         self._emit(candidate)
+
+    def _size_mode_changed(self,*_):
+        if not self.loading and self.layer:
+            self._emit(dict(self.layer,size_mode=self.size_mode.currentData()))

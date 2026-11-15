@@ -22,6 +22,8 @@ def is_animated(path):
     return Path(str(path)).suffix.casefold() in ANIMATED_SUFFIXES
 
 def normalize_visual(layer):
+    from .size_modes import normalize as normalize_size
+    normalize_size(layer)
     # Legacy inline key settings without an explicit ownership flag keep using
     # their inline configuration. An explicit saved-result choice is exclusive.
     if 'use_saved_matte' not in layer:
@@ -199,6 +201,8 @@ def add_plane(args, filters, layer, input_index, background, label, width, heigh
     from .matting_switch import original
     layer = original(layer)
     normalize_visual(layer)
+    from .size_modes import effective,native_scale,is_full
+    layer=effective(layer)
     # An explicit timing node owns the window; never apply a native one twice.
     if timing is None:
         timing = show_window(layer, duration)
@@ -293,9 +297,9 @@ def add_plane(args, filters, layer, input_index, background, label, width, heigh
     # Hidden RGB differs between original frames and premultiplied loop joins.
     # Scale alpha-cropped footage in premultiplied space to avoid changing edge
     # colour/opacity across a dissolve, then restore straight RGBA for overlay.
-    if alpha_box: effect += ['format=gbrap', 'premultiply=inplace=1']
-    effect += [f"scale={box_w}:{box_h}:force_original_aspect_ratio=decrease"]
-    if alpha_box: effect += ['unpremultiply=inplace=1', 'format=rgba']
+    if alpha_box or is_full(layer): effect += ['format=gbrap', 'premultiply=inplace=1']
+    effect += native_scale(layer,box_w,box_h)
+    if alpha_box or is_full(layer): effect += ['unpremultiply=inplace=1', 'format=rgba']
     if static_source:
         # Cache one fully keyed, despilled, scaled RGBA frame inside FFmpeg.
         # Rebuild the clock before animated scaling, movement and fades. No PNG
@@ -311,9 +315,9 @@ def add_plane(args, filters, layer, input_index, background, label, width, heigh
         if scale != "1":
             # Fixed input dimensions, changing output dimensions; preserve the
             # source aspect and re-center at every frame, not at filter init.
-            if alpha_box: effect += ['format=gbrap', 'premultiply=inplace=1']
+            if alpha_box or is_full(layer): effect += ['format=gbrap', 'premultiply=inplace=1']
             effect.append(f"scale=w='max(1,round(iw*({scale})))':h='max(1,round(ih*({scale})))':eval=frame")
-            if alpha_box: effect += ['unpremultiply=inplace=1', 'format=rgba']
+            if alpha_box or is_full(layer): effect += ['unpremultiply=inplace=1', 'format=rgba']
     effect += [f"trim=duration={local_duration:.9f}", "setsar=1"]
     filters.append(f"[{input_label}]" + ",".join(effect) + f"[{label}_source]")
     if timing:

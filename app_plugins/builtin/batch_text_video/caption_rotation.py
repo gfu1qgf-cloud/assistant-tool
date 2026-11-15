@@ -8,7 +8,7 @@ MAX_STYLES=32
 SHARED={'id','kind','name','enabled','source','source_file','text','path','thumbnail','caption_file',
         'caption_source','caption_timing','caption_language','caption_cloud_consent',
         'pool_id','pool_name','pool_field','copy_binding','sequence_items','sequence_cursor','show_start','show_end',
-        'x','y','width','height','position_anchor_x','position_anchor_y','position_reference','unit'}
+        'x','y','width','height','size_mode','position_anchor_x','position_anchor_y','position_reference','unit'}
 
 
 def snapshot(layer):

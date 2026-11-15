@@ -16,13 +16,13 @@ ANIMATIONS = ('none', 'fade', 'pop', 'slide_up', 'slide_down', 'slide_left', 'sl
               'word_pop_random_pulse', 'metronome', 'blur_sharp', 'holy_glow',
               'floating', 'flash_highlight', 'scatter_pop', 'word_random_position', 'lzx_word_pop')
 LEGACY_REVEAL_ANIMATIONS = {'typewriter','bullet_reveal'}
-LAYOUT_KEYS = ('x','y','width','height','align','vertical','caption_words','caption_per_line','caption_hold_ms')
+LAYOUT_KEYS = ('x','y','width','height','size_mode','align','vertical','caption_words','caption_per_line','caption_hold_ms')
 LAYER_KEYS = ('font', 'font_min', 'font_max', 'font_weight', 'italic', 'capitalization',
               'letter_spacing', 'word_spacing', 'line_spacing', 'color', 'outline_width',
               'outline_color', 'outline_opacity', 'outline_blur', 'outline_position', 'shadow_enabled', 'shadow_color',
               'shadow_opacity', 'shadow_x', 'shadow_y', 'shadow_blur', 'background_enabled',
               'background_color', 'background_opacity', 'background_radius', 'padding',
-              'x', 'y', 'width', 'height', 'align', 'vertical')
+              'x', 'y', 'width', 'height', 'size_mode', 'align', 'vertical')
 COLOR_KEYS = {key for key in STYLE_DEFAULTS if 'color' in key and key not in
               {'box_brush_color_mode', 'fullpage_typewriter_first_line_color'}}
 
@@ -207,6 +207,7 @@ def apply_style(layer, preset, *, reset_layout=False):
     if reset_layout:
         from .captions import new_caption
         defaults=new_caption()
+        defaults.setdefault('size_mode','fixed')
         result.update({key:copy.deepcopy(defaults[key]) for key in LAYOUT_KEYS})
     result['caption_preset'] = preset
     result['caption_effects'] = {}  # Reset previous style's effects, not timing/source.

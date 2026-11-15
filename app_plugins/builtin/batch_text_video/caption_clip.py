@@ -7,6 +7,8 @@ MAX_CACHED_MASK_BYTES = 8*1024*1024
 
 
 def clip_bounds(layer,width,height):
+    from .size_modes import effective
+    layer=effective(layer)
     box=QtCore.QRectF(width*(layer['x']-layer['width']/2)/100,
         height*(layer['y']-layer['height']/2)/100,width*layer['width']/100,height*layer['height']/100).intersected(
             QtCore.QRectF(0,0,width,height))

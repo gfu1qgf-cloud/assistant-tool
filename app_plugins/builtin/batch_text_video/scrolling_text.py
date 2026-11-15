@@ -56,6 +56,8 @@ def new_scrolling_component():
 
 
 def box_geometry(layer, width, height):
+    from .size_modes import effective
+    layer=effective(layer)
     # Keep the original box, even when partially off-canvas. The final overlay
     # clips it to the canvas; off-canvas placement must not change scroll speed.
     return (round(width*(layer["x"]-layer["width"]/2)/100),

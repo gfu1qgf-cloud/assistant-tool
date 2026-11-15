@@ -31,6 +31,8 @@ def rectangle(width, height, radius=0):
 
 
 def groups_and_events(words, layer, width, height, duration):
+    from .size_modes import effective
+    layer=effective(layer)
     from .captions import validate_words, _glyph, glyph_line_metrics
     from .layout import TextDoesNotFit
     words = validate_words(words,duration)
@@ -175,6 +177,8 @@ def groups_and_events(words, layer, width, height, duration):
 
 
 def make_primitives(words, layer, width, height, duration):
+    from .size_modes import effective
+    layer=effective(layer)
     events,groups,style = groups_and_events(words,layer,width,height,duration)
     scale = width/1080
     from .caption_follow import enabled as follow_enabled, track_for
@@ -441,6 +445,8 @@ def write_style_ass(path, words, layer, width, height, duration):
 
 
 def write_primitives_ass(path, primitives, events, layer, width, height, *, use_resources=None, check=None, optimize_follow=True):
+    from .size_modes import effective
+    layer=effective(layer)
     from .captions import _ass_time, _ass_color, _path_commands
     from .caption_resources import DrawingResources,DrawingCommandCache
     from .caption_ass_stream import ActiveBudget,FollowWindows,current_check,write_metadata
@@ -581,6 +587,8 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
 def render_design(layer, width, height, *, words=None, duration=None, time=None):
     """Same geometry/effects as export, sampled at an active-word moment."""
+    from .size_modes import effective
+    layer=effective(layer)
     from .captions import validate_words
     text = str(layer.get('text','')).split()
     if words is None:

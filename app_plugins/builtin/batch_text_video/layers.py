@@ -85,6 +85,8 @@ def normalize_layers(value=None):
         fields = [("opacity", 0, 100)]
         positioned = kind in {"image", "text", "caption"} or kind in TEXT_KINDS and "font_min" in layer
         if positioned:
+            from .size_modes import normalize as normalize_size
+            normalize_size(layer)
             from .geometry_anchors import normalize_anchors
             normalize_anchors(layer)
             if kind == "image" and layer["source"] not in {"file", "sequence", "pool"} and not layer.get("path"):
@@ -245,6 +247,9 @@ class ImageCache:
 
 
 def image_rect(layer, image, width, height):
+    from .size_modes import effective,is_full
+    layer=effective(layer)
+    if is_full(layer):return QtCore.QRectF(0,0,width,height)
     size = QtCore.QSizeF(image.size())
     size.scale(QtCore.QSizeF(width*layer["width"]/100, height*layer["height"]/100),
                QtCore.Qt.AspectRatioMode.KeepAspectRatio)
@@ -277,6 +282,8 @@ def compose_layers(text_images, layers, width, height, darkness, cache=None,tint
                 continue  # Computed by the shared FFmpeg operation compiler.
             painter.setOpacity(layer["opacity"]/100)
             if layer["kind"] == "image":
+                from .size_modes import effective,is_full,source_rect
+                layer=effective(layer)
                 from .matting_switch import original
                 layer = original(layer)
                 from .visual_animation import preview_transform
@@ -292,6 +299,7 @@ def compose_layers(text_images, layers, width, height, darkness, cache=None,tint
                 from .alpha_bounds import for_layer, crop_image
                 alpha_box = for_layer(layer)
                 decode_bounds = QtCore.QSize(4096, 4096) if layer.get("key_mode", "none") != "none" else bounds
+                if is_full(layer):decode_bounds=QtCore.QSize(4096,4096)
                 if alpha_box is not None:
                     # Keep small subjects sharp without upscaling a 2000px
                     # source to 4096px just to throw the empty borders away.
@@ -305,7 +313,7 @@ def compose_layers(text_images, layers, width, height, darkness, cache=None,tint
                 from .face_anchor import for_layer as face_for_layer
                 face = face_for_layer(layer, alpha_box=alpha_box)
                 if face: layer = dict(layer, _face_anchor=(face["ax"], face["ay"]))
-                if source.width() > bounds.width() or source.height() > bounds.height():
+                if not is_full(layer) and (source.width() > bounds.width() or source.height() > bounds.height()):
                     source = source.scaled(bounds, QtCore.Qt.AspectRatioMode.KeepAspectRatio,
                                            QtCore.Qt.TransformationMode.SmoothTransformation)
                 rect = image_rect(layer, source, width, height)
@@ -315,7 +323,8 @@ def compose_layers(text_images, layers, width, height, darkness, cache=None,tint
                 center, size = rect.center(), rect.size()*scale
                 rect = QtCore.QRectF(center.x()-size.width()/2+dx, center.y()-size.height()/2+dy,
                                     size.width(), size.height())
-                painter.drawImage(rect, source)
+                if layer.get('size_mode')=='cover':painter.drawImage(rect,source,source_rect(source,width,height))
+                else:painter.drawImage(rect, source)
             else:
                 painter.drawImage(0, 0, text_images[layer["id"]])
     finally:

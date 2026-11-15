@@ -7,6 +7,8 @@ from .caption_display import reveal_events, reveal_start
 
 
 def make_primitives(words, layer, width, height, duration):
+    from .size_modes import effective
+    layer=effective(layer)
     from .caption_styles import uses_style_renderer
     if uses_style_renderer(layer):
         from .caption_style_render import make_primitives as make_style_primitives

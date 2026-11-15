@@ -214,22 +214,11 @@ class WatermarkProperties(QtWidgets.QWidget):
         hint.setWordWrap(True)
         hint.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored, QtWidgets.QSizePolicy.Policy.Preferred)
         layout.addWidget(hint)
-        self.advanced_positions = QtWidgets.QWidget()
-        advanced_form = QtWidgets.QFormLayout(self.advanced_positions)
-        advanced_form.setContentsMargins(0, 0, 0, 0)
-        advanced_form.setRowWrapPolicy(QtWidgets.QFormLayout.RowWrapPolicy.WrapLongRows)
-        self.positions = {}
-        for key, label, minimum in (("x", "横向中心", 0), ("y", "纵向中心", 0),
-                                    ("width", "框宽度", 1), ("height", "框高度", 1)):
-            spin = QtWidgets.QDoubleSpinBox()
-            spin.setRange(minimum, 100)
-            spin.setDecimals(2)
-            spin.setSuffix(" %")
-            spin.valueChanged.connect(lambda _value, field=key: self._position_changed(field))
-            self.positions[key] = spin
-            advanced_form.addRow(label, spin)
-        pair_form_fields(advanced_form,'中心',[('x','X',self.positions['x']),('y','Y',self.positions['y'])])
-        pair_form_fields(advanced_form,'尺寸',[('width','宽',self.positions['width']),('height','高',self.positions['height'])])
+        from .geometry_ui import GeometryEditor
+        self.geometry_editor=GeometryEditor()
+        self.advanced_positions=self.geometry_editor
+        self.positions=self.geometry_editor.properties
+        self.geometry_editor.changed.connect(self._geometry_changed)
         from .property_sections import PropertySections
         self.sections=PropertySections(); layout.addWidget(self.sections)
         frame=self.sections.add_section('watermark_frame','文字框尺寸／自由坐标',self.advanced_positions)
@@ -255,9 +244,7 @@ class WatermarkProperties(QtWidgets.QWidget):
         child = self.layer["corners"][self.corner.currentData()] if self.layer else None
         self.text_style.set_layer(child)
         self.source_editor.set_layer(child)
-        for key, spin in self.positions.items():
-            if child:
-                spin.setValue(child[key])
+        self.geometry_editor.bind(child,self.canvas_size)
         if child:
             self.placement.setCurrentIndex(self.placement.findData(child.get("watermark_placement", "free")))
             self.inset_unit.setCurrentIndex(self.inset_unit.findData(child.get("watermark_inset_unit", "pixels")))
@@ -269,7 +256,10 @@ class WatermarkProperties(QtWidgets.QWidget):
         self._select_corner()
 
     def _refresh_insets(self, child):
-        anchored = bool(child and child.get("watermark_placement", "free") == "corner")
+        from .size_modes import is_full
+        full=is_full(child or {})
+        anchored = bool(child and child.get("watermark_placement", "free") == "corner" and not full)
+        self.placement.setEnabled(not full)
         pixels = self.inset_unit.currentData() == "pixels"
         self.canvas_label.setText(f"画布：{self.canvas_size.width()} × {self.canvas_size.height()} px；内缩按当前单位换算。")
         self.canvas_label.setToolTip("像素按实际导出画布计算；水平百分比按画布宽度、垂直百分比按画布高度。框宽高只控制换行和字号，不决定贴边距离。")
@@ -282,8 +272,10 @@ class WatermarkProperties(QtWidgets.QWidget):
             if child:
                 spin.setValue(child.get(key, 12))
         self.inset_unit.setEnabled(anchored)
-        self.positions["x"].setEnabled(not anchored)
-        self.positions["y"].setEnabled(not anchored)
+        self.geometry_editor.position_pair.setEnabled(not anchored and not full)
+        self.geometry_editor.anchor_pair.setEnabled(not anchored and not full)
+        self.geometry_editor.snap_button.setEnabled(not anchored and not full)
+        self.geometry_editor.size_pair.setEnabled(not full)
         self.apply_positions_button.setEnabled(anchored)
         if child and not anchored:
             self.advanced_position_toggle.setChecked(True)
@@ -294,6 +286,11 @@ class WatermarkProperties(QtWidgets.QWidget):
         self.advanced_position_toggle.setChecked(self.placement.currentData() == "free")
         self._select_corner()
         self._emit_position()
+
+    def _geometry_changed(self,values):
+        if self._loading or not self.layer:return
+        self.layer['corners'][self.corner.currentData()].update(copy.deepcopy(values))
+        self._select_corner();self._emit_position()
 
     def _inset_unit_changed(self, *_):
         if self._loading or not self.layer: return

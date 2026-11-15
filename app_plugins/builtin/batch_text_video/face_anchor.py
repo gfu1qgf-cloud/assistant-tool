@@ -16,7 +16,8 @@ _MODELS = threading.local()
 
 
 def enabled(layer):
-    return layer.get('kind') == 'image' and layer.get('position_reference', 'canvas') == 'face'
+    from .size_modes import is_full
+    return layer.get('kind') == 'image' and layer.get('position_reference', 'canvas') == 'face' and not is_full(layer)
 
 
 def source_path(layer):

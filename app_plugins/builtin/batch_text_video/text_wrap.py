@@ -57,6 +57,8 @@ def bind_exclusions(layers, context=None):
             item = by_id.get(identifier)
             if not item or not targetable(item) or not item.get('enabled', True) or not item.get('opacity', 100):
                 continue
+            from .size_modes import effective
+            item=effective(item)
             rectangles.append((item['x']-item['width']/2, item['y']-item['height']/2,
                                item['width'], item['height']))
         layer['_wrap_rects'] = rectangles

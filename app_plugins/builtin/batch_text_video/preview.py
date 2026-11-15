@@ -100,6 +100,8 @@ class Preview(QtWidgets.QWidget):
                              target.width(),target.height())
 
     def layer_rect(self,layer):
+        from .size_modes import effective
+        layer=effective(layer)
         canvas = self.canvas_rect()
         x,y = layer['x'],layer['y']
         if layer.get('position_reference') == 'face' and self.face_layouts.get(layer['id']):
@@ -113,6 +115,8 @@ class Preview(QtWidgets.QWidget):
     def display_layers(self):
         result = []
         for layer in self.layers:
+            from .size_modes import effective
+            layer=effective(layer)
             value = self.face_layouts.get(layer['id'])
             if layer.get('position_reference') == 'face' and value:
                 from .face_anchor import center_for
@@ -137,6 +141,8 @@ class Preview(QtWidgets.QWidget):
         self.update()
 
     def handle_rects(self,layer):
+        from .size_modes import is_full
+        if is_full(layer):return []
         box = self.layer_rect(layer)
         return [(handle,QtCore.QRectF(box.center().x()+handle[0]*box.width()/2-4,
             box.center().y()+handle[1]*box.height()/2-4,8,8)) for handle in HANDLES]
@@ -178,7 +184,9 @@ class Preview(QtWidgets.QWidget):
                     QtCore.Qt.PenStyle.SolidLine if selected else QtCore.Qt.PenStyle.DashLine))
                 painter.setBrush(QtCore.Qt.BrushStyle.NoBrush)
                 painter.drawRect(box)
-                label = f"{layer['name']} · {layer['width']*self.canvas_size.width()/100:.0f} × {layer['height']*self.canvas_size.height()/100:.0f} px"
+                from .size_modes import effective
+                dimensions=effective(layer)
+                label = f"{layer['name']} · {dimensions['width']*self.canvas_size.width()/100:.0f} × {dimensions['height']*self.canvas_size.height()/100:.0f} px"
                 font = QtGui.QFont(self.font())
                 font.setPixelSize(12)
                 painter.setFont(font)
@@ -306,6 +314,9 @@ class Preview(QtWidgets.QWidget):
         # Focus-out commits and selection callbacks may replace the preview's
         # copied layers. Never begin a drag using the earlier hit-test snapshot.
         layer = next((item for item in self.editable_layers() if item["id"] == identifier), None)
+        from .size_modes import is_full
+        if layer and is_full(layer):
+            self._drag=None;self.update();event.accept();return
         self._drag = ({"id":identifier,"origin":position,"values":{key:layer[key] for key in GEOMETRY_KEYS},
                        "handle":handle,"changed":False} if layer else None)
         self.update()

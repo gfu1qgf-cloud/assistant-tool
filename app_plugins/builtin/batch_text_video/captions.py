@@ -476,6 +476,8 @@ def glyph_line_metrics(glyphs):
 
 def caption_events(words, layer, width, height, duration, *, native=False):
     """Stable layout for each group; a future word is NEVER shown early."""
+    from .size_modes import effective
+    layer=effective(layer)
     from .caption_styles import uses_style_renderer
     if uses_style_renderer(layer):
         from .caption_style_render import groups_and_events
@@ -566,6 +568,8 @@ def _ass_color(value):
 
 
 def write_caption_ass(path, words, layer, width, height, duration):
+    from .size_modes import effective
+    layer=effective(layer)
     from .caption_styles import uses_style_renderer
     if uses_style_renderer(layer):
         from .caption_style_render import write_style_ass
@@ -597,6 +601,8 @@ def static_planes(title, body, width, height, settings, image_cache):
     layers, _ = resolve_sources(layers, title, body)
     from .text_colors import resolve_colors
     layers = resolve_colors(layers, settings.get("_color_scope", "design"))
+    from .size_modes import effective
+    layers=[effective(layer) for layer in layers]
     result, group, first = [], [], True
     def flush(timing_layer=None):
         nonlocal group, first

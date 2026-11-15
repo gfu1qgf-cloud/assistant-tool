@@ -193,6 +193,6 @@ def commit_sequences(layers, plan):
 def new_text_component():
     return {"id": uuid.uuid4().hex, "kind": "text", "name": "文本框", "enabled": True,
             "opacity": 100, "source": "fixed", "text": "", "x": 50, "y": 50,
-            "width": 80, "height": 30, "font": "Segoe UI", "font_min": 26,
+            "width": 80, "height": 30, "size_mode":"fixed", "font": "Segoe UI", "font_min": 26,
             "font_max": 42, "color": "#ffffff", "align": "center", "vertical": "center",
             "line_spacing": 1.15, "word_spacing":20, "outline_color": "#8b0000", "sequence_items": [], "sequence_cursor": 0}

@@ -151,6 +151,8 @@ def compile_layer(operation, directory, context, video_info, *, timing=None):
     if set(options) != {"layer"} or not isinstance(options["layer"], str): raise ValueError("图层操作格式无效。")
     value = json.loads(options["layer"])
     layer = normalize_layer(value, value["kind"])
+    from .size_modes import effective
+    layer=effective(layer)
     from .visual_loop import enabled as loop_fade_enabled
     from .visual_loop_region import selected
     if layer.get('_matting_binding', {}).get('mode') == 'dynamic' or loop_fade_enabled(layer) or selected(layer):

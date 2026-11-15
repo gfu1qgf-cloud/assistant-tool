@@ -54,6 +54,8 @@ def draw_text_groups(painter, groups, layer, x, y, scale):
 
 
 def render_text_box(layer, width, height, *, _local_surface=False):
+    from .size_modes import effective
+    layer=effective(layer)
     if layer.get("_watermark_corner") and layer.get("watermark_placement") == "corner":
         from .watermark_render import render_corner_watermark
         return render_corner_watermark(layer, width, height)

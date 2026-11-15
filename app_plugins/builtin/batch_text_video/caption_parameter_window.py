@@ -11,6 +11,7 @@ from .caption_parameter_values import VALUE_ROLE, SEARCH_ROLE, FILTERS, describe
 from .caption_parameter_edit import ValueDelegate, OverviewUndoKeys, editable, stale, history_host
 
 LABELS = {
+    'size_mode':'尺寸方式',
     'font_min': '最小字号', 'font_max': '最大字号', 'font_weight': '字重',
     'caption_words': '每组最多词数', 'caption_per_line': '每行最多词数',
     'font': '字体', 'color': '文字颜色', 'outline_color': '描边颜色',
@@ -63,6 +64,8 @@ def parameter_targets(owner):
     if panel is not None:
         add(panel.text_properties, panel.text_properties.controls, 'layer')
         add(panel.geometry_editor, panel.geometry_editor.properties, 'layer')
+        if hasattr(panel.geometry_editor,'size_mode') and 'size_mode' in (owner.layer or {}):
+            add(panel.geometry_editor,{'size_mode':panel.geometry_editor.size_mode},'layer')
         for editor in (panel.caption_appearance, panel.caption_background):
             from .caption_appearance import DEFAULTS
             for key, control in editor.controls.items():

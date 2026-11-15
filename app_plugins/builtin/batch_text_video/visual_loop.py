@@ -24,8 +24,18 @@ class LoopInput(StreamInput):
         value.source_width, value.source_height = value.width, value.height
         # Key/AI at original resolution, then keep overlap frames at the size
         # actually needed by the composition. Never upscale the RAM buffers.
-        ratio = min(1., box[0]/value.width, box[1]/value.height)
-        value.width, value.height = max(1, round(value.width*ratio)), max(1, round(value.height*ratio))
+        from .size_modes import is_full
+        ratios=(box[0]/value.width,box[1]/value.height)
+        ratio=min(1.,max(ratios) if is_full(layer) else min(ratios))
+        value.fit_mode='fixed'
+        if layer.get('size_mode')=='stretch':
+            value.width,value.height=max(1,min(value.width,round(box[0]))),max(1,min(value.height,round(box[1])))
+        elif layer.get('size_mode')=='cover' and not layer.get('media_crop_alpha'):
+            value.fit_mode='cover'
+            cw,ch=min(value.width,value.height*box[0]/box[1]),min(value.height,value.width*box[1]/box[0])
+            ratio=min(1.,box[0]/cw,box[1]/ch)
+            value.width,value.height=max(1,round(cw*ratio)),max(1,round(ch*ratio))
+        else:value.width, value.height = max(1, round(value.width*ratio)), max(1, round(value.height*ratio))
         from .engine import resolve_tools, probe
         _, ffprobe = resolve_tools(ffmpeg)
         value.clip_duration = probe(value, ffprobe)['duration']
@@ -109,7 +119,11 @@ def cycle(feed, start=None, end=None):
         filters.append(f'[{label}]fps={float(spec.fps):.9f}{segment},format=rgba[decoded]')
     else:
         w, h = spec.width, spec.height
-        filters.append(f'[{label}]fps={float(spec.fps):.9f}{segment},format=rgba,scale={w}:{h},setsar=1[decoded]')
+        from .size_modes import native_scale
+        scale=','.join(native_scale({'size_mode':spec.fit_mode},w,h)) if getattr(spec,'fit_mode','fixed')=='cover' else f'scale={w}:{h}'
+        from .size_modes import is_full
+        if is_full(spec.loop_layer):scale='format=gbrap,premultiply=inplace=1,'+scale+',unpremultiply=inplace=1,format=rgba'
+        filters.append(f'[{label}]fps={float(spec.fps):.9f}{segment},format=rgba,{scale},setsar=1[decoded]')
     args += ['-filter_complex', ';'.join(filters), '-map', '[decoded]', '-an', '-sn', '-f', 'rawvideo',
              '-threads', '1', '-pix_fmt', 'rgba', 'pipe:1']
     process = None; frames = 0; stack = ExitStack(); diagnostics=None
@@ -134,6 +148,9 @@ def cycle(feed, start=None, end=None):
                 source = np.frombuffer(data, np.uint8).reshape(h, w, 4)
                 rgb, alpha = predictor.predict(source[:, :, :3])
                 result = refine(rgb, alpha, source[:, :, 3], p)
+                if getattr(spec,'fit_mode','fixed')=='cover':
+                    rh,rw=result.shape[:2];cw,ch=min(rw,round(rh*spec.width/spec.height)),min(rh,round(rw*spec.height/spec.width))
+                    xx,yy=(rw-cw)//2,(rh-ch)//2;result=result[yy:yy+ch,xx:xx+cw]
                 if (w, h) != (spec.width, spec.height):
                     result = resize_rgba(result, spec.width, spec.height)
                 data = result.tobytes()
