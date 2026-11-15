@@ -118,7 +118,7 @@ class ChromeLauncherSettingsPage:
 class ChromeLauncherPlugin:
     plugin_id = "chrome_launcher"
     display_name = "Chrome 启动器"
-    version = "1.2.2"
+    version = "1.3.0"
     required_api_version = 1
 
     def __init__(self):
@@ -135,6 +135,9 @@ class ChromeLauncherPlugin:
         context.register_command(PluginCommand('bookmarks', '浏览器书签库…',
             lambda _rows:self.open_bookmarks(), frozenset({MAIN_MENU}),
             tooltip='从 Chrome、Edge、Firefox 导入去重；校验与加密备份后可清理源书签',order=31))
+        context.register_command(PluginCommand('firefox_containers','Firefox容器批量创建…',
+            lambda _rows:self.open_firefox_containers(),frozenset({MAIN_MENU}),
+            tooltip='选择Firefox Profile，无扩展批量创建容器；保留原有容器和登录数据',order=32))
         context.register_command(
             PluginCommand(
                 command_id="open",
@@ -262,6 +265,16 @@ class ChromeLauncherPlugin:
         self.dialog.bookmarks_panel.refresh()
         return self.open_launcher()
 
+    def open_firefox_containers(self):
+        if self.dialog is None:raise RuntimeError('浏览器插件尚未初始化。')
+        self.dialog.environment_tabs.setCurrentWidget(self.dialog.firefox_containers_panel)
+        return self.open_launcher()
+
+    def can_close(self):
+        panel=getattr(self.dialog,'firefox_containers_panel',None)
+        if panel is not None and panel.is_busy():return False,'Firefox容器操作尚未结束，请等待当前读取／写入完成。'
+        return True,''
+
     def launch_next_profile(self):
         if self.dialog is None:
             raise RuntimeError("Chrome 启动器尚未初始化")
@@ -283,6 +296,9 @@ class ChromeLauncherPlugin:
         config[CHROME_NEXT_HOTKEY_CONFIG_KEY] = self.global_hotkey
 
     def stop(self):
+        if not self.can_close()[0]:return False
+        panel=getattr(self.dialog,'firefox_containers_panel',None)
+        if panel is not None:panel.dispose()
         if self.hotkey_manager is not None:
             self.hotkey_manager.close()
             self.hotkey_manager = None

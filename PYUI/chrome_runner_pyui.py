@@ -50,6 +50,10 @@ class ChromeRunnerDialog(QtWidgets.QDialog,Ui_ChromeRunnerDialog):
         self.load_profiles()
         self.refresh_btn.clicked.connect(self.load_profiles)
         self._build_language_environment_tab(language_storage)
+        from PYUI.firefox_containers_pyui import FirefoxContainersPanel
+        self.firefox_containers_panel=FirefoxContainersPanel(self.environment_tabs,storage=language_storage,
+            task_manager=getattr(bookmark_context,'background_tasks',None))
+        self.environment_tabs.addTab(self.firefox_containers_panel,'Firefox容器')
         if bookmark_context is not None:
             from PYUI.browser_bookmarks_pyui import BrowserBookmarksPanel
             self.bookmarks_panel = BrowserBookmarksPanel(bookmark_context, self.environment_tabs)
