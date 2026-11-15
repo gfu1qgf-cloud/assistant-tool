@@ -16,6 +16,7 @@ from model.DailyQuantityStats import (
 from model.TaskResultOrganizer import get_upload_batch
 from model.DailyQuantityCopy import auto_write_enabled
 from .task_delivery_quantity_copy import DailyQuantityCopyPanel
+from .task_delivery_quantity_selection import QuantityOverviewTable
 from model.ReviewSubmissionHistory import read_review_history
 
 
@@ -132,6 +133,7 @@ class DailyQuantityDialog(QtWidgets.QDialog):
     ignore_requested = QtCore.pyqtSignal(object, bool)
     auto_write_requested = QtCore.pyqtSignal(bool)
     copy_date_requested = QtCore.pyqtSignal(str)
+    selected_write_requested = QtCore.pyqtSignal(object)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -248,12 +250,22 @@ class DailyQuantityDialog(QtWidgets.QDialog):
         self.summary_heading.setFont(heading_font)
         self.summary_heading.setWordWrap(True)
         overview_layout.addWidget(self.summary_heading)
-        self.summary_table = QtWidgets.QTableWidget(0, 6)
+        summary_actions=QtWidgets.QHBoxLayout()
+        self.summary_copy_button=QtWidgets.QPushButton('复制所选 · Ctrl+C')
+        self.summary_submit_button=QtWidgets.QPushButton('提交所选数值')
+        self.summary_copy_button.setEnabled(False);self.summary_submit_button.setEnabled(False)
+        summary_actions.addStretch(1);summary_actions.addWidget(self.summary_copy_button);summary_actions.addWidget(self.summary_submit_button)
+        overview_layout.addLayout(summary_actions)
+        self.summary_table = QuantityOverviewTable(0, 6)
         self.summary_table.setHorizontalHeaderLabels([
             "统计分页", "统计类别", "12点", "18点", "24点", "合计"
         ])
         self.summary_table.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.summary_table.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.NoSelection)
+        self.summary_table.itemSelectionChanged.connect(self._summary_selection_changed)
+        self.summary_table.submit_requested.connect(self.selected_write_requested.emit)
+        self.summary_table.message.connect(self.status_message)
+        self.summary_copy_button.clicked.connect(self.summary_table.copy_selection)
+        self.summary_submit_button.clicked.connect(self.summary_table.request_submission)
         self.summary_table.setAlternatingRowColors(True)
         self.summary_table.verticalHeader().setVisible(False)
         self.summary_table.horizontalHeader().setStretchLastSection(True)
@@ -1118,6 +1130,25 @@ class DailyQuantityDialog(QtWidgets.QDialog):
         if busy:
             self.status.setText("正在读取上传历史、本地任务表和 Google 表格…")
 
+    def status_message(self,message):self.status.setText(message)
+
+    def _summary_selection_changed(self):
+        count=len(self.summary_table.selected_quantities()['cells'])
+        self.summary_copy_button.setEnabled(bool(self.summary_table.selectedIndexes()))
+        self.summary_submit_button.setText(f'提交所选数值（{count}格）' if count else '提交所选数值')
+        self.summary_submit_button.setEnabled(count>0 and not self.summary_table.submitting)
+
+    def set_selection_busy(self,busy):
+        self.summary_table.submitting=bool(busy)
+        for widget in (self.folder_day,self.auto_write,self.refresh_button,self.view_date_button,self.scan_date_button,
+                       self.save_external_button,self.scan_button,self.apply_bulk_button,self.inspect_button,self.edit_sheet_button,
+                       self.external_table):widget.setEnabled(not busy)
+        self._summary_selection_changed()
+
+    def clear_summary_scope(self):
+        self._daily_counts=[];self._overall_count=0;self._has_summary=False
+        self._inventory_preview=None;self._show_preview=False;self._preview_day='';self._show_daily_summary()
+
     def show_result(self, result):
         self.copy_panel.show_result(result)
         if result.get('write_mode')=='cache':
@@ -1232,14 +1263,18 @@ class DailyQuantityDialog(QtWidgets.QDialog):
             f"  {suffix}"
         )
         self.summary_table.setRowCount(len(rows) + 1)
+        self.summary_table.clearContents()
         for row_number, item in enumerate(rows):
             values = [item.get("sheet", ""), item.get("category", ""),
                       item.get("01", 0), item.get("02", 0), item.get("03", 0),
                       item.get("total", 0)]
             for column, value in enumerate(values):
-                self.summary_table.setItem(
-                    row_number, column, QtWidgets.QTableWidgetItem(str(value))
-                )
+                cell=QtWidgets.QTableWidgetItem(str(value))
+                if column in (2,3,4) and type(value) is int and value>=0:
+                    cell.setData(QtCore.Qt.ItemDataRole.UserRole,{'date':day,'sheet':str(item.get('sheet','')),
+                        'category':str(item.get('category','')),'slot':('01','02','03')[column-2],'count':value})
+                    cell.setToolTip('可单独或多选提交此数量；按当前数值覆盖写入对应时段格，不累加。')
+                self.summary_table.setItem(row_number,column,cell)
         total_values = ["合计", "", slots["01"], slots["02"], slots["03"], daily_total]
         for column, value in enumerate(total_values):
             cell = QtWidgets.QTableWidgetItem(str(value))

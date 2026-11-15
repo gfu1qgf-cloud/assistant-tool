@@ -146,7 +146,7 @@ class TaskDeliveryQuickActions(QtWidgets.QWidget):
 class TaskDeliveryPlugin:
     plugin_id = "task_delivery"
     display_name = "任务交付"
-    version = "1.1"
+    version = "1.2"
     required_api_version = 2
 
     def __init__(self):
@@ -161,6 +161,7 @@ class TaskDeliveryPlugin:
         self.daily_quantity_date_thread = None
         self.daily_quantity_inspection_thread = None
         self.daily_quantity_dialog_scope = None
+        self.daily_quantity_selection = None
         self._daily_quantity_pending_day = None
         self.todo_store = None
         self.delivery_board_dialog = None
@@ -338,6 +339,7 @@ class TaskDeliveryPlugin:
             self.daily_quantity_dialog.show_inspection({})
             self.daily_quantity_dialog.show_external_sources([])
             self.daily_quantity_dialog.copy_panel.clear_scope()
+            self.daily_quantity_dialog.clear_summary_scope()
         self.daily_quantity_dialog_scope = (dict(config), root)
         if self.daily_quantity_dialog is None:
             dialog = DailyQuantityDialog(self.context.parent_widget)
@@ -358,6 +360,8 @@ class TaskDeliveryPlugin:
             dialog.copy_date_requested.connect(self.load_daily_quantity_copy_cache)
             dialog.auto_write_requested.connect(self.set_daily_quantity_auto_write)
             self.daily_quantity_dialog = dialog
+            from .task_delivery_quantity_selection import DailyQuantitySelectionController
+            self.daily_quantity_selection=DailyQuantitySelectionController(self,dialog)
             try:
                 dialog.show_external_records(external_video_records(
                     self.context.load_config(),
@@ -945,6 +949,8 @@ class TaskDeliveryPlugin:
         return self.controller.update_config(config)
 
     def can_close(self):
+        if self.daily_quantity_selection is not None and self.daily_quantity_selection.is_busy():
+            return False,'每日数量所选单元格尚在核对／填写，请等待结果。'
         if self.daily_quantity_inspection_thread is not None and thread_is_active(self.daily_quantity_inspection_thread):
             return False, "每日数量正在检索已有记录，请稍等。"
         if self.daily_quantity_date_thread is not None and thread_is_active(self.daily_quantity_date_thread):
