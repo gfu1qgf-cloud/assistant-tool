@@ -953,6 +953,23 @@ def run_task_result_organizer(
     def remember_exported_task(file_path, task):
         task_by_file[file_identity(file_path)] = task
 
+    def journal_updated_file(file_path, task):
+        if not run_upload:
+            return
+        path = Path(file_path).resolve()
+        roots = [base_dir / f'{day.month:02d}{day.day:02d}' / str(config.get(key) or default)
+                 for day in task_dates for key, default in
+                 (('task_result_output_dir', 'result'), ('task_result_wsp_output_dir', 'result-wsp'))]
+        root = next((candidate.resolve() for candidate in roots if path.is_relative_to(candidate.resolve())), None)
+        if root is None:
+            raise ValueError('成品不在本轮整理输出目录中，未登记待上传：' + str(path))
+        # Journal each committed copy, not merely the completed whole date.
+        # Preserve older pending files and concurrent background completions.
+        with _PENDING_STATE_LOCK:
+            previous = load_pending_changed_file_batches(config, base_dir, task_dates)
+            save_pending_changed_file_batches(config, base_dir, task_dates,
+                merge_changed_file_batches(previous, [(root, [path])]))
+
     if run_export:
         for task_date in task_dates:
             result = export_one_date(
@@ -962,6 +979,7 @@ def run_task_result_organizer(
                 config=config,
                 exported_file_callback=remember_exported_task,
                 deferred_file_callback=defer_file,
+                updated_file_callback=journal_updated_file,
             )
             if result:
                 result_dirs.append(result.output_dir)

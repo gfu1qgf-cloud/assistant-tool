@@ -60,7 +60,7 @@ def copy_if_updated(src: Path, dst: Path) -> bool:
     return copy_if_ready_and_updated(src, dst)
 
 
-def _copy_output(src, dst, destination_callback=None, deferred_file_callback=None):
+def _copy_output(src, dst, destination_callback=None, deferred_file_callback=None, updated_file_callback=None):
     try:
         updated = copy_if_updated(src, dst)
     except FileStillWritingError as error:
@@ -68,6 +68,8 @@ def _copy_output(src, dst, destination_callback=None, deferred_file_callback=Non
         if deferred_file_callback is not None:
             deferred_file_callback(Path(src), Path(dst), str(error))
         return False
+    if updated and updated_file_callback is not None:
+        updated_file_callback(Path(dst))
     if destination_callback is not None:
         destination_callback(Path(dst))
     return updated
@@ -78,6 +80,7 @@ def copytree_if_updated(
     dst_dir: Path,
     destination_callback: Optional[Callable[[Path], None]] = None,
     deferred_file_callback=None,
+    updated_file_callback=None,
 ) -> List[Path]:
     src_dir = Path(src_dir)
     dst_dir = Path(dst_dir)
@@ -91,7 +94,7 @@ def copytree_if_updated(
             continue
         if src_file.is_file() and not is_copy_temporary(src_file):
             dst_file = dst_dir / src_file.relative_to(src_dir)
-            if _copy_output(src_file, dst_file, destination_callback, deferred_file_callback):
+            if _copy_output(src_file, dst_file, destination_callback, deferred_file_callback, updated_file_callback):
                 updated_files.append(dst_file)
     return updated_files
 
@@ -236,10 +239,15 @@ def export_task(
     wsp_export: bool,
     exported_file_callback: Optional[Callable[[Path, Any], None]] = None,
     deferred_file_callback=None,
+    updated_file_callback=None,
 ) -> List[Path]:
     def remember_output(file_path: Path) -> None:
         if exported_file_callback is not None:
             exported_file_callback(Path(file_path), task)
+
+    def remember_updated(file_path: Path) -> None:
+        if updated_file_callback is not None:
+            updated_file_callback(Path(file_path), task)
 
     mode = str(profile.get("mode") or "single").strip().lower()
     task_dir_name = render_template(profile.get("task_dir", ""), task, task_date)
@@ -259,7 +267,7 @@ def export_task(
             legacy_name = legacy_output_name(task, task_date, config, profile)
             current_name = output_name(task, task_date, config, profile)
             dst = compatible_output_path(output_dir, current_name, legacy_name)
-            if _copy_output(result_file, dst, remember_output, deferred_file_callback):
+            if _copy_output(result_file, dst, remember_output, deferred_file_callback, remember_updated):
                 updated.append(dst)
 
         wsp_name = str(profile.get("wsp_candidate") or "").strip()
@@ -271,7 +279,7 @@ def export_task(
                 dst = compatible_output_path(
                     output_dir_wsp, current_name, legacy_name
                 )
-                if _copy_output(wsp_file, dst, remember_output, deferred_file_callback):
+                if _copy_output(wsp_file, dst, remember_output, deferred_file_callback, remember_updated):
                     updated.append(dst)
         return updated
 
@@ -303,7 +311,7 @@ def export_task(
             destinations[identity] = video_file
             planned.append((video_file, dst))
         for video_file, dst in planned:
-            if _copy_output(video_file, dst, remember_output, deferred_file_callback):
+            if _copy_output(video_file, dst, remember_output, deferred_file_callback, remember_updated):
                 updated.append(dst)
         return updated
 
@@ -321,6 +329,7 @@ def export_task(
             output_dir / directory_name,
             destination_callback=remember_output,
             deferred_file_callback=deferred_file_callback,
+            updated_file_callback=remember_updated,
         )
 
     print(f"未知导出模式，已跳过：{mode}")
@@ -334,6 +343,7 @@ def export_one_date(
     config: Optional[Dict] = None,
     exported_file_callback: Optional[Callable[[Path, Any], None]] = None,
     deferred_file_callback=None,
+    updated_file_callback=None,
 ) -> Optional[ExportResult]:
     config = dict(config or {})
     if base_dir is None:
@@ -386,6 +396,7 @@ def export_one_date(
             wsp_export,
             exported_file_callback=exported_file_callback,
             deferred_file_callback=deferred_file_callback,
+            updated_file_callback=updated_file_callback,
         )
         updated_files.extend(task_updated_files)
 
