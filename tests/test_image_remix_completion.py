@@ -187,7 +187,7 @@ class CompletionUITests(unittest.TestCase):
         with patch.object(QtWidgets.QMessageBox, 'question', return_value=QtWidgets.QMessageBox.StandardButton.Yes) as ask:
             self.dialog.complete_button.click()
         self.assertIn('共 9 张', ask.call_args.args[2]); self.assertIn('新增费用', ask.call_args.args[2])
-        self.plugin.launch.assert_called_once_with('complete', targets=[completion_target(job)])
+        self.plugin.launch.assert_called_once_with('complete', targets=[completion_target(job)], repair_moderation=True)
 
     def test_main_button_submits_all_without_selection_and_filters_running_unknown(self):
         a = self.partial(); b = self.partial(count=4); running = self.partial(); running['status'] = 'running'
@@ -199,7 +199,7 @@ class CompletionUITests(unittest.TestCase):
         with patch.object(QtWidgets.QMessageBox, 'question', return_value=QtWidgets.QMessageBox.StandardButton.Yes) as ask:
             self.dialog.complete_button.click()
         self.assertEqual(ask.call_count, 1)
-        self.plugin.launch.assert_called_once_with('complete', targets=completion_targets([a, b]))
+        self.plugin.launch.assert_called_once_with('complete', targets=completion_targets([a, b]), repair_moderation=True)
 
     def test_busy_disables_completion(self):
         self.dialog.refresh([self.partial()], '', True)
@@ -212,14 +212,14 @@ class CompletionUITests(unittest.TestCase):
         self.assertTrue(self.dialog.complete_button.isEnabled())
         with patch.object(QtWidgets.QMessageBox, 'question', return_value=QtWidgets.QMessageBox.StandardButton.Yes):
             self.dialog.complete_button.click()
-        self.plugin.launch.assert_called_once_with('complete', targets=[completion_target(eligible)])
+        self.plugin.launch.assert_called_once_with('complete', targets=[completion_target(eligible)], repair_moderation=True)
 
     def test_explicit_single_batch_completion_still_available(self):
         a = self.partial(); b = self.partial(); self.dialog.refresh([a, b], '', False)
         self.dialog.history.selectRow(1)
         with patch.object(QtWidgets.QMessageBox, 'question', return_value=QtWidgets.QMessageBox.StandardButton.Yes):
             self.dialog.complete_missing(all_jobs=False)
-        self.plugin.launch.assert_called_once_with('complete', targets=[completion_target(b)])
+        self.plugin.launch.assert_called_once_with('complete', targets=[completion_target(b)], repair_moderation=True)
 
     def test_new_ui_refuses_old_submission_runtime(self):
         from app_plugins.builtin.image_remix.ui import RemixDialog

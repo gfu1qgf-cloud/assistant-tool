@@ -14,6 +14,8 @@ def validate_spec(value):
     if mode not in ('batch', 'instant'):
         raise ValueError('提交方式只能是Batch或即时生成。')
     spec['mode'] = mode
+    if type(spec.get('auto_safety_repair', False)) is not bool:
+        raise ValueError('审核失败自动合规修正开关格式不正确。')
     if type(spec.get('rewrite_enabled', False)) is not bool:
         raise ValueError('提示词创新开关格式不正确。')
     if spec.get('rewrite_enabled'):

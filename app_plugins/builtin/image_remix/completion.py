@@ -1,4 +1,5 @@
 """Explicit, snapshot-checked completion of settled Batch image failures only."""
+from .safety_repair import moderation_blocked
 
 
 def completion_target(job):
@@ -16,7 +17,8 @@ def completion_target(job):
     # records must be checked, not silently converted into new billable calls.
     if any(item['status'] not in ('done', 'failed') for item in job['items']):
         return None
-    missing = [item['id'] for item in job['items'] if item['status'] == 'failed']
+    missing = [item['id'] for item in job['items'] if item['status'] == 'failed' and
+               not (moderation_blocked(item) and item.get('safety_repair'))]
     if not missing:
         return None
     return {'id': job['id'], 'attempt': attempt['token'], 'item_ids': missing}

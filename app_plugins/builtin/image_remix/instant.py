@@ -5,6 +5,7 @@ from uuid import uuid4
 from model.AppDataStorage import data_directory
 from model.SensitiveData import redact_sensitive_text
 from .client import APIError
+from . import safety_repair
 
 
 class InstantService:
@@ -12,8 +13,8 @@ class InstantService:
         self.store, self.client, self.shared, self.check = store, client, shared, check
         self.stage = stage
 
-    def attempt(self, job, statuses=('pending',)):
-        selected = [i for i in job['items'] if i['status'] in statuses]
+    def attempt(self, job, statuses=('pending',), item_ids=None):
+        selected = [i for i in job['items'] if i['status'] in statuses and (item_ids is None or i['id'] in item_ids)]
         if not selected:
             raise ValueError('没有符合条件的图片。')
         attempt = {'token': uuid4().hex, 'created': time.time(), 'state': 'instant',
@@ -93,6 +94,17 @@ class InstantService:
         return restored
 
     def advance(self, job):
+        if safety_repair.active(job):
+            if self.store.stop_requested(job['id']):
+                job.update(status='paused', error='已停止合规改词及后续生图；可继续。')
+                self.store.save(job)
+                return job
+            ready = safety_repair.advance(self.store, self.client, job, self.check)
+            if not ready:
+                return job
+            job['safety_repair']['state'] = 'dispatched'
+            ready += [i['id'] for i in job['items'] if i['status'] == 'pending']
+            self.attempt(job, ('pending', 'failed'), item_ids=ready)
         if job.get('planning') and job['planning']['state'] != 'done':
             raise ValueError('提示词创新尚未完整通过校验，不能即时生图。')
         if self.store.stop_requested(job['id']) and not job['attempts']:
@@ -139,7 +151,12 @@ class InstantService:
             body = self.client.generate(body, references=bool(job['references']))
         except APIError as error:
             item.update(status='failed' if error.definite else 'unknown', error=redact_sensitive_text(error)[:800])
+            safety_repair.remember_failure(job, attempt, item, error.details or {'message': str(error)}, http=error.status)
             request['state'] = item['status']
+            if error.definite and safety_repair.moderation_blocked(item) and job['spec'].get('auto_safety_repair'):
+                if safety_repair.begin(self.store, job, [item['id']]):
+                    return job
+                return self.finish(job)
             job.update(status='paused' if error.definite else 'unknown', error=item['error'])
             # Pause this configuration rather than cascade a quota/auth/prompt
             # error into hundreds of submissions. Other jobs remain independent.

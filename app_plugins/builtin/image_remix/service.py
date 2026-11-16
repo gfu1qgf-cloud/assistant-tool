@@ -16,6 +16,7 @@ from .client import APIError, BatchClient
 from .prompts import safe_id
 from .store import Store, summary
 from .completion import completion_target
+from . import safety_repair
 
 TERMINAL = {'completed', 'failed', 'expired', 'cancelled'}
 SETTLED = {'done', 'partial', 'failed', 'cancelled'}
@@ -52,10 +53,12 @@ def active_attempt(job):
     return job['attempts'][-1] if job['attempts'] else None
 
 
-def new_attempt(job, *, retry=False):
+def new_attempt(job, *, retry=False, item_ids=None):
     if job['attempts'] and job['status'] not in SETTLED:
         raise ValueError('原批次尚未核对完成，不能重复提交。')
-    items = [i for i in job['items'] if i['status'] == ('failed' if retry else 'pending')]
+    selected = set(item_ids) if item_ids is not None else None
+    items = [i for i in job['items'] if i['status'] == ('failed' if retry else 'pending')
+             and (selected is None or i['id'] in selected)]
     if not items:
         raise ValueError('没有可提交的图片。')
     attempt = {'token': uuid4().hex, 'created': time.time(), 'state': 'prepared',
@@ -156,6 +159,13 @@ class Service:
         return job
 
     def advance(self, job):
+        if safety_repair.active(job):
+            ready = safety_repair.advance(self.store, self.client, job, self.check)
+            if not ready:
+                return job
+            job['safety_repair']['state'] = 'dispatched'
+            new_attempt(job, retry=True, item_ids=ready)
+            self.store.save(job)
         attempt = active_attempt(job)
         if job['status'] in SETTLED:
             return job
@@ -237,11 +247,15 @@ class Service:
             if item['id'] in attempt['item_ids'] and item['status'] != 'done':
                 item['status'] = 'failed'
                 item['error'] = item['error'] or reason or ('云端批次' + batch['status'] + '，该图片未返回有效结果。')
+                if item.get('last_failure', {}).get('attempt') != attempt['token']:
+                    safety_repair.remember_failure(job, attempt, item, {'message': item['error']})
         attempt['state'] = 'finished'
         done, failed, _ = summary(job)
         job.update(collection_failures=0, network_failures=0, status='done' if done == len(job['items']) else
                    ('cancelled' if batch['status'] == 'cancelled' else 'partial' if done else 'failed'), error=reason)
         self.store.save(job)
+        if job['spec'].get('auto_safety_repair') and not job.get('cancel_requested'):
+            safety_repair.begin(self.store, job, [i['id'] for i in job['items'] if safety_repair.repairable(i)])
         return job
 
     def accept_line(self, job, attempt, row):
@@ -253,7 +267,9 @@ class Service:
         response = row.get('response') or {}
         body = response.get('body') or {}
         if row.get('error') or response.get('status_code') != 200:
-            item.update(status='failed', error=redact_sensitive_text(str(row.get('error') or body.get('error') or '云端图片生成失败'))[:800])
+            error = row.get('error') or body.get('error') or '云端图片生成失败'
+            item.update(status='failed', error=redact_sensitive_text(str(error))[:800])
+            safety_repair.remember_failure(job, attempt, item, error, http=response.get('status_code'))
             self.store.save(job)
             return
         data = body.get('data') or []
@@ -280,6 +296,7 @@ class Service:
             'job_id': job['id'], 'custom_id': custom, 'batch_id': attempt['batch_id'],
             'submission_mode': job['spec'].get('mode', 'batch'),
             'creative_plan': item.get('plan'), 'rewrite_model': job['spec'].get('rewrite_model'),
+            'safety_repair': item.get('safety_repair'),
             'original_prompt': job['spec']['prompt'], 'prompt': item['prompt'],
             'innovation': job['spec']['innovation'], 'model': job['spec']['model'],
             'usage': body.get('usage'), 'sha256': digest})
@@ -331,7 +348,7 @@ def _run_operation(store, payload, context):
         waiting = sorted((j for j in store.all() if j['status'] not in SETTLED and
                           (j['status'] not in ('attention', 'paused', 'planning_failed') or payload.get('manual')) and
                           (not payload.get('instant_only') or
-                           j['spec'].get('mode', 'batch') == 'instant' and j['status'] in ('ready', 'planning'))),
+                           j['spec'].get('mode', 'batch') == 'instant' and j['status'] in ('ready', 'planning', 'repairing'))),
                          key=lambda j: j.get('last_check', 0))
         identifiers = [j['id'] for j in waiting[:8]]
     messages = []
@@ -383,7 +400,9 @@ def _run_operation(store, payload, context):
                                         stage=lambda stage: report_stage(job['id'], stage))
                 if action == 'bind':
                     raise ValueError('即时任务没有Batch ID，不能关联批次。')
-                if action in ('resume', 'retry', 'retry_unknown'):
+                if action in ('resume', 'retry', 'retry_unknown') and safety_repair.active(job):
+                    store.clear_stop(job['id'])
+                elif action in ('resume', 'retry', 'retry_unknown'):
                     direct.restore_receipts(job)
                     direct.resume(job, retry=action != 'resume', include_unknown=action == 'retry_unknown')
                 if action == 'cancel':
@@ -402,7 +421,12 @@ def _run_operation(store, payload, context):
                 attempt.update(batch_id=batch['id'], state='cloud')
                 store.save(job)
             if action in ('retry', 'complete'):
-                new_attempt(job, retry=True)
+                if action == 'complete' and payload.get('repair_moderation'):
+                    job['spec']['auto_safety_repair'] = True
+                    if safety_repair.begin(store, job, confirmed[identifier]['item_ids']):
+                        messages.append(identifier[:8] + '：先合规修正审核失败提示词，完成后自动重试。')
+                        continue
+                new_attempt(job, retry=True, item_ids=confirmed[identifier]['item_ids'] if action == 'complete' else None)
                 store.save(job)
             if action == 'cancel':
                 job['cancel_requested'] = True
@@ -431,4 +455,5 @@ def _run_operation(store, payload, context):
     return {'jobs': jobs, 'messages': messages, 'draft': store.draft(),
             'auto_continue': any(j['spec'].get('mode', 'batch') == 'instant' and
                                  (j['status'] == 'ready' or j['status'] == 'planning' and
-                                  j.get('planning', {}).get('state') == 'ready') for j in jobs)}
+                                  j.get('planning', {}).get('state') == 'ready' or
+                                  j['status'] == 'repairing' and j.get('safety_repair', {}).get('planning', {}).get('state') == 'ready') for j in jobs)}

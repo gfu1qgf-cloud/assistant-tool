@@ -22,7 +22,7 @@ class Store:
         self.lock = threading.RLock()
         with self.connection() as db:
             version = db.execute('PRAGMA user_version').fetchone()[0]
-            if version not in (0, 1, 2, 3, 4):
+            if version not in (0, 1, 2, 3, 4, 5):
                 raise ValueError('图片翻版记录来自更新版本，不能覆盖。')
             db.executescript('''CREATE TABLE IF NOT EXISTS jobs (
                 id TEXT PRIMARY KEY, value TEXT NOT NULL, created REAL NOT NULL);
@@ -78,7 +78,7 @@ class Store:
 
     def save(self, job):
         with self.connection() as db:
-            target_version = 4 if job.get('skill') else 3 if job.get('planning') else 2 if job['spec'].get('mode', 'batch') == 'instant' else 1
+            target_version = 5 if job.get('safety_repair') or job['spec'].get('auto_safety_repair') else 4 if job.get('skill') else 3 if job.get('planning') else 2 if job['spec'].get('mode', 'batch') == 'instant' else 1
             if target_version > db.execute('PRAGMA user_version').fetchone()[0]:
                 # Old 0.1 clients reject version 2 rather than interpreting a
                 # queued instant intent as a new Batch on downgrade.

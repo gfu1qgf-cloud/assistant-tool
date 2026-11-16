@@ -7,12 +7,14 @@ from .store import Store, summary
 from .skill_rules import SKILL_ID, SKILL_TITLE, load_snapshot
 from .reference_inputs import recent_reference_items
 from .completion import completion_target, completion_targets
+from .safety_repair import moderation_blocked, active as repair_active
 
 LABELS = {'ready': '等待提交', 'submitting': '正在提交', 'unknown': '提交待核对',
           'running': '云端处理中', 'collecting': '正在收取', 'cancelling': '取消确认中',
           'attention': '需处理（检查可恢复）',
           'paused': '已暂停',
           'planning': '正在创新提示词', 'planning_unknown': '改写提交待核对', 'planning_failed': '提示词创新失败',
+          'repairing': '正在合规改词／自动补全', 'repair_unknown': '合规改词待核对',
           'cancelled': '已取消', 'done': '已完成', 'partial': '部分完成', 'failed': '失败'}
 
 
@@ -29,7 +31,7 @@ def thumbnail(path, size):
 class RemixDialog(QtWidgets.QDialog):
     def __init__(self, plugin, parent=None):
         super().__init__(parent)
-        if getattr(plugin, 'submission_api_version', 0) < 6:
+        if getattr(plugin, 'submission_api_version', 0) < 7:
             raise RuntimeError('图片翻版已更新，请重启软件后使用；已阻止新旧提交代码混用。')
         self.plugin = plugin
         self.draft_loaded = False
@@ -60,6 +62,10 @@ class RemixDialog(QtWidgets.QDialog):
         self.mode.addItem('即时生成 · 标准价，不等Batch排队', 'instant')
         self.mode.addItem('Batch · 优惠价，24小时处理窗口', 'batch')
         fields.addRow('提交方式', self.mode)
+        self.auto_safety_repair = QtWidgets.QCheckBox('审核失败时，AI合规改词并自动重试一次', left)
+        self.auto_safety_repair.setChecked(True)
+        self.auto_safety_repair.setToolTip('每张图片最多一次：实质调整不合规内容，保留安全核心主题；额外产生文字和生图费用。无法改写或再次被拦时停止，不保证通过审核。')
+        fields.addRow('', self.auto_safety_repair)
         self.prompt_skill = QtWidgets.QComboBox(left)
         self.prompt_skill.addItem('不使用SKILL · 通用创新', 'none')
         self.prompt_skill.addItem(SKILL_TITLE, SKILL_ID); self.prompt_skill.setCurrentIndex(1)
@@ -222,6 +228,7 @@ class RemixDialog(QtWidgets.QDialog):
 
     def spec(self):
         return {'rewrite_enabled': True, 'rewrite_model': self.rewrite_model.currentText().strip(),
+                'auto_safety_repair': self.auto_safety_repair.isChecked(),
                 'prompt_skill':self.prompt_skill.currentData(),
                 'reference_mode':self.reference_mode.currentData() if self.prompt_skill.currentData()!='none' else 'identity',
                 'mode': self.mode.currentData(), 'prompt': self.prompt.toPlainText(), 'count': self.count.value(),
@@ -236,6 +243,7 @@ class RemixDialog(QtWidgets.QDialog):
         if self.prompt.toPlainText().strip() or not draft:
             return
         self.prompt.setPlainText(str(draft.get('prompt', '')))
+        self.auto_safety_repair.setChecked(bool(draft.get('auto_safety_repair', True)))
         profile=draft.get('prompt_skill','none' if preserve_legacy else SKILL_ID)
         index=self.prompt_skill.findData(profile)
         if index>=0:self.prompt_skill.setCurrentIndex(index)
@@ -332,6 +340,7 @@ class RemixDialog(QtWidgets.QDialog):
                 f'模型：{spec["model"]}\n参考图：{len(spec["references"])} 张（会上传给OpenAI）。\n' +
                 ('SKILL：'+SKILL_TITLE+'；有图时文字模型也会读取缩略图，产生图片输入费用。\n' if spec['prompt_skill']!='none' else '') +
                 f'先用 {spec["rewrite_model"]} 创新提示词（另有文字费用），完成并校验后才生图。\n' +
+                ('已启用审核失败自动合规修正：每张最多一次，产生额外文字和生图费用；不保证审核通过。\n' if spec['auto_safety_repair'] else '') +
                 ('即时生成：使用普通API标准价格，不享受Batch折扣。逐张提交，按实际用量计费。确认提交？'
                  if spec['mode'] == 'instant' else '两步使用Batch优惠价，可能需要两轮24小时处理窗口。确认提交？'),
                 QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No,
@@ -357,7 +366,9 @@ class RemixDialog(QtWidgets.QDialog):
             return
         count = sum(len(target['item_ids']) for target in targets)
         message = (f'补全 {len(targets)} 个Batch批次，共 {count} 张明确失败的图片。\n'
-                   '只提交这些失败项；已成功图片、提示词、模型、参考图和原账号保持不变。\n'
+                   '只处理这些失败项；已成功图片、模型、参考图和原账号保持不变。\n' +
+                   ('审核拦截项先由AI实质修正为合规提示词，再自动生图；每张最多修正一次，额外产生文字和生图费用，不保证通过审核。\n'
+                    if self.auto_safety_repair.isChecked() else '自动合规修正已关闭，将原样重试失败项。\n') +
                    '这是新一轮付费Batch，会产生新增费用并重新排队，不保证立即完成。\n'
                    '正在运行、提交结果不明、尚待收取的批次均跳过；不会无限自动重试。\n确认提交？')
         if QtWidgets.QMessageBox.question(self, '确认付费补全缺失图片', message,
@@ -365,7 +376,7 @@ class RemixDialog(QtWidgets.QDialog):
                 QtWidgets.QMessageBox.StandardButton.No) != QtWidgets.QMessageBox.StandardButton.Yes:
             return
         try:
-            if self.plugin.launch('complete', targets=targets):
+            if self.plugin.launch('complete', targets=targets, repair_moderation=self.auto_safety_repair.isChecked()):
                 self.status.setText(f'正在处理 {len(targets)} 个批次、{count} 张补全申请；请勿重复点击。')
         except Exception as error:
             self.status.setText(str(error))
@@ -392,6 +403,8 @@ class RemixDialog(QtWidgets.QDialog):
             text = f'{mode} · {status} · 已收取 {done}/{len(job["items"])}'
             target = completion_target(job)
             if target: text += f' · 可补全 {len(target["item_ids"])} 张'
+            exhausted = 0 if repair_active(job) else sum(i['status'] == 'failed' and moderation_blocked(i) and bool(i.get('safety_repair')) for i in job['items'])
+            if exhausted: text += f' · 审核需核对 {exhausted} 张'
             if job.get('planning') and job['planning']['state'] != 'done':
                 planned = sum(len(c['indices']) for c in job['planning']['chunks'] if c['state'] == 'done')
                 text += f' · 创意方案 {planned}/{len(job["items"])}'
@@ -417,7 +430,7 @@ class RemixDialog(QtWidgets.QDialog):
         job = self.selected_job(); self.results.clear()
         self.results.setVisible(False)
         self.stop_button.setEnabled(bool(job and job['spec'].get('mode', 'batch') == 'instant'
-                                        and job['status'] in ('ready', 'running', 'submitting', 'planning')))
+                                        and job['status'] in ('ready', 'running', 'submitting', 'planning', 'repairing', 'repair_unknown')))
         if not job: return
         for result in job['items']:
             if result['status'] == 'done':
@@ -465,7 +478,10 @@ class RemixDialog(QtWidgets.QDialog):
                 content = ['原始提示词：', job['spec']['prompt'], '\n批次：', *[a.get('batch_id') or a['state'] for a in job['attempts']],
                            '\n最近提示：', job.get('error', '')]
                 if job.get('skill'):content += ['\nSKILL快照：',job['skill']['id'],job['skill']['version'],job['skill']['sha256']]
-                content += [f'\n{i["index"] + 1:04d} · {i["status"]}\n{i["prompt"]}\n{i["error"]}' for i in job['items']]
+                import json
+                content += [f'\n{i["index"] + 1:04d} · {i["status"]}\n{i["prompt"]}\n{i["error"]}\n'
+                            + json.dumps({'审核修正': i.get('safety_repair'), '历史错误': i.get('failure_history', [])}, ensure_ascii=False, indent=2)
+                            for i in job['items']]
                 text.setPlainText('\n'.join(content)); layout.addWidget(text); dialog.exec()
             elif chosen == reuse:
                 self.prompt.clear(); self.references.clear(); self.load_draft(job['spec'],preserve_legacy=True)

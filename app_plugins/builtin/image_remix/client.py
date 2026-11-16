@@ -9,10 +9,11 @@ from .prompts import safe_id
 
 
 class APIError(RuntimeError):
-    def __init__(self, message, *, definite=False, status=None):
+    def __init__(self, message, *, definite=False, status=None, details=None):
         super().__init__(message)
         self.definite = definite
         self.status = status
+        self.details = details or {}
 
 
 class BatchClient:
@@ -36,16 +37,19 @@ class BatchClient:
         except requests.RequestException as error:
             raise APIError('网络响应未确认；已保留原批次，不自动重新生成。' + type(error).__name__) from error
         if not 200 <= response.status_code < 300:
+            details = {}
             try:
                 body = response.json()
                 reason = body.get('error', {}).get('message', '请求失败')
+                if isinstance(body.get('error'), dict):
+                    details = {k: body['error'][k] for k in ('code', 'type', 'message', 'param', 'moderation_details') if k in body['error']}
             except (ValueError, AttributeError):
                 reason = '请求失败，请核对网络、账户权限及额度。'
             message = f'OpenAI HTTP {response.status_code}：' + redact_sensitive_text(str(reason))[:600]
             status = response.status_code
             response.close()
             # A 5xx / proxy timeout cannot establish that a POST was rejected.
-            raise APIError(message, definite=400 <= status < 500 and status not in (408, 409), status=status)
+            raise APIError(message, definite=400 <= status < 500 and status not in (408, 409), status=status, details=details)
         return response
 
     def json(self, method, path, **kwargs):
