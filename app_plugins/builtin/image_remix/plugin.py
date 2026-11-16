@@ -10,8 +10,8 @@ from .service import run_operation, credential_identity
 class ImageRemixPlugin(QtCore.QObject):
     plugin_id = 'image_remix'
     display_name = 'GPT 图片翻版'
-    version = '0.4.0'
-    submission_api_version = 5
+    version = '0.4.1'
+    submission_api_version = 6
     required_api_version = 1
 
     def __init__(self):
@@ -73,7 +73,7 @@ class ImageRemixPlugin(QtCore.QObject):
         # Persist only a fingerprint in jobs. The host's encrypted key list is
         # consulted on each check; no plaintext credentials in plugin storage.
         handle = self.context.submit_background_task(title='图片翻版 · ' + {
-            'create': '提交批次', 'check': '检查并收取', 'retry': '重试失败项',
+            'create': '提交批次', 'check': '检查并收取', 'retry': '重试失败项', 'complete': '补全Batch缺失图片',
             'cancel': '停止／取消', 'delete': '删除记录', 'snapshot': '读取记录', 'bind': '关联原批次',
             'resume': '继续未提交图片', 'retry_unknown': '确认重试未确认图片', 'retry_planning': '重试提示词创新',
             'models': '刷新账号模型'}[action],

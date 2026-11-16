@@ -6,6 +6,7 @@ from .prompts import MODELS, SIZES, innovation_note, validate_spec
 from .store import Store, summary
 from .skill_rules import SKILL_ID, SKILL_TITLE, load_snapshot
 from .reference_inputs import recent_reference_items
+from .completion import completion_target, completion_targets
 
 LABELS = {'ready': '等待提交', 'submitting': '正在提交', 'unknown': '提交待核对',
           'running': '云端处理中', 'collecting': '正在收取', 'cancelling': '取消确认中',
@@ -28,7 +29,7 @@ def thumbnail(path, size):
 class RemixDialog(QtWidgets.QDialog):
     def __init__(self, plugin, parent=None):
         super().__init__(parent)
-        if getattr(plugin, 'submission_api_version', 0) < 5:
+        if getattr(plugin, 'submission_api_version', 0) < 6:
             raise RuntimeError('图片翻版已更新，请重启软件后使用；已阻止新旧提交代码混用。')
         self.plugin = plugin
         self.draft_loaded = False
@@ -148,7 +149,16 @@ class RemixDialog(QtWidgets.QDialog):
         self.generate = QtWidgets.QPushButton('生成 · 提交Batch', self)
         self.generate.clicked.connect(self.generate_clicked); actions.addWidget(self.generate)
         self.check = QtWidgets.QPushButton('检查并收取结果', self)
-        self.check.clicked.connect(lambda: plugin.check(manual=True)); actions.addWidget(self.check); actions.addStretch()
+        self.check.clicked.connect(lambda: plugin.check(manual=True)); actions.addWidget(self.check)
+        self.complete_button = QtWidgets.QToolButton(self)
+        self.complete_button.setText('补全缺失图片…')
+        self.complete_button.setPopupMode(QtWidgets.QToolButton.ToolButtonPopupMode.MenuButtonPopup)
+        self.complete_button.clicked.connect(lambda: self.complete_missing())
+        complete_menu = QtWidgets.QMenu(self.complete_button)
+        self.complete_current = complete_menu.addAction('补全当前Batch批次…', lambda: self.complete_missing())
+        self.complete_all = complete_menu.addAction('补全全部Batch批次…', lambda: self.complete_missing(all_jobs=True))
+        self.complete_button.setMenu(complete_menu)
+        actions.addWidget(self.complete_button); actions.addStretch()
         self.stop_button = QtWidgets.QPushButton('停止后续图片', self)
         self.stop_button.clicked.connect(self.stop_instant); actions.addWidget(self.stop_button)
         self.mode_note = QtWidgets.QLabel(self)
@@ -343,7 +353,49 @@ class RemixDialog(QtWidgets.QDialog):
         if 0 <= row < len(self.jobs): return self.jobs[row]
         return None
 
+    def complete_missing(self, *, all_jobs=False):
+        if self.plugin.busy():
+            return
+        job = self.selected_job()
+        targets = completion_targets(self.jobs if all_jobs else ([job] if job else []))
+        if not targets:
+            self.status.setText('没有可补全的Batch失败项。云端处理中请继续等待；提交待核对／收取异常请先“检查并收取结果”，不会重复生成。')
+            return
+        count = sum(len(target['item_ids']) for target in targets)
+        message = (f'补全 {len(targets)} 个Batch批次，共 {count} 张明确失败的图片。\n'
+                   '只提交这些失败项；已成功图片、提示词、模型、参考图和原账号保持不变。\n'
+                   '这是新一轮付费Batch，会产生新增费用并重新排队，不保证立即完成。\n'
+                   '正在运行、提交结果不明、尚待收取的批次均跳过；不会无限自动重试。\n确认提交？')
+        if QtWidgets.QMessageBox.question(self, '确认付费补全缺失图片', message,
+                QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No,
+                QtWidgets.QMessageBox.StandardButton.No) != QtWidgets.QMessageBox.StandardButton.Yes:
+            return
+        try:
+            if self.plugin.launch('complete', targets=targets):
+                self.status.setText(f'正在处理 {len(targets)} 个批次、{count} 张补全申请；请勿重复点击。')
+        except Exception as error:
+            self.status.setText(str(error))
+
+    def update_completion_controls(self):
+        job = self.selected_job()
+        target = completion_target(job) if job else None
+        targets = completion_targets(self.jobs)
+        count = len(target['item_ids']) if target else 0
+        busy = self.operation_busy
+        self.complete_button.setText(f'补全缺失 {count} 张…' if count else '补全缺失图片…')
+        self.complete_button.setEnabled(not busy and bool(targets))
+        # When only other rows are eligible, clicking the button opens the menu
+        # instead of silently acting on a different job.
+        self.complete_button.setPopupMode(QtWidgets.QToolButton.ToolButtonPopupMode.MenuButtonPopup if target
+                                         else QtWidgets.QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.complete_current.setText(f'补全当前Batch批次（{count} 张）…')
+        self.complete_current.setEnabled(not busy and bool(target))
+        self.complete_all.setText(f'补全全部Batch（{len(targets)} 批／{sum(len(t["item_ids"]) for t in targets)} 张）…')
+        self.complete_all.setEnabled(not busy and bool(targets))
+        self.complete_button.setToolTip('本轮已结束才可补全；仅重试明确失败项，成功图片不重做。右侧箭头可补全全部Batch。')
+
     def refresh(self, jobs, message, busy):
+        self.operation_busy = busy
         selected = self.selected_job()
         identifier = selected['id'] if selected else None
         self.jobs = jobs
@@ -355,6 +407,8 @@ class RemixDialog(QtWidgets.QDialog):
             status = LABELS.get(job['status'], job['status'])
             mode = '即时' if job['spec'].get('mode', 'batch') == 'instant' else 'Batch'
             text = f'{mode} · {status} · 已收取 {done}/{len(job["items"])}'
+            target = completion_target(job)
+            if target: text += f' · 可补全 {len(target["item_ids"])} 张'
             if job.get('planning') and job['planning']['state'] != 'done':
                 planned = sum(len(c['indices']) for c in job['planning']['chunks'] if c['state'] == 'done')
                 text += f' · 创意方案 {planned}/{len(job["items"])}'
@@ -365,7 +419,8 @@ class RemixDialog(QtWidgets.QDialog):
             detail = job.get('error') or '\n'.join(i['error'] for i in job['items'] if i.get('error'))[:2500]
             for column, value in enumerate(values):
                 item = QtWidgets.QTableWidgetItem(value)
-                item.setToolTip(detail or value); self.history.setItem(row, column, item)
+                note = '本轮Batch已结束，继续等待不会自动补全；点击“补全缺失图片”仅重试失败项（另计费）。\n' if column == 2 and target else ''
+                item.setToolTip(note + (detail or value)); self.history.setItem(row, column, item)
             if job['id'] == identifier: self.history.selectRow(row)
         if identifier is None and jobs: self.history.selectRow(0)
         self.history.blockSignals(False)
@@ -375,6 +430,7 @@ class RemixDialog(QtWidgets.QDialog):
         self.show_results()
 
     def show_results(self):
+        self.update_completion_controls()
         job = self.selected_job(); self.results.clear()
         self.results.setVisible(False)
         self.stop_button.setEnabled(bool(job and job['spec'].get('mode', 'batch') == 'instant'
@@ -400,9 +456,9 @@ class RemixDialog(QtWidgets.QDialog):
         reuse = menu.addAction('用这套参数再做一批…')
         menu.addSeparator()
         instant = job['spec'].get('mode', 'batch') == 'instant'
-        retry = menu.addAction('继续未提交／重试失败图片…' if instant else '仅重试失败图片…')
+        retry = menu.addAction('继续未提交／重试失败图片…' if instant else '补全当前Batch缺失图片…')
         retry.setEnabled((job['status'] in ('partial', 'failed', 'cancelled', 'paused', 'unknown') if instant
-                          else job['status'] in ('partial', 'failed', 'cancelled')) and not self.plugin.busy())
+                          else bool(completion_target(job))) and not self.plugin.busy())
         resume = menu.addAction('仅继续尚未提交的图片…') if instant else None
         uncertain = menu.addAction('确认重试未确认图片（可能重复计费）…') if instant else None
         if instant:
@@ -445,6 +501,8 @@ class RemixDialog(QtWidgets.QDialog):
                     QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No,
                     QtWidgets.QMessageBox.StandardButton.No) == QtWidgets.QMessageBox.StandardButton.Yes:
                     self.plugin.launch('retry_planning', id=job['id'])
+            elif chosen == retry and not instant:
+                self.complete_missing()
             elif chosen is not None and chosen in (retry, cancel, remove, resume, uncertain):
                 action = {retry: 'retry', cancel: 'cancel', remove: 'delete', resume: 'resume', uncertain: 'retry_unknown'}[chosen]
                 message = {'retry': ('按标准价继续未提交和已明确失败的图片；未确认请求不重发，已成功图片不重做。' if instant

@@ -15,6 +15,7 @@ from model.SensitiveData import redact_sensitive_text
 from .client import APIError, BatchClient
 from .prompts import safe_id
 from .store import Store, summary
+from .completion import completion_target
 
 TERMINAL = {'completed', 'failed', 'expired', 'cancelled'}
 SETTLED = {'done', 'partial', 'failed', 'cancelled'}
@@ -314,6 +315,16 @@ def _run_operation(store, payload, context):
     if action == 'create':
         job = store.create(payload['spec'], payload['credential'], identifier=payload['id'])
         identifiers = [job['id']]
+    elif action == 'complete':
+        targets = payload.get('targets')
+        if not isinstance(targets, list) or not targets:
+            raise ValueError('没有确认要补全的Batch批次。')
+        confirmed = {}
+        for target in targets:
+            if not isinstance(target, dict) or not isinstance(target.get('id'), str) or target['id'] in confirmed:
+                raise ValueError('补全批次列表无效或重复；未提交。')
+            confirmed[target['id']] = target
+        identifiers = list(confirmed)
     elif payload.get('id'):
         identifiers = [payload['id']]
     else:
@@ -326,7 +337,17 @@ def _run_operation(store, payload, context):
     messages = []
     for identifier in identifiers:
         context.check_canceled()
-        job = store.get(identifier)
+        try:
+            job = store.get(identifier)
+            if action == 'complete' and (completion_target(job) is None or
+                                         completion_target(job) != confirmed[identifier]):
+                messages.append(identifier[:8] + '：状态已变化或原请求尚未核对，跳过补全，未重新生成。')
+                continue
+        except (ValueError, OSError) as error:
+            if action != 'complete':
+                raise
+            messages.append(identifier[:8] + '：' + redact_sensitive_text(error)[:800])
+            continue
         job['last_check'] = time.time()
         store.save(job)
         client = None
@@ -380,7 +401,7 @@ def _run_operation(store, payload, context):
                     raise ValueError('该批次不属于当前生成记录，拒绝关联。')
                 attempt.update(batch_id=batch['id'], state='cloud')
                 store.save(job)
-            if action == 'retry':
+            if action in ('retry', 'complete'):
                 new_attempt(job, retry=True)
                 store.save(job)
             if action == 'cancel':
@@ -388,6 +409,9 @@ def _run_operation(store, payload, context):
                 store.save(job)
             context.report('检查图片批次 ' + identifier[:8], 0)
             service.advance(job)
+            if action == 'complete':
+                messages.append(identifier[:8] + f'：已处理 {len(confirmed[identifier]["item_ids"])} 张补全申请；'
+                                '已成功图片保留，具体进度见列表。')
         except Exception as error:
             # Never discard durable intent or promote pending items to success.
             message = redact_sensitive_text(error)[:800]
