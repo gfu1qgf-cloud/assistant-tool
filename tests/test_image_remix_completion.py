@@ -182,31 +182,44 @@ class CompletionUITests(unittest.TestCase):
             self.dialog.complete_button.click()
         self.plugin.launch.assert_not_called()
 
-    def test_selected_confirmed_count_and_payload(self):
+    def test_single_batch_confirmed_count_and_payload(self):
         job = self.partial(); self.dialog.refresh([job], '', False)
         with patch.object(QtWidgets.QMessageBox, 'question', return_value=QtWidgets.QMessageBox.StandardButton.Yes) as ask:
             self.dialog.complete_button.click()
         self.assertIn('共 9 张', ask.call_args.args[2]); self.assertIn('新增费用', ask.call_args.args[2])
         self.plugin.launch.assert_called_once_with('complete', targets=[completion_target(job)])
 
-    def test_all_menu_filters_running_and_unknown_batches(self):
+    def test_main_button_submits_all_without_selection_and_filters_running_unknown(self):
         a = self.partial(); b = self.partial(count=4); running = self.partial(); running['status'] = 'running'
         unknown = self.partial(); unknown['status'] = 'unknown'
         self.dialog.refresh([a, running, b, unknown], '', False)
-        self.assertIn('2 批／12 张', self.dialog.complete_all.text())
-        with patch.object(QtWidgets.QMessageBox, 'question', return_value=QtWidgets.QMessageBox.StandardButton.Yes):
-            self.dialog.complete_all.trigger()
+        self.dialog.history.clearSelection(); self.dialog.history.setCurrentCell(-1, -1)
+        self.assertIsNone(self.dialog.selected_job())
+        self.assertIn('2 批／12 张', self.dialog.complete_button.text())
+        with patch.object(QtWidgets.QMessageBox, 'question', return_value=QtWidgets.QMessageBox.StandardButton.Yes) as ask:
+            self.dialog.complete_button.click()
+        self.assertEqual(ask.call_count, 1)
         self.plugin.launch.assert_called_once_with('complete', targets=completion_targets([a, b]))
 
     def test_busy_disables_completion(self):
         self.dialog.refresh([self.partial()], '', True)
-        self.assertFalse(self.dialog.complete_button.isEnabled()); self.assertFalse(self.dialog.complete_all.isEnabled())
+        self.assertFalse(self.dialog.complete_button.isEnabled())
 
-    def test_other_eligible_rows_use_menu_instead_of_wrong_current_row(self):
+    def test_running_selected_row_does_not_prevent_other_batches_completing(self):
         running = self.partial(); running['status'] = 'running'
-        self.dialog.refresh([running, self.partial()], '', False)
-        self.assertFalse(self.dialog.complete_current.isEnabled()); self.assertTrue(self.dialog.complete_all.isEnabled())
-        self.assertEqual(self.dialog.complete_button.popupMode(), QtWidgets.QToolButton.ToolButtonPopupMode.InstantPopup)
+        eligible = self.partial(); self.dialog.refresh([running, eligible], '', False)
+        self.assertEqual(self.dialog.selected_job()['id'], running['id'])
+        self.assertTrue(self.dialog.complete_button.isEnabled())
+        with patch.object(QtWidgets.QMessageBox, 'question', return_value=QtWidgets.QMessageBox.StandardButton.Yes):
+            self.dialog.complete_button.click()
+        self.plugin.launch.assert_called_once_with('complete', targets=[completion_target(eligible)])
+
+    def test_explicit_single_batch_completion_still_available(self):
+        a = self.partial(); b = self.partial(); self.dialog.refresh([a, b], '', False)
+        self.dialog.history.selectRow(1)
+        with patch.object(QtWidgets.QMessageBox, 'question', return_value=QtWidgets.QMessageBox.StandardButton.Yes):
+            self.dialog.complete_missing(all_jobs=False)
+        self.plugin.launch.assert_called_once_with('complete', targets=[completion_target(b)])
 
     def test_new_ui_refuses_old_submission_runtime(self):
         from app_plugins.builtin.image_remix.ui import RemixDialog

@@ -10,7 +10,7 @@ from .service import run_operation, credential_identity
 class ImageRemixPlugin(QtCore.QObject):
     plugin_id = 'image_remix'
     display_name = 'GPT 图片翻版'
-    version = '0.4.1'
+    version = '0.4.2'
     submission_api_version = 6
     required_api_version = 1
 
