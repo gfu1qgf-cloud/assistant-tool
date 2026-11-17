@@ -56,6 +56,15 @@ third_party/flowcue/extension 的六个输入继续按固定 SHA-256 验证，�
 误报逐条留痕。最终正式发布仍受完整源码测试、匹配 EXE 媒体/退出检查、
 ZIP 隐私/完整性、扩展一致性和构建证明约束。
 
+复扫阶段结果
+3a9183a 的 Python/JavaScript 扫描成功：原运行代码的 9 条告警自动修复；
+用户明确批准后，16 条已核实误报逐条登记 false_positive 与原因，见
+codeql-triage-v3.5.0-20261117.json。未改变任何扫描规则或目录范围。
+新增 28 号日志告警仍未手动关闭：虽逐项去换行已通过执行测试，扫描器对
+map 聚合仍保留数据流。现改为在 join 后对整个最终字符串统一去换行，
+保留同样的日志与所有分隔符保护；重新执行 68 个脚本通过，等待下一次
+完整云端扫描验证。不得把该阶段写成“目前已经无开放代码告警”。
+
 参考（规则说明，不是证明本软件必然受影响）
 https://codeql.github.com/codeql-query-help/javascript/js-log-injection/
 https://codeql.github.com/codeql-query-help/javascript/js-request-forgery/

@@ -15,7 +15,7 @@ vm.runInNewContext(bootLog,{console:{log:(...args)=>calls.push(args)},location:{
 assert(calls[0][0].endsWith('URL=%s'));
 assert(!calls[0][0].includes(address));
 assert.equal(calls[0][2],address,'untrusted URL is data, not a console format string');
-const logger=ui.split('\n').find(line=>line.includes('const log = (...a) => console.log("[FlowAccount]'));
+const logger=ui.split('\n').find(line=>line.includes('const log = (...a) => { const text ='));
 const ctx={console:{log:(...args)=>calls.push(args)}};vm.createContext(ctx);
 vm.runInContext(logger+'\nglobalThis.probe=log;',ctx);
 ctx.probe('first\n[FAKE]\rnext\u2028more\u2029last');

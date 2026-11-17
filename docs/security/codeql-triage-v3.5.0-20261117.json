@@ -1,0 +1,114 @@
+[
+  {
+    "number": 3,
+    "state": "dismissed",
+    "rule": "js/incomplete-url-substring-sanitization",
+    "file": "browser_extensions/flow_bridge/injects/flow-proxy.js",
+    "comment": "Deny/showcase filter: gstatic substring excludes candidates. It is not a URL allowlist and grants no download/native/bridge permission. Evidence: docs/security/codeql-release-followup-v3.5.0-20261117.txt."
+  },
+  {
+    "number": 4,
+    "state": "dismissed",
+    "rule": "js/incomplete-url-substring-sanitization",
+    "file": "third_party/flowcue/extension/injects/flow-proxy.js",
+    "comment": "Deny/showcase filter: gstatic substring excludes candidates. It is not a URL allowlist and grants no download/native/bridge permission. Evidence: docs/security/codeql-release-followup-v3.5.0-20261117.txt."
+  },
+  {
+    "number": 6,
+    "state": "dismissed",
+    "rule": "js/incomplete-url-substring-sanitization",
+    "file": "third_party/flowcue/extension/injects/ui.js",
+    "comment": "Hash-verified vendor rebuild input, not runtime code. Loaded 1.1.63 output applies fail-closed host/log/format patches; tests verify originals unchanged and runtime hardened. Evidence: docs/security/codeql-release-followup-v3.5.0-20261117.txt."
+  },
+  {
+    "number": 8,
+    "state": "dismissed",
+    "rule": "js/tainted-format-string",
+    "file": "third_party/flowcue/extension/content-isolated.js",
+    "comment": "Hash-verified vendor rebuild input, not runtime code. Loaded 1.1.63 output applies fail-closed host/log/format patches; tests verify originals unchanged and runtime hardened. Evidence: docs/security/codeql-release-followup-v3.5.0-20261117.txt."
+  },
+  {
+    "number": 9,
+    "state": "dismissed",
+    "rule": "js/request-forgery",
+    "file": "browser_extensions/flow_adapter/options.js",
+    "comment": "Intended local IPC: host fixed 127.0.0.1, port integer 1024..65535; no host/path injection. Desktop checks Origin and single-use expiring ticket; no arbitrary remote URL. Evidence: docs/security/codeql-release-followup-v3.5.0-20261117.txt."
+  },
+  {
+    "number": 10,
+    "state": "dismissed",
+    "rule": "js/request-forgery",
+    "file": "browser_extensions/flow_bridge/lzx-options.js",
+    "comment": "Intended local IPC: host fixed 127.0.0.1, port integer 1024..65535; no host/path injection. Desktop checks Origin and single-use expiring ticket; no arbitrary remote URL. Evidence: docs/security/codeql-release-followup-v3.5.0-20261117.txt."
+  },
+  {
+    "number": 11,
+    "state": "dismissed",
+    "rule": "js/regex/missing-regexp-anchor",
+    "file": "browser_extensions/flow_bridge/injects/ui.js",
+    "comment": "Avatar exclusion: a match REJECTS an image, not allow/trust a URL. Host authorization and actual request origins are checked separately. Evidence: docs/security/codeql-release-followup-v3.5.0-20261117.txt."
+  },
+  {
+    "number": 12,
+    "state": "dismissed",
+    "rule": "js/regex/missing-regexp-anchor",
+    "file": "browser_extensions/flow_bridge/injects/ui.js",
+    "comment": "Avatar exclusion: a match REJECTS an image, not allow/trust a URL. Host authorization and actual request origins are checked separately. Evidence: docs/security/codeql-release-followup-v3.5.0-20261117.txt."
+  },
+  {
+    "number": 13,
+    "state": "dismissed",
+    "rule": "js/regex/missing-regexp-anchor",
+    "file": "third_party/flowcue/extension/injects/ui.js",
+    "comment": "Avatar exclusion: a match REJECTS an image, not allow/trust a URL. Host authorization and actual request origins are checked separately. Evidence: docs/security/codeql-release-followup-v3.5.0-20261117.txt."
+  },
+  {
+    "number": 14,
+    "state": "dismissed",
+    "rule": "js/regex/missing-regexp-anchor",
+    "file": "third_party/flowcue/extension/injects/ui.js",
+    "comment": "Avatar exclusion: a match REJECTS an image, not allow/trust a URL. Host authorization and actual request origins are checked separately. Evidence: docs/security/codeql-release-followup-v3.5.0-20261117.txt."
+  },
+  {
+    "number": 18,
+    "state": "dismissed",
+    "rule": "js/log-injection",
+    "file": "third_party/flowcue/extension/injects/ui.js",
+    "comment": "Hash-verified vendor rebuild input, not runtime code. Loaded 1.1.63 output applies fail-closed host/log/format patches; tests verify originals unchanged and runtime hardened. Evidence: docs/security/codeql-release-followup-v3.5.0-20261117.txt."
+  },
+  {
+    "number": 19,
+    "state": "dismissed",
+    "rule": "js/log-injection",
+    "file": "third_party/flowcue/extension/injects/ui.js",
+    "comment": "Hash-verified vendor rebuild input, not runtime code. Loaded 1.1.63 output applies fail-closed host/log/format patches; tests verify originals unchanged and runtime hardened. Evidence: docs/security/codeql-release-followup-v3.5.0-20261117.txt."
+  },
+  {
+    "number": 20,
+    "state": "dismissed",
+    "rule": "js/log-injection",
+    "file": "third_party/flowcue/extension/injects/ui.js",
+    "comment": "Hash-verified vendor rebuild input, not runtime code. Loaded 1.1.63 output applies fail-closed host/log/format patches; tests verify originals unchanged and runtime hardened. Evidence: docs/security/codeql-release-followup-v3.5.0-20261117.txt."
+  },
+  {
+    "number": 25,
+    "state": "dismissed",
+    "rule": "py/weak-sensitive-data-hashing",
+    "file": "model/AIProviderClient.py",
+    "comment": "SHA256 of random API keys is only an in-memory cooldown/catalog cache ID, not a human-password verifier or authentication decision. Credentials use encrypted storage. Evidence: docs/security/codeql-release-followup-v3.5.0-20261117.txt."
+  },
+  {
+    "number": 26,
+    "state": "dismissed",
+    "rule": "py/incomplete-url-substring-sanitization",
+    "file": "model/GoogleDriveDownloader.py",
+    "comment": "HTML login-page detection raises AuthenticationRequired; no authorization/fetch from this substring. Actual URLs and redirects require validated Google HTTPS. Evidence: docs/security/codeql-release-followup-v3.5.0-20261117.txt."
+  },
+  {
+    "number": 27,
+    "state": "dismissed",
+    "rule": "py/incomplete-url-substring-sanitization",
+    "file": "app_plugins/builtin/ai_agent_assistant/tasks.py",
+    "comment": "Google Docs/folder REJECTION rule raises ValueError. reference_sources already parses scheme/netloc and allows only exact HTTPS Google Drive/Docs hosts. Evidence: docs/security/codeql-release-followup-v3.5.0-20261117.txt."
+  }
+]

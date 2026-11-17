@@ -18,7 +18,7 @@ class FlowCodeQLSecurityTests(unittest.TestCase):
         result=security['patch_ui'](source)
         self.assertIn('host.endsWith(".flow.google.com")',result)
         self.assertNotIn('host.endsWith("flow.google.com")',result)
-        self.assertIn('String(value).replace(/\\n|\\r|\\u2028|\\u2029/g',result)
+        self.assertIn('join(" ").replace(/\\n|\\r|\\u2028|\\u2029/g',result)
         with self.assertRaisesRegex(ValueError,'re-audit'):
             security['patch_ui'](source.replace('host.endsWith("flow.google.com")','changed'))
 

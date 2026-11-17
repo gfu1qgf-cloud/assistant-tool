@@ -17,7 +17,7 @@ def patch_ui(text):
         'console.log("[FlowUI] 正在关联素材");')
     text=once(text,
         'const log = (...a) => console.log("[FlowAccount]", ...a);',
-        r'const log = (...a) => console.log("[FlowAccount] %s", a.map(value => String(value).replace(/\n|\r|\u2028|\u2029/g, " ")).join(" "));')
+        r'const log = (...a) => { const text = a.map(value => String(value)).join(" ").replace(/\n|\r|\u2028|\u2029/g, " "); console.log("[FlowAccount] %s", text); };')
     return text
 
 
