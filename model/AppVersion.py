@@ -1,3 +1,3 @@
 """Application version. A source version is not a publication/approval status."""
 
-APP_VERSION = '3.5.0'
+APP_VERSION = '3.5.1'

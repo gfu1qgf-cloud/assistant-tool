@@ -2,6 +2,7 @@ import copy
 import json
 from pathlib import Path
 import tempfile
+import threading
 import time
 from types import SimpleNamespace
 import unittest
@@ -214,6 +215,27 @@ class FlowTests(unittest.TestCase):
         finally: dialog.close()
 
     def test_plugin_worker_starts_and_stops_without_a_live_account(self):
+        self._check_plugin_worker_lifecycle()
+
+    def test_plugin_worker_accepts_slow_start_without_blocking_ui(self):
+        # Reproduce a loaded Windows runner taking more than the old 1s limit.
+        startup_release = threading.Event()
+
+        class SlowService(FlowService):
+            @QtCore.pyqtSlot()
+            def start(self):
+                time.sleep(1.2)
+                if not startup_release.wait(10):
+                    raise RuntimeError('main-thread heartbeat did not release startup')
+                super().start()
+
+        with patch('app_plugins.builtin.flow_assistant.service.FlowService', SlowService):
+            try:
+                self._check_plugin_worker_lifecycle(startup_release=startup_release)
+            finally:
+                startup_release.set()
+
+    def _check_plugin_worker_lifecycle(self, *, startup_release=None):
         from app_plugins.builtin.flow_assistant.plugin import FlowAssistantPlugin
         from qt_compat import QtTest
         self.namespace.file('pairing.json').write_json({'token': 'x' * 40, 'port': 0})
@@ -227,19 +249,32 @@ class FlowTests(unittest.TestCase):
         self.assertEqual({call.args[0].page_id for call in context.register_settings_page.call_args_list},
                          {'chrome', 'timing', 'browser'})
         plugin.browser_launcher.start = MagicMock()
+        errors = []
+        plugin._failed = errors.append
         plugin.start()
-        try:
-            for _ in range(100):
+
+        def wait_for(predicate, description):
+            deadline = time.monotonic() + 10
+            while not predicate() and not errors and time.monotonic() < deadline:
                 QtTest.QTest.qWait(10)
-                if plugin.snapshot: break
+            self.assertFalse(errors, f'{description}: {errors}')
+            self.assertTrue(predicate(), f'{description}; logs={context.log.call_args_list!r}')
+
+        try:
+            if startup_release is not None:
+                heartbeat = []
+                QtCore.QTimer.singleShot(10, lambda: heartbeat.append(True))
+                wait_for(lambda: bool(heartbeat), 'main-thread heartbeat')
+                self.assertFalse(plugin.snapshot, 'slow startup must still be in the worker')
+                startup_release.set()
+            wait_for(lambda: bool(plugin.snapshot), 'initial worker snapshot')
             self.assertIn('jobs', plugin.snapshot)
             self.assertEqual(plugin.snapshot['preferences']['timing']['credit_validity_seconds'], 43200)
             self.assertFalse(plugin.snapshot['preferences']['browser_options']['focus_before_action'])
             plugin.apply_settings({'flow_assistant_timing': {'credit_validity_seconds': 21600},
                                    'flow_assistant_browser_options': {'focus_before_action': True}})
-            for _ in range(100):
-                QtTest.QTest.qWait(10)
-                if plugin.snapshot['preferences']['timing']['credit_validity_seconds'] == 21600: break
+            wait_for(lambda: plugin.snapshot['preferences']['timing']['credit_validity_seconds'] == 21600,
+                     'updated worker settings')
             self.assertEqual(plugin.snapshot['preferences']['timing']['credit_validity_seconds'], 21600)
             self.assertTrue(plugin.snapshot['preferences']['browser_options']['focus_before_action'])
             self.assertTrue(plugin.stop())
