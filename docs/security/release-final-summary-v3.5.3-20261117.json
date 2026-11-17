@@ -1,0 +1,59 @@
+{
+  "version": "3.5.3",
+  "extension_version": "1.1.63",
+  "source_commit": "d1e211332190149ff7c26b28d5a3f52463924a4f",
+  "release_url": "https://github.com/gfu1qgf-cloud/assistant-tool/releases/tag/v3.5.3",
+  "release_id": 449011610,
+  "draft": false,
+  "prerelease": false,
+  "published_at": "2026-11-17T18:07:53Z",
+  "workflow_run": 44136904066,
+  "workflow_conclusion": "success",
+  "isolated_modules": 588,
+  "failed_modules": 0,
+  "browser_scripts": 68,
+  "failed_browser_scripts": 0,
+  "optional_canvas_branch": "skipped",
+  "frozen_exe_smoke": {
+    "environment": "GitHub Actions Windows, disposable offline state",
+    "version": "3.5.3",
+    "plugins": 26,
+    "closed": true,
+    "av_decode": true,
+    "opencv_decode": true,
+    "pillow_png": true,
+    "torch_cpu": true,
+    "qt_video_frames": 1
+  },
+  "dependency_audit": {"python_distributions": 127, "known_hits": 0},
+  "source_scan": {"text_files": 1595, "pattern_hits": 0, "syntax_errors": 0},
+  "post_release_codeql": {
+    "python": "2026-11-17T18:11:43Z",
+    "javascript_typescript": "2026-11-17T18:09:37Z",
+    "source_commit": "d1e211332190149ff7c26b28d5a3f52463924a4f",
+    "open_alerts": 0,
+    "open_dependabot_alerts": 0,
+    "previous_user_approved_false_positives": 16,
+    "previous_auto_fixed_alerts": 11
+  },
+  "download_verification": {
+    "assets": 5,
+    "full_application_downloaded": true,
+    "application_bytes": 642902929,
+    "application_entries": 10079,
+    "application_sha256": "8c863dccd3ad75de206fd563da3c21289c5dd407e3069cae0a7d4ba81993d65f",
+    "full_zip_crc": "passed",
+    "privacy_and_required_files": "passed",
+    "matching_extension_files": 15,
+    "canonical_extension_rebuild": "all source, runtime and archive hashes match"
+  },
+  "remaining_limits": [
+    "Archived subtitle engine replacement requires business acceptance",
+    "Untrusted models unsupported; pt2 advisory remains conditional",
+    "Six active legacy local credential/config files require verified migration",
+    "Intermittent player hang not reproduced; no permanent-fix claim",
+    "No paid live Flow end-to-end acceptance; strong extension permissions remain",
+    "Non-WAV audio splitting without system FFmpeg requires dedicated validation",
+    "Native libraries and trusted local plugins are not a security sandbox"
+  ]
+}
