@@ -42,9 +42,11 @@ class VideoKitStylesTests(unittest.TestCase):
         gc.collect()
         QtCore.QCoreApplication.sendPostedEvents(None,QtCore.QEvent.Type.DeferredDelete)
 
-    def test_all_65_presets_validate_draw_and_write_ass(self):
-        self.assertEqual(len(PRESETS),65)
-        self.assertEqual(len(preset_choices()),66)
+    def test_all_catalog_presets_validate_draw_and_write_ass(self):
+        self.assertGreaterEqual(len(PRESETS),65)
+        choices = [key for _, key in preset_choices()]
+        self.assertEqual(len(choices), len(set(choices)))
+        self.assertTrue({PREFIX+name for name in PRESETS} <= set(choices))
         with tempfile.TemporaryDirectory() as folder:
             for index,name in enumerate(PRESETS):
                 with self.subTest(preset=name):

@@ -166,7 +166,7 @@ class PreviewLinkTests(unittest.TestCase):
             self.assertNotIn("old error",dialog.preview_status.text())
             dialog.close()
 
-    def test_refresh_explicitly_retries_current_background(self):
+    def test_refresh_button_checks_associations_and_explicit_refresh_retries_background(self):
         with tempfile.TemporaryDirectory() as folder:
             store = Store(folder)
             state = fresh_state()
@@ -175,7 +175,11 @@ class PreviewLinkTests(unittest.TestCase):
             with patch.object(BatchTextVideoDialog,"request_background") as request:
                 dialog = BatchTextVideoDialog(store=store)
                 request.reset_mock()
-                dialog.refresh_preview_button.click()
+                with patch('app_plugins.builtin.batch_text_video.association_refresh.start') as refresh:
+                    dialog.refresh_preview_button.click()
+                    refresh.assert_called_once_with(dialog)
+                dialog.current_id='a'
+                dialog.refresh_preview()
                 request.assert_called_once_with("background.mp4",force=True)
                 dialog.close()
 

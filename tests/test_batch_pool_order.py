@@ -147,7 +147,7 @@ class PoolOrderTests(unittest.TestCase):
                 self.assertEqual(dialog.pool_order_button.text(),'顺序')
                 self.assertTrue(dialog.pool_tools.isAncestorOf(dialog.pool_order_button))
                 dialog.pool_order_button.menu().aboutToShow.emit()
-                self.assertEqual([a.text() for a in dialog.pool_order_button.menu().actions()],['随机使用顺序','恢复原顺序'])
+                self.assertEqual([a.text() for a in dialog.pool_order_button.menu().actions()],['互斥选择…','随机使用顺序','恢复原顺序'])
             finally:
                 dialog.close();dialog.deleteLater()
 

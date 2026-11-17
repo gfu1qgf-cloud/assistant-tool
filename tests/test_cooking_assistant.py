@@ -228,7 +228,9 @@ class CookingUiTests(unittest.TestCase):
         self.dialog = self.plugin.open_dialog()
     def tearDown(self):
         self.assertFalse(self.dialog.is_busy())
+        self.dialog.close()
         self.dialog.deleteLater()
+        self.app.sendPostedEvents(None,QtCore.QEvent.Type.DeferredDelete)
         self.app.processEvents()
         self.temp.cleanup()
     def test_plugin_registration_defaults_and_hidden_window_reuse(self):
@@ -302,7 +304,7 @@ class CookingUiTests(unittest.TestCase):
     def test_progress_is_logged_on_gui_thread_and_redacted(self):
         original_log = self.context.log
         observed_threads = []
-        self.context.log = lambda message: (original_log(message), observed_threads.append(QtCore.QThread.currentThread()))
+        self.context.log = lambda message,*args: (original_log(message,*args), observed_threads.append(QtCore.QThread.currentThread()))
         def generate(_payload, _model, _manager, progress):
             progress("[做饭响应] STOP dummy-secret-one")
             return [RECIPE]

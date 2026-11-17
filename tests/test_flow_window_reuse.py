@@ -26,9 +26,9 @@ class WindowReuseTests(unittest.TestCase):
         launches = []; service.launch_requested.connect(launches.append)
         service.execute({'action': 'open_browser', 'profile': 'Profile 23'})
         self.assertFalse(launches)
-        self.assertEqual([r['action'] for r in service.pending.values()], ['open_project'])
+        self.assertEqual([r['action'] for r in service.pending.values()], ['focus_window'])
 
-    def test_cold_online_page_uses_idle_repair_on_same_project(self):
+    def test_open_cold_online_page_only_focuses_without_forcing_repair(self):
         service = self.service()
         client = flow.FlowTests.client(self, service, 'Profile 23')
         client.update(saved_project=setups.PROJECT, project=setups.PROJECT, page_ready=False)
@@ -36,7 +36,7 @@ class WindowReuseTests(unittest.TestCase):
         launches = []; service.launch_requested.connect(launches.append)
         service.execute({'action': 'open_browser', 'profile': 'Profile 23'})
         self.assertFalse(launches)
-        self.assertEqual({r['action'] for r in service.pending.values()}, {'open_project', 'repair_project'})
+        self.assertEqual([r['action'] for r in service.pending.values()], ['focus_window'])
 
     def test_open_during_paid_work_never_repairs_or_refreshes_page(self):
         service = self.service()
@@ -49,7 +49,7 @@ class WindowReuseTests(unittest.TestCase):
         launches = []; service.launch_requested.connect(launches.append)
         service.execute({'action': 'open_browser', 'job': row['id']})
         self.assertFalse(launches)
-        self.assertEqual([r['action'] for r in service.pending.values()], ['open_project'])
+        self.assertEqual([r['action'] for r in service.pending.values()], ['focus_window'])
         self.assertEqual(service.store.get(row['id'])['status'], 'generating')
 
     def test_connected_setup_ack_does_not_start_a_second_browser(self):

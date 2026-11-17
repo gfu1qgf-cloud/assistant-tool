@@ -59,7 +59,9 @@ class AssociationAccess(QtCore.QObject):
         data=result.get('associations');context=result.get('association_context')
         if not data or not context:return True
         owner=self.owner
-        if not owner.isVisible() or context['profile']!=owner.state['active_profile'] or owner.is_batch_busy():return False
+        # A poster may finish between construction and the first showEvent.
+        # Reject explicitly closed editors, not every not-yet-visible editor.
+        if not getattr(owner,'_preview_accept_results',True) or context['profile']!=owner.state['active_profile'] or owner.is_batch_busy():return False
         current=owner.active_entry()
         if current.get('id')!=context['job'].get('id'):return False
         if context.get('token')!=self.binding_token(current):return False

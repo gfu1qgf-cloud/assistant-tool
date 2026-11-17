@@ -11,6 +11,13 @@ ENTRY_LIMIT=1024
 FIELDS=('font','font_weight','italic','capitalization','letter_spacing','font_max','underline','strikeout')
 
 
+def clear():
+    global _BYTES
+    with _LOCK:
+        _CACHE.clear()
+        _BYTES=0
+
+
 def snapshot(value):
     result=dict(value)
     if '_native_path' in result:result['_native_path']=QtGui.QPainterPath(result['_native_path'])

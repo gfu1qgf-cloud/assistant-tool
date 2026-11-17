@@ -187,7 +187,7 @@ class PoolTests(unittest.TestCase):
             clone["music"][0]["cursor"] = 22
             clone = store.save(clone,clone["revision"])
             self.assertEqual(store.select_profile(clone,first)["music"][0]["cursor"],12)
-            with self.assertRaisesRegex(ValueError,"重复"):
+            with self.assertRaisesRegex(ValueError,"已存在"):
                 store.create_profile(clone,"副本",clone=True)
 
     def test_delete_video_multiple_selection_and_reopen_never_deletes_source_files(self):

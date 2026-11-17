@@ -86,6 +86,9 @@ def font_capabilities(family, italic=False):
 
 def _clear_font_cache():
     font_capabilities.cache_clear()
+    # Cached fallback geometry must not survive newly registered/replaced fonts.
+    from .caption_glyph_cache import clear
+    clear()
 
 
 def weight_font(family, weight, italic=False):

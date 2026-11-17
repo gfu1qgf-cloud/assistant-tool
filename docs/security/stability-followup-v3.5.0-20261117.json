@@ -1,0 +1,144 @@
+{
+  "schema": 1,
+  "date": "2026-11-17",
+  "version": "3.5.0",
+  "baseline_commit": "a47723ea79adc3ea057ad5cee188e063520e4a0b",
+  "status": "repairs_installed_remaining_issue_open",
+  "release_gate_passed": false,
+  "full_regression": {
+    "modules": 585,
+    "tests": 7674,
+    "failures": 0,
+    "errors": 1,
+    "skipped": 43,
+    "callbacks": 0,
+    "failed_modules": [
+      "test_matting_video_preview"
+    ]
+  },
+  "installed_regression": {
+    "modules": 18,
+    "tests": 194,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 1,
+    "callbacks": 0,
+    "failed_modules": [],
+    "results": [
+      {
+        "module": "test_preview_result_lifecycle",
+        "exit_code": 0,
+        "summary": "RELEASE_TEST_RESULT: run=2, failures=0, errors=0, skipped=0, callbacks=0"
+      },
+      {
+        "module": "test_batch_preview_link",
+        "exit_code": 0,
+        "summary": "RELEASE_TEST_RESULT: run=12, failures=0, errors=0, skipped=0, callbacks=0"
+      },
+      {
+        "module": "test_background_trim",
+        "exit_code": 0,
+        "summary": "RELEASE_TEST_RESULT: run=6, failures=0, errors=0, skipped=0, callbacks=0"
+      },
+      {
+        "module": "test_batch_export_polish",
+        "exit_code": 0,
+        "summary": "RELEASE_TEST_RESULT: run=11, failures=0, errors=0, skipped=0, callbacks=0"
+      },
+      {
+        "module": "test_caption_preview_performance",
+        "exit_code": 0,
+        "summary": "RELEASE_TEST_RESULT: run=8, failures=0, errors=0, skipped=0, callbacks=0"
+      },
+      {
+        "module": "test_late_task_associations",
+        "exit_code": 0,
+        "summary": "RELEASE_TEST_RESULT: run=28, failures=0, errors=0, skipped=0, callbacks=0"
+      },
+      {
+        "module": "test_batch_variable_fonts",
+        "exit_code": 0,
+        "summary": "RELEASE_TEST_RESULT: run=6, failures=0, errors=0, skipped=1, callbacks=0"
+      },
+      {
+        "module": "test_cursor_parameters",
+        "exit_code": 0,
+        "summary": "RELEASE_TEST_RESULT: run=12, failures=0, errors=0, skipped=0, callbacks=0"
+      },
+      {
+        "module": "test_follow_vertical_clip",
+        "exit_code": 0,
+        "summary": "RELEASE_TEST_RESULT: run=9, failures=0, errors=0, skipped=0, callbacks=0"
+      },
+      {
+        "module": "test_caption_cursor_continuous",
+        "exit_code": 0,
+        "summary": "RELEASE_TEST_RESULT: run=8, failures=0, errors=0, skipped=0, callbacks=0"
+      },
+      {
+        "module": "test_flow_window_reuse",
+        "exit_code": 0,
+        "summary": "RELEASE_TEST_RESULT: run=12, failures=0, errors=0, skipped=0, callbacks=0"
+      },
+      {
+        "module": "test_flow_fault_rotation",
+        "exit_code": 0,
+        "summary": "RELEASE_TEST_RESULT: run=10, failures=0, errors=0, skipped=0, callbacks=0"
+      },
+      {
+        "module": "test_flow_launch_spacing",
+        "exit_code": 0,
+        "summary": "RELEASE_TEST_RESULT: run=9, failures=0, errors=0, skipped=0, callbacks=0"
+      },
+      {
+        "module": "test_flow_browser_table",
+        "exit_code": 0,
+        "summary": "RELEASE_TEST_RESULT: run=9, failures=0, errors=0, skipped=0, callbacks=0"
+      },
+      {
+        "module": "test_flow_launch_contract",
+        "exit_code": 0,
+        "summary": "RELEASE_TEST_RESULT: run=8, failures=0, errors=0, skipped=0, callbacks=0"
+      },
+      {
+        "module": "test_flow_launch_ui_mutex",
+        "exit_code": 0,
+        "summary": "RELEASE_TEST_RESULT: run=15, failures=0, errors=0, skipped=0, callbacks=0"
+      },
+      {
+        "module": "test_batch_videokit_styles",
+        "exit_code": 0,
+        "summary": "RELEASE_TEST_RESULT: run=14, failures=0, errors=0, skipped=0, callbacks=0"
+      },
+      {
+        "module": "test_qt_thread_lifecycle",
+        "exit_code": 0,
+        "summary": "RELEASE_TEST_RESULT: run=15, failures=0, errors=0, skipped=0, callbacks=0"
+      }
+    ]
+  },
+  "player_stress": {
+    "modules": 5,
+    "tests": 65,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "callbacks": 0,
+    "failed_modules": [],
+    "rounds": 5
+  },
+  "remaining": [
+    {
+      "id": "STAB-PENDING-1",
+      "severity": "Low",
+      "status": "pending_confirmation",
+      "module": "test_matting_video_preview",
+      "error": "Intermittent WinError 32 when deleting/renaming an isolated source MOV after cancellation.",
+      "evidence": "Reproduced even after native QThread join; matching decoder Popen not found and Windows Restart Manager returned no lock owner. Does not establish external cause or production deadlock.",
+      "workaround_not_applied": "No ignored error, forced source deletion, unbounded wait or pass override."
+    }
+  ],
+  "changed_files": [],
+  "no_network_or_paid_generation": true,
+  "configuration_and_business_data_unchanged": true
+}

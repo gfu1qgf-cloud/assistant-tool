@@ -159,7 +159,7 @@ class ExportPolishTests(unittest.TestCase):
             result, url, message = self.open_folder(root, {})
             self.assertFalse(result)
             self.assertIsNone(url)
-            self.assertIn("请先选择", message)
+            self.assertEqual(message, "请选择输出文件夹。")
 
 
 if __name__ == "__main__":

@@ -18,7 +18,10 @@ FFMPEG=os.environ.get('NODE_FFMPEG','')
 
 class VerticalClipTests(unittest.TestCase):
     @classmethod
-    def setUpClass(cls):cls.app=QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    def setUpClass(cls):
+        cls.app=QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+        from app_plugins.builtin.batch_text_video.layout import ensure_fonts
+        ensure_fonts()
 
     def layer(self,**values):
         layer=new_follow_caption();layer.update(font='Arial',font_min=48,font_max=48,

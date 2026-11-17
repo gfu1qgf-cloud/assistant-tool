@@ -199,9 +199,10 @@ class WeightAndEffectsTests(unittest.TestCase):
             second_state = reopened.select_profile(first_state, clone_id)
             self.assertEqual(snapshot(second_state), clone_snapshot)
             empty = reopened.create_profile(second_state, "空配置", clone=False)
+            defaults = snapshot(fresh_state())
             for key in RESOURCE_KEYS:
                 if key not in {"settings", "next_music_id"}:
-                    self.assertEqual(empty[key], [])
+                    self.assertEqual(empty[key], defaults[key])
             self.assertEqual(empty["next_music_id"], "")
             again = reopened.select_profile(empty, first)
             self.assertEqual(snapshot(again), first_snapshot)

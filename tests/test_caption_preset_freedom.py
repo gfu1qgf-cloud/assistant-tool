@@ -39,7 +39,12 @@ class PresetFreedomTests(unittest.TestCase):
                     self.assertTrue(widget.effect_section.isAncestorOf(widget.effects_editor))
                     self.assertFalse(widget.random_widget.isHidden())
                     for key,control in {**widget.controls,**widget.font_effect_controls}.items():
-                        self.assertTrue(control.isEnabled(),(preset,key))
+                        if key=='caption_cursor_pool_id':
+                            self.assertEqual(control.isEnabled(),widget.controls['caption_cursor_source'].currentData()=='pool')
+                        else:self.assertTrue(control.isEnabled(),(preset,key))
+                    source=widget.controls['caption_cursor_source']
+                    source.setCurrentIndex(source.findData('pool'))
+                    self.assertTrue(widget.controls['caption_cursor_pool_id'].isEnabled())
                     for key,control in advanced.controls.items():
                         self.assertTrue(control.isEnabled(),(preset,key))
                     for key,group in advanced.groups.items():

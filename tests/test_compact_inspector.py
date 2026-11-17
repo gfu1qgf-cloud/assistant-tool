@@ -30,7 +30,9 @@ class CompactInspectorTests(unittest.TestCase):
         editor=GeometryEditor(); self.addCleanup(editor.deleteLater)
         editor.bind(fixtures.caption(),QtCore.QSize(1080,1920),'percent')
         form=editor.layout()
-        self.assertEqual(form.rowCount(),5)  # units, reference, position, size, snap.
+        self.assertEqual(form.rowCount(),7)  # also hidden face status and size mode.
+        rows=[form.getWidgetPosition(pair)[0] for pair in (editor.anchor_pair,editor.position_pair,editor.size_pair)]
+        self.assertEqual(len(set(rows)),3)
         self.assertEqual(form.labelForField(editor.anchor_pair).text(),'基准')
         self.assertEqual(form.labelForField(editor.size_pair).text(),'尺寸')
         for keys,pair,controls in ((('x','y'),editor.anchor_pair,editor.anchor_controls),

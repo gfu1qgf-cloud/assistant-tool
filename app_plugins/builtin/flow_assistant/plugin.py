@@ -260,10 +260,6 @@ class FlowAssistantPlugin(QtCore.QObject):
         if not targets or any(not url.startswith('https://') for url in targets):
             if completed: completed(False, '没有有效的 Flow 网页地址。')
             return False, '没有有效的 Flow 网页地址。'
-        if manual:
-            entry={'profile':directory,'targets':targets,'guard':guard,'callbacks':[completed] if completed else [],
-                'ticket':uuid.uuid4().hex,'bootstrap_existing':bootstrap_existing,'manual':True}
-            return self._launch_now(entry)
         now = time.monotonic()
         wait = timing_value(self.snapshot.get('preferences', {}), 'browser_startup_seconds')
         self.browser_launches = {key: at for key, at in self.browser_launches.items() if now - at < wait}
@@ -280,6 +276,12 @@ class FlowAssistantPlugin(QtCore.QObject):
                 if active.get('reported'):completed(active['opened'],active.get('error'))
                 else:active['callbacks'].append(completed)
             return True,None
+        # Manual opens bypass unrelated launch/UI waits, not an identical open
+        # already in flight. The guide and scheduler share this same startup.
+        if manual:
+            entry={'profile':directory,'targets':targets,'guard':guard,'callbacks':[completed] if completed else [],
+                'ticket':uuid.uuid4().hex,'bootstrap_existing':bootstrap_existing,'manual':True}
+            return self._launch_now(entry)
         entry = {'profile':directory, 'targets':targets, 'guard':guard, 'callbacks':[completed] if completed else [],
                  'ticket':uuid.uuid4().hex, 'bootstrap_existing':bootstrap_existing}
         self.launch_ui.track(entry)

@@ -32,11 +32,12 @@ class InlineCaptionInspectorTests(unittest.TestCase):
         self.addCleanup(panel.deleteLater)
         return panel,caption['id']
 
-    def test_only_basic_settings_and_font_are_top_level_and_no_effect_dialog_exists(self):
+    def test_caption_sections_are_inline_and_no_effect_dialog_exists(self):
         panel,_=self.panel(); editor=panel.editor; basic=editor.sections['basic']
-        self.assertEqual(editor.body.count(),3)
+        self.assertEqual(editor.body.count(),5)
         self.assertIs(editor.body.itemAt(0).widget(),editor.content_editor)
-        self.assertIs(editor.body.itemAt(1).widget(),basic)
+        self.assertIs(editor.body.itemAt(1).widget(),editor.sections['rotation'])
+        self.assertIs(editor.body.itemAt(2).widget(),basic)
         for child in (editor.caption_identity,editor.geometry_editor,editor.caption_properties):
             self.assertTrue(basic.content.isAncestorOf(child))
         for key in ('caption','caption_layout'):

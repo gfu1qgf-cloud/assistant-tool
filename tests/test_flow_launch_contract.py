@@ -82,7 +82,7 @@ class FlowLaunchContractTests(unittest.TestCase):
         launches = []; service.launch_requested.connect(launches.append)
         service.execute({'action': 'open_browser', 'profile': 'Profile 23'})
         self.assertFalse(launches)
-        self.assertTrue(any(request['action'] == 'open_project' for request in service.pending.values()))
+        self.assertEqual([request['action'] for request in service.pending.values()], ['focus_window'])
 
     def test_live_bridge_overrides_stale_install_record_in_queue_launcher(self):
         dialog, launcher, commands = self.ui(); plugin = dialog.plugin

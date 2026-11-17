@@ -1135,7 +1135,7 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
         self.update_preview()
         job = self.active_entry()
         if job:
-            self.request_background(job["path"],force=True)
+            self.request_background(job.get("path", ""),force=True)
 
     def _overlay_finished(self):
         self.overlay_worker.deleteLater()
@@ -2042,10 +2042,12 @@ class BatchTextVideoDialog(ComponentNodeController, UndoController, PlaybackCont
                 self.show()
                 event.ignore()
                 return
+        self._preview_accept_results = False
         self.hide()
         event.ignore()
 
     def showEvent(self, event):
+        self._preview_accept_results = True
         super().showEvent(event)
         if hasattr(self,'association_access') and not self.is_batch_busy():
             QtCore.QTimer.singleShot(0,self.refresh_preview)

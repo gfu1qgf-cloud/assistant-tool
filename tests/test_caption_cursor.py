@@ -20,7 +20,10 @@ FFMPEG=os.environ.get('NODE_FFMPEG','')
 
 class CursorTests(unittest.TestCase):
     @classmethod
-    def setUpClass(cls):cls.app=QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    def setUpClass(cls):
+        cls.app=QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+        from app_plugins.builtin.batch_text_video.layout import ensure_fonts
+        ensure_fonts()
 
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup);self.root=Path(self.temp.name)

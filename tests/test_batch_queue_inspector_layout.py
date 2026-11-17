@@ -165,7 +165,8 @@ class QueueInspectorLayoutTests(unittest.TestCase):
         panel.select_layer_id(layer['id'])
         editor = panel.editor
         self.assertIs(editor.body.itemAt(0).widget(), editor.content_editor)
-        self.assertIs(editor.body.itemAt(1).widget(), editor.sections['basic'])
+        self.assertIs(editor.body.itemAt(1).widget(), editor.sections['rotation'])
+        self.assertIs(editor.body.itemAt(2).widget(), editor.sections['basic'])
         for child in (editor.geometry_editor, panel.caption_properties):
             self.assertTrue(editor.sections['basic'].content.isAncestorOf(child))
         text = panel.text_properties

@@ -31,7 +31,11 @@ class AdjustableCursorTests(original.CursorTests):
         event=events[0]
         self.assertAlmostEqual(cursor['width'],9.)
         self.assertAlmostEqual(cursor['height'],event['height']*1.6)
-        self.assertAlmostEqual(cursor['y']+cursor['height']/2,event['y']+event['height']/2)
+        from app_plugins.builtin.batch_text_video.caption_style_render import motion_at
+        _size,_dx,dy,_alpha,_blur=motion_at(cursor,event['start'])
+        from app_plugins.builtin.batch_text_video.caption_follow import offset_at
+        follow_y=offset_at(cursor['follow_track'],event['start'])[1]
+        self.assertAlmostEqual(cursor['y']+dy+cursor['height']/2,event['y']+follow_y+event['height']/2)
         self.assertAlmostEqual(cursor['opacity'],.4*.65)
 
     def test_bar_ui_fields_and_parameter_overview_are_editable_and_mode_specific(self):

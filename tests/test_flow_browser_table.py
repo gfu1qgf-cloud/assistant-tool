@@ -126,8 +126,9 @@ class BrowserTableTests(unittest.TestCase):
         with patch.object(dialog, 'open_setup') as open_setup:
             dialog.setup.begin = MagicMock()
             dialog.open_selected_browser()
-            open_setup.assert_called_once_with('Profile 2')
-            dialog.setup.begin.assert_called_once_with()
+            self.assertEqual(commands[-1], {'action':'open_browser','browser':'browser-2'})
+            open_setup.assert_not_called()
+            dialog.setup.begin.assert_not_called()
 
     def test_insert_remove_reconnect_and_group_reorder_preserve_existing_editor(self):
         dialog, _, _ = self.table()

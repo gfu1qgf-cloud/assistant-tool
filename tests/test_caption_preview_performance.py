@@ -113,3 +113,20 @@ class CaptionPreviewPerformanceTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             with text_outline.preview_geometry():raise RuntimeError('interrupted')
         self.assertFalse(text_outline.is_preview())
+
+    def test_font_database_change_invalidates_cached_fallback_geometry(self):
+        from app_plugins.builtin.batch_text_video.layout import ensure_fonts
+        from app_plugins.builtin.batch_text_video import captions
+        ensure_fonts()
+        cache.clear()
+        layer=self.layer()
+        with patch.object(captions,'_uncached_glyph',wraps=captions._uncached_glyph) as build:
+            _glyph('cache-reset',layer,24,native=True)
+            _glyph('cache-reset',layer,24,native=True)
+            self.assertEqual(build.call_count,1)
+            self.assertGreater(cache._BYTES,0)
+            self.app.fontDatabaseChanged.emit()
+            self.assertEqual(cache._BYTES,0)
+            self.assertFalse(cache._CACHE)
+            _glyph('cache-reset',layer,24,native=True)
+            self.assertEqual(build.call_count,2)

@@ -331,6 +331,8 @@ class ThreadLifecycleTests(unittest.TestCase):
             # Preview dialogs are GUI-owned QDialogs, also not QThreads.
             'PYUI/node_workspace.py': {'self.handle.finished.connect','handle.finished.connect',
                                       'self.preview_handle.finished.connect','dialog.finished.connect'},
+            # _manager.submit returns a host-owned BackgroundTaskHandle, not QThread.
+            'PYUI/firefox_containers_pyui.py': {'self._handle.finished.connect'},
             # QDialog.finished, released by the GUI-thread details owner.
             'app_plugins/builtin/waste_reminder/plugin.py': {'dialog.finished.connect'},
             'app_plugins/builtin/davinci_remote/ui.py': {'process.finished.connect'},
@@ -350,6 +352,8 @@ class ThreadLifecycleTests(unittest.TestCase):
             'app_plugins/builtin/task_delivery.py': {'thread.finished.connect'},
             'app_plugins/builtin/task_delivery_board.py': {'worker.signals.finished.connect', 'dialog.finished.connect'},
             'app_plugins/builtin/task_delivery_controller.py': {'thread.finished.connect', 'handle.finished.connect'},
+            # Selection submit is a BackgroundTaskManager network handle.
+            'app_plugins/builtin/task_delivery_quantity_selection.py': {'self.handle.finished.connect'},
             'model/BackgroundTasks.py': {'worker.finished.connect'},
             'model/QtThreadLifecycle.py': {'thread.finished.connect'},
             # Native QProcess lifetimes, not QThread completion. Process tests
