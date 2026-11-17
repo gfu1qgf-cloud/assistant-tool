@@ -10,15 +10,16 @@
   "added_or_updated_modules": [
     "test_release_native_environment",
     "test_build_manifest",
-    "test_video_stitch"
+    "test_video_stitch",
+    "test_application_package"
   ],
   "stitch_followup": {
     "rounds": 5,
     "tests_per_round": 24,
     "failed": 0
   },
-  "final_module_coverage": 586,
-  "tests": 7680,
+  "final_module_coverage": 587,
+  "tests": 7685,
   "skipped": 43,
   "failures": 0,
   "errors": 0,
@@ -282,6 +283,11 @@
     {
       "module": "test_app_version",
       "tests": 2,
+      "skipped": 0
+    },
+    {
+      "module": "test_application_package",
+      "tests": 5,
       "skipped": 0
     },
     {
@@ -2961,7 +2967,7 @@
     "raster_fixture_skipped": true
   },
   "source_scan": {
-    "files": 1583,
+    "files": 1585,
     "findings": [],
     "syntax_errors": []
   },

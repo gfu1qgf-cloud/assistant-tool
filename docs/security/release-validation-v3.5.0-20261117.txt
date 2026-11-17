@@ -22,6 +22,7 @@ dependency-review-v3.5.0-20261117.csv 和 packaging/constraints-win-py314.txt。
 R01 | 构建/原生依赖 | Medium | packaging/AssistantTool.spec:11；packaging/build_environment.py:7 | 已修复
 R02 | 发布验证缺口 | Medium | .github/workflows/release.yml；packaging/smoke_frozen.py | 已修复
 R03 | 发行说明 | Low | packaging/release_notes.py；CHANGELOG.md:3；README.md | 已修复
+R04 | 打包资源占用 | Low | packaging/package_application.py；release.yml | 已改为流式打包
 
 R01：源码导入 Qt 正常，冻结 EXE 导入 QtCore 却报“找不到指定的程序”。
 从 Analysis TOC 确认，PyInstaller 沿开发机 PATH 收进了其他工具的
@@ -46,6 +47,12 @@ R03：旧发行说明提取器会把版本标题后面的非版本开发流水�
 3.5.0 使用面向用户的功能与升级说明，README 同步当前 Python/Qt/Torch
 组合及 Google 账号管理方式，不再保留“当前 Torch 2.10”等过时说法。
 
+R04：本机 Compress-Archive 打包期间磁盘可用空间骤降；未证明全部空间
+增量都由压缩造成，不臆断外部进程。已中止本轮自有压缩进程并清理自建
+错误候选，不碰用户任务。改用 ZipFile.write 流式写入，避免 Update 模式
+保留整个归档的内存压力；独占创建目标，异常只删除自己创建的半成品，
+拒绝覆盖已有包、递归打包自身和链接资源。新增 5 项回归，CI 使用同一入口。
+
 测试失败甄别与修正（不是新增产品漏洞）
 1. 64/3 路调度测试使用假编码器，却依赖真实剩余内存，可能被生产内存
    准入降并发。测试改用固定充足内存快照；低内存、等待、取消、重试仍由
@@ -66,7 +73,7 @@ R03：旧发行说明提取器会把版本标题后面的非版本开发流水�
 本地验证结果
 第二轮全量覆盖 585 个模块，584 个直接通过；上述拼接时序用例修正后
 五轮通过，另执行新增原生环境测试及更新的构建身份测试。
-最终覆盖 586 个模块 / 7680 个测试，0 个未关闭失败、0 个错误、
+最终覆盖 587 个模块 / 7685 个测试，0 个未关闭失败、0 个错误、
 0 个 Qt 回调异常；43 个有明确条件的跳过（如 Windows 符号链接权限）。
 这不是声称“同一次全量执行原本就全绿”；逐模块证据和复验来源见同名 JSON。
 Flow 新构建扩展：67 个禁网 JS 脚本通过；@napi-rs/canvas 缺失的像素夹具

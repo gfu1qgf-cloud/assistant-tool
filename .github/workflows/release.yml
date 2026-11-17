@@ -75,7 +75,7 @@ jobs:
           Copy-Item app_icon.png dist\AssistantTool\app_icon.png
           Copy-Item app_icon.ico dist\AssistantTool\app_icon.ico
           New-Item -ItemType Directory -Force dist_final | Out-Null
-          Compress-Archive -Path dist\AssistantTool\* -DestinationPath dist_final\AssistantTool-Windows.zip
+          python packaging/package_application.py --application dist/AssistantTool --output dist_final/AssistantTool-Windows.zip
 
       - name: Check release privacy and completeness
         run: python packaging/check_release_artifact.py dist_final/AssistantTool-Windows.zip
