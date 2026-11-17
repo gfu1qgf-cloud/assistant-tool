@@ -60,7 +60,7 @@ multidict==6.9.1
 networkx==3.4.2
 numba==0.68.0
 numpy==2.2.6
-oauthlib==4.0.0
+oauthlib==4.0.1
 odfpy==1.4.1
 onnxruntime==1.23.2
 openai-whisper==20250625
