@@ -1,0 +1,62 @@
+Git 开发工具链安全更新记录
+日期：2026-11-17
+
+结论
+系统 Git 已从 2.51.0.windows.2 升级到官方安全版 2.56.1.windows.1。
+本轮公开的六项 Git 安全修复均包含在该发行版中。
+这不等于机器上所有嵌入式 Git 都已修复：当前 Codex 签名运行时中的
+Git 2.56.0.windows.4 仍早于修复版，列为未关闭的宿主工具链风险。
+先前应用安全审核侧重程序依赖与源码，遗漏了这项开发工具版本检查；
+本记录将它明确补入范围，不修改旧报告的原始检测证据。
+
+官方依据
+Git for Windows 官方发行版 v2.56.1.windows.1，2026-11-10：
+https://github.com/git-for-windows/git/releases/tag/v2.56.1.windows.1
+上游安全公告：
+https://github.blog/open-source/git/git-security-vulnerabilities-announced-7/
+递归子模块克隆远程执行公告（CVSS 8.0 / High）：
+https://github.com/git/git/security/advisories/GHSA-vp2w-7xxj-jvxr
+
+同批六项：CVE-2026-111760、CVE-2026-113408、CVE-2026-114466、
+CVE-2026-114467、CVE-2026-114469、CVE-2026-105437。
+GHSA 页面部分“Patched versions”元数据仍写 none；维护者正式发行说明
+已经明确列出 2.56.1 与维护分支修复版，因此以发行说明判断本次修补版本，
+不把聚合字段差异隐去，也不称它们全都能通过普通 status/log 触发。
+其中 CVE-2026-111760 主要涉及攻击者控制仓库的递归子模块克隆。
+
+安装与验证
+- 安装源为 git-for-windows/git 官方 GitHub release，未使用第三方下载站。
+- Git-2.56.1-64-bit.exe 的 SHA-256：
+  c330c72e10b408cc39994bfefdb63542b0d93d21699325c3e0bd874af8a5a559
+  与官方发布页及 GitHub 资产 digest 相符。
+- 安装包与安装后的 git.exe 均通过 Windows Authenticode 有效签名检查，
+  签署者为 Johannes Schindelin。
+- 保持 C:/Program Files/Git，保留 Cmd PATH、Schannel/WinSSL、原有换行、
+  OpenSSH、凭据管理、禁用符号链接和 FSMonitor 等原安装选项。
+- 安装日志明确报告成功、post-install 完成、不需要重启 Windows。
+- 实际系统 git --version 为 2.56.1.windows.1；命令解析仍优先指向系统 Git。
+- 对本项目执行 git fsck --connectivity-only --no-dangling 成功；status/log、
+  凭据管理器启动及个人 GitHub 远端分支查询均正常。
+- 没有执行漏洞 PoC、克隆攻击仓库、强退程序、关闭 TLS 校验或删除业务数据。
+
+仍需处理：Codex 内置 Git（High / 未关闭）
+PATH 还包含 OpenAI 签名的 CodexPrimaryRuntime 框架，实测内置 Git 为
+2.56.0.windows.4。没有手动修改 WindowsApps 内的签名软件包或权限。
+应用官方更新检查返回当前配置通道 up_to_date，未提供可安装更新；
+这只代表该通道没有合格更新，不代表其内置 Git 已修复。
+一次尝试的应用升级命令被审批拦截，未执行；没有绕过审批或重启应用。
+后续本次终端操作均显式使用已修复的系统 Git；不能由此推断 Codex 所有
+内部 Git 界面也已切换。内置副本应等待官方运行时更新并再次核对版本。
+在此之前避免通过仍用旧副本的应用递归克隆不可信仓库或处理不可信
+二进制补丁、异常引用、复杂合并输入；不是只禁用子模块就修好了六项问题。
+官方应用更新方式依据：
+https://learn.chatgpt.com/docs/enterprise/windows-deployment
+
+个人仓库同步范围
+用户已明确同意：仅正常推送已提交源码至个人仓库现有 pyqt6-local 分支。
+main 默认分支、origin 仓库、标签和发行版均不改动，不强推。
+当前 68 项未提交开发改动不纳入本次推送，也不替用户判断它们已验收。
+推送前已核对个人远端 pyqt6-local 为 9e800d7186f54780db5a0775fecbaa69c78a1673，
+当前源码修复提交为 ce862ef8a11e0d1abe67310ccf7e9cec6ebddb27，另加本记录。
+推送结果必须在操作完成后用远端实际提交号核实，不能以本地 commit 成功
+或过期的 tracking ref 当作“GitHub 已同步”的证据。
