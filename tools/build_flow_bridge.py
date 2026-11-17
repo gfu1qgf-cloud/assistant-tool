@@ -8,7 +8,7 @@ import shutil
 ROOT = Path(__file__).resolve().parents[1]
 PIN = 'a5a4a3607e55c85c9c0c2e8e4700f2140eefb36d'
 UPSTREAM_VERSION = '1.1.6'
-BRIDGE_VERSION = '1.1.62'
+BRIDGE_VERSION = '1.1.63'
 KEY = 'MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAnvFDGkX5m/XE6cRqK89rmU6CkCtcOue7G3zgttpk45gF21Y9SQi4L6IvLh4SgLIPcU3Gm5MsXjB4UqmC03ssHqI9Q5SG4TqkGpS+LunJanIVy9Q7ak3IevqA1A3QgA28iAbMHsX9a8sEL/qhi13afdr7n42eF6A4XzJs3+9An6pjzAPNjK4AJLF7PytIzY9YxJ4eg7ANPQUPVTC233hvW5OGMXOxdo4QX1/qGe1npm6E8wwnGfp85NkRPLohy9t1cfJreXcqfswkRa1QlyeKsCfTIKQX2vclCDavsoddro3w98YS4SRb4Tz8NRnbJITsOoPqCbMtXyaWP2QIyy/S6QIDAQAB'
 HASHES = {
     'background.js': '756e503f5612b4f1218ea5b7f87ee7a3b17fdcd36009058d7442867df5b87139',
@@ -42,13 +42,14 @@ def build(root=ROOT, *, destination=None):
     security_spec = importlib.util.spec_from_file_location('flow_security_patches', Path(__file__).with_name('flow_security_patches.py'))
     security = importlib.util.module_from_spec(security_spec)
     security_spec.loader.exec_module(security)
+    ui = security.patch_ui(ui)
     background = security.patch_background(background, (root / 'browser_extensions/flow_adapter/page_boundary.js').read_text('utf-8'))
     destination.mkdir(parents=True, exist_ok=True)
     shutil.copytree(source, destination, dirs_exist_ok=True)
     for name, content in {'injects/ui.js': ui, 'injects/flow-proxy.js': proxy, 'background.js': background}.items():
         (destination / name).write_text(content, encoding='utf-8')
-    (destination / 'content-isolated.js').write_text(guards.patch_isolated(patches.patch_isolated(
-        (source / 'content-isolated.js').read_text('utf-8'))), encoding='utf-8')
+    (destination / 'content-isolated.js').write_text(security.patch_isolated(guards.patch_isolated(patches.patch_isolated(
+        (source / 'content-isolated.js').read_text('utf-8')))), encoding='utf-8')
     adapter = root / 'browser_extensions/flow_adapter'
     for original, target in {'background.js': 'lzx-background.js', 'page.js': 'lzx-page.js',
                              'content.js': 'lzx-content.js', 'reference.js': 'lzx-reference.js', 'options.js': 'lzx-options.js', 'options.html': 'options.html'}.items():
@@ -77,6 +78,7 @@ def build(root=ROOT, *, destination=None):
         'upstream_version': UPSTREAM_VERSION, 'bridge_version': BRIDGE_VERSION, 'protocol': 1,
         'patch_module': 'tools/flow_bridge_patches.py',
         'patches': [
+            'CodeQL follow-up: exact Google host suffix boundaries, literal console format, single-line diagnostics, own-key acknowledgement and Map-based batch claims; immutable upstream inputs retained',
             'page storage whitelist excludes pairing and host journals; native file drag requires a live desktop-approved exact-path grant; webpage cannot close all browser windows',
             'optional confirmed-progress UI lease renewal on the same token; serialized desktop expiry and stop acknowledgement include in-flight native input before handoff',
             'read-only loaded project-video catalog with bounded thumbnail previews; explicit desktop user selection creates a separate download-only binding without altering generation receipts or page ownership',

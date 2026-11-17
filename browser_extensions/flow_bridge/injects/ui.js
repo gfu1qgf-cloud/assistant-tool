@@ -4555,7 +4555,7 @@
     const targetAspect = aspectRatio || "ASPECT_RATIO_9_16";
     const targetFootage = footageType || "VIDEO_FRAMES";
 
-    console.log(`[FlowUI] 开始同步视频设置: 模式=${targetFootage}, 比例=${targetAspect}, 分辨率=${targetRes}, 数量=${targetCount}, 时长=${duration || '默认'}, 模型=${videoModel || '默认'}`);
+    console.log("[FlowUI] 开始同步视频设置");
 
     // 0-B. 尝试全局 store 兜底设置
     try {
@@ -4819,7 +4819,7 @@
     const imgKey = image.primaryMediaKey || image.id || "";
     const isFrameMode = footageType === "VIDEO_FRAMES";
 
-    console.log(`[FlowUI] 正在关联素材: Name="${imgName}", Key="${imgKey}", Mode="${footageType}"`);
+    console.log("[FlowUI] 正在关联素材");
 
     // 0. 尝试全局 store 注入兜底 (兼容 Flow 早先架构)
     try {
@@ -6567,7 +6567,7 @@ ${presetAfter || ""}`.trim();
   // ====================================================================
   (function initAccountBridge() {
     const host = location.hostname;
-    if (!(host.endsWith("labs.google") || host.endsWith("flow.google.com") || isVidsPage())) return;
+    if (!(host === "labs.google" || host.endsWith(".labs.google") || host === "flow.google.com" || host.endsWith(".flow.google.com") || isVidsPage())) return;
     if (window.__flowAccountBridgeLoaded) return;
     window.__flowAccountBridgeLoaded = true;
 
@@ -6604,7 +6604,7 @@ ${presetAfter || ""}`.trim();
     let lastProbeAt = 0;
     let probing = null;
 
-    const log = (...a) => console.log("[FlowAccount]", ...a);
+    const log = (...a) => console.log("[FlowAccount] %s", a.map(value => String(value).replace(/\n|\r|\u2028|\u2029/g, " ")).join(" "));
     const sleep = (ms) => new Promise(r => setTimeout(r, ms));
     const EMAIL_RE = /([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/;
 

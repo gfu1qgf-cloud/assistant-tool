@@ -105,6 +105,8 @@ EXE 的离线界面、媒体解码、CPU 运算与正常关闭检查，而不只
 
 ## 安全检查与发布
 
+3.5.0 发布前的完整 CodeQL 追加复核、告警判定与 Flow 1.1.63 加固，见 `docs/security/codeql-release-followup-v3.5.0-20261117.txt`。阶段性验收与原始失败记录保留，不把扫描评分直接当成已确认利用，也不靠隐藏扫描目录消除告警。
+
 GitHub 在提交和 Pull Request 上运行 CodeQL（security-extended）；每周继续扫描。
 Dependabot 跟踪依赖与 Actions 更新，仓库启用密钥扫描与推送保护。
 创建新的 `v*` 标签会自动运行完整隔离测试、构建、发布包隐私检查、生成构建证明和发布。

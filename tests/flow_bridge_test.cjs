@@ -72,6 +72,17 @@ const crypto = require('node:crypto');
   assert.equal(complete.data.download_path, task.download_path, 'renaming must not lose the requested media binding');
   await api.receive({type: 'ack', event_id: complete.event_id});
   assert.equal(Object.keys(data.lzxOutbox).length, 0);
+  data.lzxOutbox={pending:{type:'download',data:{state:'complete'}}};
+  for(const key of ['__proto__','constructor','prototype','unknown']) {
+    await api.receive({type:'ack',event_id:key});
+    assert.deepEqual(Object.keys(data.lzxOutbox),['pending'],'only an existing own receipt may be acknowledged');
+    const count=forwarded.length;
+    await api.receive({...request,request_id:'invalid-key',params:{...request.params,batch_id:key}});
+    assert.equal(forwarded.length,count,'reserved keys cannot enter paid batch claims');
+    assert.equal(Object.hasOwn(data.lzxBatches,key),false);
+  }
+  await api.receive({type:'ack',event_id:'pending'});
+  assert.equal(Object.keys(data.lzxOutbox).length,0);
   const saveLocal = chrome.storage.local.set;
   chrome.storage.local.set = async values => {
     if ('lzxBatches' in values) throw Error('synthetic batch journal failure');

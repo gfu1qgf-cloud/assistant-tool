@@ -34,7 +34,7 @@ class FlowVersionSyncTests(unittest.TestCase):
         builder=ast.parse(self.read('tools/build_flow_bridge.py'))
         version=next(ast.literal_eval(node.value) for node in builder.body if isinstance(node,ast.Assign) and
             any(isinstance(target,ast.Name) and target.id=='BRIDGE_VERSION' for target in node.targets))
-        self.assertEqual(EXTENSION_VERSION,'1.1.62');self.assertEqual(version,EXTENSION_VERSION)
+        self.assertEqual(EXTENSION_VERSION,'1.1.63');self.assertEqual(version,EXTENSION_VERSION)
         self.assertEqual(json.loads(self.read('browser_extensions/flow_bridge/manifest.json'))['version'],version)
         self.assertEqual(json.loads(self.read('browser_extensions/flow_bridge/SOURCE.json'))['bridge_version'],version)
 
@@ -53,7 +53,7 @@ class FlowVersionSyncTests(unittest.TestCase):
         for version in ('1.1.8','1.1.22','1.1.38','1.1.39','1.1.40','1.1.41','1.1.42','1.1.43','1.1.44','1.1.45','1.1.46','1.1.47','1.1.48','1.1.49','1.1.50','1.1.51','1.1.58','1.1.59'):
             self.assertTrue(compatible_extension(version),version)
         self.assertTrue(compatible_extension(EXTENSION_VERSION))
-        for version in ('1.1.7','1.1.63','2.0.0'):
+        for version in ('1.1.7','1.1.64','2.0.0'):
             self.assertFalse(compatible_extension(version),version)
         url='https://flow.google.com/project/version-fixture'
         for version in ('1.1.39','1.1.40'):

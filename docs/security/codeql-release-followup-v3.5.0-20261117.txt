@@ -1,0 +1,61 @@
+3.5.0 发布前 CodeQL 追加复核（2026-11-17）
+
+背景与边界
+个人仓库 main 从旧版本快进后，新的完整 security-extended 扫描完成，
+产生 25 条代码告警，而非 25 个已确认可利用漏洞。依赖图已自动刷新为
+0 条开放依赖告警。正式标签尚未创建；本记录不冒充发布完成。
+本轮 Flow 桥接升级为 1.1.63。原 release-validation 中的 1.1.62 EXE
+与测试结果是前一候选的真实阶段记录；最终匹配包须重新构建并通过 CI。
+
+逐项处置
+编号 | 规则 | 位置/用途 | 判定与处置
+21–24 | js/remote-property-injection | adapter/background.js 与生成的 lzx-background.js | 兼容加固：Map 批次表、只确认已有 own-key 回执
+7、8 | js/tainted-format-string | isolated console 启动日志及原始上游副本 | 运行版本固定格式字符串，网址作为独立 %s 数据；原始上游仅供重建
+15–20 | js/log-injection | UI 设置/素材诊断、账号日志及上游副本 | 运行版本去掉不必要用户内容，账号日志移除全部换行；原始上游不执行
+5、6 | js/incomplete-url-substring-sanitization | 账号桥接 host 后缀及上游副本 | 运行版本显式完整域名或点分子域边界；原始上游不执行
+11–14 | js/regex/missing-regexp-anchor | isIgnoredImg 的头像排除条件，两条正则各两份 | 误报：命中后拒绝图片候选，不是信任/允许 URL 的条件
+3、4 | js/incomplete-url-substring-sanitization | isStaticShowcaseAsset 的 gstatic 展示素材排除 | 误报：命中后排除，不授予下载、上传或网页通信权限
+9、10 | js/request-forgery | options 的本机配对 WebSocket | 误报：地址主机固定 127.0.0.1；端口为已验证 1024–65535 整数，不能注入主机/路径
+25 | py/weak-sensitive-data-hashing | AIProviderClient._fingerprint | 误报：随机 API Key 的内存限流/模型列表缓存标识，不是用户密码验证器
+26 | py/incomplete-url-substring-sanitization | GoogleDriveDownloader HTML 登录页识别 | 误报：识别后抛 AuthenticationRequired；真实 URL 与重定向另有精确 Google HTTPS 校验
+27 | py/incomplete-url-substring-sanitization | Agent 图片任务排除 Google 文档/文件夹 | 误报：命中后拒绝；reference_sources 已按解析后的 scheme/netloc 严格验证 Google 域名
+
+加固详情与利用条件
+批次 ID 原本已有 32 位十六进制校验，外部无法用 __proto__/constructor
+穿过该校验；ACK 来自已认证桌面连接，原动态 delete 本身也不是原型写入。
+仍改为 Map/own-key 明确数据语义，保持磁盘 JSON 格式、原子去重及请求
+身份不变。未知/继承的 ACK 不写回，正确回执照常完成；不额外提交视频。
+域名判断显式匹配完整主机或 '.flow.google.com' / '.labs.google' 边界，
+拒绝 evilflow.google.com、notlabs.google 和真正域名后再拼接外域的情形。
+控制台原始格式串拼网址可被 URL 中的 %c 等影响展示，但这不是 JS 执行。
+改用常量格式与独立数据。日志换行已过滤；移除的只是冗余诊断参数，不是
+素材选择、积分、生成、下载或人工控制功能。
+
+本机通信误报的具体边界
+options.js 中的 WebSocket 模板固定为 ws://127.0.0.1:<整数端口>。
+setup ticket 限定 32 位十六进制；服务端仍验证扩展 Origin、票据、期限
+与账号配置，长期 token 的领取不能绕过原校验。端口可配置是现有必要 IPC
+功能；没有为消除扫描标记而锁死端口或移除用户连接功能。
+不是把 URL 白名单改成不严谨的字符串 contains，也没有放宽 localhost 鉴权。
+
+原始上游源码告警
+third_party/flowcue/extension 的六个输入继续按固定 SHA-256 验证，未改字节。
+其中 5 条对应本轮已改的日志/格式/域名代码，仅是供重建的上游原始输入，
+不是主程序或扩展运行入口。构建器在复制后强制应用精确安全接缝；接缝数量
+变化立即失败。程序与独立扩展只加载生成的 15 个白名单资源，源码包另附
+构建器及补丁，不能把未执行的上游原件和生成后的代码混为同一漏洞。
+复核后可按 false_positive 记录这些原件告警，附明确原因；不删除厂商原件、
+不排除 CodeQL 扫描目录、不修改查询规则、不隐藏真实运行代码。
+
+验证
+新增/更新可执行用例：保留上游哈希；接缝变化失败关闭；恶意域名边界；
+控制台格式串及 CR/LF/U+2028/U+2029；危险缓存键与未知 ACK；非整数、越界
+及带 @/路径的端口拒收。68 个禁网浏览器脚本通过，版本/桥接边界/源码打包
+定向测试通过；Windows 符号链接权限与 @napi-rs/canvas 条件性跳过继续披露。
+接下来以新的 main CodeQL 结果确认运行代码的告警已自动关闭，再对上述
+误报逐条留痕。最终正式发布仍受完整源码测试、匹配 EXE 媒体/退出检查、
+ZIP 隐私/完整性、扩展一致性和构建证明约束。
+
+参考（规则说明，不是证明本软件必然受影响）
+https://codeql.github.com/codeql-query-help/javascript/js-log-injection/
+https://codeql.github.com/codeql-query-help/javascript/js-request-forgery/

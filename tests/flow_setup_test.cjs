@@ -61,6 +61,10 @@ async function background(config, ownedUrl) {
 (async () => {
   const ui = options(); await flush();
   const bundle = {token: 't'.repeat(40), port: 18189, profile: 'Profile 23', project, extension_id: id, setup_id: 'a'.repeat(32)};
+  for(const port of [-1,0,1023,65536,1.5,true,'18189@evil.test','18189/path']) {
+    ui.context.badPair=JSON.stringify({...bundle,port});
+    assert.throws(()=>vm.runInContext('readPair(badPair)',ui.context));
+  }
   ui.fields.pair.value = JSON.stringify(bundle); ui.fields.pair.events.input();
   assert.equal(ui.fields.profile.value, 'Profile 23'); assert.equal(ui.fields.project.value, project);
   assert.equal(ui.writes.length, 0, 'pasting fills form but requires explicit save');

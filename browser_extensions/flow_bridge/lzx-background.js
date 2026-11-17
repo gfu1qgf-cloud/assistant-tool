@@ -439,14 +439,15 @@ async function receive(message) {
     await serialize(async () => {
       const saved = await local();
       const outbox = saved.lzxOutbox || {};
+      if (typeof message.event_id !== 'string' || !Object.hasOwn(outbox, message.event_id)) return;
       const event = outbox[message.event_id];
       const downloads = saved.lzxDownloads || {};
       const binding = event?.type === 'download' && downloads[event.data?.downloadId];
       if (binding && binding.batch === event.batch_id && binding.submissionId === event.data.submissionId) {
         binding.reported = event.data.state;
       }
-      delete outbox[message.event_id];
-      await chrome.storage.local.set({lzxOutbox: outbox, ...(binding ? {lzxDownloads: downloads} : {})});
+      const remaining = Object.fromEntries(Object.entries(outbox).filter(([id]) => id !== message.event_id));
+      await chrome.storage.local.set({lzxOutbox: remaining, ...(binding ? {lzxDownloads: downloads} : {})});
     });
     return;
   }
@@ -529,12 +530,12 @@ async function receive(message) {
       if (!/^[a-f0-9]{32}$/.test(batch || '') || message.params.tasks?.length !== 1) throw new Error('任务批次格式无效');
       const claimed = await serialize(async () => {
         const saved = await local();
-        const batches = saved.lzxBatches || {};
-        if (batches[batch]) return false;
-        batches[batch] = {at: Date.now(), request_id: message.request_id, state: 'sent', packed: message.params.packed === true};
+        const batches = new Map(Object.entries(saved.lzxBatches || {}));
+        if (batches.has(batch)) return false;
+        batches.set(batch, {at: Date.now(), request_id: message.request_id, state: 'sent', packed: message.params.packed === true});
         // Atomically claim before forwarding; concurrent replays must also
         // observe this durable claim, including while storage is awaiting I/O.
-        await chrome.storage.local.set({lzxBatch: batch, lzxBatches: batches});
+        await chrome.storage.local.set({lzxBatch: batch, lzxBatches: Object.fromEntries(batches)});
         activeBatch = batch;
         return true;
       });
@@ -1454,9 +1455,9 @@ async function projectSetupAction(entry, sender) {
         if (reply.type !== 'setup_reload_allowed') return;
         if (reply.ticket !== ticket || !reply.profile || new URL(reply.project).href.replace(/\/$/, '') !== project) throw Error('项目与本次连接请求不匹配。');
         receiving = true; clearTimeout(timer);
-        if (chrome.runtime.getManifest().version !== '1.1.62') {
+        if (chrome.runtime.getManifest().version !== '1.1.63') {
           await chrome.storage.local.set({lzxReloadSetup: {...entry, tabId: sender.tab.id,
-            mode: reply.mode || 'pair', profile: reply.profile, version: '1.1.62'}});
+            mode: reply.mode || 'pair', profile: reply.profile, version: '1.1.63'}});
           finish(null, {success: true, updating: true}); chrome.runtime.reload(); return;
         }
         if (action === 'options') {
