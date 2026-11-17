@@ -4,6 +4,12 @@ from model.PluginStorageBoundary import direct_io_calls
 
 
 class PluginStorageBoundaryTests(unittest.TestCase):
+    def test_only_literal_sqlite_memory_is_exempt(self):
+        self.assertEqual(direct_io_calls("import sqlite3; sqlite3.connect(':memory:')"), [])
+        self.assertEqual(direct_io_calls("from sqlite3 import connect as db; db(database=':memory:')"), [])
+        for expression in ("'secret.db'", "name", "'file:secret.db?mode=memory&cache=shared'"):
+            self.assertEqual(len(direct_io_calls('import sqlite3; sqlite3.connect('+expression+')')), 1)
+
     def test_all_plugin_source_uses_host_data_io(self):
         root = Path(__file__).resolve().parents[1] / 'app_plugins'
         failures = []

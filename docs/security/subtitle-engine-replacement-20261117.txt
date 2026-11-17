@@ -1,0 +1,37 @@
+字幕引擎替换评估（2026-11-17）
+结论：可逐步替换，但不具备本轮直接无损删除 stable-ts 的条件。以下是实际代码与离线实验，不是已完成迁移的声明。
+
+1. 当前用途，不仅是语音识别
+model/SubtitleHelper.py:5、83–93：加载／复用 faster-whisper，再使用 stable-ts 将给定原文强制对齐到音频。
+model/SubtitleHelper.py:113：已知词级时间戳也借助 WhisperResult 分组、按词数／字符数拆分及导出 SRT。
+app_plugins/builtin/batch_text_video/caption_alignment.py:124：原文逐词对齐，重试时调整上下文及静音策略，保留原文字词。
+app_plugins/builtin/batch_text_video/caption_windows.py:117：整段失败后，按已核对 SRT／识别锚点的语句窗口再次强制对齐。
+因此，直接把 align() 改为 transcribe(word_timestamps=True) 会变成“重新识别文案”，可能替换客户原文，不可作为等价修复。
+
+2. 上游维护状态
+stable-ts 上游在 2026-05-30 归档。归档不等于已经存在可利用漏洞，但后续 Python／Torch 兼容与安全补丁不能指望持续上游维护。
+来源：https://github.com/jianfch/stable-ts/security
+现有 faster-whisper 本身仍提供识别与逐词时间戳：
+https://github.com/SYSTRAN/faster-whisper
+
+3. 实测原型：不使用 stable-ts 进行短窗口强制对齐
+在隔离环境中，使用本机 SAPI 写入测试 WAV（未播放、未联网），已缓存的 faster-whisper base/int8 模型，以及 CTranslate2 的对齐能力。
+测试为约 6.25 秒的英文合成语音。原型保持完整原文，输出 15 个分词单元、0 个零时长单元，时间均为有限数值。
+同一输入的原有 stable-ts 输出 13 个分词单元、1 个零时长单元，亦保留原文。
+这说明技术路径可行，也证明“分词单元”并不等价；不能仅凭一次英文短句试验就替换正式流程。
+实验包含编码与强制对齐，而不是给每个词平均分配时间。测试脚本未加入正式程序。
+
+4. 其他候选
+WhisperX：具备强制对齐，但核对当日上游 pyproject.toml 要求 Python <3.14，且 Torch ~2.8、TorchVision ~0.23，与本程序 Python 3.14.10／已验证 Torch 2.13 冲突。
+不建议为接入它降级全程序，更不能为安装成功而 --no-deps 强塞或回退到存在旧安全公告的 Torch。
+来源：https://github.com/m-bain/whisperX/blob/main/pyproject.toml
+另找未经审查的 fork 或预编译 EXE，不视为解决维护风险。
+
+5. 推荐迁移顺序与验收门槛
+A. 先把词级公共数据与 SRT 分组／导出接口从 WhisperResult 解耦，保存现有输出作为金样，确保换行、标点、块间距和不覆盖已有文件的行为不变。
+B. 基于已存在的 faster-whisper/CTranslate2 增加独立的短窗口原文对齐适配器，明确时间上限、词／Token 上限、取消与模型互斥；跨窗口以可靠语音／语句锚点衔接，不均分长段时间。
+C. 验证斯洛伐克语、中文、长口播、长静音、数字、复合词、重复词和标点。重点检查保词率、零时长比例、边界漂移及失败后的可恢复性。
+D. 在界面中作为可选候选引擎进行 A/B 验收，不能静默把精确对齐改成近似时刻。用户确认后才切换默认值并删除 stable-ts 依赖和打包项。
+本次授权为“一并评估替换”；尚未批准改变正式字幕算法或默认字幕效果，故没有抢先切换。
+
+剩余结论：维护风险已识别，替换路线与短句原型已验证；完整替换仍待业务效果验收，不标记为已解决。

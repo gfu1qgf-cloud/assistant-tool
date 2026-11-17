@@ -96,7 +96,8 @@ class ReferenceAccountPool:
 
 
 def _hash(path, canceled):
-    value = hashlib.md5()
+    # Drive exposes MD5 as a transfer checksum, not as an authenticity proof.
+    value = hashlib.md5(usedforsecurity=False)
     with data_file(path).open('rb') as stream:
         while chunk := stream.read(1024 * 1024):
             if canceled(): raise InterruptedError('参考文件下载已取消。')

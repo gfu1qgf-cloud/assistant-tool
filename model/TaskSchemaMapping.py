@@ -102,7 +102,7 @@ def read_columns(payload, run):
     """Read headers only, not task rows; keep parsing outside the GUI thread."""
     from pathlib import Path
     from zipfile import ZipFile
-    from model.OdsHelper import load, TableRow, _select_sheet, _find_header
+    from model.OdsHelper import _load_task_document, TableRow, _select_sheet, _find_header
     path = Path(payload['path'])
     run.check_canceled()
     stat = path.stat()
@@ -114,7 +114,7 @@ def read_columns(payload, run):
             raise ValueError('表格解压内容超过128MiB，未继续解析。')
     run.report('读取表头', 10)
     schema = normalize_task_table_schema(payload['schema'])
-    document = load(str(path))
+    document = _load_task_document(path)
     run.check_canceled()
     sheet, sheet_name = _select_sheet(document, schema)
     row, headers, _ = _find_header(sheet.getElementsByType(TableRow), schema)

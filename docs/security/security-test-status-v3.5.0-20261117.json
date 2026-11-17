@@ -1,0 +1,3592 @@
+{
+  "baseline_modules": 583,
+  "baseline_failed_modules": 29,
+  "candidate_modules": 584,
+  "full_candidate_initial_failed_modules": 24,
+  "targeted_overrides": [
+    "test_agent_local_references",
+    "test_ai_chat_privacy",
+    "test_alpha_bounds",
+    "test_app_version",
+    "test_document_formatter",
+    "test_document_formatter_auth",
+    "test_drive_browser",
+    "test_face_anchor",
+    "test_google_accounts",
+    "test_image_assignment_sort",
+    "test_inventory_update_sort",
+    "test_material_download_queue",
+    "test_material_submission_validation",
+    "test_matting_video_preview",
+    "test_plugin_storage_boundary",
+    "test_reference_auth_fallback",
+    "test_release_notes",
+    "test_security_io_limits",
+    "test_task_schema_nodes",
+    "test_visual_loop_region",
+    "test_waste_reminder"
+  ],
+  "final_totals": {
+    "tests": 7671,
+    "failures": 125,
+    "errors": 2,
+    "skipped": 43,
+    "callbacks": 2
+  },
+  "remaining_failed_modules": [
+    "test_background_trim",
+    "test_batch_export_polish",
+    "test_batch_pool_order",
+    "test_batch_pools",
+    "test_batch_preview_link",
+    "test_batch_queue_inspector_layout",
+    "test_batch_preview_parity",
+    "test_batch_weight_effects",
+    "test_batch_videokit_styles",
+    "test_caption_baseline",
+    "test_caption_cursor_continuous",
+    "test_caption_inline_inspector",
+    "test_caption_preset_freedom",
+    "test_compact_inspector",
+    "test_cooking_assistant",
+    "test_cursor_parameters",
+    "test_flow_browser_table",
+    "test_flow_launch_contract",
+    "test_flow_window_reuse",
+    "test_follow_vertical_clip",
+    "test_qt_thread_lifecycle"
+  ],
+  "new_remaining_failures": [],
+  "rows": [
+    {
+      "module": "test_agent_ai_review",
+      "exit_code": 0,
+      "seconds": 3.39,
+      "summary": "RELEASE_TEST_RESULT: run=13, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_agent_badges",
+      "exit_code": 0,
+      "seconds": 4.74,
+      "summary": "RELEASE_TEST_RESULT: run=29, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_agent_bulk_ui",
+      "exit_code": 0,
+      "seconds": 3.12,
+      "summary": "RELEASE_TEST_RESULT: run=18, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_agent_completed_extras",
+      "exit_code": 0,
+      "seconds": 4.28,
+      "summary": "RELEASE_TEST_RESULT: run=10, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_agent_download_all",
+      "exit_code": 0,
+      "seconds": 4.62,
+      "summary": "RELEASE_TEST_RESULT: run=14, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_agent_delivery",
+      "exit_code": 0,
+      "seconds": 10.27,
+      "summary": "RELEASE_TEST_RESULT: run=55, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_agent_handoff_isolation",
+      "exit_code": 0,
+      "seconds": 4.65,
+      "summary": "RELEASE_TEST_RESULT: run=8, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_agent_local_references",
+      "exit_code": 0,
+      "seconds": 3.54,
+      "summary": "RELEASE_TEST_RESULT: run=24, failures=0, errors=0, skipped=0, callbacks=0",
+      "verification": "targeted rerun after final delta"
+    },
+    {
+      "module": "test_agent_lifecycle",
+      "exit_code": 0,
+      "seconds": 5.39,
+      "summary": "RELEASE_TEST_RESULT: run=10, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_agent_manual_badge",
+      "exit_code": 0,
+      "seconds": 4.13,
+      "summary": "RELEASE_TEST_RESULT: run=11, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_agent_nested_receipts",
+      "exit_code": 0,
+      "seconds": 4.03,
+      "summary": "RELEASE_TEST_RESULT: run=7, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_agent_partial_receipts",
+      "exit_code": 0,
+      "seconds": 4.36,
+      "summary": "RELEASE_TEST_RESULT: run=9, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_agent_polling",
+      "exit_code": 0,
+      "seconds": 4.71,
+      "summary": "RELEASE_TEST_RESULT: run=14, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_agent_receipt_names",
+      "exit_code": 0,
+      "seconds": 2.25,
+      "summary": "RELEASE_TEST_RESULT: run=7, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_agent_receipt_progress",
+      "exit_code": 0,
+      "seconds": 2.21,
+      "summary": "RELEASE_TEST_RESULT: run=8, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_agent_receipt_policy",
+      "exit_code": 0,
+      "seconds": 4.43,
+      "summary": "RELEASE_TEST_RESULT: run=13, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_agent_receipt_state",
+      "exit_code": 0,
+      "seconds": 3.21,
+      "summary": "RELEASE_TEST_RESULT: run=4, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_agent_schema_v2",
+      "exit_code": 0,
+      "seconds": 3.15,
+      "summary": "RELEASE_TEST_RESULT: run=22, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_agent_sheet_format",
+      "exit_code": 0,
+      "seconds": 1.97,
+      "summary": "RELEASE_TEST_RESULT: run=5, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_agent_spoken_segments",
+      "exit_code": 0,
+      "seconds": 2.59,
+      "summary": "RELEASE_TEST_RESULT: run=11, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_agent_submit_preparation",
+      "exit_code": 0,
+      "seconds": 2.08,
+      "summary": "RELEASE_TEST_RESULT: run=15, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_ai_account_balance",
+      "exit_code": 0,
+      "seconds": 3.71,
+      "summary": "RELEASE_TEST_RESULT: run=20, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_agent_user_fill_status",
+      "exit_code": 0,
+      "seconds": 6.5,
+      "summary": "RELEASE_TEST_RESULT: run=15, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_ai_agent_assistant",
+      "exit_code": 0,
+      "seconds": 3.73,
+      "summary": "RELEASE_TEST_RESULT: run=40, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_ai_capabilities",
+      "exit_code": 0,
+      "seconds": 5.85,
+      "summary": "RELEASE_TEST_RESULT: run=61, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_ai_catalog_settings",
+      "exit_code": 0,
+      "seconds": 6.76,
+      "summary": "RELEASE_TEST_RESULT: run=26, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_ai_chat_batch",
+      "exit_code": 0,
+      "seconds": 3.56,
+      "summary": "RELEASE_TEST_RESULT: run=10, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_ai_chat_branches",
+      "exit_code": 0,
+      "seconds": 2.59,
+      "summary": "RELEASE_TEST_RESULT: run=6, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_ai_chat_privacy",
+      "exit_code": 0,
+      "seconds": 3.21,
+      "summary": "RELEASE_TEST_RESULT: run=11, failures=0, errors=0, skipped=0, callbacks=0",
+      "verification": "targeted rerun after final delta"
+    },
+    {
+      "module": "test_ai_chat_ui",
+      "exit_code": 0,
+      "seconds": 2.84,
+      "summary": "RELEASE_TEST_RESULT: run=7, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_ai_client_markdown",
+      "exit_code": 0,
+      "seconds": 8.57,
+      "summary": "RELEASE_TEST_RESULT: run=41, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_ai_client_stream",
+      "exit_code": 0,
+      "seconds": 9.15,
+      "summary": "RELEASE_TEST_RESULT: run=107, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_ai_context_controls",
+      "exit_code": 0,
+      "seconds": 2.18,
+      "summary": "RELEASE_TEST_RESULT: run=7, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_ai_edit_message",
+      "exit_code": 0,
+      "seconds": 3.4,
+      "summary": "RELEASE_TEST_RESULT: run=7, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_ai_form_layout",
+      "exit_code": 0,
+      "seconds": 6.06,
+      "summary": "RELEASE_TEST_RESULT: run=21, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_ai_key_list",
+      "exit_code": 0,
+      "seconds": 6.5,
+      "summary": "RELEASE_TEST_RESULT: run=33, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_ai_model_client",
+      "exit_code": 0,
+      "seconds": 7.86,
+      "summary": "RELEASE_TEST_RESULT: run=68, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_ai_group_chat",
+      "exit_code": 0,
+      "seconds": 18.49,
+      "summary": "RELEASE_TEST_RESULT: run=20, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_ai_provider_preserve",
+      "exit_code": 0,
+      "seconds": 1.74,
+      "summary": "RELEASE_TEST_RESULT: run=9, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_ai_workflow_node",
+      "exit_code": 0,
+      "seconds": 2.69,
+      "summary": "RELEASE_TEST_RESULT: run=26, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_ai_retry_entry",
+      "exit_code": 0,
+      "seconds": 3.43,
+      "summary": "RELEASE_TEST_RESULT: run=6, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_all_component_inspector",
+      "exit_code": 0,
+      "seconds": 3.52,
+      "summary": "RELEASE_TEST_RESULT: run=7, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_antigravity_account_switcher_plugin",
+      "exit_code": 0,
+      "seconds": 1.97,
+      "summary": "RELEASE_TEST_RESULT: run=4, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_antigravity_desktop_v2",
+      "exit_code": 0,
+      "seconds": 3.22,
+      "summary": "RELEASE_TEST_RESULT: run=28, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_antigravity_identity_sources",
+      "exit_code": 0,
+      "seconds": 2.04,
+      "summary": "RELEASE_TEST_RESULT: run=17, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_antigravity_integration_safety",
+      "exit_code": 0,
+      "seconds": 4.76,
+      "summary": "RELEASE_TEST_RESULT: run=27, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_api_status_replace_retry",
+      "exit_code": 0,
+      "seconds": 0.33,
+      "summary": "RELEASE_TEST_RESULT: run=3, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_app_data_storage",
+      "exit_code": 0,
+      "seconds": 0.44,
+      "summary": "RELEASE_TEST_RESULT: run=10, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_app_icon",
+      "exit_code": 0,
+      "seconds": 0.26,
+      "summary": "RELEASE_TEST_RESULT: run=3, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_app_theme",
+      "exit_code": 0,
+      "seconds": 1.68,
+      "summary": "RELEASE_TEST_RESULT: run=4, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_app_version",
+      "exit_code": 0,
+      "seconds": 0.26,
+      "summary": "RELEASE_TEST_RESULT: run=2, failures=0, errors=0, skipped=0, callbacks=0",
+      "verification": "targeted rerun after final delta"
+    },
+    {
+      "module": "test_asset_replace",
+      "exit_code": 0,
+      "seconds": 4.7,
+      "summary": "RELEASE_TEST_RESULT: run=24, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_audio_splitter_plugin",
+      "exit_code": 0,
+      "seconds": 1.57,
+      "summary": "RELEASE_TEST_RESULT: run=5, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_alpha_bounds",
+      "exit_code": 0,
+      "seconds": 25.9,
+      "summary": "RELEASE_TEST_RESULT: run=7, failures=0, errors=0, skipped=0, callbacks=0",
+      "verification": "targeted rerun after final delta"
+    },
+    {
+      "module": "test_background_dialog_lifecycle",
+      "exit_code": 0,
+      "seconds": 4.26,
+      "summary": "RELEASE_TEST_RESULT: run=6, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_background_result_boundary",
+      "exit_code": 0,
+      "seconds": 0.34,
+      "summary": "RELEASE_TEST_RESULT: run=4, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_background_task_limits",
+      "exit_code": 0,
+      "seconds": 4.17,
+      "summary": "RELEASE_TEST_RESULT: run=14, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_background_tasks",
+      "exit_code": 0,
+      "seconds": 0.74,
+      "summary": "RELEASE_TEST_RESULT: run=24, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_background_plugin_jobs",
+      "exit_code": 0,
+      "seconds": 8.64,
+      "summary": "RELEASE_TEST_RESULT: run=22, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_batch_ai_refinement",
+      "exit_code": 0,
+      "seconds": 1.77,
+      "summary": "RELEASE_TEST_RESULT: run=6, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_batch_animation_clip",
+      "exit_code": 0,
+      "seconds": 1.89,
+      "summary": "RELEASE_TEST_RESULT: run=1, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_background_trim",
+      "exit_code": 1,
+      "seconds": 5.76,
+      "summary": "RELEASE_TEST_RESULT: run=6, failures=0, errors=1, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_batch_animation_scrub",
+      "exit_code": 0,
+      "seconds": 4.17,
+      "summary": "RELEASE_TEST_RESULT: run=14, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_batch_audio_sources",
+      "exit_code": 0,
+      "seconds": 4.22,
+      "summary": "RELEASE_TEST_RESULT: run=13, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_batch_body_only_import",
+      "exit_code": 0,
+      "seconds": 2.55,
+      "summary": "RELEASE_TEST_RESULT: run=11, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_batch_caption_alignment",
+      "exit_code": 0,
+      "seconds": 3.82,
+      "summary": "RELEASE_TEST_RESULT: run=14, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_batch_canvas_settings",
+      "exit_code": 0,
+      "seconds": 6.69,
+      "summary": "RELEASE_TEST_RESULT: run=16, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_batch_caption_windows",
+      "exit_code": 0,
+      "seconds": 3.21,
+      "summary": "RELEASE_TEST_RESULT: run=13, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_batch_components",
+      "exit_code": 0,
+      "seconds": 3.36,
+      "summary": "RELEASE_TEST_RESULT: run=13, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_batch_copy_binding",
+      "exit_code": 0,
+      "seconds": 3.52,
+      "summary": "RELEASE_TEST_RESULT: run=17, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_batch_custom_pools",
+      "exit_code": 0,
+      "seconds": 4.29,
+      "summary": "RELEASE_TEST_RESULT: run=23, failures=0, errors=0, skipped=1, callbacks=0"
+    },
+    {
+      "module": "test_batch_direct_task_wires",
+      "exit_code": 0,
+      "seconds": 1.87,
+      "summary": "RELEASE_TEST_RESULT: run=6, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_batch_component_nodes",
+      "exit_code": 0,
+      "seconds": 15.26,
+      "summary": "RELEASE_TEST_RESULT: run=43, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_batch_dnx_alpha",
+      "exit_code": 0,
+      "seconds": 2.17,
+      "summary": "RELEASE_TEST_RESULT: run=16, failures=0, errors=0, skipped=7, callbacks=0"
+    },
+    {
+      "module": "test_batch_drag_units",
+      "exit_code": 0,
+      "seconds": 2.61,
+      "summary": "RELEASE_TEST_RESULT: run=13, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_batch_duration_colors",
+      "exit_code": 0,
+      "seconds": 6.85,
+      "summary": "RELEASE_TEST_RESULT: run=26, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_batch_edge_anchors",
+      "exit_code": 0,
+      "seconds": 2.15,
+      "summary": "RELEASE_TEST_RESULT: run=12, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_batch_dynamic_captions",
+      "exit_code": 0,
+      "seconds": 9.49,
+      "summary": "RELEASE_TEST_RESULT: run=29, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_batch_effect_colors",
+      "exit_code": 0,
+      "seconds": 3.38,
+      "summary": "RELEASE_TEST_RESULT: run=7, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_batch_empty_background",
+      "exit_code": 0,
+      "seconds": 4.08,
+      "summary": "RELEASE_TEST_RESULT: run=10, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_batch_encoding_stall",
+      "exit_code": 0,
+      "seconds": 2.06,
+      "summary": "RELEASE_TEST_RESULT: run=8, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_batch_encoding_pipeline_real",
+      "exit_code": 0,
+      "seconds": 6.15,
+      "summary": "RELEASE_TEST_RESULT: run=5, failures=0, errors=0, skipped=2, callbacks=0"
+    },
+    {
+      "module": "test_batch_error_feedback",
+      "exit_code": 0,
+      "seconds": 3.75,
+      "summary": "RELEASE_TEST_RESULT: run=8, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_batch_export_destination",
+      "exit_code": 0,
+      "seconds": 3.67,
+      "summary": "RELEASE_TEST_RESULT: run=13, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_batch_export_polish",
+      "exit_code": 1,
+      "seconds": 3.69,
+      "summary": "RELEASE_TEST_RESULT: run=11, failures=1, errors=0, skipped=0, callbacks=1"
+    },
+    {
+      "module": "test_batch_export_settings_ui",
+      "exit_code": 0,
+      "seconds": 1.96,
+      "summary": "RELEASE_TEST_RESULT: run=1, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_batch_export_safety",
+      "exit_code": 0,
+      "seconds": 5.95,
+      "summary": "RELEASE_TEST_RESULT: run=13, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_batch_failed_retry",
+      "exit_code": 0,
+      "seconds": 2.9,
+      "summary": "RELEASE_TEST_RESULT: run=4, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_batch_filter_tail",
+      "exit_code": 0,
+      "seconds": 3.54,
+      "summary": "RELEASE_TEST_RESULT: run=2, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_batch_font_watermarks",
+      "exit_code": 0,
+      "seconds": 5.68,
+      "summary": "RELEASE_TEST_RESULT: run=19, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_batch_global_render_settings",
+      "exit_code": 0,
+      "seconds": 3.35,
+      "summary": "RELEASE_TEST_RESULT: run=7, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_batch_hdr_composition",
+      "exit_code": 0,
+      "seconds": 4.2,
+      "summary": "RELEASE_TEST_RESULT: run=3, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_batch_image_background",
+      "exit_code": 0,
+      "seconds": 6.14,
+      "summary": "RELEASE_TEST_RESULT: run=12, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_batch_image_selection",
+      "exit_code": 0,
+      "seconds": 2.83,
+      "summary": "RELEASE_TEST_RESULT: run=9, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_batch_inspector_ux",
+      "exit_code": 0,
+      "seconds": 3.08,
+      "summary": "RELEASE_TEST_RESULT: run=16, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_batch_layer_drag_drop",
+      "exit_code": 0,
+      "seconds": 2.57,
+      "summary": "RELEASE_TEST_RESULT: run=9, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_batch_lazy_thumbnails",
+      "exit_code": 0,
+      "seconds": 2.41,
+      "summary": "RELEASE_TEST_RESULT: run=6, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_batch_legacy_project_matrix",
+      "exit_code": 0,
+      "seconds": 3.28,
+      "summary": "RELEASE_TEST_RESULT: run=16, failures=0, errors=0, skipped=1, callbacks=0"
+    },
+    {
+      "module": "test_batch_matte_edge_controls",
+      "exit_code": 0,
+      "seconds": 4.05,
+      "summary": "RELEASE_TEST_RESULT: run=13, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_batch_media_cache_retention",
+      "exit_code": 0,
+      "seconds": 4.44,
+      "summary": "RELEASE_TEST_RESULT: run=11, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_batch_memory_admission",
+      "exit_code": 0,
+      "seconds": 2.48,
+      "summary": "RELEASE_TEST_RESULT: run=13, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_batch_memory_feedback",
+      "exit_code": 0,
+      "seconds": 2.27,
+      "summary": "RELEASE_TEST_RESULT: run=7, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_batch_music_long_run",
+      "exit_code": 0,
+      "seconds": 1.63,
+      "summary": "RELEASE_TEST_RESULT: run=1, failures=0, errors=0, skipped=1, callbacks=0"
+    },
+    {
+      "module": "test_batch_music_preparation",
+      "exit_code": 0,
+      "seconds": 4.5,
+      "summary": "RELEASE_TEST_RESULT: run=17, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_batch_music_timeline",
+      "exit_code": 0,
+      "seconds": 4.71,
+      "summary": "RELEASE_TEST_RESULT: run=11, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_batch_numeric_wheel",
+      "exit_code": 0,
+      "seconds": 1.61,
+      "summary": "RELEASE_TEST_RESULT: run=6, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_batch_open_sans",
+      "exit_code": 0,
+      "seconds": 2.76,
+      "summary": "RELEASE_TEST_RESULT: run=8, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_batch_node_effects",
+      "exit_code": 0,
+      "seconds": 9.11,
+      "summary": "RELEASE_TEST_RESULT: run=41, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_batch_parallel_64",
+      "exit_code": 0,
+      "seconds": 6.13,
+      "summary": "RELEASE_TEST_RESULT: run=3, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_batch_playback_blur",
+      "exit_code": 0,
+      "seconds": 2.92,
+      "summary": "RELEASE_TEST_RESULT: run=16, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_batch_parallel_export",
+      "exit_code": 0,
+      "seconds": 5.11,
+      "summary": "RELEASE_TEST_RESULT: run=28, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_batch_polygon_wrap",
+      "exit_code": 0,
+      "seconds": 3.21,
+      "summary": "RELEASE_TEST_RESULT: run=16, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_batch_pool_copy",
+      "exit_code": 0,
+      "seconds": 2.96,
+      "summary": "RELEASE_TEST_RESULT: run=17, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_batch_pool_order",
+      "exit_code": 1,
+      "seconds": 2.12,
+      "summary": "RELEASE_TEST_RESULT: run=8, failures=1, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_batch_pool_preview",
+      "exit_code": 0,
+      "seconds": 4.32,
+      "summary": "RELEASE_TEST_RESULT: run=11, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_batch_preview_cache",
+      "exit_code": 0,
+      "seconds": 2.29,
+      "summary": "RELEASE_TEST_RESULT: run=2, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_batch_pools",
+      "exit_code": 1,
+      "seconds": 5.47,
+      "summary": "RELEASE_TEST_RESULT: run=26, failures=1, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_batch_preview_layer_isolation",
+      "exit_code": 0,
+      "seconds": 2.01,
+      "summary": "RELEASE_TEST_RESULT: run=4, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_batch_preview_link",
+      "exit_code": 1,
+      "seconds": 4.1,
+      "summary": "RELEASE_TEST_RESULT: run=12, failures=1, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_batch_preview_finger_gaps",
+      "exit_code": 0,
+      "seconds": 14.53,
+      "summary": "RELEASE_TEST_RESULT: run=10, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_batch_project_deletion",
+      "exit_code": 0,
+      "seconds": 2.41,
+      "summary": "RELEASE_TEST_RESULT: run=7, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_batch_properties",
+      "exit_code": 0,
+      "seconds": 2.69,
+      "summary": "RELEASE_TEST_RESULT: run=11, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_batch_quality_presets",
+      "exit_code": 0,
+      "seconds": 3.43,
+      "summary": "RELEASE_TEST_RESULT: run=8, failures=0, errors=0, skipped=1, callbacks=0"
+    },
+    {
+      "module": "test_batch_quantity_basis",
+      "exit_code": 0,
+      "seconds": 2.72,
+      "summary": "RELEASE_TEST_RESULT: run=4, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_batch_queue_inspector_layout",
+      "exit_code": 1,
+      "seconds": 4.2,
+      "summary": "RELEASE_TEST_RESULT: run=6, failures=1, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_batch_quick_export",
+      "exit_code": 0,
+      "seconds": 2.91,
+      "summary": "RELEASE_TEST_RESULT: run=11, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_batch_quick_preview",
+      "exit_code": 0,
+      "seconds": 3.11,
+      "summary": "RELEASE_TEST_RESULT: run=5, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_batch_read_ahead",
+      "exit_code": 0,
+      "seconds": 4.27,
+      "summary": "RELEASE_TEST_RESULT: run=16, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_batch_render_stages",
+      "exit_code": 0,
+      "seconds": 1.64,
+      "summary": "RELEASE_TEST_RESULT: run=5, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_batch_render_stress",
+      "exit_code": 0,
+      "seconds": 21.5,
+      "summary": "RELEASE_TEST_RESULT: run=1, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_batch_preview_parity",
+      "exit_code": 1,
+      "seconds": 58.74,
+      "summary": "RELEASE_TEST_RESULT: run=18, failures=12, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_batch_render_timing",
+      "exit_code": 0,
+      "seconds": 4.23,
+      "summary": "RELEASE_TEST_RESULT: run=11, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_batch_review_regressions",
+      "exit_code": 0,
+      "seconds": 2.85,
+      "summary": "RELEASE_TEST_RESULT: run=6, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_batch_runtime_host",
+      "exit_code": 0,
+      "seconds": 1.76,
+      "summary": "RELEASE_TEST_RESULT: run=2, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_batch_runtime_project",
+      "exit_code": 0,
+      "seconds": 1.82,
+      "summary": "RELEASE_TEST_RESULT: run=13, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_batch_shadow_blur",
+      "exit_code": 0,
+      "seconds": 2.86,
+      "summary": "RELEASE_TEST_RESULT: run=8, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_batch_startup_scaling",
+      "exit_code": 0,
+      "seconds": 2.25,
+      "summary": "RELEASE_TEST_RESULT: run=5, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_batch_scrolling_text",
+      "exit_code": 0,
+      "seconds": 8.32,
+      "summary": "RELEASE_TEST_RESULT: run=16, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_batch_task_import_ux",
+      "exit_code": 0,
+      "seconds": 2.58,
+      "summary": "RELEASE_TEST_RESULT: run=9, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_batch_task_output_names",
+      "exit_code": 0,
+      "seconds": 2.16,
+      "summary": "RELEASE_TEST_RESULT: run=8, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_batch_text_background",
+      "exit_code": 0,
+      "seconds": 5.27,
+      "summary": "RELEASE_TEST_RESULT: run=10, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_batch_text_layers",
+      "exit_code": 0,
+      "seconds": 3.56,
+      "summary": "RELEASE_TEST_RESULT: run=14, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_batch_text_video",
+      "exit_code": 0,
+      "seconds": 2.45,
+      "summary": "RELEASE_TEST_RESULT: run=14, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_batch_text_styles",
+      "exit_code": 0,
+      "seconds": 2.59,
+      "summary": "RELEASE_TEST_RESULT: run=8, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_batch_text_wrap",
+      "exit_code": 0,
+      "seconds": 3.53,
+      "summary": "RELEASE_TEST_RESULT: run=16, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_batch_text_voice",
+      "exit_code": 0,
+      "seconds": 6.4,
+      "summary": "RELEASE_TEST_RESULT: run=13, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_batch_undo",
+      "exit_code": 0,
+      "seconds": 8.27,
+      "summary": "RELEASE_TEST_RESULT: run=14, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_batch_variable_fonts",
+      "exit_code": 0,
+      "seconds": 1.66,
+      "summary": "RELEASE_TEST_RESULT: run=6, failures=0, errors=0, skipped=1, callbacks=0"
+    },
+    {
+      "module": "test_batch_unified_sources",
+      "exit_code": 0,
+      "seconds": 16.2,
+      "summary": "RELEASE_TEST_RESULT: run=28, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_batch_video_reinit",
+      "exit_code": 0,
+      "seconds": 3.71,
+      "summary": "RELEASE_TEST_RESULT: run=7, failures=0, errors=0, skipped=2, callbacks=0"
+    },
+    {
+      "module": "test_batch_vertical_motion",
+      "exit_code": 0,
+      "seconds": 14.05,
+      "summary": "RELEASE_TEST_RESULT: run=20, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_batch_weight_effects",
+      "exit_code": 1,
+      "seconds": 1.91,
+      "summary": "RELEASE_TEST_RESULT: run=10, failures=1, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_batch_word_spacing",
+      "exit_code": 0,
+      "seconds": 1.8,
+      "summary": "RELEASE_TEST_RESULT: run=8, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_batch_videokit_styles",
+      "exit_code": 1,
+      "seconds": 6.72,
+      "summary": "RELEASE_TEST_RESULT: run=14, failures=1, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_bookmark_quick_actions",
+      "exit_code": 0,
+      "seconds": 1.79,
+      "summary": "RELEASE_TEST_RESULT: run=3, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_batch_workspace_navigation",
+      "exit_code": 0,
+      "seconds": 4.51,
+      "summary": "RELEASE_TEST_RESULT: run=8, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_browser_bookmarks",
+      "exit_code": 0,
+      "seconds": 1.08,
+      "summary": "RELEASE_TEST_RESULT: run=14, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_build_manifest",
+      "exit_code": 0,
+      "seconds": 0.48,
+      "summary": "RELEASE_TEST_RESULT: run=3, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_caption_baseline",
+      "exit_code": 1,
+      "seconds": 1.77,
+      "summary": "RELEASE_TEST_RESULT: run=7, failures=1, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_caption_char_sequence",
+      "exit_code": 0,
+      "seconds": 1.67,
+      "summary": "RELEASE_TEST_RESULT: run=6, failures=0, errors=0, skipped=1, callbacks=0"
+    },
+    {
+      "module": "test_caption_clip_feather",
+      "exit_code": 0,
+      "seconds": 5.23,
+      "summary": "RELEASE_TEST_RESULT: run=8, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_caption_common_appearance",
+      "exit_code": 0,
+      "seconds": 6.92,
+      "summary": "RELEASE_TEST_RESULT: run=14, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_caption_cursor",
+      "exit_code": 0,
+      "seconds": 5.68,
+      "summary": "RELEASE_TEST_RESULT: run=7, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_caption_custom_styles",
+      "exit_code": 0,
+      "seconds": 1.75,
+      "summary": "RELEASE_TEST_RESULT: run=7, failures=0, errors=0, skipped=1, callbacks=0"
+    },
+    {
+      "module": "test_caption_cursor_continuous",
+      "exit_code": 1,
+      "seconds": 8.22,
+      "summary": "RELEASE_TEST_RESULT: run=8, failures=6, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_caption_follow",
+      "exit_code": 0,
+      "seconds": 3.87,
+      "summary": "RELEASE_TEST_RESULT: run=13, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_caption_follow_regressions",
+      "exit_code": 0,
+      "seconds": 2.08,
+      "summary": "RELEASE_TEST_RESULT: run=7, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_caption_display_controls",
+      "exit_code": 0,
+      "seconds": 9.39,
+      "summary": "RELEASE_TEST_RESULT: run=18, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_caption_follow_states",
+      "exit_code": 0,
+      "seconds": 2.65,
+      "summary": "RELEASE_TEST_RESULT: run=7, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_caption_inline_inspector",
+      "exit_code": 1,
+      "seconds": 2.99,
+      "summary": "RELEASE_TEST_RESULT: run=12, failures=1, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_caption_inspector_polish",
+      "exit_code": 0,
+      "seconds": 1.73,
+      "summary": "RELEASE_TEST_RESULT: run=4, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_caption_outline",
+      "exit_code": 0,
+      "seconds": 1.66,
+      "summary": "RELEASE_TEST_RESULT: run=6, failures=0, errors=0, skipped=5, callbacks=0"
+    },
+    {
+      "module": "test_caption_modern_presets",
+      "exit_code": 0,
+      "seconds": 10.65,
+      "summary": "RELEASE_TEST_RESULT: run=15, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_caption_parameter_edit",
+      "exit_code": 0,
+      "seconds": 8.25,
+      "summary": "RELEASE_TEST_RESULT: run=11, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_caption_path_compaction",
+      "exit_code": 0,
+      "seconds": 2.14,
+      "summary": "RELEASE_TEST_RESULT: run=5, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_caption_preset_audit",
+      "exit_code": 0,
+      "seconds": 1.96,
+      "summary": "RELEASE_TEST_RESULT: run=11, failures=0, errors=0, skipped=1, callbacks=0"
+    },
+    {
+      "module": "test_caption_parameter_window",
+      "exit_code": 0,
+      "seconds": 5.74,
+      "summary": "RELEASE_TEST_RESULT: run=9, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_caption_preview_performance",
+      "exit_code": 0,
+      "seconds": 2.37,
+      "summary": "RELEASE_TEST_RESULT: run=7, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_caption_random_toggle",
+      "exit_code": 0,
+      "seconds": 1.83,
+      "summary": "RELEASE_TEST_RESULT: run=6, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_caption_preset_freedom",
+      "exit_code": 1,
+      "seconds": 38.84,
+      "summary": "RELEASE_TEST_RESULT: run=10, failures=88, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_caption_rotation",
+      "exit_code": 0,
+      "seconds": 4.2,
+      "summary": "RELEASE_TEST_RESULT: run=16, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_caption_timing_sources",
+      "exit_code": 0,
+      "seconds": 2.75,
+      "summary": "RELEASE_TEST_RESULT: run=20, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_challenger2_adversarial",
+      "exit_code": 0,
+      "seconds": 0.73,
+      "summary": "RELEASE_TEST_RESULT: run=31, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_caption_resource_stream",
+      "exit_code": 0,
+      "seconds": 48.06,
+      "summary": "RELEASE_TEST_RESULT: run=13, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_chroma_cleanup",
+      "exit_code": 0,
+      "seconds": 4.65,
+      "summary": "RELEASE_TEST_RESULT: run=11, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_chroma_color_parity",
+      "exit_code": 0,
+      "seconds": 3.45,
+      "summary": "RELEASE_TEST_RESULT: run=3, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_challenger_concurrency_stress",
+      "exit_code": 0,
+      "seconds": 21.04,
+      "summary": "RELEASE_TEST_RESULT: run=17, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_chroma_edge_despill",
+      "exit_code": 0,
+      "seconds": 5.96,
+      "summary": "RELEASE_TEST_RESULT: run=10, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_chroma_matte",
+      "exit_code": 0,
+      "seconds": 3.65,
+      "summary": "RELEASE_TEST_RESULT: run=24, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_chroma_enhanced",
+      "exit_code": 0,
+      "seconds": 5.8,
+      "summary": "RELEASE_TEST_RESULT: run=23, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_chrome_flow_merge",
+      "exit_code": 0,
+      "seconds": 1.86,
+      "summary": "RELEASE_TEST_RESULT: run=10, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_chrome_language_environment",
+      "exit_code": 0,
+      "seconds": 1.1,
+      "summary": "RELEASE_TEST_RESULT: run=19, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_chrome_profile_groups",
+      "exit_code": 0,
+      "seconds": 0.57,
+      "summary": "RELEASE_TEST_RESULT: run=8, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_chroma_softness",
+      "exit_code": 0,
+      "seconds": 6.4,
+      "summary": "RELEASE_TEST_RESULT: run=12, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_clipboard_task_material_ui",
+      "exit_code": 0,
+      "seconds": 1.74,
+      "summary": "RELEASE_TEST_RESULT: run=11, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_codex_account_switcher_plugin",
+      "exit_code": 0,
+      "seconds": 1.92,
+      "summary": "RELEASE_TEST_RESULT: run=12, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_codex_project_state",
+      "exit_code": 0,
+      "seconds": 2.16,
+      "summary": "RELEASE_TEST_RESULT: run=17, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_color_field",
+      "exit_code": 0,
+      "seconds": 1.76,
+      "summary": "RELEASE_TEST_RESULT: run=3, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_compact_inspector",
+      "exit_code": 1,
+      "seconds": 2.18,
+      "summary": "RELEASE_TEST_RESULT: run=6, failures=1, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_color_palettes",
+      "exit_code": 0,
+      "seconds": 4.86,
+      "summary": "RELEASE_TEST_RESULT: run=19, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_component_import_race",
+      "exit_code": 0,
+      "seconds": 1.57,
+      "summary": "RELEASE_TEST_RESULT: run=3, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_completion_shutdown",
+      "exit_code": 0,
+      "seconds": 3.37,
+      "summary": "RELEASE_TEST_RESULT: run=16, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_config_hot_reload",
+      "exit_code": 0,
+      "seconds": 0.31,
+      "summary": "RELEASE_TEST_RESULT: run=11, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_control_clipboard",
+      "exit_code": 0,
+      "seconds": 3.26,
+      "summary": "RELEASE_TEST_RESULT: run=14, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_control_size_modes",
+      "exit_code": 0,
+      "seconds": 6.48,
+      "summary": "RELEASE_TEST_RESULT: run=20, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_cooking_assistant",
+      "exit_code": 1,
+      "seconds": 3.27,
+      "summary": "RELEASE_TEST_RESULT: run=25, failures=0, errors=0, skipped=0, callbacks=1"
+    },
+    {
+      "module": "test_control_time_window",
+      "exit_code": 0,
+      "seconds": 7.0,
+      "summary": "RELEASE_TEST_RESULT: run=13, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_cursor_pool",
+      "exit_code": 0,
+      "seconds": 3.02,
+      "summary": "RELEASE_TEST_RESULT: run=9, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_cursor_parameters",
+      "exit_code": 1,
+      "seconds": 4.08,
+      "summary": "RELEASE_TEST_RESULT: run=12, failures=2, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_daily_link_archive",
+      "exit_code": 0,
+      "seconds": 1.63,
+      "summary": "RELEASE_TEST_RESULT: run=3, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_custom_video_background_selection",
+      "exit_code": 0,
+      "seconds": 2.77,
+      "summary": "RELEASE_TEST_RESULT: run=6, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_daily_quantity_categories",
+      "exit_code": 0,
+      "seconds": 1.63,
+      "summary": "RELEASE_TEST_RESULT: run=8, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_daily_quantity_dedup",
+      "exit_code": 0,
+      "seconds": 1.58,
+      "summary": "RELEASE_TEST_RESULT: run=14, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_daily_quantity_default_slot",
+      "exit_code": 0,
+      "seconds": 0.4,
+      "summary": "RELEASE_TEST_RESULT: run=5, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_daily_quantity_dialog",
+      "exit_code": 0,
+      "seconds": 1.66,
+      "summary": "RELEASE_TEST_RESULT: run=15, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_daily_quantity_formula_headers",
+      "exit_code": 0,
+      "seconds": 1.65,
+      "summary": "RELEASE_TEST_RESULT: run=11, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_daily_quantity_manual_progress",
+      "exit_code": 0,
+      "seconds": 1.62,
+      "summary": "RELEASE_TEST_RESULT: run=4, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_daily_quantity_inspection",
+      "exit_code": 0,
+      "seconds": 1.79,
+      "summary": "RELEASE_TEST_RESULT: run=22, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_daily_quantity_prayer_repair",
+      "exit_code": 0,
+      "seconds": 0.39,
+      "summary": "RELEASE_TEST_RESULT: run=8, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_daily_quantity_oral_duration",
+      "exit_code": 0,
+      "seconds": 1.56,
+      "summary": "RELEASE_TEST_RESULT: run=15, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_daily_quantity_progress",
+      "exit_code": 0,
+      "seconds": 1.61,
+      "summary": "RELEASE_TEST_RESULT: run=12, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_daily_quantity_removed_columns",
+      "exit_code": 0,
+      "seconds": 1.76,
+      "summary": "RELEASE_TEST_RESULT: run=18, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_daily_quantity_stats",
+      "exit_code": 0,
+      "seconds": 0.59,
+      "summary": "RELEASE_TEST_RESULT: run=21, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_daily_quantity_settings",
+      "exit_code": 0,
+      "seconds": 3.32,
+      "summary": "RELEASE_TEST_RESULT: run=2, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_daily_tasks",
+      "exit_code": 0,
+      "seconds": 2.04,
+      "summary": "RELEASE_TEST_RESULT: run=35, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_data_safety_regressions",
+      "exit_code": 0,
+      "seconds": 2.06,
+      "summary": "RELEASE_TEST_RESULT: run=17, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_davinci_remote_plugin",
+      "exit_code": 0,
+      "seconds": 1.83,
+      "summary": "RELEASE_TEST_RESULT: run=15, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_delivery_background_integration",
+      "exit_code": 0,
+      "seconds": 2.25,
+      "summary": "RELEASE_TEST_RESULT: run=13, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_delivery_export_journal",
+      "exit_code": 0,
+      "seconds": 0.6,
+      "summary": "RELEASE_TEST_RESULT: run=7, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_delivery_input_fields",
+      "exit_code": 0,
+      "seconds": 1.95,
+      "summary": "RELEASE_TEST_RESULT: run=19, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_delivery_board_embedded",
+      "exit_code": 0,
+      "seconds": 5.6,
+      "summary": "RELEASE_TEST_RESULT: run=15, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_delivery_media_storage",
+      "exit_code": 0,
+      "seconds": 1.58,
+      "summary": "RELEASE_TEST_RESULT: run=4, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_delivery_passthrough",
+      "exit_code": 0,
+      "seconds": 1.64,
+      "summary": "RELEASE_TEST_RESULT: run=4, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_developer_documentation",
+      "exit_code": 0,
+      "seconds": 0.5,
+      "summary": "RELEASE_TEST_RESULT: run=10, failures=0, errors=0, skipped=1, callbacks=0"
+    },
+    {
+      "module": "test_distribution_directory",
+      "exit_code": 0,
+      "seconds": 0.26,
+      "summary": "RELEASE_TEST_RESULT: run=2, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_delivery_todo_board",
+      "exit_code": 0,
+      "seconds": 2.12,
+      "summary": "RELEASE_TEST_RESULT: run=16, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_document_formatter_auth",
+      "exit_code": 0,
+      "seconds": 1.82,
+      "summary": "RELEASE_TEST_RESULT: run=8, failures=0, errors=0, skipped=0, callbacks=0",
+      "verification": "targeted rerun after final delta"
+    },
+    {
+      "module": "test_document_formatter",
+      "exit_code": 0,
+      "seconds": 2.72,
+      "summary": "RELEASE_TEST_RESULT: run=20, failures=0, errors=0, skipped=0, callbacks=0",
+      "verification": "targeted rerun after final delta"
+    },
+    {
+      "module": "test_document_formatter_ui",
+      "exit_code": 0,
+      "seconds": 1.95,
+      "summary": "RELEASE_TEST_RESULT: run=7, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_drive_browser_frames",
+      "exit_code": 0,
+      "seconds": 0.29,
+      "summary": "RELEASE_TEST_RESULT: run=2, failures=0, errors=0, skipped=2, callbacks=0"
+    },
+    {
+      "module": "test_drive_browser",
+      "exit_code": 0,
+      "seconds": 1.84,
+      "summary": "RELEASE_TEST_RESULT: run=22, failures=0, errors=0, skipped=0, callbacks=0",
+      "verification": "targeted rerun after final delta"
+    },
+    {
+      "module": "test_drive_shortcuts",
+      "exit_code": 0,
+      "seconds": 0.28,
+      "summary": "RELEASE_TEST_RESULT: run=5, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_drive_browser_ui",
+      "exit_code": 0,
+      "seconds": 1.92,
+      "summary": "RELEASE_TEST_RESULT: run=10, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_ele_settings_lifecycle",
+      "exit_code": 0,
+      "seconds": 3.71,
+      "summary": "RELEASE_TEST_RESULT: run=4, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_e2e_stabilization",
+      "exit_code": 0,
+      "seconds": 5.95,
+      "summary": "RELEASE_TEST_RESULT: run=59, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_elevenlabs_paid_keys",
+      "exit_code": 0,
+      "seconds": 1.32,
+      "summary": "RELEASE_TEST_RESULT: run=18, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_elevenlabs_permissions",
+      "exit_code": 0,
+      "seconds": 1.36,
+      "summary": "RELEASE_TEST_RESULT: run=19, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_export_project_prefix",
+      "exit_code": 0,
+      "seconds": 2.67,
+      "summary": "RELEASE_TEST_RESULT: run=7, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_elevenlabs_timestamps",
+      "exit_code": 0,
+      "seconds": 4.82,
+      "summary": "RELEASE_TEST_RESULT: run=25, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_export_queue_delete",
+      "exit_code": 0,
+      "seconds": 3.78,
+      "summary": "RELEASE_TEST_RESULT: run=10, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_export_total_list",
+      "exit_code": 0,
+      "seconds": 7.81,
+      "summary": "RELEASE_TEST_RESULT: run=11, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_face_anchor",
+      "exit_code": 0,
+      "seconds": 6.12,
+      "summary": "RELEASE_TEST_RESULT: run=16, failures=0, errors=0, skipped=1, callbacks=0",
+      "verification": "targeted rerun after final delta"
+    },
+    {
+      "module": "test_facebook_background_tasks",
+      "exit_code": 0,
+      "seconds": 1.84,
+      "summary": "RELEASE_TEST_RESULT: run=8, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_facebook_contact_sheet",
+      "exit_code": 0,
+      "seconds": 0.89,
+      "summary": "RELEASE_TEST_RESULT: run=26, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_fetch_ffmpeg",
+      "exit_code": 0,
+      "seconds": 0.3,
+      "summary": "RELEASE_TEST_RESULT: run=2, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_facebook_separate_frames",
+      "exit_code": 0,
+      "seconds": 1.75,
+      "summary": "RELEASE_TEST_RESULT: run=8, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_firefox_containers",
+      "exit_code": 0,
+      "seconds": 1.97,
+      "summary": "RELEASE_TEST_RESULT: run=23, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_flow_account_isolation",
+      "exit_code": 0,
+      "seconds": 2.97,
+      "summary": "RELEASE_TEST_RESULT: run=11, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_first_use",
+      "exit_code": 0,
+      "seconds": 3.86,
+      "summary": "RELEASE_TEST_RESULT: run=32, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_flow_audit_state_machine",
+      "exit_code": 0,
+      "seconds": 5.54,
+      "summary": "RELEASE_TEST_RESULT: run=20, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_flow_assistant",
+      "exit_code": 0,
+      "seconds": 7.02,
+      "summary": "RELEASE_TEST_RESULT: run=25, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_flow_background_results",
+      "exit_code": 0,
+      "seconds": 2.7,
+      "summary": "RELEASE_TEST_RESULT: run=6, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_flow_automatic_dispatch",
+      "exit_code": 0,
+      "seconds": 3.91,
+      "summary": "RELEASE_TEST_RESULT: run=13, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_flow_balance_dispatch",
+      "exit_code": 0,
+      "seconds": 3.62,
+      "summary": "RELEASE_TEST_RESULT: run=7, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_flow_backup_rotation",
+      "exit_code": 0,
+      "seconds": 4.02,
+      "summary": "RELEASE_TEST_RESULT: run=9, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_flow_batch_handoff",
+      "exit_code": 0,
+      "seconds": 3.32,
+      "summary": "RELEASE_TEST_RESULT: run=9, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_flow_batch_workspace",
+      "exit_code": 0,
+      "seconds": 4.01,
+      "summary": "RELEASE_TEST_RESULT: run=23, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_flow_boundary_regressions",
+      "exit_code": 0,
+      "seconds": 2.84,
+      "summary": "RELEASE_TEST_RESULT: run=8, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_flow_bridge_install",
+      "exit_code": 0,
+      "seconds": 1.68,
+      "summary": "RELEASE_TEST_RESULT: run=6, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_flow_bridge_auto_recovery",
+      "exit_code": 0,
+      "seconds": 5.46,
+      "summary": "RELEASE_TEST_RESULT: run=14, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_flow_browser_lifecycle",
+      "exit_code": 0,
+      "seconds": 3.19,
+      "summary": "RELEASE_TEST_RESULT: run=9, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_flow_browser_options",
+      "exit_code": 0,
+      "seconds": 2.83,
+      "summary": "RELEASE_TEST_RESULT: run=10, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_flow_browser_table",
+      "exit_code": 1,
+      "seconds": 1.95,
+      "summary": "RELEASE_TEST_RESULT: run=9, failures=1, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_flow_browser_slots",
+      "exit_code": 0,
+      "seconds": 5.19,
+      "summary": "RELEASE_TEST_RESULT: run=14, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_flow_bulk_close",
+      "exit_code": 0,
+      "seconds": 2.57,
+      "summary": "RELEASE_TEST_RESULT: run=9, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_flow_capacity_liveness",
+      "exit_code": 0,
+      "seconds": 2.23,
+      "summary": "RELEASE_TEST_RESULT: run=3, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_flow_catalog_readonly",
+      "exit_code": 0,
+      "seconds": 5.14,
+      "summary": "RELEASE_TEST_RESULT: run=12, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_flow_cautious_launch",
+      "exit_code": 0,
+      "seconds": 6.11,
+      "summary": "RELEASE_TEST_RESULT: run=18, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_flow_com_lifecycle",
+      "exit_code": 0,
+      "seconds": 0.74,
+      "summary": "RELEASE_TEST_RESULT: run=7, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_flow_collect_submit",
+      "exit_code": 0,
+      "seconds": 3.72,
+      "summary": "RELEASE_TEST_RESULT: run=13, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_flow_connection_automation",
+      "exit_code": 0,
+      "seconds": 2.2,
+      "summary": "RELEASE_TEST_RESULT: run=13, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_flow_credit_connection_regressions",
+      "exit_code": 0,
+      "seconds": 2.48,
+      "summary": "RELEASE_TEST_RESULT: run=8, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_flow_credit_demote",
+      "exit_code": 0,
+      "seconds": 2.58,
+      "summary": "RELEASE_TEST_RESULT: run=6, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_flow_credit_cooldown",
+      "exit_code": 0,
+      "seconds": 5.72,
+      "summary": "RELEASE_TEST_RESULT: run=24, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_flow_credit_probe_wait",
+      "exit_code": 0,
+      "seconds": 2.07,
+      "summary": "RELEASE_TEST_RESULT: run=4, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_flow_credit_packs",
+      "exit_code": 0,
+      "seconds": 4.61,
+      "summary": "RELEASE_TEST_RESULT: run=13, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_flow_daily_refresh",
+      "exit_code": 0,
+      "seconds": 4.13,
+      "summary": "RELEASE_TEST_RESULT: run=13, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_flow_credit_scan",
+      "exit_code": 0,
+      "seconds": 4.71,
+      "summary": "RELEASE_TEST_RESULT: run=17, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_flow_deleted_slot_release",
+      "exit_code": 0,
+      "seconds": 2.86,
+      "summary": "RELEASE_TEST_RESULT: run=4, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_flow_download_backlog",
+      "exit_code": 0,
+      "seconds": 4.17,
+      "summary": "RELEASE_TEST_RESULT: run=11, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_flow_drain_before_launch",
+      "exit_code": 0,
+      "seconds": 2.56,
+      "summary": "RELEASE_TEST_RESULT: run=5, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_flow_editor_width",
+      "exit_code": 0,
+      "seconds": 1.58,
+      "summary": "RELEASE_TEST_RESULT: run=3, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_flow_error_liveness",
+      "exit_code": 0,
+      "seconds": 2.58,
+      "summary": "RELEASE_TEST_RESULT: run=6, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_flow_exhausted_disconnect",
+      "exit_code": 0,
+      "seconds": 3.26,
+      "summary": "RELEASE_TEST_RESULT: run=12, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_flow_extension_package",
+      "exit_code": 0,
+      "seconds": 2.43,
+      "summary": "RELEASE_TEST_RESULT: run=6, failures=0, errors=0, skipped=1, callbacks=0"
+    },
+    {
+      "module": "test_flow_failure_capacity",
+      "exit_code": 0,
+      "seconds": 4.64,
+      "summary": "RELEASE_TEST_RESULT: run=9, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_flow_failure_skip",
+      "exit_code": 0,
+      "seconds": 5.41,
+      "summary": "RELEASE_TEST_RESULT: run=15, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_flow_fault_rotation",
+      "exit_code": 0,
+      "seconds": 2.95,
+      "summary": "RELEASE_TEST_RESULT: run=10, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_flow_fixed_pricing",
+      "exit_code": 0,
+      "seconds": 3.26,
+      "summary": "RELEASE_TEST_RESULT: run=8, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_flow_generation_recovery",
+      "exit_code": 0,
+      "seconds": 3.0,
+      "summary": "RELEASE_TEST_RESULT: run=7, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_flow_group_sync",
+      "exit_code": 0,
+      "seconds": 2.07,
+      "summary": "RELEASE_TEST_RESULT: run=8, failures=0, errors=0, skipped=1, callbacks=0"
+    },
+    {
+      "module": "test_flow_high_permission",
+      "exit_code": 0,
+      "seconds": 2.61,
+      "summary": "RELEASE_TEST_RESULT: run=9, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_flow_high_credit",
+      "exit_code": 0,
+      "seconds": 9.93,
+      "summary": "RELEASE_TEST_RESULT: run=35, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_flow_image_affinity",
+      "exit_code": 0,
+      "seconds": 8.51,
+      "summary": "RELEASE_TEST_RESULT: run=20, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_flow_image_capacity",
+      "exit_code": 0,
+      "seconds": 4.6,
+      "summary": "RELEASE_TEST_RESULT: run=7, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_flow_image_content_id",
+      "exit_code": 0,
+      "seconds": 2.72,
+      "summary": "RELEASE_TEST_RESULT: run=7, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_flow_joint_packs",
+      "exit_code": 0,
+      "seconds": 2.99,
+      "summary": "RELEASE_TEST_RESULT: run=11, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_flow_known_result_recovery",
+      "exit_code": 0,
+      "seconds": 2.96,
+      "summary": "RELEASE_TEST_RESULT: run=5, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_flow_image_upload_limit",
+      "exit_code": 0,
+      "seconds": 6.89,
+      "summary": "RELEASE_TEST_RESULT: run=11, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_flow_launch_contract",
+      "exit_code": 1,
+      "seconds": 1.91,
+      "summary": "RELEASE_TEST_RESULT: run=8, failures=1, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_flow_late_generation",
+      "exit_code": 0,
+      "seconds": 2.58,
+      "summary": "RELEASE_TEST_RESULT: run=7, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_flow_launch_spacing",
+      "exit_code": 0,
+      "seconds": 1.83,
+      "summary": "RELEASE_TEST_RESULT: run=9, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_flow_launch_recheck",
+      "exit_code": 0,
+      "seconds": 4.45,
+      "summary": "RELEASE_TEST_RESULT: run=8, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_flow_launch_ui_mutex",
+      "exit_code": 0,
+      "seconds": 3.65,
+      "summary": "RELEASE_TEST_RESULT: run=15, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_flow_manual_credit_check",
+      "exit_code": 0,
+      "seconds": 2.63,
+      "summary": "RELEASE_TEST_RESULT: run=10, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_flow_manual_iterator_holds",
+      "exit_code": 0,
+      "seconds": 1.62,
+      "summary": "RELEASE_TEST_RESULT: run=5, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_flow_media_identity",
+      "exit_code": 0,
+      "seconds": 2.61,
+      "summary": "RELEASE_TEST_RESULT: run=7, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_flow_manual_parallelism",
+      "exit_code": 0,
+      "seconds": 4.39,
+      "summary": "RELEASE_TEST_RESULT: run=7, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_flow_mutex_monitor",
+      "exit_code": 0,
+      "seconds": 2.4,
+      "summary": "RELEASE_TEST_RESULT: run=9, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_flow_native_foreground",
+      "exit_code": 0,
+      "seconds": 2.92,
+      "summary": "RELEASE_TEST_RESULT: run=11, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_flow_mutex_upgrade",
+      "exit_code": 0,
+      "seconds": 4.1,
+      "summary": "RELEASE_TEST_RESULT: run=9, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_flow_no_auto_close",
+      "exit_code": 0,
+      "seconds": 3.05,
+      "summary": "RELEASE_TEST_RESULT: run=5, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_flow_ordered_runtime",
+      "exit_code": 0,
+      "seconds": 2.99,
+      "summary": "RELEASE_TEST_RESULT: run=11, failures=0, errors=0, skipped=1, callbacks=0"
+    },
+    {
+      "module": "test_flow_page_readiness",
+      "exit_code": 0,
+      "seconds": 3.65,
+      "summary": "RELEASE_TEST_RESULT: run=13, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_flow_pack_lock_yield",
+      "exit_code": 0,
+      "seconds": 3.84,
+      "summary": "RELEASE_TEST_RESULT: run=9, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_flow_pairing_state",
+      "exit_code": 0,
+      "seconds": 3.02,
+      "summary": "RELEASE_TEST_RESULT: run=8, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_flow_pairing_recovery",
+      "exit_code": 0,
+      "seconds": 3.37,
+      "summary": "RELEASE_TEST_RESULT: run=10, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_flow_parameter_guard",
+      "exit_code": 0,
+      "seconds": 0.3,
+      "summary": "RELEASE_TEST_RESULT: run=14, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_flow_parallel_regression",
+      "exit_code": 0,
+      "seconds": 3.45,
+      "summary": "RELEASE_TEST_RESULT: run=16, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_flow_parked_close",
+      "exit_code": 0,
+      "seconds": 3.32,
+      "summary": "RELEASE_TEST_RESULT: run=4, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_flow_passive_credits",
+      "exit_code": 0,
+      "seconds": 2.54,
+      "summary": "RELEASE_TEST_RESULT: run=6, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_flow_passive_ui_waits",
+      "exit_code": 0,
+      "seconds": 2.42,
+      "summary": "RELEASE_TEST_RESULT: run=5, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_flow_preparation_recovery",
+      "exit_code": 0,
+      "seconds": 3.51,
+      "summary": "RELEASE_TEST_RESULT: run=7, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_flow_prepare_snapshot",
+      "exit_code": 0,
+      "seconds": 5.22,
+      "summary": "RELEASE_TEST_RESULT: run=5, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_flow_probe_upgrade",
+      "exit_code": 0,
+      "seconds": 2.75,
+      "summary": "RELEASE_TEST_RESULT: run=7, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_flow_project_landing",
+      "exit_code": 0,
+      "seconds": 2.68,
+      "summary": "RELEASE_TEST_RESULT: run=5, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_flow_production",
+      "exit_code": 0,
+      "seconds": 6.7,
+      "summary": "RELEASE_TEST_RESULT: run=36, failures=0, errors=0, skipped=1, callbacks=0"
+    },
+    {
+      "module": "test_flow_project_startup",
+      "exit_code": 0,
+      "seconds": 3.84,
+      "summary": "RELEASE_TEST_RESULT: run=12, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_flow_prompt_segments",
+      "exit_code": 0,
+      "seconds": 1.45,
+      "summary": "RELEASE_TEST_RESULT: run=6, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_flow_readiness_exit",
+      "exit_code": 0,
+      "seconds": 2.77,
+      "summary": "RELEASE_TEST_RESULT: run=8, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_flow_record_deletion",
+      "exit_code": 0,
+      "seconds": 3.94,
+      "summary": "RELEASE_TEST_RESULT: run=17, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_flow_release_bundle",
+      "exit_code": 0,
+      "seconds": 1.72,
+      "summary": "RELEASE_TEST_RESULT: run=9, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_flow_reference_image",
+      "exit_code": 0,
+      "seconds": 4.08,
+      "summary": "RELEASE_TEST_RESULT: run=8, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_flow_report_regressions",
+      "exit_code": 0,
+      "seconds": 3.01,
+      "summary": "RELEASE_TEST_RESULT: run=14, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_flow_report_audit",
+      "exit_code": 0,
+      "seconds": 3.91,
+      "summary": "RELEASE_TEST_RESULT: run=13, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_flow_runtime_close",
+      "exit_code": 0,
+      "seconds": 3.48,
+      "summary": "RELEASE_TEST_RESULT: run=15, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_flow_retry_now",
+      "exit_code": 0,
+      "seconds": 4.23,
+      "summary": "RELEASE_TEST_RESULT: run=11, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_flow_settings_retry",
+      "exit_code": 0,
+      "seconds": 2.82,
+      "summary": "RELEASE_TEST_RESULT: run=7, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_flow_scheduler_audit",
+      "exit_code": 0,
+      "seconds": 3.5,
+      "summary": "RELEASE_TEST_RESULT: run=10, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_flow_site_pause_evidence",
+      "exit_code": 0,
+      "seconds": 2.31,
+      "summary": "RELEASE_TEST_RESULT: run=3, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_flow_setup",
+      "exit_code": 0,
+      "seconds": 3.2,
+      "summary": "RELEASE_TEST_RESULT: run=33, failures=0, errors=0, skipped=1, callbacks=0"
+    },
+    {
+      "module": "test_flow_socket_lifecycle",
+      "exit_code": 0,
+      "seconds": 2.27,
+      "summary": "RELEASE_TEST_RESULT: run=5, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_flow_snapshot_download_regressions",
+      "exit_code": 0,
+      "seconds": 2.95,
+      "summary": "RELEASE_TEST_RESULT: run=9, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_flow_stall_followthrough",
+      "exit_code": 0,
+      "seconds": 2.57,
+      "summary": "RELEASE_TEST_RESULT: run=8, failures=0, errors=0, skipped=2, callbacks=0"
+    },
+    {
+      "module": "test_flow_stable_upload_name",
+      "exit_code": 0,
+      "seconds": 3.21,
+      "summary": "RELEASE_TEST_RESULT: run=8, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_flow_stall_recovery",
+      "exit_code": 0,
+      "seconds": 3.45,
+      "summary": "RELEASE_TEST_RESULT: run=11, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_flow_startup_recovery",
+      "exit_code": 0,
+      "seconds": 2.69,
+      "summary": "RELEASE_TEST_RESULT: run=9, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_flow_start_fill",
+      "exit_code": 0,
+      "seconds": 6.12,
+      "summary": "RELEASE_TEST_RESULT: run=10, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_flow_startup_state",
+      "exit_code": 0,
+      "seconds": 2.2,
+      "summary": "RELEASE_TEST_RESULT: run=7, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_flow_status_layout",
+      "exit_code": 0,
+      "seconds": 2.16,
+      "summary": "RELEASE_TEST_RESULT: run=1, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_flow_tab_reuse",
+      "exit_code": 0,
+      "seconds": 2.98,
+      "summary": "RELEASE_TEST_RESULT: run=9, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_flow_suspicious_download",
+      "exit_code": 0,
+      "seconds": 4.59,
+      "summary": "RELEASE_TEST_RESULT: run=11, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_flow_task_selection",
+      "exit_code": 0,
+      "seconds": 2.08,
+      "summary": "RELEASE_TEST_RESULT: run=13, failures=0, errors=0, skipped=1, callbacks=0"
+    },
+    {
+      "module": "test_flow_task_reset",
+      "exit_code": 0,
+      "seconds": 5.16,
+      "summary": "RELEASE_TEST_RESULT: run=15, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_flow_timing_settings",
+      "exit_code": 0,
+      "seconds": 6.58,
+      "summary": "RELEASE_TEST_RESULT: run=31, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_flow_transfer_recovery",
+      "exit_code": 0,
+      "seconds": 7.58,
+      "summary": "RELEASE_TEST_RESULT: run=19, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_flow_transient_recovery",
+      "exit_code": 0,
+      "seconds": 4.16,
+      "summary": "RELEASE_TEST_RESULT: run=13, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_flow_ui_launch_retry",
+      "exit_code": 0,
+      "seconds": 3.34,
+      "summary": "RELEASE_TEST_RESULT: run=10, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_flow_ui_mutex",
+      "exit_code": 0,
+      "seconds": 2.92,
+      "summary": "RELEASE_TEST_RESULT: run=13, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_flow_ui_renewal",
+      "exit_code": 0,
+      "seconds": 2.4,
+      "summary": "RELEASE_TEST_RESULT: run=8, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_flow_ui_permission_recovery",
+      "exit_code": 0,
+      "seconds": 4.18,
+      "summary": "RELEASE_TEST_RESULT: run=11, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_flow_upstream_build",
+      "exit_code": 0,
+      "seconds": 0.61,
+      "summary": "RELEASE_TEST_RESULT: run=3, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_flow_upload_stall_exit",
+      "exit_code": 0,
+      "seconds": 3.29,
+      "summary": "RELEASE_TEST_RESULT: run=5, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_flow_usability",
+      "exit_code": 0,
+      "seconds": 3.35,
+      "summary": "RELEASE_TEST_RESULT: run=17, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_flow_version_sync",
+      "exit_code": 0,
+      "seconds": 1.62,
+      "summary": "RELEASE_TEST_RESULT: run=3, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_flow_video_page_download",
+      "exit_code": 0,
+      "seconds": 2.54,
+      "summary": "RELEASE_TEST_RESULT: run=6, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_flow_visual_reference",
+      "exit_code": 0,
+      "seconds": 1.49,
+      "summary": "RELEASE_TEST_RESULT: run=2, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_flow_video_catalog",
+      "exit_code": 0,
+      "seconds": 5.77,
+      "summary": "RELEASE_TEST_RESULT: run=17, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_flow_wait_existing_balance",
+      "exit_code": 0,
+      "seconds": 2.5,
+      "summary": "RELEASE_TEST_RESULT: run=6, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_flow_window_budget",
+      "exit_code": 0,
+      "seconds": 5.36,
+      "summary": "RELEASE_TEST_RESULT: run=10, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_flow_waiting_parallel",
+      "exit_code": 0,
+      "seconds": 6.71,
+      "summary": "RELEASE_TEST_RESULT: run=9, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_flow_window_reuse",
+      "exit_code": 1,
+      "seconds": 2.25,
+      "summary": "RELEASE_TEST_RESULT: run=12, failures=4, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_fusion_batch",
+      "exit_code": 0,
+      "seconds": 0.26,
+      "summary": "RELEASE_TEST_RESULT: run=3, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_follow_vertical_clip",
+      "exit_code": 1,
+      "seconds": 2.51,
+      "summary": "RELEASE_TEST_RESULT: run=9, failures=0, errors=1, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_gemini_key_manager",
+      "exit_code": 0,
+      "seconds": 3.09,
+      "summary": "RELEASE_TEST_RESULT: run=17, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_gemini_key_recovery",
+      "exit_code": 0,
+      "seconds": 3.08,
+      "summary": "RELEASE_TEST_RESULT: run=6, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_global_render_plan_deletion",
+      "exit_code": 0,
+      "seconds": 2.93,
+      "summary": "RELEASE_TEST_RESULT: run=8, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_global_render_queue",
+      "exit_code": 0,
+      "seconds": 3.65,
+      "summary": "RELEASE_TEST_RESULT: run=11, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_google_account_isolation",
+      "exit_code": 0,
+      "seconds": 2.1,
+      "summary": "RELEASE_TEST_RESULT: run=15, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_google_accounts_release",
+      "exit_code": 0,
+      "seconds": 0.28,
+      "summary": "RELEASE_TEST_RESULT: run=2, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_google_accounts_ui",
+      "exit_code": 0,
+      "seconds": 0.61,
+      "summary": "RELEASE_TEST_RESULT: run=10, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_google_accounts",
+      "exit_code": 0,
+      "seconds": 2.51,
+      "summary": "RELEASE_TEST_RESULT: run=33, failures=0, errors=0, skipped=0, callbacks=0",
+      "verification": "targeted rerun after final delta"
+    },
+    {
+      "module": "test_groq_provider",
+      "exit_code": 0,
+      "seconds": 0.35,
+      "summary": "RELEASE_TEST_RESULT: run=5, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_google_authorization_registry",
+      "exit_code": 0,
+      "seconds": 2.17,
+      "summary": "RELEASE_TEST_RESULT: run=19, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_hotkey_settings",
+      "exit_code": 0,
+      "seconds": 1.53,
+      "summary": "RELEASE_TEST_RESULT: run=3, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_gui_responsiveness",
+      "exit_code": 0,
+      "seconds": 3.97,
+      "summary": "RELEASE_TEST_RESULT: run=14, failures=0, errors=0, skipped=1, callbacks=0"
+    },
+    {
+      "module": "test_image_assignment_sort",
+      "exit_code": 0,
+      "seconds": 1.51,
+      "summary": "RELEASE_TEST_RESULT: run=2, failures=0, errors=0, skipped=0, callbacks=0",
+      "verification": "targeted rerun after final delta"
+    },
+    {
+      "module": "test_image_index_connections",
+      "exit_code": 0,
+      "seconds": 0.46,
+      "summary": "RELEASE_TEST_RESULT: run=3, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_image_classifier_plugin",
+      "exit_code": 0,
+      "seconds": 1.63,
+      "summary": "RELEASE_TEST_RESULT: run=13, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_image_remix",
+      "exit_code": 0,
+      "seconds": 4.94,
+      "summary": "RELEASE_TEST_RESULT: run=60, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_image_remix_completion",
+      "exit_code": 0,
+      "seconds": 5.78,
+      "summary": "RELEASE_TEST_RESULT: run=22, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_image_remix_instant",
+      "exit_code": 0,
+      "seconds": 4.37,
+      "summary": "RELEASE_TEST_RESULT: run=32, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_image_remix_planning",
+      "exit_code": 0,
+      "seconds": 5.44,
+      "summary": "RELEASE_TEST_RESULT: run=34, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_image_remix_simple",
+      "exit_code": 0,
+      "seconds": 1.71,
+      "summary": "RELEASE_TEST_RESULT: run=6, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_image_remix_skill",
+      "exit_code": 0,
+      "seconds": 2.48,
+      "summary": "RELEASE_TEST_RESULT: run=22, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_image_remix_safety",
+      "exit_code": 0,
+      "seconds": 9.19,
+      "summary": "RELEASE_TEST_RESULT: run=33, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_independent_visual_fades",
+      "exit_code": 0,
+      "seconds": 2.22,
+      "summary": "RELEASE_TEST_RESULT: run=6, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_inventory_update_sort",
+      "exit_code": 0,
+      "seconds": 0.48,
+      "summary": "RELEASE_TEST_RESULT: run=3, failures=0, errors=0, skipped=0, callbacks=0",
+      "verification": "targeted rerun after final delta"
+    },
+    {
+      "module": "test_inventory_plugin_merge",
+      "exit_code": 0,
+      "seconds": 1.71,
+      "summary": "RELEASE_TEST_RESULT: run=9, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_late_task_associations",
+      "exit_code": 0,
+      "seconds": 6.51,
+      "summary": "RELEASE_TEST_RESULT: run=28, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_main_dialog_extraction",
+      "exit_code": 0,
+      "seconds": 0.36,
+      "summary": "RELEASE_TEST_RESULT: run=11, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_life_dashboard_design",
+      "exit_code": 0,
+      "seconds": 8.53,
+      "summary": "RELEASE_TEST_RESULT: run=25, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_main_plugin_integration",
+      "exit_code": 0,
+      "seconds": 4.93,
+      "summary": "RELEASE_TEST_RESULT: run=2, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_manual_association_refresh",
+      "exit_code": 0,
+      "seconds": 1.72,
+      "summary": "RELEASE_TEST_RESULT: run=8, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_material_dedup",
+      "exit_code": 0,
+      "seconds": 0.49,
+      "summary": "RELEASE_TEST_RESULT: run=7, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_material_download_queue",
+      "exit_code": 0,
+      "seconds": 1.68,
+      "summary": "RELEASE_TEST_RESULT: run=5, failures=0, errors=0, skipped=0, callbacks=0",
+      "verification": "targeted rerun after final delta"
+    },
+    {
+      "module": "test_main_workspace_layout",
+      "exit_code": 0,
+      "seconds": 6.41,
+      "summary": "RELEASE_TEST_RESULT: run=15, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_material_download_resume",
+      "exit_code": 0,
+      "seconds": 0.41,
+      "summary": "RELEASE_TEST_RESULT: run=3, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_material_drive_sync",
+      "exit_code": 0,
+      "seconds": 0.36,
+      "summary": "RELEASE_TEST_RESULT: run=4, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_material_submission_validation",
+      "exit_code": 0,
+      "seconds": 1.81,
+      "summary": "RELEASE_TEST_RESULT: run=8, failures=0, errors=0, skipped=0, callbacks=0",
+      "verification": "targeted rerun after final delta"
+    },
+    {
+      "module": "test_material_organizer",
+      "exit_code": 0,
+      "seconds": 2.28,
+      "summary": "RELEASE_TEST_RESULT: run=10, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_matting_master_switch",
+      "exit_code": 0,
+      "seconds": 4.37,
+      "summary": "RELEASE_TEST_RESULT: run=10, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_matting_live_preview",
+      "exit_code": 0,
+      "seconds": 9.13,
+      "summary": "RELEASE_TEST_RESULT: run=12, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_matting_parameter_ownership",
+      "exit_code": 0,
+      "seconds": 2.58,
+      "summary": "RELEASE_TEST_RESULT: run=8, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_matting_memory",
+      "exit_code": 0,
+      "seconds": 7.9,
+      "summary": "RELEASE_TEST_RESULT: run=16, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_matting_studio",
+      "exit_code": 0,
+      "seconds": 8.57,
+      "summary": "RELEASE_TEST_RESULT: run=34, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_matting_video_preview",
+      "exit_code": 0,
+      "seconds": 33.77,
+      "summary": "RELEASE_TEST_RESULT: run=20, failures=0, errors=0, skipped=0, callbacks=0",
+      "verification": "targeted rerun after final delta"
+    },
+    {
+      "module": "test_monitor_sorter_plugins",
+      "exit_code": 0,
+      "seconds": 1.62,
+      "summary": "RELEASE_TEST_RESULT: run=10, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_new_managers",
+      "exit_code": 0,
+      "seconds": 1.98,
+      "summary": "RELEASE_TEST_RESULT: run=101, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_media_boundary_safety",
+      "exit_code": 0,
+      "seconds": 32.66,
+      "summary": "RELEASE_TEST_RESULT: run=12, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_node_batch_layers",
+      "exit_code": 0,
+      "seconds": 5.92,
+      "summary": "RELEASE_TEST_RESULT: run=19, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_node_clipboard",
+      "exit_code": 0,
+      "seconds": 0.33,
+      "summary": "RELEASE_TEST_RESULT: run=5, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_node_compression",
+      "exit_code": 0,
+      "seconds": 23.01,
+      "summary": "RELEASE_TEST_RESULT: run=16, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_node_connections_upgrade",
+      "exit_code": 0,
+      "seconds": 0.35,
+      "summary": "RELEASE_TEST_RESULT: run=5, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_node_deferred_operations",
+      "exit_code": 0,
+      "seconds": 1.64,
+      "summary": "RELEASE_TEST_RESULT: run=18, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_node_execution_modes",
+      "exit_code": 0,
+      "seconds": 1.64,
+      "summary": "RELEASE_TEST_RESULT: run=17, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_node_export_terminal",
+      "exit_code": 0,
+      "seconds": 0.43,
+      "summary": "RELEASE_TEST_RESULT: run=9, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_node_feature_suggestions",
+      "exit_code": 0,
+      "seconds": 0.45,
+      "summary": "RELEASE_TEST_RESULT: run=9, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_node_filesystem",
+      "exit_code": 0,
+      "seconds": 1.75,
+      "summary": "RELEASE_TEST_RESULT: run=16, failures=0, errors=0, skipped=1, callbacks=0"
+    },
+    {
+      "module": "test_node_caption_styles",
+      "exit_code": 0,
+      "seconds": 32.51,
+      "summary": "RELEASE_TEST_RESULT: run=10, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_node_global_data",
+      "exit_code": 0,
+      "seconds": 0.4,
+      "summary": "RELEASE_TEST_RESULT: run=14, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_node_loop_blocks",
+      "exit_code": 0,
+      "seconds": 0.51,
+      "summary": "RELEASE_TEST_RESULT: run=41, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_node_loop_regions",
+      "exit_code": 0,
+      "seconds": 0.51,
+      "summary": "RELEASE_TEST_RESULT: run=11, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_node_foundation",
+      "exit_code": 0,
+      "seconds": 2.01,
+      "summary": "RELEASE_TEST_RESULT: run=18, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_node_media",
+      "exit_code": 0,
+      "seconds": 1.64,
+      "summary": "RELEASE_TEST_RESULT: run=18, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_node_multi_boolean",
+      "exit_code": 0,
+      "seconds": 0.37,
+      "summary": "RELEASE_TEST_RESULT: run=6, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_node_multiswitch",
+      "exit_code": 0,
+      "seconds": 0.42,
+      "summary": "RELEASE_TEST_RESULT: run=7, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_node_mutex_legacy",
+      "exit_code": 0,
+      "seconds": 1.52,
+      "summary": "RELEASE_TEST_RESULT: run=3, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_node_mutexes",
+      "exit_code": 0,
+      "seconds": 1.66,
+      "summary": "RELEASE_TEST_RESULT: run=19, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_node_named_saving",
+      "exit_code": 0,
+      "seconds": 1.8,
+      "summary": "RELEASE_TEST_RESULT: run=4, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_node_media_smoke",
+      "exit_code": 0,
+      "seconds": 11.15,
+      "summary": "RELEASE_TEST_RESULT: run=13, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_node_polymorphism",
+      "exit_code": 0,
+      "seconds": 0.38,
+      "summary": "RELEASE_TEST_RESULT: run=10, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_node_postprocess",
+      "exit_code": 0,
+      "seconds": 8.38,
+      "summary": "RELEASE_TEST_RESULT: run=47, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_node_presentation_upgrade",
+      "exit_code": 0,
+      "seconds": 0.36,
+      "summary": "RELEASE_TEST_RESULT: run=6, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_node_overlay_timing",
+      "exit_code": 0,
+      "seconds": 15.79,
+      "summary": "RELEASE_TEST_RESULT: run=24, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_node_preview_refresh",
+      "exit_code": 0,
+      "seconds": 0.74,
+      "summary": "RELEASE_TEST_RESULT: run=2, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_node_python_extended",
+      "exit_code": 0,
+      "seconds": 0.42,
+      "summary": "RELEASE_TEST_RESULT: run=16, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_node_python_native",
+      "exit_code": 0,
+      "seconds": 0.43,
+      "summary": "RELEASE_TEST_RESULT: run=18, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_node_preview_edit_regressions",
+      "exit_code": 0,
+      "seconds": 6.8,
+      "summary": "RELEASE_TEST_RESULT: run=10, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_node_routing",
+      "exit_code": 0,
+      "seconds": 0.97,
+      "summary": "RELEASE_TEST_RESULT: run=20, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_node_render_smoke",
+      "exit_code": 0,
+      "seconds": 3.96,
+      "summary": "RELEASE_TEST_RESULT: run=5, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_node_task_workflow",
+      "exit_code": 0,
+      "seconds": 1.71,
+      "summary": "RELEASE_TEST_RESULT: run=22, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_node_text_palette",
+      "exit_code": 0,
+      "seconds": 2.14,
+      "summary": "RELEASE_TEST_RESULT: run=13, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_node_text_paths",
+      "exit_code": 0,
+      "seconds": 0.43,
+      "summary": "RELEASE_TEST_RESULT: run=18, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_node_task_smoke",
+      "exit_code": 0,
+      "seconds": 5.89,
+      "summary": "RELEASE_TEST_RESULT: run=6, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_node_values_upgrade",
+      "exit_code": 0,
+      "seconds": 4.47,
+      "summary": "RELEASE_TEST_RESULT: run=13, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_node_visual_upgrade",
+      "exit_code": 0,
+      "seconds": 2.86,
+      "summary": "RELEASE_TEST_RESULT: run=8, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_node_window",
+      "exit_code": 0,
+      "seconds": 0.22,
+      "summary": "RELEASE_TEST_RESULT: run=6, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_node_video_stitch",
+      "exit_code": 0,
+      "seconds": 7.2,
+      "summary": "RELEASE_TEST_RESULT: run=10, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_node_workflow",
+      "exit_code": 0,
+      "seconds": 1.93,
+      "summary": "RELEASE_TEST_RESULT: run=22, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_offline_mode",
+      "exit_code": 0,
+      "seconds": 5.75,
+      "summary": "RELEASE_TEST_RESULT: run=16, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_offscreen_slide",
+      "exit_code": 0,
+      "seconds": 4.15,
+      "summary": "RELEASE_TEST_RESULT: run=6, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_open_today_task_table",
+      "exit_code": 0,
+      "seconds": 2.95,
+      "summary": "RELEASE_TEST_RESULT: run=10, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_openai_chat",
+      "exit_code": 0,
+      "seconds": 1.66,
+      "summary": "RELEASE_TEST_RESULT: run=13, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_oral_video_duration_checker",
+      "exit_code": 0,
+      "seconds": 0.29,
+      "summary": "RELEASE_TEST_RESULT: run=4, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_organizer_offline_behavior",
+      "exit_code": 0,
+      "seconds": 0.37,
+      "summary": "RELEASE_TEST_RESULT: run=2, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_outside_preview_speed",
+      "exit_code": 0,
+      "seconds": 1.48,
+      "summary": "RELEASE_TEST_RESULT: run=3, failures=0, errors=0, skipped=1, callbacks=0"
+    },
+    {
+      "module": "test_plugin_host",
+      "exit_code": 0,
+      "seconds": 1.67,
+      "summary": "RELEASE_TEST_RESULT: run=21, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_node_workspace",
+      "exit_code": 0,
+      "seconds": 20.47,
+      "summary": "RELEASE_TEST_RESULT: run=74, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_plugin_manager",
+      "exit_code": 0,
+      "seconds": 3.58,
+      "summary": "RELEASE_TEST_RESULT: run=12, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_plugin_storage_boundary",
+      "exit_code": 0,
+      "seconds": 2.82,
+      "summary": "RELEASE_TEST_RESULT: run=5, failures=0, errors=0, skipped=0, callbacks=0",
+      "verification": "targeted rerun after final delta"
+    },
+    {
+      "module": "test_pool_exclusion",
+      "exit_code": 0,
+      "seconds": 2.43,
+      "summary": "RELEASE_TEST_RESULT: run=9, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_project_initializer",
+      "exit_code": 0,
+      "seconds": 0.33,
+      "summary": "RELEASE_TEST_RESULT: run=8, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_private_path_remount",
+      "exit_code": 0,
+      "seconds": 3.46,
+      "summary": "RELEASE_TEST_RESULT: run=16, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_project_initializer_ui",
+      "exit_code": 0,
+      "seconds": 3.09,
+      "summary": "RELEASE_TEST_RESULT: run=4, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_protected_storage",
+      "exit_code": 0,
+      "seconds": 0.62,
+      "summary": "RELEASE_TEST_RESULT: run=17, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_qt6_migration",
+      "exit_code": 0,
+      "seconds": 0.64,
+      "summary": "RELEASE_TEST_RESULT: run=6, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_protected_integration",
+      "exit_code": 0,
+      "seconds": 3.44,
+      "summary": "RELEASE_TEST_RESULT: run=9, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_quantity_copy",
+      "exit_code": 0,
+      "seconds": 1.49,
+      "summary": "RELEASE_TEST_RESULT: run=14, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_quantity_scope_and_review",
+      "exit_code": 0,
+      "seconds": 1.62,
+      "summary": "RELEASE_TEST_RESULT: run=16, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_quantity_selection",
+      "exit_code": 0,
+      "seconds": 1.6,
+      "summary": "RELEASE_TEST_RESULT: run=25, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_qt_thread_lifecycle",
+      "exit_code": 1,
+      "seconds": 6.07,
+      "summary": "RELEASE_TEST_RESULT: run=15, failures=1, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_queue_completed_selection",
+      "exit_code": 0,
+      "seconds": 3.39,
+      "summary": "RELEASE_TEST_RESULT: run=6, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_queue_legacy_snapshots",
+      "exit_code": 0,
+      "seconds": 2.34,
+      "summary": "RELEASE_TEST_RESULT: run=8, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_reference_auth_fallback",
+      "exit_code": 0,
+      "seconds": 0.45,
+      "summary": "RELEASE_TEST_RESULT: run=20, failures=0, errors=0, skipped=0, callbacks=0",
+      "verification": "targeted rerun after final delta"
+    },
+    {
+      "module": "test_release_artifact",
+      "exit_code": 0,
+      "seconds": 0.45,
+      "summary": "RELEASE_TEST_RESULT: run=10, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_release_notes",
+      "exit_code": 0,
+      "seconds": 0.39,
+      "summary": "RELEASE_TEST_RESULT: run=11, failures=0, errors=0, skipped=0, callbacks=0",
+      "verification": "targeted rerun after final delta"
+    },
+    {
+      "module": "test_release_private_config",
+      "exit_code": 0,
+      "seconds": 0.32,
+      "summary": "RELEASE_TEST_RESULT: run=4, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_release_test_runner",
+      "exit_code": 0,
+      "seconds": 0.27,
+      "summary": "RELEASE_TEST_RESULT: run=3, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_release_privacy_inventory",
+      "exit_code": 0,
+      "seconds": 2.9,
+      "summary": "RELEASE_TEST_RESULT: run=3, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_review_status_monitor",
+      "exit_code": 0,
+      "seconds": 0.48,
+      "summary": "RELEASE_TEST_RESULT: run=20, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_render_checkboxes",
+      "exit_code": 0,
+      "seconds": 2.86,
+      "summary": "RELEASE_TEST_RESULT: run=7, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_script_duration_warning",
+      "exit_code": 0,
+      "seconds": 1.95,
+      "summary": "RELEASE_TEST_RESULT: run=13, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_script_segmenter_node",
+      "exit_code": 0,
+      "seconds": 1.6,
+      "summary": "RELEASE_TEST_RESULT: run=13, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_script_segmenter",
+      "exit_code": 0,
+      "seconds": 3.41,
+      "summary": "RELEASE_TEST_RESULT: run=61, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_scroll_origin",
+      "exit_code": 0,
+      "seconds": 3.28,
+      "summary": "RELEASE_TEST_RESULT: run=8, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_scroll_line_anchors",
+      "exit_code": 0,
+      "seconds": 4.71,
+      "summary": "RELEASE_TEST_RESULT: run=14, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_search_shutdown",
+      "exit_code": 0,
+      "seconds": 2.39,
+      "summary": "RELEASE_TEST_RESULT: run=10, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_security_hardening",
+      "exit_code": 0,
+      "seconds": 0.34,
+      "summary": "RELEASE_TEST_RESULT: run=10, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_security_bridge_writes",
+      "exit_code": 0,
+      "seconds": 1.53,
+      "summary": "RELEASE_TEST_RESULT: run=4, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_security_io_limits",
+      "exit_code": 0,
+      "seconds": 1.68,
+      "summary": "RELEASE_TEST_RESULT: run=11, failures=0, errors=0, skipped=0, callbacks=0",
+      "verification": "targeted rerun after final delta"
+    },
+    {
+      "module": "test_settings_hotkey_conflict",
+      "exit_code": 0,
+      "seconds": 3.26,
+      "summary": "RELEASE_TEST_RESULT: run=2, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_settings_navigation",
+      "exit_code": 0,
+      "seconds": 1.77,
+      "summary": "RELEASE_TEST_RESULT: run=8, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_shared_capabilities",
+      "exit_code": 0,
+      "seconds": 2.64,
+      "summary": "RELEASE_TEST_RESULT: run=8, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_settings_native_lifecycle",
+      "exit_code": 0,
+      "seconds": 8.74,
+      "summary": "RELEASE_TEST_RESULT: run=1, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_shared_music",
+      "exit_code": 0,
+      "seconds": 4.79,
+      "summary": "RELEASE_TEST_RESULT: run=20, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_shared_music_drop",
+      "exit_code": 0,
+      "seconds": 2.5,
+      "summary": "RELEASE_TEST_RESULT: run=9, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_smart_breath_presets",
+      "exit_code": 0,
+      "seconds": 1.74,
+      "summary": "RELEASE_TEST_RESULT: run=17, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_smart_breath_settings",
+      "exit_code": 0,
+      "seconds": 1.57,
+      "summary": "RELEASE_TEST_RESULT: run=11, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_smart_duplicate_display",
+      "exit_code": 0,
+      "seconds": 1.59,
+      "summary": "RELEASE_TEST_RESULT: run=6, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_smart_image_assignment",
+      "exit_code": 0,
+      "seconds": 2.02,
+      "summary": "RELEASE_TEST_RESULT: run=23, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_smart_image_search",
+      "exit_code": 0,
+      "seconds": 3.44,
+      "summary": "RELEASE_TEST_RESULT: run=36, failures=0, errors=0, skipped=1, callbacks=0"
+    },
+    {
+      "module": "test_smart_image_delete",
+      "exit_code": 0,
+      "seconds": 5.87,
+      "summary": "RELEASE_TEST_RESULT: run=15, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_smart_music_search",
+      "exit_code": 0,
+      "seconds": 2.63,
+      "summary": "RELEASE_TEST_RESULT: run=26, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_smart_order_evidence",
+      "exit_code": 0,
+      "seconds": 3.06,
+      "summary": "RELEASE_TEST_RESULT: run=6, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_smart_review_ux",
+      "exit_code": 0,
+      "seconds": 2.64,
+      "summary": "RELEASE_TEST_RESULT: run=8, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_smart_search",
+      "exit_code": 0,
+      "seconds": 3.37,
+      "summary": "RELEASE_TEST_RESULT: run=22, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_smart_source_tree",
+      "exit_code": 0,
+      "seconds": 1.74,
+      "summary": "RELEASE_TEST_RESULT: run=11, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_smart_srt_only",
+      "exit_code": 0,
+      "seconds": 1.9,
+      "summary": "RELEASE_TEST_RESULT: run=12, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_smart_seam_cover",
+      "exit_code": 0,
+      "seconds": 7.71,
+      "summary": "RELEASE_TEST_RESULT: run=19, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_smart_subtitle_timing",
+      "exit_code": 0,
+      "seconds": 1.46,
+      "summary": "RELEASE_TEST_RESULT: run=4, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_smart_task_refresh",
+      "exit_code": 0,
+      "seconds": 3.81,
+      "summary": "RELEASE_TEST_RESULT: run=16, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_smart_video_cache_rename",
+      "exit_code": 0,
+      "seconds": 1.64,
+      "summary": "RELEASE_TEST_RESULT: run=6, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_smart_video_background_integration",
+      "exit_code": 0,
+      "seconds": 4.34,
+      "summary": "RELEASE_TEST_RESULT: run=25, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_smart_video_export_blockers_ui",
+      "exit_code": 0,
+      "seconds": 2.85,
+      "summary": "RELEASE_TEST_RESULT: run=31, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_smart_video_layout",
+      "exit_code": 0,
+      "seconds": 1.55,
+      "summary": "RELEASE_TEST_RESULT: run=1, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_smart_video_locations",
+      "exit_code": 0,
+      "seconds": 1.62,
+      "summary": "RELEASE_TEST_RESULT: run=10, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_smart_video_only",
+      "exit_code": 0,
+      "seconds": 2.46,
+      "summary": "RELEASE_TEST_RESULT: run=9, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_smart_video_editor",
+      "exit_code": 0,
+      "seconds": 10.88,
+      "summary": "RELEASE_TEST_RESULT: run=83, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_smart_video_player",
+      "exit_code": 0,
+      "seconds": 4.27,
+      "summary": "RELEASE_TEST_RESULT: run=13, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_smart_video_renaming",
+      "exit_code": 0,
+      "seconds": 1.44,
+      "summary": "RELEASE_TEST_RESULT: run=2, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_smart_video_postprocess",
+      "exit_code": 0,
+      "seconds": 4.46,
+      "summary": "RELEASE_TEST_RESULT: run=19, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_smart_video_segments",
+      "exit_code": 0,
+      "seconds": 2.48,
+      "summary": "RELEASE_TEST_RESULT: run=14, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_smart_video_timeline",
+      "exit_code": 0,
+      "seconds": 1.49,
+      "summary": "RELEASE_TEST_RESULT: run=9, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_startup_guide",
+      "exit_code": 0,
+      "seconds": 0.4,
+      "summary": "RELEASE_TEST_RESULT: run=14, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_storage_capacity",
+      "exit_code": 0,
+      "seconds": 1.59,
+      "summary": "RELEASE_TEST_RESULT: run=9, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_static_visual_once",
+      "exit_code": 0,
+      "seconds": 3.21,
+      "summary": "RELEASE_TEST_RESULT: run=5, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_task_audio_quiet_skips",
+      "exit_code": 0,
+      "seconds": 1.48,
+      "summary": "RELEASE_TEST_RESULT: run=3, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_subtitle_no_console",
+      "exit_code": 0,
+      "seconds": 2.86,
+      "summary": "RELEASE_TEST_RESULT: run=5, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_task_audio_subtitle",
+      "exit_code": 0,
+      "seconds": 1.64,
+      "summary": "RELEASE_TEST_RESULT: run=12, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_task_delivery_gemini",
+      "exit_code": 0,
+      "seconds": 1.48,
+      "summary": "RELEASE_TEST_RESULT: run=2, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_task_delivery_config",
+      "exit_code": 0,
+      "seconds": 3.12,
+      "summary": "RELEASE_TEST_RESULT: run=27, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_task_delivery_inbox",
+      "exit_code": 0,
+      "seconds": 1.44,
+      "summary": "RELEASE_TEST_RESULT: run=7, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_task_delivery_quick_upload",
+      "exit_code": 0,
+      "seconds": 1.44,
+      "summary": "RELEASE_TEST_RESULT: run=5, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_task_path_loading",
+      "exit_code": 0,
+      "seconds": 3.98,
+      "summary": "RELEASE_TEST_RESULT: run=13, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_task_loading_performance",
+      "exit_code": 0,
+      "seconds": 4.23,
+      "summary": "RELEASE_TEST_RESULT: run=31, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_task_result_exporter_candidates",
+      "exit_code": 0,
+      "seconds": 0.28,
+      "summary": "RELEASE_TEST_RESULT: run=2, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_task_result_file_guard",
+      "exit_code": 0,
+      "seconds": 0.81,
+      "summary": "RELEASE_TEST_RESULT: run=22, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_task_review_list",
+      "exit_code": 0,
+      "seconds": 0.45,
+      "summary": "RELEASE_TEST_RESULT: run=8, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_task_schema_nodes",
+      "exit_code": 0,
+      "seconds": 0.86,
+      "summary": "RELEASE_TEST_RESULT: run=29, failures=0, errors=0, skipped=0, callbacks=0",
+      "verification": "targeted rerun after final delta"
+    },
+    {
+      "module": "test_task_submission_audit",
+      "exit_code": 0,
+      "seconds": 0.3,
+      "summary": "RELEASE_TEST_RESULT: run=4, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_task_rerender_preview",
+      "exit_code": 0,
+      "seconds": 3.24,
+      "summary": "RELEASE_TEST_RESULT: run=21, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_temporary_totp",
+      "exit_code": 0,
+      "seconds": 3.01,
+      "summary": "RELEASE_TEST_RESULT: run=20, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_task_voice_id",
+      "exit_code": 0,
+      "seconds": 3.57,
+      "summary": "RELEASE_TEST_RESULT: run=27, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_test_runner",
+      "exit_code": 0,
+      "seconds": 0.25,
+      "summary": "RELEASE_TEST_RESULT: run=3, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_text_outside_stroke",
+      "exit_code": 0,
+      "seconds": 2.92,
+      "summary": "RELEASE_TEST_RESULT: run=10, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_vc_responsiveness",
+      "exit_code": 0,
+      "seconds": 0.37,
+      "summary": "RELEASE_TEST_RESULT: run=15, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_ui_action_integrity",
+      "exit_code": 0,
+      "seconds": 3.55,
+      "summary": "RELEASE_TEST_RESULT: run=3, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_video_crop_geometry",
+      "exit_code": 0,
+      "seconds": 1.51,
+      "summary": "RELEASE_TEST_RESULT: run=5, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_video_prompt_assistant",
+      "exit_code": 0,
+      "seconds": 1.48,
+      "summary": "RELEASE_TEST_RESULT: run=7, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_video_prompt_vision_retry",
+      "exit_code": 0,
+      "seconds": 1.46,
+      "summary": "RELEASE_TEST_RESULT: run=12, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_video_upload_history",
+      "exit_code": 0,
+      "seconds": 0.47,
+      "summary": "RELEASE_TEST_RESULT: run=11, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_video_stitch",
+      "exit_code": 0,
+      "seconds": 6.71,
+      "summary": "RELEASE_TEST_RESULT: run=24, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_visual_control_audio",
+      "exit_code": 0,
+      "seconds": 6.3,
+      "summary": "RELEASE_TEST_RESULT: run=9, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_visual_loop_compat",
+      "exit_code": 0,
+      "seconds": 1.85,
+      "summary": "RELEASE_TEST_RESULT: run=4, failures=0, errors=0, skipped=2, callbacks=0"
+    },
+    {
+      "module": "test_visual_loop_dissolve",
+      "exit_code": 0,
+      "seconds": 9.56,
+      "summary": "RELEASE_TEST_RESULT: run=12, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_visual_loop_region",
+      "exit_code": 0,
+      "seconds": 10.08,
+      "summary": "RELEASE_TEST_RESULT: run=20, failures=0, errors=0, skipped=1, callbacks=0",
+      "verification": "targeted rerun after final delta"
+    },
+    {
+      "module": "test_visual_transitions",
+      "exit_code": 0,
+      "seconds": 4.99,
+      "summary": "RELEASE_TEST_RESULT: run=19, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_voice_effects",
+      "exit_code": 0,
+      "seconds": 9.84,
+      "summary": "RELEASE_TEST_RESULT: run=15, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_waste_weather",
+      "exit_code": 0,
+      "seconds": 6.74,
+      "summary": "RELEASE_TEST_RESULT: run=51, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_weather_ball_physics",
+      "exit_code": 0,
+      "seconds": 0.21,
+      "summary": "RELEASE_TEST_RESULT: run=2, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_waste_reminder",
+      "exit_code": 0,
+      "seconds": 14.93,
+      "summary": "RELEASE_TEST_RESULT: run=51, failures=0, errors=0, skipped=0, callbacks=0",
+      "verification": "targeted rerun after final delta"
+    },
+    {
+      "module": "test_windows_shutdown",
+      "exit_code": 0,
+      "seconds": 0.25,
+      "summary": "RELEASE_TEST_RESULT: run=9, failures=0, errors=0, skipped=0, callbacks=0"
+    },
+    {
+      "module": "test_whisper_inference",
+      "exit_code": 0,
+      "seconds": 3.07,
+      "summary": "RELEASE_TEST_RESULT: run=12, failures=0, errors=0, skipped=0, callbacks=0"
+    }
+  ],
+  "limits": [
+    "Full run plus targeted reruns is not a clean all-green run.",
+    "Baseline player hang did not reproduce in candidate; no player fix was made.",
+    "Final source deltas were rerun in affected modules, not a second complete frozen run."
+  ]
+}

@@ -1,6 +1,7 @@
 """Independent Docs OAuth token, broker storage and cancelable loopback login."""
 import copy
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler
+from model.OAuthLoopback import OAuthLoopbackServer
 import time
 from urllib.parse import parse_qs, urlsplit
 import webbrowser
@@ -34,17 +35,18 @@ def authorize(private_root, run):
     root = data_directory(private_root)
     client = root.file('google_client.json')
     if not client.exists(): raise ValueError('请先选择Google桌面应用OAuth客户端JSON。不会改动原有表格或网盘授权。')
-    flow = InstalledAppFlow.from_client_config(client_config(client.read_json()), SCOPES)
+    flow = InstalledAppFlow.from_client_config(client_config(client.read_json()), SCOPES, autogenerate_code_verifier=True)
     received, expected_state = [], ['']
     class Callback(BaseHTTPRequestHandler):
         def log_message(self, *args): pass  # Authorization codes must never enter logs.
         def do_GET(self):
             parts = urlsplit(self.path); values = parse_qs(parts.query)
             valid = parts.path == '/' and values.get('state') == [expected_state[0]] and bool(values.get('code') or values.get('error'))
-            self.send_response(200 if valid else 400); self.send_header('Content-Type', 'text/plain; charset=utf-8'); self.end_headers()
+            self.send_response(200 if valid else 400); self.send_header('Content-Type', 'text/plain; charset=utf-8')
+            self.send_header('Cache-Control', 'no-store'); self.end_headers()
             self.wfile.write(('已收到授权结果，可以关闭此页面。' if valid else '无效的授权回调。').encode('utf-8'))
-            if valid: received.append(self.path)
-    with HTTPServer(('127.0.0.1', 0), Callback) as server:
+            if valid and not received: received.append(self.path)
+    with OAuthLoopbackServer(('127.0.0.1', 0), Callback) as server:
         server.timeout = 0.5
         flow.redirect_uri = f'http://127.0.0.1:{server.server_port}/'
         url, state = flow.authorization_url(access_type='offline', prompt='consent')
@@ -56,7 +58,9 @@ def authorize(private_root, run):
             run.check_canceled()
             root.storage.check(root.path)
             if time.monotonic() > deadline: raise TimeoutError('Google授权等待超时；原有密钥和授权未改变。')
-            server.handle_request()
+            try: server.handle_request()
+            except TimeoutError:
+                run.check_canceled()
     run.check_canceled()
     root.storage.check(root.path, write=True)
     if parse_qs(urlsplit(received[0]).query).get('error'): raise RuntimeError('Google授权被拒绝，未保存新令牌。')

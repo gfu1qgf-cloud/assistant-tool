@@ -51,20 +51,21 @@ class DocsAuthTests(unittest.TestCase):
     def test_authorize_uses_cancelable_loopback_and_private_token_only(self):
         flow = Mock(); flow.authorization_url.return_value = ('https://accounts.google.com/fixture', 'fixture-state')
         flow.credentials.to_json.return_value = json.dumps({'token': 'fixture-token', 'token_uri': 'https://oauth2.googleapis.com/token'})
-        with (patch.object(google_auth, 'HTTPServer', FakeServer), patch.object(google_auth.webbrowser, 'open', return_value=True) as browser,
-              patch('google_auth_oauthlib.flow.InstalledAppFlow.from_client_config', return_value=flow)):
+        with (patch.object(google_auth, 'OAuthLoopbackServer', FakeServer), patch.object(google_auth.webbrowser, 'open', return_value=True) as browser,
+              patch('google_auth_oauthlib.flow.InstalledAppFlow.from_client_config', return_value=flow) as factory):
             result = google_auth.authorize(self.private, self.run)
         self.assertEqual(result['kind'], 'auth'); self.assertEqual(flow.redirect_uri, 'http://127.0.0.1:12345/')
         flow.fetch_token.assert_called_once_with(authorization_response='https://127.0.0.1:12345/?code=fixture-code&state=fixture-state', timeout=45)
         self.assertEqual(json.loads((self.private/'google_token.json').read_text())['token'], 'fixture-token')
         self.assertEqual(self.unrelated.read_text(), 'other-service-unchanged')
         browser.assert_called_once()
+        self.assertIs(factory.call_args.kwargs['autogenerate_code_verifier'], True)
 
     def test_canceled_login_preserves_existing_docs_token(self):
         token = self.private/'google_token.json'; token.write_text('original-docs-token')
         flow = Mock(); flow.authorization_url.return_value = ('https://accounts.google.com/fixture', 'fixture-state')
         run = SimpleNamespace(check_canceled=Mock(side_effect=BackgroundTaskCanceled()), report=Mock())
-        with (patch.object(google_auth, 'HTTPServer', FakeServer), patch.object(google_auth.webbrowser, 'open', return_value=True),
+        with (patch.object(google_auth, 'OAuthLoopbackServer', FakeServer), patch.object(google_auth.webbrowser, 'open', return_value=True),
               patch('google_auth_oauthlib.flow.InstalledAppFlow.from_client_config', return_value=flow)):
             with self.assertRaises(BackgroundTaskCanceled): google_auth.authorize(self.private, run)
         self.assertEqual(token.read_text(), 'original-docs-token'); flow.fetch_token.assert_not_called()

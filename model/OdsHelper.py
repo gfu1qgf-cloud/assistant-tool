@@ -1,6 +1,7 @@
 import io
 import re
 import unicodedata
+from zipfile import ZipFile
 
 from odf.opendocument import load
 from odf.table import Table, TableRow, TableCell
@@ -18,6 +19,28 @@ from model.TaskTableSchema import (
 
 
 MAX_TABLE_COLUMNS = 512
+MAX_TASK_ODS_BYTES = 32 * 1024 * 1024
+MAX_TASK_ODS_EXPANDED_BYTES = 128 * 1024 * 1024
+
+
+def _load_task_document(doc_path, source_bytes=None):
+    """Apply the header editor's size limits to the actual task import too.
+
+    Validate and parse one immutable snapshot, so replacement of the path
+    cannot substitute an unchecked ZIP between validation and parsing.
+    odfpy uses defusedxml; these limits additionally bound ZIP expansion.
+    """
+    if source_bytes is None:
+        with open(doc_path, 'rb') as source:
+            source_bytes = source.read(MAX_TASK_ODS_BYTES + 1)
+    if len(source_bytes) > MAX_TASK_ODS_BYTES:
+        raise TaskTableSchemaError('表格超过32MiB，请使用较小的任务表。')
+    snapshot = io.BytesIO(source_bytes)
+    with ZipFile(snapshot) as archive:
+        if sum(item.file_size for item in archive.infolist()) > MAX_TASK_ODS_EXPANDED_BYTES:
+            raise TaskTableSchemaError('表格解压内容超过128MiB，未继续解析。')
+    snapshot.seek(0)
+    return load(snapshot)
 
 
 def cell_text_values(cell, include_hrefs=False):
@@ -238,7 +261,7 @@ def ReadTaskOds2(doc_path, schema=None, return_report=False, *, source_bytes=Non
     )
     if cancelled is not None and cancelled():
         raise InterruptedError('任务读取已取消')
-    doc = load(str(doc_path) if source_bytes is None else io.BytesIO(source_bytes))
+    doc = _load_task_document(doc_path, source_bytes)
     sheet, sheet_name = _select_sheet(doc, effective_schema)
     rows = sheet.getElementsByType(TableRow)
     header_index, headers, header_score = _find_header(rows, effective_schema)

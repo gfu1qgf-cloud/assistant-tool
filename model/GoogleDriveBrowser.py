@@ -2,7 +2,8 @@
 from contextlib import contextmanager
 import copy
 import hashlib
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler
+from model.OAuthLoopback import OAuthLoopbackServer
 import io
 import json
 from pathlib import Path
@@ -122,17 +123,18 @@ def authorize(run):
     root = private_root(); selected = root.file('google_client.json')
     client = selected if selected.exists() else data_file(CLIENT_SECRET_FILE)
     if not client.exists(): raise ValueError('没有OAuth客户端，请在“网盘授权”菜单选择Google桌面应用客户端JSON。')
-    flow = InstalledAppFlow.from_client_config(client_config(client.read_json()), [READONLY])
+    flow = InstalledAppFlow.from_client_config(client_config(client.read_json()), [READONLY], autogenerate_code_verifier=True)
     received, state = [], ['']
     class Callback(BaseHTTPRequestHandler):
         def log_message(self, *_): pass
         def do_GET(self):
             parts = urlsplit(self.path); query = parse_qs(parts.query)
             valid = parts.path == '/' and query.get('state') == state and bool(query.get('code') or query.get('error'))
-            self.send_response(200 if valid else 400); self.send_header('Content-Type', 'text/plain; charset=utf-8'); self.end_headers()
+            self.send_response(200 if valid else 400); self.send_header('Content-Type', 'text/plain; charset=utf-8')
+            self.send_header('Cache-Control', 'no-store'); self.end_headers()
             self.wfile.write(('授权结果已收到，可以关闭页面。' if valid else '无效回调。').encode())
-            if valid: received.append(self.path)
-    with HTTPServer(('127.0.0.1', 0), Callback) as server:
+            if valid and not received: received.append(self.path)
+    with OAuthLoopbackServer(('127.0.0.1', 0), Callback) as server:
         server.timeout = .5
         flow.redirect_uri = f'http://127.0.0.1:{server.server_port}/'
         url, state[0] = flow.authorization_url(access_type='offline', prompt='consent')
@@ -142,7 +144,9 @@ def authorize(run):
         while not received:
             run.check_canceled(); private_root()
             if time.monotonic() > deadline: raise TimeoutError('Google授权等待超时。')
-            server.handle_request()
+            try: server.handle_request()
+            except TimeoutError:
+                run.check_canceled()
     run.check_canceled()
     if parse_qs(urlsplit(received[0]).query).get('error'): raise ValueError('授权已取消，原有网盘授权没有改变。')
     try: flow.fetch_token(authorization_response=f'https://127.0.0.1:{server.server_port}{received[0]}', timeout=30)

@@ -1,0 +1,124 @@
+视频辅助工具 v3.5.0 安全审核报告
+日期：2026-11-17
+状态：安全修复与隔离验证已完成主要部分；不批准正式发布。仍有既有回归失败及维护／凭据清理事项。
+
+一、项目与范围
+实际源码：C:/Users/RTV/pythonPro/辅助小工具。
+基线 HEAD：26d5fe3bd38962648539c92ded56ae186c783b19。开始时已有68项工作树变更，未回滚、覆盖或冒充本轮成果。
+Python 3.14.10、PyQt6 桌面、插件与节点系统；JavaScript Manifest V3 Chrome 扩展；Rust DNx 原生解码器；PyInstaller 与 GitHub Actions。
+依赖清单：requirements.txt、packaging/constraints-win-py314.txt、packaging/requirements-build.txt、native/Cargo.toml/Cargo.lock。
+30个唯一的直接运行／构建依赖，实际环境127个Python发行包；Rust锁文件8个注册表依赖，另有本地包。
+未发现项目的 package.json/npm锁文件、go.mod、pom.xml或Podfile，不虚报 npm audit 等未适用工具结果。
+完整版本附表：dependency-review-v3.5.0-20261117.csv，列出全部127个Python包的基线／候选版本、直接／间接关系、公告和来源。
+
+审查方式：公开源码逐文件自动扫描、Python语法／敏感特征检查、Bandit，以及认证、下载、解压、进程、存储、扩展通信和CI等高风险路径的人工复核。
+基线源清单包含1590个已跟踪路径、36个公开未跟踪路径；1374个Python文件。Bandit扫描777个运行时／工具文件、156501行，产生190条待甄别提示，不能当成190个真实漏洞。
+扫描全部可达Git历史中5029个文本blob，共145453607字节。当前公开文件与该历史范围未发现密钥特征命中。
+限制：没有声称所有文件均已人工逐行证明安全；没有对第三方原生DLL内部做逆向或全面模糊测试，也没有解密任意历史压缩包、接触真实付费生成或外部审核系统。
+
+二、问题汇总（依赖严重性主要引用上游；可达性另述）
+编号 | 类别 | 严重级别 | 位置 | 状态
+D01 | 依赖 | High（部分上游为Moderate） | requirements.txt:pypdf / constraints | 升级6.21.2→6.21.4，修复7条命中公告
+D02 | 依赖 | High | constraints:pyasn1 | 升级0.6.4→0.6.5，修复4条复杂度公告
+D03 | 依赖 | Medium | constraints:filelock | 经批准隔离验证3.20.3→4.2.1，修复2条公告
+D04 | 依赖 | High（库评级，项目未启用漏洞服务端路径） | constraints:oauthlib | 升级4.0.0→4.0.1
+D05 | 依赖 | Medium | constraints:opentelemetry-api | 升级1.45.1→1.45.2
+D06 | 依赖 | Low（GHSA评级） | requirements.txt:torch | 经批准验证2.10.0→2.13.0；TorchAudio同时2.10.0→2.11.0
+D07 | 依赖 | Medium／待确认 | torch.export.load/.pt2公告 | 尚无明确修复版本；软件未发现该接口调用，保留条件风险，不宣称升级已修复
+D08 | 依赖维护 | Medium | stable-ts==2.19.1 | 上游归档；本轮已完成替代可行性原型，未擅改正式字幕算法
+C01 | 代码 | Medium | model/GoogleDriveBrowser.py:126；document_formatter/google_auth.py:38；model/OAuthLoopback.py:7 | 已修复
+C02 | 代码 | Medium | model/OdsHelper.py:26；TaskSchemaMapping.py:117 | 已修复
+C03 | 代码 | Medium（保护失效条件下） | batch_text_video/{alpha_bounds,visual_loop_region,caption_cursor,face_anchor}.py | 已修复本轮发现的宿主存储检查绕行
+C04 | 代码／可用性 | Medium | PYUI/utility_managers_pyui.py:1083 | 已修复冷导入循环，5个受阻模块恢复
+S01 | 密钥／本地副本 | Medium | 被Git忽略的旧配置与Google授权文件 | 9份明确旧备份已验证迁移后清理；2个主配置和4个可能活动的授权原文件保留，待明确入口依赖
+R01 | 供应链 | Low | constraints-win-py314.txt | 精确版本约束存在，但不是全平台轮子哈希锁，建议关注
+R02 | 本地执行边界 | Low／设计说明 | model/node_workflow/code_node.py；插件宿主 | 有意允许用户授权代码，并非不可信代码沙箱；不能把存储约定误称恶意插件隔离
+
+三、依赖公告、实际影响和修复
+D01：pypdf基线命中 GHSA-42gh-23hr-vphw、4vqv-7265-gm2w、5849-834g-hvw5、62m5-6wh8-28x7、cggf-277g-3q54、mfr5-77xh-9j7h、x3rh-gjgm-fmqc。
+软件的生活提醒解析器会读取外部PDF；下载字节限制不能防止解析中的CPU／内存耗尽，属于实际输入路径，已升级6.21.4。
+https://github.com/py-pdf/pypdf/security/advisories/GHSA-5849-834g-hvw5
+https://github.com/py-pdf/pypdf/security/advisories/GHSA-cggf-277g-3q54
+
+D02：pyasn1的BIT STRING、构造字符串／ANY、无schema容器和REAL解码存在复杂度问题。项目主要经Google认证等间接使用，未发现自行暴露公共ASN.1服务；仍升级0.6.5。
+https://github.com/pyasn1/pyasn1/security/advisories/GHSA-2qm8-x737-gmw5
+
+D03：Unix锁路径被其他用户替换时可能截断／改权限；Windows锁文件mode未按预期收紧ACL。Unix分支不直接适用于本Windows发行版；Windows风险还取决于父目录ACL。已验证递归获取、竞争锁超时及模型库兼容。
+https://github.com/tox-dev/filelock/security/advisories/GHSA-69hj-f68j-2879
+https://github.com/tox-dev/filelock/security/advisories/GHSA-8mx5-7m5m-r77g
+
+D04：漏洞针对OAuthLib设备授权服务端校验，不是说本机Google登录已泄露令牌。本程序使用客户端授权流程。供应商公告写4.0.1，而聚合页面一度写4.0.0；采用更保守的供应商修复版本4.0.1。
+https://github.com/oauthlib/oauthlib/security/advisories/GHSA-3jp2-3mrg-2vxc
+
+D05：TraceContextTextMapPropagator.extract处理带嵌入换行的大traceparent时可发生二次回溯。未发现程序向外暴露对应追踪载体入口；仍修补依赖。
+https://github.com/open-telemetry/opentelemetry-python/security/advisories/GHSA-mf5v-w3w3-f6cg
+
+D06：GHSA-rrmf-rvhw-rf47涉及torch.jit.script，GitHub评级Low，修复2.13.0。不是把所有PyTorch公告都说成远程Critical。
+https://github.com/advisories/GHSA-rrmf-rvhw-rf47
+TorchAudio 2.11使用稳定ABI，官方支持PyTorch 2.11及以后；旧2.10不能与新Torch混搭，故成套验证。
+https://docs.pytorch.org/audio/stable/installation.html
+
+D07：CVE-2026-4538 / PYSEC-2026-139涉及.pt2反序列化，聚合页面的版本范围与修复信息不完整，上游PR不能等同已发布修复。
+本软件源代码未发现torch.export.load或.pt2导入入口。不得加载不可信.pt2，不将升级后的OSV“无命中”等同该问题已被证明消失。
+https://github.com/advisories/GHSA-33x2-ppm4-v46v
+https://github.com/pytorch/pytorch/pull/176791
+
+其他依赖与原生库：全部直接Python依赖逐项检索官方／主要公告来源，全部127个实际发行包同时通过OSV与pip-audit交叉核对。
+基线6个版本命中17条公告，修复候选完整清单复扫未命中已知公告；不是无漏洞保证。Rust 8个精确版本OSV查询无命中；本机没有cargo，因此未声称运行cargo audit。
+Qt实际运行库是PyQt6-Qt6 6.11.2，不是仅看绑定PyQt6 6.11.0就认定未修复：官方说明6.11.2已包含SVG递归和QtMultimedia内置FFmpeg相关高危修复。
+https://www.qt.io/blog/security-advisory-cve-2026-8168
+https://www.qt.io/blog/security-advisory-cve-2026-8461
+独立FFmpeg为9.0.2；OpenCV/PyAV/Qt带各自的媒体库，不能用一个ffmpeg.exe版本替代全部二进制审查。
+https://ffmpeg.org/security.html
+stable-ts已归档；pydub、odfpy、langdetect长期无稳定新版本，列维护关注，不据此编造CVE或断言恶意仿冒。Google API客户端为维护模式，不能等同停止安全维护。
+
+四、代码修复细节与攻击条件
+C01：两个旧Google授权回调只设server.timeout，无法限制已接受TCP连接的读取；本地进程可连入后不发完整HTTP头，使取消和3分钟截止检查无法执行。新共享服务器为每个连接设置读超时和整次请求截止，防止持续滴送头部；超时后归还控制，不吞掉任意OSError。
+显式开启SDK的S256 PKCE，保留state校验和127.0.0.1绑定，回调加no-store并只保留首个有效结果。只改登录保护，不更换账号、授权用途或令牌。
+新增11项安全回归，覆盖无响应连接、整次截止、SDK真实PKCE参数、压缩包边界等；原Docs授权8项测试增加PKCE断言，未放宽业务检查。
+
+C02：主任务ODS导入此前没有沿用表头编辑器的32MiB压缩／128MiB展开限制。恶意或错误表格可在进入行数处理前耗尽资源。现在先读取有上限的不可变快照、检查ZIP展开总量再交给odfpy，表头路径复用同一入口，避免检查路径后被替换。
+odfpy当前使用defusedxml，未将此问题误报为已证实的XXE。128MiB限制仍不等于所有XML复杂度攻击已隔离，进程级解析时间／内存限制列后续建议。
+
+C03：透明边界扫描与循环播放清单使用裸临时目录／路径写入，光标JSON缓存直接读删，固定人脸模型直接读取，绕过宿主数据检查。改为data_io/data_file；透明扫描的输出与错误日志也放在受检查的临时目录内。正常VeraCrypt会话保留原有保护，不偷偷回退系统临时目录。
+无痕聊天的sqlite3.connect(':memory:')不接触磁盘，原静态规则误报；仅为字面量:memory:增加精确豁免，并测试普通路径、变量和URI数据库仍被检出。没有通过隐藏真实文件写入来“让测试变绿”。
+
+C04：utility_managers中途导入插件UI，触发builtin导入库存插件，而后者又需要尚未定义的InventoryManagerDialog。改为模块__getattr__延迟兼容导入，旧导入路径保留；没有改变库存数据或插件默认状态。
+
+误报甄别：两处MD5用于Google Drive传输校验而非安全认证，保留协议兼容并显式usedforsecurity=False；本地身份仍用SHA-256。SQLite动态列名／排序来自固定白名单，值使用占位符。Python节点exec属于经指纹确认的有意功能，外部导入／粘贴会清授权；子进程限时与数据限制不是通用安全沙箱。
+下载与解压：核对Google下载HTTPS域名／重定向和文件名限制；FFmpeg/mpv先验固定SHA-256、仅提取明确文件名，不按任意归档路径落地。mpv下载总量／完整请求期限仍可进一步收紧。
+TLS／序列化：未确认关闭证书校验、shell=True拼接、pickle反序列化或无界extractall的真实漏洞；静态无命中不是形式化证明。
+
+五、Chrome扩展与CI/CD
+候选桥接1.1.62，基于固定FlowCue 1.1.6提交；源码构建白名单15个资源并核对版本，未替换正在使用的浏览器扩展。
+本地WebSocket仅监听LocalHost；验证精确chrome-extension Origin、令牌、协议和消息大小。配对票据单次、限时；已有token才可查询本配置票据。不是向任意网页开放一个免鉴权端口。
+网页→扩展接口校验sender、顶层frame、Google来源；网页存储访问限制为UI键，不能取得桌面配对密钥。原生上传另有当前项目／本地图片授权；网页不能命令关闭全部浏览器。
+permissions中的debugger/tabs/downloads/scripting及Google内容域范围较宽，确有拖放／捕获／下载用途，未盲删破坏现有功能。建议长期拆分可选权限、减少docs及googleapis范围；目前属于可信站点与扩展代码受攻陷时的残余高权限面。
+67个新构建扩展禁网JS脚本通过；一个像素夹具分支因缺@napi-rs/canvas跳过，不能写成全部视觉像素测试已跑。
+CI：核对固定40位SHA的第三方Action、tag触发、persist-credentials:false；未发现pull_request_target或PR标题等不可信表达式直接拼脚本。本轮未推送tag、上传发行或提交外部审核。
+
+六、密钥与旧副本
+.env示例仅含变量名，补齐OpenAI、OpenRouter、Mistral、Cloudflare；没有把真实Key放进示例。
+.env、根私有配置、Google令牌和*.bak-*等被忽略；当前公开文本和全部可达历史文本扫描无特征命中。模式扫描无法证明未知格式／二进制／不可达对象中绝无秘密。
+首次本地旧配置检查命中33处Google API Key特征；在用户批准后，9份明确旧备份先保存到经驱动核验的VeraCrypt卷，逐字节SHA-256复核后删除外部副本。未删除任何加密副本，也未改账号绑定。
+补查根OAuth文件后，剩余2个主配置及4个Google授权原文件有16处敏感特征。它们未被Git跟踪，但普通磁盘副本仍是待处理风险。安全检查不允许仅凭密盘中存在同内容就认定主文件不再活动，因此没有擅删。
+普通删除不等于SSD／备份系统的取证级安全擦除。若凭据曾真实泄露或已提交到别处，必须去对应平台作废并重新生成，只删文件不够；本轮未擅自轮换Key。
+
+七、构建、测试和实际安装
+基线完整583模块：29模块失败；报告记录7622个测试、127个失败断言／子测试、7个错误、43跳过、2个Qt回调错误，另1模块150秒超时未返回完整汇总。
+候选完整584模块后，对最终增量定向重跑：有效汇总7671测试、125个失败断言／子测试、2个错误、43跳过、2个Qt回调错误；剩21个失败模块，无新增未解决失败模块。
+这些不是全绿结果。88个失败子测试集中在旧字幕预设自由度断言，另有预览／成片差异、布局、Flow窗口行为、后台素材及测试清理问题，必须分别确认是旧断言还是产品缺陷，不能删除断言粉饰。
+播放器基线在setSource处曾挂住150秒，候选13项测试通过，但本轮没有修改播放器，所以该问题仍标“间歇性待确认”，不宣称已修复死锁。
+离线原生验证：张量、音频重采样、锁竞争／递归、权重安全读写、CLIP最小推理、Whisper编码／解码均通过；现有缓存base语音模型与安全权重CLIP-large应用加载器通过。CLIP-base因本机无该模型缓存未完成，同错误在旧环境也存在，未伪造通过。
+127包候选依赖元数据检查0冲突；pip-audit/OSV复扫无已知命中。现有PyInstaller流程已构建成功，最终安全增量另行重建；构建成功不等于真实账户和完整GUI验收通过。
+现用虚拟环境已离线安装这7项升级，pip check通过，实际环境pip-audit/OSV亦无已知命中。源码安装前逐文件核对原始哈希；安装后19个关键模块、307个测试全部通过（含2项环境性跳过，无失败或Qt回调错误）。首次安装后测试的一个默认GBK解码错误来自测试启动环境，补齐与CI一致的UTF-8设置后完整重跑，未改业务断言。
+最终安全增量PyInstaller重建成功；本机审查ZIP包含10135个条目，通过现有完整性／隐私门禁，开发者文档未打入包内；匹配Flow扩展1.1.62审核包已准备。ZIP明确标为LOCAL-SECURITY-REVIEW、不可发布，未上传；这不是正式发行包。
+系统Python未因本轮任务额外变更，运行中的浏览器扩展没有热替换。完整审查原始记录保存在本机独立security-audit-v350-20261117工作目录，私有副本位置与指纹未加入公开文档。
+
+八、开发者取舍与后续
+1. 暂不发布：先关闭21个回归失败模块和间歇播放器挂起；本轮不擅改字幕业务效果、删除功能或放宽断言。
+2. stable-ts替代评估见subtitle-engine-replacement-20261117.txt。短句原型保留原文，但分词数与原引擎不同；WhisperX与Python3.14／安全版Torch有明确约束冲突，不应降级整套环境硬装。
+3. 无明确修复的.pt2公告继续作为条件风险，保持不接受不可信检查点；新增模型类型必须重新审查，不能套用本次无命中结论。
+4. 活动主配置／OAuth原文件须完成入口依赖和恢复验证后再清理；不能为了扫描数字归零删掉仍被使用的凭据。
+5. 加入持续依赖审计与凭据扫描、轮子哈希锁、受限进程内的PDF／ODS解析和恶意媒体模糊测试。第三方插件仍按可信本地代码管理。
+6. 最终发行需要冻结全部拟发布代码、重跑干净全量门禁、核对新EXE与匹配扩展、生成构建身份与SHA-256，再申请发布／外部审核；本报告不代替外部通过证明。

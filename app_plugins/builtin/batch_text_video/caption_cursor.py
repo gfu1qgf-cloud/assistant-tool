@@ -145,7 +145,9 @@ def write_native_assets(ass_path,primitives,layer,width,height):
     cursors=[p for p in primitives if p.get('cursor_image')]
     path=Path(ass_path)
     if not cursors:
-        path.with_suffix('.cursor.json').unlink(missing_ok=True);return
+        metadata_file = data_file(path.with_suffix('.cursor.json'))
+        if metadata_file.exists(): metadata_file.remove()
+        return
     budget=ActiveBudget(80000,32*1024*1024,ticks_per_second=10**9)
     for p in cursors:budget.add(p['start'],p['end'],256)
     budget.validate()
@@ -185,8 +187,9 @@ def write_native_assets(ass_path,primitives,layer,width,height):
 
 
 def append_native(args,filters,source,output,ass_path,layer,width,height,duration,fps,index):
+    from model.AppDataStorage import data_file
     from .captions import filter_path
-    metadata=json.loads(Path(ass_path).with_suffix('.cursor.json').read_text('utf8'))
+    metadata=json.loads(data_file(Path(ass_path).with_suffix('.cursor.json')).read_text('utf8'))
     prefix=output+'_cursor';rate=f'{float(fps):.9f}'
     args.extend(('-i',metadata['image']))
     filters.append(f'[{index}:v]format=rgba,loop=loop=-1:size=1:start=0,setpts=N/({rate}*TB),trim=duration={duration:.9f},colorchannelmixer=aa={metadata["opacity"]:.9f}[{prefix}_sprite]')

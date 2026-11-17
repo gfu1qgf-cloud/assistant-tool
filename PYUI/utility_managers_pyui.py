@@ -1080,7 +1080,13 @@ class MaterialGroupAssignmentDialog(QtWidgets.QDialog):
         self.accept()
 
 
-from app_plugins.builtin.sheet_monitor.ui import GoogleSheetMonitorDialog  # Legacy import compatibility.
+def __getattr__(name):
+    # Keep the old import path without loading every built-in plugin while
+    # this module's InventoryManagerDialog is still being defined.
+    if name == 'GoogleSheetMonitorDialog':
+        from app_plugins.builtin.sheet_monitor.ui import GoogleSheetMonitorDialog
+        return GoogleSheetMonitorDialog
+    raise AttributeError(f'module {__name__!r} has no attribute {name!r}')
 
 
 class InventoryItemDialog(QtWidgets.QDialog):

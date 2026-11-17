@@ -53,6 +53,7 @@ def _first_frame(path, ffmpeg='', cancel=None):
 
 def _models():
     import cv2
+    from model.AppDataStorage import data_file
     if not hasattr(_MODELS, 'models'):
         models = []
         for name in ('haarcascade_frontalface_default.xml', 'haarcascade_profileface.xml'):
@@ -60,7 +61,7 @@ def _models():
             # OpenCV's narrow Windows filename API cannot open a Chinese
             # installation path. Read with Python, then parse XML in memory.
             try:
-                storage = cv2.FileStorage(path.read_text(encoding='utf8'), cv2.FILE_STORAGE_READ | cv2.FILE_STORAGE_MEMORY)
+                storage = cv2.FileStorage(data_file(path).read_text(encoding='utf8'), cv2.FILE_STORAGE_READ | cv2.FILE_STORAGE_MEMORY)
                 try:
                     model = cv2.CascadeClassifier(); model.read(storage.getFirstTopLevelNode())
                 finally: storage.release()

@@ -110,15 +110,18 @@ def _validate(value):
 
 
 def _scan(path, ffmpeg, width, height, threshold, padding, native, cancel):
+    from model.AppDataStorage import data_io, data_file
     from .dnx_alpha import packets, decoder, check, FLAGS
     decode = process = None
-    with tempfile.TemporaryDirectory(prefix='alpha-bounds-') as folder, tempfile.TemporaryFile() as output, tempfile.TemporaryFile() as errors:
+    with data_io.TemporaryDirectory(prefix='alpha-bounds-') as folder, \
+            data_file(Path(folder)/'output.log').open('w+b') as output, \
+            data_file(Path(folder)/'errors.log').open('w+b') as errors:
         try:
             args = [ffmpeg, '-nostdin', '-v', 'error', '-threads', '1', '-filter_threads', '1']
             if native:
                 rows = packets(native, cancel)
                 index = Path(folder)/'frames.index'
-                index.write_bytes(b'DNA1'+struct.pack('<I', len(rows))+b''.join(struct.pack('<QI', *row) for row in rows))
+                data_file(index).write_bytes(b'DNA1'+struct.pack('<I', len(rows))+b''.join(struct.pack('<QI', *row) for row in rows))
                 decode = subprocess.Popen([decoder(), '--stream', str(path), str(index)], stdout=subprocess.PIPE, stderr=errors, creationflags=FLAGS)
                 args += ['-f', 'rawvideo', '-pixel_format', 'gray', '-video_size', f'{width}x{height}', '-framerate', native['rate'], '-i', 'pipe:0']
                 vf = ''

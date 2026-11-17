@@ -84,6 +84,7 @@ class PlaylistInput(str):
 
 @contextmanager
 def playlist(spec):
+    from model.AppDataStorage import data_io, data_file
     if stamp(spec.rule['path']) != {key: spec.rule[key] for key in ('size', 'mtime_ns')}:
         raise ValueError('循环素材已改变，请重新设置区间。')
     path = Path(str(spec)).resolve().as_posix().replace("'", "'\\''")
@@ -97,9 +98,9 @@ def playlist(spec):
     for a, b in segments:
         content += (f"file '{path}'\ninpoint {a+spec.start_time:.9f}\n"
                     f"outpoint {b+spec.start_time:.9f}\nduration {b-a:.9f}\n")
-    with tempfile.TemporaryDirectory(prefix='visual-loop-') as directory:
+    with data_io.TemporaryDirectory(prefix='visual-loop-') as directory:
         script = Path(directory)/'loop.ffconcat'
-        script.write_text(content, encoding='utf-8')
+        data_file(script).write_text(content, encoding='utf-8')
         yield ['-f', 'concat', '-safe', '0', '-segment_time_metadata', '1', '-i', str(script)]
 
 

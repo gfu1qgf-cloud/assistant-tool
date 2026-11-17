@@ -63,7 +63,9 @@ def image_record(path, run, *, thumbnail=False, copy_to=None):
     if not path.is_file(): raise ValueError('找不到本地图片：' + str(path))
     before = path.stat()
     if not 0 < before.st_size <= MAX_BYTES: raise ValueError('本地图片为空或超过64MiB：' + path.name)
-    sha, md5, total = hashlib.sha256(), hashlib.md5(), 0
+    # MD5 is required only to compare Drive's transfer checksum; SHA-256 is the
+    # local content identity. Neither checksum authorizes a remote resource.
+    sha, md5, total = hashlib.sha256(), hashlib.md5(usedforsecurity=False), 0
     with data_file(path).open('rb') as stream, (data_file(copy_to).open('wb') if copy_to else nullcontext(None)) as output:
         while block := stream.read(1024 * 1024):
             run.check_canceled(); total += len(block)

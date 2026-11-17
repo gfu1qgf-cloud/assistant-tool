@@ -65,5 +65,14 @@ def direct_io_calls(source):
                 elif mode is None and isinstance(receiver, ast.Call) and isinstance(receiver.func, ast.Name) and receiver.func.id == 'Path':
                     forbidden = not managed(receiver)
         if forbidden:
+            # An exact in-memory SQLite database never opens a private path.
+            # Do not exempt URI databases or variables that may name files.
+            if ((isinstance(call, ast.Attribute) and call.attr == 'connect'
+                    and isinstance(call.value, ast.Name)
+                    and aliases.get(call.value.id, call.value.id) == 'sqlite3')
+                    or (isinstance(call, ast.Name) and imported.get(call.id) == ('sqlite3', 'connect'))):
+                database = node.args[0] if node.args else next((k.value for k in node.keywords if k.arg == 'database'), None)
+                if isinstance(database, ast.Constant) and database.value == ':memory:':
+                    continue
             violations.append((node.lineno, ast.unparse(call)))
     return sorted(violations)
