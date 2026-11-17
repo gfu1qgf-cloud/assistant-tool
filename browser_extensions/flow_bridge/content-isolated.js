@@ -134,7 +134,7 @@ chrome.runtime.onMessage.addListener((message) => {
   }
 });
 
-console.log("%c[FlowIsolated] 消息桥梁脚本已成功注入当前页面！URL=%s", "background: #3b82f6; color: white; padding: 2px 6px; border-radius: 4px; font-weight: bold;", location.href);
+console.log("%c[FlowIsolated] 消息桥梁脚本已成功注入当前页面！", "background: #3b82f6; color: white; padding: 2px 6px; border-radius: 4px; font-weight: bold;");
 
 // 4. 守护保底：若主世界 UI 脚本未能成功挂载悬浮按钮，由独立世界兜底注入
 function ensureFabMounted() {

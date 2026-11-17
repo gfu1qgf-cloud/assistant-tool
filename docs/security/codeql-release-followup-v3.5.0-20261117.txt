@@ -10,8 +10,8 @@
 逐项处置
 编号 | 规则 | 位置/用途 | 判定与处置
 21–24 | js/remote-property-injection | adapter/background.js 与生成的 lzx-background.js | 兼容加固：Map 批次表、只确认已有 own-key 回执
-7、8 | js/tainted-format-string | isolated console 启动日志及原始上游副本 | 运行版本固定格式字符串，网址作为独立 %s 数据；原始上游仅供重建
-15–20 | js/log-injection | UI 设置/素材诊断、账号日志及上游副本 | 运行版本去掉不必要用户内容，账号日志移除全部换行；原始上游不执行
+7、8 | js/tainted-format-string | isolated console 启动日志及原始上游副本 | 运行版本固定格式字符串且不记录页面网址/配对片段；原始上游仅供重建
+15–20 | js/log-injection | UI 设置/素材诊断、账号日志及上游副本 | 运行版本不写入用户/账号诊断值；原始上游不执行
 5、6 | js/incomplete-url-substring-sanitization | 账号桥接 host 后缀及上游副本 | 运行版本显式完整域名或点分子域边界；原始上游不执行
 11–14 | js/regex/missing-regexp-anchor | isIgnoredImg 的头像排除条件，两条正则各两份 | 误报：命中后拒绝图片候选，不是信任/允许 URL 的条件
 3、4 | js/incomplete-url-substring-sanitization | isStaticShowcaseAsset 的 gstatic 展示素材排除 | 误报：命中后排除，不授予下载、上传或网页通信权限
@@ -28,7 +28,8 @@
 域名判断显式匹配完整主机或 '.flow.google.com' / '.labs.google' 边界，
 拒绝 evilflow.google.com、notlabs.google 和真正域名后再拼接外域的情形。
 控制台原始格式串拼网址可被 URL 中的 %c 等影响展示，但这不是 JS 执行。
-改用常量格式与独立数据。日志换行已过滤；移除的只是冗余诊断参数，不是
+改用常量格式，并完全省略页面网址，避免连同短期配对片段写入日志。账号诊断仅保留常量事件，不写入邮箱、积分或
+任何外部值；移除的只是冗余诊断参数，不是
 素材选择、积分、生成、下载或人工控制功能。
 
 本机通信误报的具体边界
@@ -64,6 +65,13 @@ codeql-triage-v3.5.0-20261117.json。未改变任何扫描规则或目录范围�
 map 聚合仍保留数据流。现改为在 join 后对整个最终字符串统一去换行，
 保留同样的日志与所有分隔符保护；重新执行 68 个脚本通过，等待下一次
 完整云端扫描验证。不得把该阶段写成“目前已经无开放代码告警”。
+
+最终日志策略追加
+28 号由下一次扫描自动修复，但同一聚合日志路径又产生 29 号告警；未将
+29 号纳入用户批准的 16 条误报，也未手动关闭。最终改为只输出固定的账号
+状态事件，不再把任何账号派生值写入控制台，连日志格式/换行解释面一并
+移除。账号识别、余额计算、连接状态及主程序诊断界面不变；执行测试确认
+恶意分隔符及邮箱均不进入控制台。仍由完整扫描自动验证该新路径。
 
 参考（规则说明，不是证明本软件必然受影响）
 https://codeql.github.com/codeql-query-help/javascript/js-log-injection/

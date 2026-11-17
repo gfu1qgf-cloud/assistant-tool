@@ -6604,7 +6604,7 @@ ${presetAfter || ""}`.trim();
     let lastProbeAt = 0;
     let probing = null;
 
-    const log = (...a) => { const text = a.map(value => String(value)).join(" ").replace(/\n|\r|\u2028|\u2029/g, " "); console.log("[FlowAccount] %s", text); };
+    const log = () => console.log("[FlowAccount] 状态事件");
     const sleep = (ms) => new Promise(r => setTimeout(r, ms));
     const EMAIL_RE = /([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/;
 

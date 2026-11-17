@@ -18,14 +18,16 @@ class FlowCodeQLSecurityTests(unittest.TestCase):
         result=security['patch_ui'](source)
         self.assertIn('host.endsWith(".flow.google.com")',result)
         self.assertNotIn('host.endsWith("flow.google.com")',result)
-        self.assertIn('join(" ").replace(/\\n|\\r|\\u2028|\\u2029/g',result)
+        self.assertIn('const log = () => console.log("[FlowAccount] 状态事件");',result)
         with self.assertRaisesRegex(ValueError,'re-audit'):
             security['patch_ui'](source.replace('host.endsWith("flow.google.com")','changed'))
 
-    def test_console_format_patch_keeps_url_as_separate_data(self):
+    def test_console_format_patch_does_not_log_page_url(self):
         source=(ROOT/'third_party/flowcue/extension/content-isolated.js').read_text('utf-8')
         result=security['patch_isolated'](source)
-        self.assertIn('URL=%s",',result)
+        boot=next(line for line in result.splitlines() if '消息桥梁脚本已成功注入当前页面！' in line)
+        self.assertNotIn('location.href',boot)
+        self.assertNotIn('URL=',boot)
         self.assertNotIn('URL=" + location.href',result)
         with self.assertRaises(ValueError):
             security['patch_isolated'](result)

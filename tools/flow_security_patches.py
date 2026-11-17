@@ -17,14 +17,14 @@ def patch_ui(text):
         'console.log("[FlowUI] 正在关联素材");')
     text=once(text,
         'const log = (...a) => console.log("[FlowAccount]", ...a);',
-        r'const log = (...a) => { const text = a.map(value => String(value)).join(" ").replace(/\n|\r|\u2028|\u2029/g, " "); console.log("[FlowAccount] %s", text); };')
+        'const log = () => console.log("[FlowAccount] 状态事件");')
     return text
 
 
 def patch_isolated(text):
     return once(text,
         'console.log("%c[FlowIsolated] 消息桥梁脚本已成功注入当前页面！URL=" + location.href, "background: #3b82f6; color: white; padding: 2px 6px; border-radius: 4px; font-weight: bold;");',
-        'console.log("%c[FlowIsolated] 消息桥梁脚本已成功注入当前页面！URL=%s", "background: #3b82f6; color: white; padding: 2px 6px; border-radius: 4px; font-weight: bold;", location.href);')
+        'console.log("%c[FlowIsolated] 消息桥梁脚本已成功注入当前页面！", "background: #3b82f6; color: white; padding: 2px 6px; border-radius: 4px; font-weight: bold;");')
 
 def patch_background(text,guard):
     text=once(text,'chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {',
