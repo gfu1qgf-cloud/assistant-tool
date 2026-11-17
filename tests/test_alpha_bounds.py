@@ -133,6 +133,11 @@ class AlphaBoundsTests(unittest.TestCase):
             self.assertLessEqual(np.abs(frames[0].astype(int)-frames[15]).max(),2, (transition, frames[0,25,20].tolist(),frames[15,25,20].tolist()))
 
     def test_node_conversion_keeps_crop_and_matches_native_export(self):
+        from render_test_fixtures import lossless_composition
+        with lossless_composition():
+            self._check_node_conversion_keeps_crop_and_matches_native_export()
+
+    def _check_node_conversion_keeps_crop_and_matches_native_export(self):
         from types import SimpleNamespace
         from app_plugins.builtin.batch_text_video.component_nodes import component_graph
         from app_plugins.builtin.batch_text_video.node_effects import fallback_registry,new_effect,prepare_bundle,EffectRuntime

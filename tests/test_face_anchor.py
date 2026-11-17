@@ -7,7 +7,6 @@ import subprocess
 import tempfile
 import threading
 import time
-import time
 import unittest
 from unittest.mock import patch
 import numpy as np
@@ -293,33 +292,6 @@ class FaceAnchorTests(unittest.TestCase):
         self.assertEqual(layer,original)
 
     @unittest.skipUnless(FF,'real FFmpeg required')
-    def test_node_render_and_native_render_have_matching_face_anchor(self):
-        from types import SimpleNamespace
-        from app_plugins.builtin.batch_text_video.component_nodes import component_graph
-        from app_plugins.builtin.batch_text_video.node_effects import fallback_registry,new_effect,prepare_bundle,EffectRuntime
-        from app_plugins.builtin.batch_text_video.store import DEFAULTS,fresh_state
-        from model.node_workflow.library import WorkflowLibrary
-        layer=self.layer(x=62,y=35,visual_animation='breathe',animation_strength=25,animation_period=1)
-        registry=fallback_registry();graph,_=component_graph(layer,DEFAULTS,registry)
-        library=WorkflowLibrary(self.root/'workflows');saved=library.save(graph,'face',registry)
-        effect=new_effect();effect['workflow_id']=saved['workflow_id']
-        services=SimpleNamespace(available_nodes=lambda:registry,workflow_library=library)
-        outputs=[]
-        with patch.object(face,'locate',return_value=dict(POINT)):
-            for mode in ('native','node'):
-                state=fresh_state();state['settings'].update(aspect='custom',canvas_width=W,canvas_height=H,
-                    unvoiced_duration_seconds=1,darkness=0,music_enabled=False,use_voice=False,ffmpeg_path=FF,
-                    video_encoder='cpu',output_dir=str(self.root/mode),layers=[effect if mode=='node' else layer])
-                job=dict(id=mode,path='',name=mode,title='',body='');state['jobs']=[job]
-                runtime=None
-                if mode=='node':
-                    bundle,registry,_=prepare_bundle(state,[mode],services);runtime=EffectRuntime(bundle,registry)
-                output,_=engine.render_static_text(job,state,self.root/'private',node_effects=runtime)
-                result=subprocess.run([FF,'-v','error','-i',str(output),'-f','rawvideo','-pix_fmt','rgb24','pipe:1'],capture_output=True,timeout=30)
-                self.assertEqual(result.returncode,0,result.stderr.decode('utf8','replace'));outputs.append(result.stdout)
-        self.assertEqual(outputs[0],outputs[1])
-
-    @unittest.skipUnless(FF,'real FFmpeg required')
     def test_video_detects_only_frame_zero_and_does_not_track_later_motion(self):
         from app_plugins.builtin.batch_text_video import preview_cache
         video=self.root/'first-only.mov'
@@ -351,6 +323,19 @@ class FaceAnchorTests(unittest.TestCase):
 
     @unittest.skipUnless(FF,'real FFmpeg required')
     def test_node_render_and_native_render_have_matching_face_anchor(self):
+        for threads in (1,4):
+            with self.subTest(filter_threads=threads):
+                outputs=self._render_face_pair(filter_threads=threads)
+                # Keep exact pixel equality: only eliminate lossy rate control
+                # and host-dependent scheduling from this geometry fixture.
+                self.assertEqual(outputs[0],outputs[1])
+
+    @unittest.skipUnless(FF,'real FFmpeg required')
+    def test_face_anchor_pixel_comparison_detects_a_real_position_change(self):
+        outputs=self._render_face_pair(node_x_offset=2)
+        self.assertNotEqual(outputs[0],outputs[1])
+
+    def _render_face_pair(self, *, filter_threads=1, node_x_offset=0):
         from types import SimpleNamespace
         from app_plugins.builtin.batch_text_video.component_nodes import component_graph
         from app_plugins.builtin.batch_text_video.node_effects import fallback_registry,new_effect,prepare_bundle,EffectRuntime
@@ -358,11 +343,14 @@ class FaceAnchorTests(unittest.TestCase):
         from model.node_workflow.library import WorkflowLibrary
         layer=self.layer(x=62,y=35,visual_animation='breathe',animation_strength=25,animation_period=1)
         registry=fallback_registry();graph,_=component_graph(layer,DEFAULTS,registry)
+        operation=next(item for item in graph['nodes'] if item['kind']=='batch_text_video.visual_layer')
+        operation['params']['layer']['x']+=node_x_offset
         library=WorkflowLibrary(self.root/'workflows');saved=library.save(graph,'face',registry)
         effect=new_effect();effect['workflow_id']=saved['workflow_id']
         services=SimpleNamespace(available_nodes=lambda:registry,workflow_library=library)
         outputs=[]
-        with patch.object(face,'locate',return_value=dict(POINT)):
+        from render_test_fixtures import lossless_composition
+        with patch.object(face,'locate',return_value=dict(POINT)), lossless_composition(filter_threads=filter_threads):
             for mode in ('native','node'):
                 state=fresh_state();state['settings'].update(aspect='custom',canvas_width=W,canvas_height=H,
                     unvoiced_duration_seconds=1,darkness=0,music_enabled=False,use_voice=False,ffmpeg_path=FF,
@@ -372,9 +360,9 @@ class FaceAnchorTests(unittest.TestCase):
                 if mode=='node':
                     bundle,registry,_=prepare_bundle(state,[mode],services);runtime=EffectRuntime(bundle,registry)
                 output,_=engine.render_static_text(job,state,self.root/'private',node_effects=runtime)
-                result=subprocess.run([FF,'-v','error','-i',str(output),'-f','rawvideo','-pix_fmt','rgb24','pipe:1'],capture_output=True,timeout=30)
+                result=subprocess.run([FF,'-v','error','-threads','1','-i',str(output),'-f','rawvideo','-pix_fmt','rgb24','pipe:1'],capture_output=True,timeout=30)
                 self.assertEqual(result.returncode,0,result.stderr.decode('utf8','replace'));outputs.append(result.stdout)
-        self.assertEqual(outputs[0],outputs[1])
+        return outputs
 
     def test_preview_handles_use_worker_geometry_without_reading_files(self):
         from app_plugins.builtin.batch_text_video.preview import Preview
