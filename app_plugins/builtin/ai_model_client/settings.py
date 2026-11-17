@@ -9,6 +9,8 @@ CONFIG_KEY = "ai_model_client"
 
 def default_options():
     return {"system": "", "rounds": 20, "max_tokens": 4096,
+            'context_chars': 0, 'history_images': True,
+            'request_mode': 'instant',
             "temperature": None, "free_only": True, "foreign_only": True, "cf_free_only": True,
             'reasoning_effort':'default','reasoning_mode':'default','verbosity':'default',
             'thinking_budget':None,'top_p':None,'web_search':False,'search_mode':'auto','search_limit':3}

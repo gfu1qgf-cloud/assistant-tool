@@ -47,6 +47,10 @@ def _qt_markdown(text):
     never inside fenced or indented code. Incomplete streaming text stays literal
     until the delimiter arrives, then the next render recognizes the table.
     """
+    # Qt's GitHub dialect silently consumes an opening --- ... --- section as
+    # YAML front matter, even when it is ordinary chat prose. Use the equivalent
+    # thematic break syntax for this display copy; never alter stored text.
+    text = re.sub(r'\A(\ufeff?(?:[ \t]*\r?\n)* {0,3})---[ \t]*(?=\r?\n|$)', r'\1***', text, count=1)
     lines = text.split("\n")
     output = []
     fence = None

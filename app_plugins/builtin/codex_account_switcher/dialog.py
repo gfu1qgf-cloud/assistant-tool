@@ -81,7 +81,7 @@ class AccountSwitcherDialog(QtWidgets.QDialog):
         title.setStyleSheet("font-size: 20px; font-weight: 600;")
         layout.addWidget(title)
         subtitle = QtWidgets.QLabel(
-            "每个账号只登录一次；以后仅替换 Codex 登录缓存，本地对话、项目和历史在各账号间共用。",
+            "每个账号只登录一次；切换登录缓存时同步本地项目记录，兼容新版 Codex 的账号项目归属。",
             self,
         )
         subtitle.setWordWrap(True)
@@ -174,7 +174,7 @@ class AccountSwitcherDialog(QtWidgets.QDialog):
         QtWidgets.QMessageBox.information(
             self,
             "已升级为共享本地对话模式",
-            "旧版账号档案已无损升级：现在仅替换 auth.json，当前 .codex、"
+            "旧版账号档案已无损升级：现在原位切换 auth.json，并兼容账号项目快照；当前 .codex、"
             "本地对话、历史数据库和项目记录都会固定留在原位。\n\n"
             "旧版完整账号目录仍作为安全备份保留。",
         )

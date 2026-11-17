@@ -36,6 +36,8 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install "pip==26.2.1"
+          # Select the same CPU variants used by the local native-stack checks.
+          python -m pip install --no-deps --index-url https://download.pytorch.org/whl/cpu "torch==2.13.0+cpu" "torchaudio==2.11.0+cpu"
           python -m pip install -r requirements.txt
           python -m pip install -r packaging/requirements-build.txt
 
@@ -56,6 +58,9 @@ jobs:
 
       - name: Build Windows application
         run: pyinstaller --noconfirm --clean packaging/AssistantTool.spec
+
+      - name: Check frozen UI and cooperative shutdown with disposable offline state
+        run: python packaging/smoke_frozen.py --executable dist/AssistantTool/AssistantTool.exe --template config.example.json --output test-results/frozen-smoke --version "$env:GITHUB_REF_NAME"
 
       - name: Record source and actual dependency versions
         run: python packaging/build_manifest.py --version "$env:GITHUB_REF_NAME" --commit "$env:GITHUB_SHA" --output dist/AssistantTool/BUILD_INFO.json
@@ -96,6 +101,8 @@ jobs:
             dist_final/flow/FLOW_REVIEW.txt
           body_path: dist_final/RELEASE_NOTES.md
           generate_release_notes: false
+          draft: false
+          prerelease: false
 
   # Run only after the Release exists: the review platform requires a fresh
   # SARIF upload newer than Release.published_at, not just a pre-release scan.

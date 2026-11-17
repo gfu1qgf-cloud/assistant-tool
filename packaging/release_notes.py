@@ -20,6 +20,11 @@ def extract_release_notes(markdown, version):
         raise ValueError(f"CHANGELOG.md 必须包含且仅包含一条 {version} 更新日志。")
     index, heading = matches[0]
     end = headings[index + 1].start() if index + 1 < len(headings) else len(markdown)
+    # Development diary headings are not release-version boundaries. Do not
+    # accidentally publish all those entries as part of the preceding release.
+    following = re.search(r'^## ', markdown[heading.end():end], re.MULTILINE)
+    if following:
+        end = heading.end() + following.start()
     body = markdown[heading.end():end].strip()
     if not body or not re.search(r"^[-*] \S", body, re.MULTILINE):
         raise ValueError(f"{version} 更新日志为空或没有具体改动条目。")

@@ -1,13 +1,14 @@
 """Safe local credential profiles for the Codex account-switcher plugin.
 
-Only ``auth.json`` is switched.  The live ``.codex`` directory, including
-sessions, project state, and configuration, stays in place at all times.
+Credentials are switched in place. New Codex account-scoped project snapshots
+are bridged for local projects; sessions, databases and configuration stay put.
 """
 
 from __future__ import annotations
 from model.AppDataStorage import data_directory, data_file, data_io
 
 import json
+import hashlib
 import os
 import shutil
 import stat
@@ -17,6 +18,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+from .project_state import GLOBAL_STATE_FILE, MAX_STATE_BYTES, share_local_projects
 
 
 STORE_VERSION = 3
@@ -154,6 +157,74 @@ class AccountProfileStore:
     @property
     def rollback_auth_path(self) -> Path:
         return self.rollback_root / "auth.json"
+
+    @property
+    def rollback_state_path(self) -> Path:
+        return self.rollback_root / "project-state.json"
+
+    def _atomic_write_state(self, path: Path, content: bytes) -> None:
+        data_directory(path.parent).ensure(parents=True, exist_ok=True)
+        descriptor, name = data_io.mkstemp(prefix="project-state-", suffix=".tmp", dir=path.parent)
+        temporary = Path(name)
+        try:
+            with os.fdopen(descriptor, "wb") as handle:
+                handle.write(content)
+                handle.flush()
+                os.fsync(handle.fileno())
+            self._tighten_file(temporary)
+            data_io.replace(temporary, path)
+        finally:
+            if temporary.exists():
+                data_file(temporary).remove()
+
+    def _prepare_project_state(self, target_auth: Path) -> tuple[bytes, bytes] | None:
+        path = self.live_home / GLOBAL_STATE_FILE
+        if not path.exists():
+            return None
+        if is_reparse_or_symlink(path) or not path.is_file() or path.stat().st_size > MAX_STATE_BYTES:
+            raise AccountSwitcherError("Codex 项目状态不是普通文件或过大，未执行切换。")
+        try:
+            original = data_file(path).read_bytes()
+            state = json.loads(original)
+            if not isinstance(state, dict):
+                raise ValueError("Codex 项目状态格式无效。")
+            # Old Codex needs no credential parsing or state rewrite.
+            if "electron-account-renderer-state-v1" not in state:
+                return None
+            auth = json.loads(data_file(target_auth).read_text(encoding="utf-8"))
+            updated = share_local_projects(state, auth, "local:" + str(self.live_home))
+            if updated == state:
+                return None
+            content = (json.dumps(updated, ensure_ascii=False, separators=(",", ":")) + "\n").encode("utf-8")
+            return original, content
+        except (ValueError, TypeError, AttributeError, KeyError) as error:
+            raise AccountSwitcherError(f"无法兼容 Codex 本地项目状态：{error}") from error
+
+    def _restore_project_state(self, transaction: dict[str, Any]) -> str | None:
+        digest = transaction.get("project_state_after_sha256")
+        if not digest:
+            return None  # Compatible with transactions from older switchers.
+        try:
+            path = self.live_home / GLOBAL_STATE_FILE
+            original = data_file(self.rollback_state_path).read_bytes()
+            if hashlib.sha256(original).hexdigest() != transaction.get("project_state_before_sha256"):
+                raise AccountSwitcherError("项目状态恢复备份校验失败。")
+            if is_reparse_or_symlink(path):
+                raise AccountSwitcherError("项目状态路径已变化。")
+            current = data_file(path).read_bytes()
+            if current == original:
+                return None
+            if hashlib.sha256(current).hexdigest() != digest:
+                raise AccountSwitcherError("项目状态已被其他进程更新，保留备份并停止覆盖；请关闭 Codex 后检查。")
+            self._atomic_write_state(path, original)
+            return None
+        except (OSError, AccountSwitcherError) as error:
+            return str(error)
+
+    def _cleanup_switch_backups(self) -> None:
+        for path in (self.rollback_auth_path, self.rollback_state_path):
+            if path.exists():
+                data_file(path).remove()
 
     @staticmethod
     def _tighten_directory(path: Path) -> None:
@@ -488,7 +559,7 @@ class AccountProfileStore:
         return ready[0]
 
     def switch_to(self, target_id: str, *, allow_unbound: bool = False) -> AccountProfile:
-        """Atomically replace only the live auth file and retain a rollback copy."""
+        """Switch auth and bridge local project snapshots in one recoverable transaction."""
         current = self.active_profile
         target = self.profile(target_id)
         if not target:
@@ -509,6 +580,8 @@ class AccountProfileStore:
         if not target_ready and not allow_unbound:
             raise AccountSwitcherError("目标账号尚未完成首次登录。")
 
+        project_change = self._prepare_project_state(target_auth) if target_ready else None
+
         # Tokens can refresh while Codex is running, so persist the latest one
         # immediately before replacing the live cache.
         if self._is_valid_auth_file(self.live_auth_path):
@@ -526,6 +599,14 @@ class AccountProfileStore:
             "had_live_auth": had_live_auth,
             "started_at": utc_now(),
         }
+        if project_change is not None:
+            original, content = project_change
+            self._atomic_write_state(self.rollback_state_path, original)
+            backup = self.archive_root / "project-state-before-compat.json"
+            if not backup.exists():
+                self._atomic_write_state(backup, original)
+            transaction["project_state_before_sha256"] = hashlib.sha256(original).hexdigest()
+            transaction["project_state_after_sha256"] = hashlib.sha256(content).hexdigest()
         self._data["transaction"] = transaction
         self.save()
         cleanup_backup = False
@@ -534,6 +615,11 @@ class AccountProfileStore:
                 self._atomic_copy_auth(target_auth, self.live_auth_path)
             elif self.live_auth_path.exists():
                 data_file(self.live_auth_path).remove()
+            if project_change is not None:
+                path = self.live_home / GLOBAL_STATE_FILE
+                if is_reparse_or_symlink(path) or data_file(path).read_bytes() != project_change[0]:
+                    raise AccountSwitcherError("Codex 项目状态在切换期间变化，已停止切换。")
+                self._atomic_write_state(path, project_change[1])
             self._data["active_profile_id"] = target.profile_id
             updated = self._mark_used(target.profile_id, save=False)
             self._data["transaction"] = None
@@ -542,7 +628,10 @@ class AccountProfileStore:
             return updated
         except (OSError, AccountSwitcherError) as error:
             restore_error = self._restore_previous_auth(had_live_auth)
+            state_error = self._restore_project_state(transaction)
+            restore_error = "; ".join(v for v in (restore_error, state_error) if v) or None
             self._data["active_profile_id"] = current.profile_id
+            self._data["transaction"] = transaction
             index_error = None
             if restore_error is None:
                 self._data["transaction"] = None
@@ -554,15 +643,15 @@ class AccountProfileStore:
                     # can still restore safely, matching the standalone tool.
                     self._data["transaction"] = transaction
                     index_error = str(save_error)
-            message = f"登录缓存切换失败：{error}"
+            message = f"账号切换失败：{error}"
             if restore_error:
                 message += f"；自动恢复也失败：{restore_error}"
             if index_error:
                 message += f"；恢复后的索引暂时无法写入：{index_error}"
             raise AccountSwitcherError(message) from error
         finally:
-            if cleanup_backup and self.rollback_auth_path.exists():
-                data_file(self.rollback_auth_path).remove()
+            if cleanup_backup:
+                self._cleanup_switch_backups()
 
     def _restore_previous_auth(self, had_live_auth: bool) -> str | None:
         try:
@@ -582,13 +671,14 @@ class AccountProfileStore:
         if not source:
             raise AccountSwitcherError("发现未完成切换，但原账号不存在；已停止操作。")
         restore_error = self._restore_previous_auth(bool(transaction.get("had_live_auth")))
+        state_error = self._restore_project_state(transaction)
+        restore_error = "; ".join(v for v in (restore_error, state_error) if v) or None
         if restore_error:
             raise AccountSwitcherError(f"恢复上次登录缓存失败：{restore_error}")
         self._data["active_profile_id"] = source.profile_id
         self._data["transaction"] = None
         self.save()
-        if self.rollback_auth_path.exists():
-            data_file(self.rollback_auth_path).remove()
+        self._cleanup_switch_backups()
 
     def _recover_v2_interrupted_switch(self) -> None:
         """Stabilize an old whole-directory switch before the v3 migration."""

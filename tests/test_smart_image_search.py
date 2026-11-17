@@ -333,6 +333,15 @@ class ImageSearchDialogTests(unittest.TestCase):
         dialog.close()
         self.wait_count(dialog)
 
+    def wait_work(self, dialog):
+        # QThread.finished precedes native cleanup. The production lifecycle
+        # gate intentionally defers releasing ownership until wait(0) succeeds.
+        deadline = time.monotonic() + 3
+        while dialog.is_busy() and time.monotonic() < deadline:
+            self.app.processEvents()
+            time.sleep(.002)
+        self.assertFalse(dialog.is_busy())
+
     def test_dialog_builds_without_loading_model(self):
         with tempfile.TemporaryDirectory() as folder:
             dialog = SmartImageSearchDialog(
@@ -368,6 +377,7 @@ class ImageSearchDialogTests(unittest.TestCase):
                 dialog.worker.finished.connect(loop.quit)
                 QtCore.QTimer.singleShot(3000, loop.quit)
                 loop.exec()
+                self.wait_work(dialog)
                 self.assertFalse(dialog.is_busy())
                 self.assertEqual(dialog.results.count(), 1)
                 self.assertIn("red.png", dialog.results.item(0).text())
@@ -397,6 +407,7 @@ class ImageSearchDialogTests(unittest.TestCase):
                 dialog.worker.finished.connect(loop.quit)
                 QtCore.QTimer.singleShot(3000, loop.quit)
                 loop.exec()
+                self.wait_work(dialog)
                 self.assertFalse(dialog.is_busy())
                 self.assertIn("blue.png", dialog.results.item(0).text())
                 self.assertIn("图片＋文字", dialog.status.text())

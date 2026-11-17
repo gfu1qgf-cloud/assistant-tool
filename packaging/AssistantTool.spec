@@ -1,6 +1,14 @@
 # -*- mode: python ; coding: utf-8 -*-
 import sys
+import os
 from pathlib import Path
+from runpy import run_path
+
+# PyInstaller otherwise searches the developer desktop's PATH for DLLs. A
+# Poppler ICU with the same filename lacks the Windows ICU exports Qt needs.
+# Scope this change to this build process; never modify the user's system PATH.
+if os.name == 'nt':
+    run_path(str(Path(SPECPATH) / 'build_environment.py'))['isolate_windows_build_environment']()
 
 from PyInstaller.utils.hooks import collect_all, collect_submodules
 

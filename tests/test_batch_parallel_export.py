@@ -21,6 +21,13 @@ from model.MediaCacheLeases import media_cache_lease, media_cache_in_use
 
 class ParallelExportTests(unittest.TestCase):
     def setUp(self):
+        # These fake encoders exercise ordering/replay, not machine pressure.
+        # Low-memory admission/cancellation has its own controlled test suite.
+        from app_plugins.builtin.batch_text_video import memory_pressure as memory
+        counter=patch.object(memory,'read_status',return_value=dict(
+            total_physical=512*memory.GIB,free_physical=512*memory.GIB,
+            total_commit=1024*memory.GIB,free_commit=512*memory.GIB))
+        counter.start();self.addCleanup(counter.stop)
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)

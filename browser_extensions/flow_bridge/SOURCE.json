@@ -2,7 +2,7 @@
   "repository": "https://github.com/dedeyuyu/FlowCue",
   "commit": "a5a4a3607e55c85c9c0c2e8e4700f2140eefb36d",
   "upstream_version": "1.1.6",
-  "bridge_version": "1.1.60",
+  "bridge_version": "1.1.62",
   "protocol": 1,
   "patch_module": "tools/flow_bridge_patches.py",
   "patches": [

@@ -163,8 +163,8 @@ class SmartTimelineWidget(QtWidgets.QWidget):
         for top, height, label in (
             (self.VIDEO_TOP, self.VIDEO_HEIGHT, "视频 / 删除区"),
             (self.WAVE_TOP, self.WAVE_HEIGHT, "音频波形"),
-            (self.RECOGNIZED_TOP, self.SUBTITLE_HEIGHT, "模型识别字幕"),
-            (self.ALIGNED_TOP, self.SUBTITLE_HEIGHT, "任务文本对齐"),
+            (self.RECOGNIZED_TOP, self.SUBTITLE_HEIGHT, "模型原始时间"),
+            (self.ALIGNED_TOP, self.SUBTITLE_HEIGHT, "任务字幕预览"),
         ):
             self._draw_track_background(painter, top, height, label)
         painter.setPen(QtGui.QColor("#AAB2C3"))
@@ -469,9 +469,9 @@ class SmartTimelineWidget(QtWidgets.QWidget):
                     label = "⛔ 缺段原文"
                 else:
                     label = (
-                        "模型识别"
+                        "模型识别（原始时间）"
                         if block.get("kind") == "recognized"
-                        else "任务文本对齐"
+                        else "任务字幕预览（按字幕间隔设置）"
                     )
                 self.setToolTip(
                     f"{label} · {format_time(block['timeline_start'])}\n"

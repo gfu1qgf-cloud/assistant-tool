@@ -31,6 +31,9 @@ def make_manifest(version, commit):
         for dist in importlib.metadata.distributions()
         if dist.metadata.get("Name")
     }
+    for name, expected in {'torch': '2.13.0+cpu', 'torchaudio': '2.11.0+cpu'}.items():
+        if packages.get(name) != expected:
+            raise ValueError('Release native stack differs from the tested CPU variant: ' + name)
     return {
         "version": version,
         "source_commit": commit,

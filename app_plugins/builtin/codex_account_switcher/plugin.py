@@ -13,7 +13,7 @@ from .store import AccountProfileStore, AccountSwitcherError
 class CodexAccountSwitcherPlugin:
     plugin_id = "codex_account_switcher"
     display_name = "Codex 多账号切换"
-    version = "3.0"
+    version = "3.1"
     required_api_version = 1
 
     def __init__(self):

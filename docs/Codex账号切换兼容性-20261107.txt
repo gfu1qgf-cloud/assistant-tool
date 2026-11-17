@@ -1,0 +1,37 @@
+Codex 账号切换 / 本地项目快照兼容修复
+日期：2026-11-07（Europe/Rome）
+
+原因
+本机安装 OpenAI.Codex 26.1103.4239.0。该版在 .codex-global-state.json 的
+electron-account-renderer-state-v1 中，按 SHA256(JSON.stringify([userId, accountId]))
+归档和恢复 renderer globals/atoms。local-projects、project-order、路径及会话项目归属
+均属于账号 globals。旧切换器只替换 auth.json，因此新账号恢复空 globals；磁盘文件并未删除。
+具体行为经本机 app.asar 的 selectRendererOwner / 全局字段枚举确认，不依赖猜测。
+
+改动
+插件 3.0 → 3.1。对已登录档案切换时，仅把普通本地项目及关联路径、顺序、会话归属、
+原 app-server 项目 ID 合并到目标账号的 inactive globals。保留目标现有记录，保留源账号
+的 owner 和原 globals，交由 Codex 正常完成归档/恢复。不修改 app.asar 或任何数据库。
+不跨账号复制 ChatGPT 项目（g-p-*）、有 ChatGPT backing 的项目、远端连接、未知字段
+和账号 atoms；不改变云端权限。迁移标志由目标账号自行完成，避免伪造迁移完成状态。
+旧版 Codex 没有账号快照时不写项目状态。
+
+写入与恢复
+在正常退出 Codex 后的既有切换流程中执行；不热改正在运行的 Codex 状态。
+首次写入前保存 archive/project-state-before-compat.json，事务保存原始字节备份和前后
+SHA256。状态写入失败、索引提交失败、进程中断时同时恢复凭据和项目状态。
+若发现其他进程更新项目状态，不覆盖它，保留事务和备份，提示检查。
+没有目标身份的首次登录仍沿用原登录流程；完成登录后，下一次切入该档案即可同步项目。
+合并优先保留资料，旧账号快照中仍存在的本地项目可能被找回；不主动删除项目记录。
+
+验证
+隔离环境，阻止外网，不读取真实密钥进行网络操作。29 项测试通过，含原账号切换器
+12 项及新增 17 项：新版启动归档/恢复、空源恢复、往返切换、云端/远端/账号状态隔离、
+server ID 保留、旧版兼容、无效状态拒绝、写入/提交失败回滚、中断恢复、并发更新保护。
+另用真实状态在内存中生成计划，执行已安装 app.asar 的原 selectRendererOwner 方法：
+3 个非当前账号均恢复 2 个普通本地项目及 33 条本地会话项目归属，选中项目存在。
+以上为只读模拟；未切换当前账号、未关闭 Codex、未写真实 .codex 状态。
+未做实际桌面退出→切账号→启动的端到端实测。
+
+源码安装后，辅助小工具下次正常重启生效。入口：主菜单 → Codex 多账号切换…。
+无推送、发布、PR或修改用户业务数据。

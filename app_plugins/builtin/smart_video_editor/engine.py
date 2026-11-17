@@ -27,6 +27,7 @@ from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from qt_compat import QtCore
 from model.WhisperInference import whisper_inference
+from .seam_cover import DEFAULTS as SEAM_COVER_DEFAULTS, normalize_options as normalize_seam_cover
 
 
 SMART_VIDEO_EDITOR_CONFIG_KEY = "smart_video_editor"
@@ -34,7 +35,7 @@ SMART_VIDEO_PENDING_CONFIG_KEY = "smart_video_pending_reviews"
 SMART_VIDEO_EDITOR_REPORT_NAME = "智能剪辑审核.json"
 SMART_VIDEO_EDITOR_TEXT_REPORT_NAME = "智能剪辑问题报告.txt"
 BREATH_CUT_OUTPUT_FOLDER_NAME = "气口剪辑结果"
-SMART_VIDEO_ANALYSIS_CACHE_VERSION = 11
+SMART_VIDEO_ANALYSIS_CACHE_VERSION = 13
 VOICE_ACTIVITY_CACHE_VERSION = 1
 VIDEO_SUFFIXES = {".mp4", ".mov", ".m4v", ".avi", ".mkv", ".webm", ".mts"}
 BREATH_DETECTION_MODES = (
@@ -53,6 +54,7 @@ BREATH_SETTINGS_KEYS = (
     "vad_min_speech_ms", "vad_speech_pad_ms", "min_silence_ms",
     "compress_internal_pauses", "internal_pause_mode", "pause_threshold_ms",
     "pause_keep_before_ms", "pause_keep_after_ms", "retained_pause_ms",
+    "lead_padding_ms", "tail_padding_ms",
 )
 
 _ANALYSIS_SETTING_KEYS = (
@@ -126,6 +128,7 @@ DEFAULT_SMART_VIDEO_EDITOR_SETTINGS = {
     "export_mode": "joined",
     "postprocess_enabled": False,
     "postprocess_workflow": "",
+    **SEAM_COVER_DEFAULTS,
 }
 
 
@@ -281,9 +284,11 @@ def normalize_smart_video_editor_settings(value=None):
     result["auto_export_clean"] = bool(
         source.get("auto_export_clean", True)
     )
-    result["export_mode"] = "segments" if source.get("export_mode") == "segments" else "joined"
+    mode = source.get("export_mode")
+    result["export_mode"] = mode if mode in ("segments", "srt_only", "video_only") else "joined"
     result["postprocess_enabled"] = bool(source.get("postprocess_enabled", False))
     result["postprocess_workflow"] = str(source.get("postprocess_workflow") or "").strip()
+    result.update(normalize_seam_cover(source))
     return result
 
 
@@ -1046,21 +1051,25 @@ def _content_order_evidence(
     return result
 
 
-def _content_order_is_complete(evidence):
-    if not evidence or not all(item.get("reliable") for item in evidence):
-        return False
-    ordered = sorted(evidence, key=lambda item: (item["start"], item["end"]))
-    for previous, following in zip(ordered, ordered[1:]):
+def _content_order_review_indexes(evidence):
+    """Keep uncertain positions and overlapping evidence local to their clips."""
+    affected = {index for index, item in enumerate(evidence) if not item.get("reliable")}
+    ordered = sorted(((index, item) for index, item in enumerate(evidence) if item.get("reliable")),
+                     key=lambda pair: (pair[1]["start"], pair[1]["end"]))
+    for position, (previous_index, previous) in enumerate(ordered):
         previous_length = max(1, previous["end"] - previous["start"] + 1)
-        following_length = max(1, following["end"] - following["start"] + 1)
-        overlap = _overlap_size(
-            previous["start"],
-            previous["end"],
-            [(following["start"], following["end"])],
-        )
-        if overlap / max(1, min(previous_length, following_length)) >= 0.65:
-            return False
-    return True
+        for following_index, following in ordered[position + 1:]:
+            if following["start"] > previous["end"]:
+                break
+            following_length = max(1, following["end"] - following["start"] + 1)
+            overlap = _overlap_size(previous["start"], previous["end"], [(following["start"], following["end"])])
+            if overlap / min(previous_length, following_length) >= 0.65:
+                affected.update((previous_index, following_index))
+    return affected
+
+
+def _content_order_is_complete(evidence):
+    return bool(evidence) and not _content_order_review_indexes(evidence)
 
 
 def _range_overlap_ratio(left, right):
@@ -1789,6 +1798,20 @@ def combine_breath_gap_ranges(
     return _merge_time_ranges(refined, duration)
 
 
+def describe_breath_detection_mode(mode, *, script_guard=False):
+    hints = {
+        "voice_refined": "人声检测决定气口位置，分贝只修边。要让分贝独立增加气口，可选“仅分贝”或“并集”。",
+        "voice_only": "只按人声检测寻找气口，分贝阈值不参与。",
+        "db_only": "只按音量寻找气口；-10 比 -35 更容易判为低音量，持续达到最短静音时长才会命中。",
+        "union": "分贝或人声任一检测命中就作为气口，删除范围通常更多。",
+        "intersection": "分贝和人声同时确认的位置才作为气口，删除范围通常更少。",
+    }
+    text = hints.get(mode, hints["voice_refined"])
+    if script_guard:
+        text += " 智能剪辑还会保护已识别单词；只按声音剪切可用独立“剪辑气口”。"
+    return text
+
+
 def _combined_detection_error(settings, silence_error, voice_error):
     mode = str(settings.get("breath_detection_mode") or "voice_refined")
     db_enabled = bool(settings.get("silence_detection_enabled", True))
@@ -1850,10 +1873,14 @@ def refine_trim_boundaries(
         })
         return trim_start, trim_end, decisions, warnings
 
+    # Raising the dB threshold can extend a quiet interval slightly INTO a
+    # matched word. Intersect with the speech-safe side instead of discarding
+    # the entire interval, which previously made a valid edge cut disappear.
     before = [
-        item for item in silence_ranges
-        if item[1] <= first_word_start + 0.001
-        and first_word_start - item[1] <= search
+        [max(0.0, start), min(end, first_word_start)]
+        for start, end in silence_ranges
+        if min(end, first_word_start) - max(0.0, start) > 0.001
+        and first_word_start - min(end, first_word_start) <= search
     ]
     if before:
         quiet = max(before, key=lambda item: item[1])
@@ -1882,9 +1909,10 @@ def refine_trim_boundaries(
         })
 
     after = [
-        item for item in silence_ranges
-        if item[0] >= last_word_end - 0.001
-        and item[0] - last_word_end <= search
+        [max(start, last_word_end), min(end, duration)]
+        for start, end in silence_ranges
+        if min(end, duration) - max(start, last_word_end) > 0.001
+        and max(start, last_word_end) - last_word_end <= search
     ]
     if after:
         quiet = min(after, key=lambda item: item[0])
@@ -3465,8 +3493,9 @@ def _allocate_authoritative_script_ranges(
     """Give ordered clips continuous, complete slices of the task script.
 
     ASR decides timings and raises review issues; it must never be allowed to
-    delete words from the authoritative task text.  Explicit filename numbers
-    additionally allow an unmatched clip to receive its intended position.
+    delete words from the authoritative task text. Unmatched clips require
+    independent content evidence before they may receive a script position;
+    filename numbers alone do not prove that their speech belongs here.
     """
     if not clips or not script_words:
         return
@@ -4263,9 +4292,10 @@ def _protect_edges_adjacent_to_missing_script(clips, missing_blocks):
 
 
 def _add_order_warning(clips, title, detail, kind):
+    severity = "orange" if kind == "filename_order_fallback" else "pink"
     for clip in clips:
         issue = {
-            "severity": "pink",
+            "severity": severity,
             "kind": kind,
             "start": float(clip.get("trim_start") or 0.0),
             "end": float(clip.get("trim_end") or 0.0),
@@ -4275,8 +4305,9 @@ def _add_order_warning(clips, title, detail, kind):
             "recognized": clip.get("recognized_text", ""),
         }
         clip.setdefault("issues", []).insert(0, issue)
-        clip["status"] = "pink"
-        clip["issue_reason"] = _issue_summary(issue)
+        if severity == "pink" or clip.get("status", "green") == "green":
+            clip["status"] = severity
+            clip["issue_reason"] = _issue_summary(issue)
 
 
 def analyze_smart_video_jobs(jobs, model, settings=None, progress=None, cancelled=None):
@@ -4457,6 +4488,7 @@ def analyze_smart_video_jobs(jobs, model, settings=None, progress=None, cancelle
             int(clip.get("source_index", 0)),
         ))
         order_warning = None
+        order_warning_clips = []
         ordering_conflict = False
         if content_order_complete:
             active_clips = content_sorted
@@ -4475,16 +4507,19 @@ def analyze_smart_video_jobs(jobs, model, settings=None, progress=None, cancelle
                         ),
                         "filename_content_order_conflict",
                     )
+                    order_warning_clips = active_clips
                 else:
                     ordering_mode = "content_verified_filename"
         elif filename_sequence:
+            affected = _content_order_review_indexes(active_order_evidence)
+            order_warning_clips = [clip for index, clip in enumerate(active_clips) if index in affected]
             active_clips = filename_sorted
             ordering_mode = "filename_fallback"
             order_warning = (
                 "语音顺序证据不足",
                 (
-                    "部分片段无法仅凭语音可靠确定位置，当前暂按文件名编号排列。"
-                    "编号可能有误，必须人工核对顺序后再生成。"
+                    "本片段的语音位置未能可靠确认，当前暂按文件名编号保留位置。"
+                    "请试听本片段及相邻片段的接续，核对顺序。"
                 ),
                 "filename_order_fallback",
             )
@@ -4522,7 +4557,7 @@ def analyze_smart_video_jobs(jobs, model, settings=None, progress=None, cancelle
                 script_words,
                 script_lines,
                 settings,
-                include_unmatched=(content_order_complete or filename_sequence),
+                include_unmatched=content_order_complete,
             )
             # Range allocation can turn a boundary ASR spelling/tokenization
             # mismatch into an ordinary word-difference issue. Recalculate
@@ -4537,7 +4572,7 @@ def analyze_smart_video_jobs(jobs, model, settings=None, progress=None, cancelle
                 block for block in uncovered_blocks if not block.get("blocks_export")
             ]
         if order_warning is not None:
-            _add_order_warning(active_clips, *order_warning)
+            _add_order_warning(order_warning_clips, *order_warning)
         for clip in active_clips:
             _apply_repeated_speech_cuts(clip, script_words, script_lines, settings)
             if clip.get("repeated_speech_removals"):
@@ -4819,7 +4854,7 @@ def _complete_timeline_for_srt(clip, records, timeline_by_word):
     }
 
 
-def build_srt_cues(task, settings):
+def build_srt_cues(task, settings, *, retained_only=False):
     cues = []
     timeline_offset = 0.0
     max_words = settings["srt_max_words_per_block"]
@@ -4851,6 +4886,11 @@ def build_srt_cues(task, settings):
         timeline_by_word = _complete_timeline_for_srt(
             clip, clip_script_words, timeline_by_word
         )
+        if retained_only:
+            clip_script_words = [word for word in clip_script_words if any(
+                min(float(timeline_by_word[word["word_index"]]["end"]), float(right))
+                - max(float(timeline_by_word[word["word_index"]]["start"]), float(left)) > .001
+                for left, right in ranges)]
         record_groups = []
         current = []
         for word in clip_script_words:
@@ -4863,6 +4903,7 @@ def build_srt_cues(task, settings):
                 current
                 and (
                     word["line_index"] != current[-1]["line_index"]
+                    or word["word_index"] != current[-1]["word_index"] + 1
                     or (max_words > 0 and len(current) >= max_words)
                     or (max_chars > 0 and len(candidate_text) > max_chars)
                 )
@@ -5208,6 +5249,34 @@ def _generate_final_aligned_srt(
     progress(f"[智能剪辑] 最终成片字幕对齐完成：{output_srt.name}")
 
 
+def _export_srt_task(task, settings, progress, cancelled):
+    """Publish only the reviewed timeline's subtitles; no media/model work."""
+    if cancelled():
+        raise InterruptedError("用户已请求停止字幕导出")
+    output_dir = Path(task["output_dir"])
+    base_name = _safe_child_name(task.get("task_id") or task.get("task_name"), "智能剪辑") + "_智能剪辑"
+    target = _versioned_output(output_dir / f"{base_name}.srt", settings["existing_output"])
+    if target is None:
+        return {"task_id": task.get("task_id", ""), "status": "skipped", "video": "",
+                "srt": str(output_dir / f"{base_name}.srt"), "export_mode": "srt_only",
+                "message": "SRT 已存在，按设置跳过"}
+    cues = build_srt_cues(task, settings, retained_only=True)
+    if not cues:
+        raise ValueError("当前核对时间线没有可导出的字幕，请先完成文案匹配或人工填写片段字幕。")
+    if not settings["srt_include_line_breaks"]:
+        cues = [dict(cue, text=" ".join(cue["text"].split())) for cue in cues]
+    data_directory(output_dir).ensure(parents=True, exist_ok=True)
+    progress(f"[智能剪辑] 按当前核对时间线导出 SRT：{target.name}")
+    with data_io.TemporaryDirectory(prefix=".smart_srt_", dir=str(output_dir)) as temporary:
+        staged = Path(temporary) / "subtitles.srt"
+        _write_srt(staged, cues)
+        if cancelled():
+            raise InterruptedError("用户已请求停止字幕导出")
+        data_io.replace(staged, target)
+    return {"task_id": task.get("task_id", ""), "status": "completed", "video": "", "srt": str(target),
+            "export_mode": "srt_only", "subtitle_alignment": "review_timeline", "cue_count": len(cues)}
+
+
 def _export_task(
     task, settings, ffmpeg, progress, cancelled, alignment_model=None,
     output_basename=None, generate_srt=True, alignment_model_loader=None,
@@ -5249,15 +5318,22 @@ def _export_task(
         }
     output_srt = output_video.with_suffix(".srt")
     width, height, fps = _media_shape(ranges[0][0]["source"])
+    from .seam_cover import prepare_cover, segment_video_args
+    frame_counts = [max(1, int(round((end-start)*fps))) for _clip, (start, end) in ranges]
 
     with data_io.TemporaryDirectory(prefix="smart_edit_", dir=str(output_dir)) as temp:
         temp_dir = Path(temp)
         segment_paths = []
+        # Cover placement follows the actual fps filter rate; retain the existing
+        # frame count / audio duration calculations whether cover is on or off.
+        cover = prepare_cover(settings, frame_counts, width, height, float(f"{fps:.3f}"), temp_dir, ffmpeg,
+                              _run_process, progress, cancelled)
+        timeline_frame = 0
         for index, (clip, (start, end)) in enumerate(ranges, 1):
             if cancelled():
                 raise InterruptedError("用户已请求停止智能剪辑导出")
             segment_path = temp_dir / f"segment_{index:05d}.mkv"
-            frame_count = max(1, int(round((end - start) * fps)))
+            frame_count = frame_counts[index-1]
             frame_duration = frame_count / fps
             progress(
                 f"[智能剪辑] 裁剪 {index}/{len(ranges)}：{clip['file_name']} "
@@ -5268,11 +5344,11 @@ def _export_task(
                 f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1,"
                 f"fps={fps:.3f},setpts=PTS-STARTPTS"
             )
+            extra_inputs, video_args = segment_video_args(cover, timeline_frame, frame_count, video_filter)
             args = [
                 ffmpeg, "-y", "-ss", f"{start:.3f}", "-i", clip["source"],
-                "-t", f"{frame_duration:.9f}",
-                "-map", "0:v:0", "-map", "0:a:0?",
-                "-vf", video_filter,
+                *extra_inputs, "-t", f"{frame_duration:.9f}",
+                *video_args, "-map", "0:a:0?",
                 "-af", (
                     f"apad,atrim=duration={frame_duration:.9f},"
                     "asetpts=PTS-STARTPTS"
@@ -5287,8 +5363,11 @@ def _export_task(
                 "-c:a", "pcm_s16le", "-ar", "48000", "-ac", "2",
                 "-shortest", str(segment_path),
             ]
+            if cover:
+                args[-1:-1] = ["-pix_fmt", "yuv420p"]
             _run_process(args, progress, cancelled)
             segment_paths.append(segment_path)
+            timeline_frame += frame_count
 
         concat_path = temp_dir / "concat.txt"
         data_file(concat_path).write_text(
@@ -5563,8 +5642,10 @@ def export_smart_video_bundle(
         task for task in tasks
         if smart_video_task_review_decision(task) != "skipped"
     ]
-    ffmpeg = _resolve_ffmpeg(settings) if export_tasks else ""
+    ffmpeg = _resolve_ffmpeg(settings) if export_tasks and settings["export_mode"] != "srt_only" else ""
     result = {"completed": [], "failed": [], "skipped": []}
+    if settings["export_mode"] == "srt_only":
+        result["export_mode"] = "srt_only"
     for index, task in enumerate(tasks, 1):
         if smart_video_task_review_decision(task) == "skipped":
             progress(
@@ -5583,8 +5664,13 @@ def export_smart_video_bundle(
             f"[智能剪辑] 导出任务 {index}/{len(tasks)}：{task.get('label', '')}"
         )
         try:
-            if settings["export_mode"] == "segments":
+            if settings["export_mode"] == "srt_only":
+                item = _export_srt_task(task, settings, progress, cancelled)
+            elif settings["export_mode"] == "segments":
                 item = _export_segmented_task(task, settings, ffmpeg, progress, cancelled)
+            elif settings["export_mode"] == "video_only":
+                item = _export_task(task, settings, ffmpeg, progress, cancelled, generate_srt=False)
+                item["export_mode"] = "video_only"
             else:
                 item = _export_task(
                     task, settings, ffmpeg, progress, cancelled,
@@ -5654,7 +5740,7 @@ class SmartVideoEditorThread(QtCore.QThread):
             elif self.mode == "export":
                 if not isinstance(self.bundle, dict):
                     raise ValueError("没有可导出的智能剪辑分析结果")
-                if self.settings["export_mode"] != "segments" and any(
+                if self.settings["export_mode"] == "joined" and any(
                     smart_video_task_review_decision(task) != "skipped"
                     for task in self.bundle.get("tasks", [])
                 ):

@@ -1,0 +1,2998 @@
+{
+  "version": "3.5.0",
+  "date": "2026-11-17",
+  "scope": "local release validation; GitHub CI is an additional publishing gate",
+  "full_run": {
+    "modules": 585,
+    "failed": 1,
+    "failed_module": "test_video_stitch"
+  },
+  "added_or_updated_modules": [
+    "test_release_native_environment",
+    "test_build_manifest",
+    "test_video_stitch"
+  ],
+  "stitch_followup": {
+    "rounds": 5,
+    "tests_per_round": 24,
+    "failed": 0
+  },
+  "final_module_coverage": 586,
+  "tests": 7680,
+  "skipped": 43,
+  "failures": 0,
+  "errors": 0,
+  "qt_callbacks": 0,
+  "modules": [
+    {
+      "module": "test_agent_ai_review",
+      "tests": 13,
+      "skipped": 0
+    },
+    {
+      "module": "test_agent_badges",
+      "tests": 29,
+      "skipped": 0
+    },
+    {
+      "module": "test_agent_bulk_ui",
+      "tests": 18,
+      "skipped": 0
+    },
+    {
+      "module": "test_agent_completed_extras",
+      "tests": 10,
+      "skipped": 0
+    },
+    {
+      "module": "test_agent_delivery",
+      "tests": 55,
+      "skipped": 0
+    },
+    {
+      "module": "test_agent_download_all",
+      "tests": 14,
+      "skipped": 0
+    },
+    {
+      "module": "test_agent_handoff_isolation",
+      "tests": 8,
+      "skipped": 0
+    },
+    {
+      "module": "test_agent_lifecycle",
+      "tests": 10,
+      "skipped": 0
+    },
+    {
+      "module": "test_agent_local_references",
+      "tests": 24,
+      "skipped": 0
+    },
+    {
+      "module": "test_agent_manual_badge",
+      "tests": 11,
+      "skipped": 0
+    },
+    {
+      "module": "test_agent_nested_receipts",
+      "tests": 7,
+      "skipped": 0
+    },
+    {
+      "module": "test_agent_partial_receipts",
+      "tests": 9,
+      "skipped": 0
+    },
+    {
+      "module": "test_agent_polling",
+      "tests": 14,
+      "skipped": 0
+    },
+    {
+      "module": "test_agent_receipt_names",
+      "tests": 7,
+      "skipped": 0
+    },
+    {
+      "module": "test_agent_receipt_policy",
+      "tests": 13,
+      "skipped": 0
+    },
+    {
+      "module": "test_agent_receipt_progress",
+      "tests": 8,
+      "skipped": 0
+    },
+    {
+      "module": "test_agent_receipt_state",
+      "tests": 4,
+      "skipped": 0
+    },
+    {
+      "module": "test_agent_schema_v2",
+      "tests": 22,
+      "skipped": 0
+    },
+    {
+      "module": "test_agent_sheet_format",
+      "tests": 5,
+      "skipped": 0
+    },
+    {
+      "module": "test_agent_spoken_segments",
+      "tests": 11,
+      "skipped": 0
+    },
+    {
+      "module": "test_agent_submit_preparation",
+      "tests": 15,
+      "skipped": 0
+    },
+    {
+      "module": "test_agent_user_fill_status",
+      "tests": 15,
+      "skipped": 0
+    },
+    {
+      "module": "test_ai_account_balance",
+      "tests": 20,
+      "skipped": 0
+    },
+    {
+      "module": "test_ai_agent_assistant",
+      "tests": 40,
+      "skipped": 0
+    },
+    {
+      "module": "test_ai_capabilities",
+      "tests": 61,
+      "skipped": 0
+    },
+    {
+      "module": "test_ai_catalog_settings",
+      "tests": 26,
+      "skipped": 0
+    },
+    {
+      "module": "test_ai_chat_batch",
+      "tests": 10,
+      "skipped": 0
+    },
+    {
+      "module": "test_ai_chat_branches",
+      "tests": 6,
+      "skipped": 0
+    },
+    {
+      "module": "test_ai_chat_privacy",
+      "tests": 11,
+      "skipped": 0
+    },
+    {
+      "module": "test_ai_chat_ui",
+      "tests": 7,
+      "skipped": 0
+    },
+    {
+      "module": "test_ai_client_markdown",
+      "tests": 41,
+      "skipped": 0
+    },
+    {
+      "module": "test_ai_client_stream",
+      "tests": 107,
+      "skipped": 0
+    },
+    {
+      "module": "test_ai_context_controls",
+      "tests": 7,
+      "skipped": 0
+    },
+    {
+      "module": "test_ai_edit_message",
+      "tests": 7,
+      "skipped": 0
+    },
+    {
+      "module": "test_ai_form_layout",
+      "tests": 21,
+      "skipped": 0
+    },
+    {
+      "module": "test_ai_group_chat",
+      "tests": 20,
+      "skipped": 0
+    },
+    {
+      "module": "test_ai_key_list",
+      "tests": 33,
+      "skipped": 0
+    },
+    {
+      "module": "test_ai_model_client",
+      "tests": 68,
+      "skipped": 0
+    },
+    {
+      "module": "test_ai_provider_preserve",
+      "tests": 9,
+      "skipped": 0
+    },
+    {
+      "module": "test_ai_retry_entry",
+      "tests": 6,
+      "skipped": 0
+    },
+    {
+      "module": "test_ai_workflow_node",
+      "tests": 26,
+      "skipped": 0
+    },
+    {
+      "module": "test_all_component_inspector",
+      "tests": 7,
+      "skipped": 0
+    },
+    {
+      "module": "test_alpha_bounds",
+      "tests": 7,
+      "skipped": 0
+    },
+    {
+      "module": "test_antigravity_account_switcher_plugin",
+      "tests": 4,
+      "skipped": 0
+    },
+    {
+      "module": "test_antigravity_desktop_v2",
+      "tests": 28,
+      "skipped": 0
+    },
+    {
+      "module": "test_antigravity_identity_sources",
+      "tests": 17,
+      "skipped": 0
+    },
+    {
+      "module": "test_antigravity_integration_safety",
+      "tests": 27,
+      "skipped": 0
+    },
+    {
+      "module": "test_api_status_replace_retry",
+      "tests": 3,
+      "skipped": 0
+    },
+    {
+      "module": "test_app_data_storage",
+      "tests": 10,
+      "skipped": 0
+    },
+    {
+      "module": "test_app_icon",
+      "tests": 3,
+      "skipped": 0
+    },
+    {
+      "module": "test_app_theme",
+      "tests": 4,
+      "skipped": 0
+    },
+    {
+      "module": "test_app_version",
+      "tests": 2,
+      "skipped": 0
+    },
+    {
+      "module": "test_asset_replace",
+      "tests": 24,
+      "skipped": 0
+    },
+    {
+      "module": "test_audio_splitter_plugin",
+      "tests": 5,
+      "skipped": 0
+    },
+    {
+      "module": "test_background_dialog_lifecycle",
+      "tests": 6,
+      "skipped": 0
+    },
+    {
+      "module": "test_background_plugin_jobs",
+      "tests": 22,
+      "skipped": 0
+    },
+    {
+      "module": "test_background_result_boundary",
+      "tests": 4,
+      "skipped": 0
+    },
+    {
+      "module": "test_background_task_limits",
+      "tests": 14,
+      "skipped": 0
+    },
+    {
+      "module": "test_background_tasks",
+      "tests": 24,
+      "skipped": 0
+    },
+    {
+      "module": "test_background_trim",
+      "tests": 6,
+      "skipped": 0
+    },
+    {
+      "module": "test_batch_ai_refinement",
+      "tests": 6,
+      "skipped": 0
+    },
+    {
+      "module": "test_batch_animation_clip",
+      "tests": 1,
+      "skipped": 0
+    },
+    {
+      "module": "test_batch_animation_scrub",
+      "tests": 14,
+      "skipped": 0
+    },
+    {
+      "module": "test_batch_audio_sources",
+      "tests": 13,
+      "skipped": 0
+    },
+    {
+      "module": "test_batch_body_only_import",
+      "tests": 11,
+      "skipped": 0
+    },
+    {
+      "module": "test_batch_canvas_settings",
+      "tests": 16,
+      "skipped": 0
+    },
+    {
+      "module": "test_batch_caption_alignment",
+      "tests": 14,
+      "skipped": 0
+    },
+    {
+      "module": "test_batch_caption_windows",
+      "tests": 13,
+      "skipped": 0
+    },
+    {
+      "module": "test_batch_component_nodes",
+      "tests": 43,
+      "skipped": 0
+    },
+    {
+      "module": "test_batch_components",
+      "tests": 13,
+      "skipped": 0
+    },
+    {
+      "module": "test_batch_copy_binding",
+      "tests": 17,
+      "skipped": 0
+    },
+    {
+      "module": "test_batch_custom_pools",
+      "tests": 23,
+      "skipped": 1
+    },
+    {
+      "module": "test_batch_direct_task_wires",
+      "tests": 6,
+      "skipped": 0
+    },
+    {
+      "module": "test_batch_dnx_alpha",
+      "tests": 16,
+      "skipped": 7
+    },
+    {
+      "module": "test_batch_drag_units",
+      "tests": 13,
+      "skipped": 0
+    },
+    {
+      "module": "test_batch_duration_colors",
+      "tests": 26,
+      "skipped": 0
+    },
+    {
+      "module": "test_batch_dynamic_captions",
+      "tests": 29,
+      "skipped": 0
+    },
+    {
+      "module": "test_batch_edge_anchors",
+      "tests": 12,
+      "skipped": 0
+    },
+    {
+      "module": "test_batch_effect_colors",
+      "tests": 7,
+      "skipped": 0
+    },
+    {
+      "module": "test_batch_empty_background",
+      "tests": 10,
+      "skipped": 0
+    },
+    {
+      "module": "test_batch_encoding_pipeline_real",
+      "tests": 5,
+      "skipped": 2
+    },
+    {
+      "module": "test_batch_encoding_stall",
+      "tests": 8,
+      "skipped": 0
+    },
+    {
+      "module": "test_batch_error_feedback",
+      "tests": 8,
+      "skipped": 0
+    },
+    {
+      "module": "test_batch_export_destination",
+      "tests": 13,
+      "skipped": 0
+    },
+    {
+      "module": "test_batch_export_polish",
+      "tests": 11,
+      "skipped": 0
+    },
+    {
+      "module": "test_batch_export_safety",
+      "tests": 13,
+      "skipped": 0
+    },
+    {
+      "module": "test_batch_export_settings_ui",
+      "tests": 1,
+      "skipped": 0
+    },
+    {
+      "module": "test_batch_failed_retry",
+      "tests": 4,
+      "skipped": 0
+    },
+    {
+      "module": "test_batch_filter_tail",
+      "tests": 2,
+      "skipped": 0
+    },
+    {
+      "module": "test_batch_font_watermarks",
+      "tests": 19,
+      "skipped": 0
+    },
+    {
+      "module": "test_batch_global_render_settings",
+      "tests": 7,
+      "skipped": 0
+    },
+    {
+      "module": "test_batch_hdr_composition",
+      "tests": 3,
+      "skipped": 0
+    },
+    {
+      "module": "test_batch_image_background",
+      "tests": 12,
+      "skipped": 0
+    },
+    {
+      "module": "test_batch_image_selection",
+      "tests": 9,
+      "skipped": 0
+    },
+    {
+      "module": "test_batch_inspector_ux",
+      "tests": 16,
+      "skipped": 0
+    },
+    {
+      "module": "test_batch_layer_drag_drop",
+      "tests": 9,
+      "skipped": 0
+    },
+    {
+      "module": "test_batch_lazy_thumbnails",
+      "tests": 6,
+      "skipped": 0
+    },
+    {
+      "module": "test_batch_legacy_project_matrix",
+      "tests": 16,
+      "skipped": 1
+    },
+    {
+      "module": "test_batch_matte_edge_controls",
+      "tests": 13,
+      "skipped": 0
+    },
+    {
+      "module": "test_batch_media_cache_retention",
+      "tests": 11,
+      "skipped": 0
+    },
+    {
+      "module": "test_batch_memory_admission",
+      "tests": 13,
+      "skipped": 0
+    },
+    {
+      "module": "test_batch_memory_feedback",
+      "tests": 7,
+      "skipped": 0
+    },
+    {
+      "module": "test_batch_music_long_run",
+      "tests": 1,
+      "skipped": 1
+    },
+    {
+      "module": "test_batch_music_preparation",
+      "tests": 17,
+      "skipped": 0
+    },
+    {
+      "module": "test_batch_music_timeline",
+      "tests": 11,
+      "skipped": 0
+    },
+    {
+      "module": "test_batch_node_effects",
+      "tests": 41,
+      "skipped": 0
+    },
+    {
+      "module": "test_batch_numeric_wheel",
+      "tests": 6,
+      "skipped": 0
+    },
+    {
+      "module": "test_batch_open_sans",
+      "tests": 8,
+      "skipped": 0
+    },
+    {
+      "module": "test_batch_parallel_64",
+      "tests": 3,
+      "skipped": 0
+    },
+    {
+      "module": "test_batch_parallel_export",
+      "tests": 28,
+      "skipped": 0
+    },
+    {
+      "module": "test_batch_playback_blur",
+      "tests": 16,
+      "skipped": 0
+    },
+    {
+      "module": "test_batch_polygon_wrap",
+      "tests": 16,
+      "skipped": 0
+    },
+    {
+      "module": "test_batch_pool_copy",
+      "tests": 17,
+      "skipped": 0
+    },
+    {
+      "module": "test_batch_pool_order",
+      "tests": 8,
+      "skipped": 0
+    },
+    {
+      "module": "test_batch_pool_preview",
+      "tests": 11,
+      "skipped": 0
+    },
+    {
+      "module": "test_batch_pools",
+      "tests": 26,
+      "skipped": 0
+    },
+    {
+      "module": "test_batch_preview_cache",
+      "tests": 2,
+      "skipped": 0
+    },
+    {
+      "module": "test_batch_preview_finger_gaps",
+      "tests": 10,
+      "skipped": 0
+    },
+    {
+      "module": "test_batch_preview_layer_isolation",
+      "tests": 4,
+      "skipped": 0
+    },
+    {
+      "module": "test_batch_preview_link",
+      "tests": 12,
+      "skipped": 0
+    },
+    {
+      "module": "test_batch_preview_parity",
+      "tests": 18,
+      "skipped": 0
+    },
+    {
+      "module": "test_batch_project_deletion",
+      "tests": 7,
+      "skipped": 0
+    },
+    {
+      "module": "test_batch_properties",
+      "tests": 11,
+      "skipped": 0
+    },
+    {
+      "module": "test_batch_quality_presets",
+      "tests": 8,
+      "skipped": 1
+    },
+    {
+      "module": "test_batch_quantity_basis",
+      "tests": 4,
+      "skipped": 0
+    },
+    {
+      "module": "test_batch_queue_inspector_layout",
+      "tests": 6,
+      "skipped": 0
+    },
+    {
+      "module": "test_batch_quick_export",
+      "tests": 11,
+      "skipped": 0
+    },
+    {
+      "module": "test_batch_quick_preview",
+      "tests": 5,
+      "skipped": 0
+    },
+    {
+      "module": "test_batch_read_ahead",
+      "tests": 16,
+      "skipped": 0
+    },
+    {
+      "module": "test_batch_render_stages",
+      "tests": 5,
+      "skipped": 0
+    },
+    {
+      "module": "test_batch_render_stress",
+      "tests": 1,
+      "skipped": 0
+    },
+    {
+      "module": "test_batch_render_timing",
+      "tests": 11,
+      "skipped": 0
+    },
+    {
+      "module": "test_batch_review_regressions",
+      "tests": 6,
+      "skipped": 0
+    },
+    {
+      "module": "test_batch_runtime_host",
+      "tests": 2,
+      "skipped": 0
+    },
+    {
+      "module": "test_batch_runtime_project",
+      "tests": 13,
+      "skipped": 0
+    },
+    {
+      "module": "test_batch_scrolling_text",
+      "tests": 16,
+      "skipped": 0
+    },
+    {
+      "module": "test_batch_shadow_blur",
+      "tests": 8,
+      "skipped": 0
+    },
+    {
+      "module": "test_batch_startup_scaling",
+      "tests": 5,
+      "skipped": 0
+    },
+    {
+      "module": "test_batch_task_import_ux",
+      "tests": 9,
+      "skipped": 0
+    },
+    {
+      "module": "test_batch_task_output_names",
+      "tests": 8,
+      "skipped": 0
+    },
+    {
+      "module": "test_batch_text_background",
+      "tests": 10,
+      "skipped": 0
+    },
+    {
+      "module": "test_batch_text_layers",
+      "tests": 14,
+      "skipped": 0
+    },
+    {
+      "module": "test_batch_text_styles",
+      "tests": 8,
+      "skipped": 0
+    },
+    {
+      "module": "test_batch_text_video",
+      "tests": 14,
+      "skipped": 0
+    },
+    {
+      "module": "test_batch_text_voice",
+      "tests": 13,
+      "skipped": 0
+    },
+    {
+      "module": "test_batch_text_wrap",
+      "tests": 16,
+      "skipped": 0
+    },
+    {
+      "module": "test_batch_undo",
+      "tests": 14,
+      "skipped": 0
+    },
+    {
+      "module": "test_batch_unified_sources",
+      "tests": 28,
+      "skipped": 0
+    },
+    {
+      "module": "test_batch_variable_fonts",
+      "tests": 6,
+      "skipped": 1
+    },
+    {
+      "module": "test_batch_vertical_motion",
+      "tests": 20,
+      "skipped": 0
+    },
+    {
+      "module": "test_batch_video_reinit",
+      "tests": 7,
+      "skipped": 2
+    },
+    {
+      "module": "test_batch_videokit_styles",
+      "tests": 14,
+      "skipped": 0
+    },
+    {
+      "module": "test_batch_weight_effects",
+      "tests": 10,
+      "skipped": 0
+    },
+    {
+      "module": "test_batch_word_spacing",
+      "tests": 8,
+      "skipped": 0
+    },
+    {
+      "module": "test_batch_workspace_navigation",
+      "tests": 8,
+      "skipped": 0
+    },
+    {
+      "module": "test_bookmark_quick_actions",
+      "tests": 3,
+      "skipped": 0
+    },
+    {
+      "module": "test_browser_bookmarks",
+      "tests": 14,
+      "skipped": 0
+    },
+    {
+      "module": "test_build_manifest",
+      "tests": 4,
+      "skipped": 0
+    },
+    {
+      "module": "test_caption_baseline",
+      "tests": 7,
+      "skipped": 0
+    },
+    {
+      "module": "test_caption_char_sequence",
+      "tests": 6,
+      "skipped": 1
+    },
+    {
+      "module": "test_caption_clip_feather",
+      "tests": 8,
+      "skipped": 0
+    },
+    {
+      "module": "test_caption_common_appearance",
+      "tests": 14,
+      "skipped": 0
+    },
+    {
+      "module": "test_caption_cursor",
+      "tests": 7,
+      "skipped": 0
+    },
+    {
+      "module": "test_caption_cursor_continuous",
+      "tests": 8,
+      "skipped": 0
+    },
+    {
+      "module": "test_caption_custom_styles",
+      "tests": 7,
+      "skipped": 1
+    },
+    {
+      "module": "test_caption_display_controls",
+      "tests": 18,
+      "skipped": 0
+    },
+    {
+      "module": "test_caption_follow",
+      "tests": 13,
+      "skipped": 0
+    },
+    {
+      "module": "test_caption_follow_regressions",
+      "tests": 7,
+      "skipped": 0
+    },
+    {
+      "module": "test_caption_follow_states",
+      "tests": 7,
+      "skipped": 0
+    },
+    {
+      "module": "test_caption_inline_inspector",
+      "tests": 12,
+      "skipped": 0
+    },
+    {
+      "module": "test_caption_inspector_polish",
+      "tests": 4,
+      "skipped": 0
+    },
+    {
+      "module": "test_caption_modern_presets",
+      "tests": 15,
+      "skipped": 0
+    },
+    {
+      "module": "test_caption_outline",
+      "tests": 6,
+      "skipped": 5
+    },
+    {
+      "module": "test_caption_parameter_edit",
+      "tests": 11,
+      "skipped": 0
+    },
+    {
+      "module": "test_caption_parameter_window",
+      "tests": 9,
+      "skipped": 0
+    },
+    {
+      "module": "test_caption_path_compaction",
+      "tests": 5,
+      "skipped": 0
+    },
+    {
+      "module": "test_caption_preset_audit",
+      "tests": 11,
+      "skipped": 1
+    },
+    {
+      "module": "test_caption_preset_freedom",
+      "tests": 10,
+      "skipped": 0
+    },
+    {
+      "module": "test_caption_preview_performance",
+      "tests": 8,
+      "skipped": 0
+    },
+    {
+      "module": "test_caption_random_toggle",
+      "tests": 6,
+      "skipped": 0
+    },
+    {
+      "module": "test_caption_resource_stream",
+      "tests": 13,
+      "skipped": 0
+    },
+    {
+      "module": "test_caption_rotation",
+      "tests": 16,
+      "skipped": 0
+    },
+    {
+      "module": "test_caption_timing_sources",
+      "tests": 20,
+      "skipped": 0
+    },
+    {
+      "module": "test_challenger2_adversarial",
+      "tests": 31,
+      "skipped": 0
+    },
+    {
+      "module": "test_challenger_concurrency_stress",
+      "tests": 17,
+      "skipped": 0
+    },
+    {
+      "module": "test_chroma_cleanup",
+      "tests": 11,
+      "skipped": 0
+    },
+    {
+      "module": "test_chroma_color_parity",
+      "tests": 3,
+      "skipped": 0
+    },
+    {
+      "module": "test_chroma_edge_despill",
+      "tests": 10,
+      "skipped": 0
+    },
+    {
+      "module": "test_chroma_enhanced",
+      "tests": 23,
+      "skipped": 0
+    },
+    {
+      "module": "test_chroma_matte",
+      "tests": 24,
+      "skipped": 0
+    },
+    {
+      "module": "test_chroma_softness",
+      "tests": 12,
+      "skipped": 0
+    },
+    {
+      "module": "test_chrome_flow_merge",
+      "tests": 10,
+      "skipped": 0
+    },
+    {
+      "module": "test_chrome_language_environment",
+      "tests": 19,
+      "skipped": 0
+    },
+    {
+      "module": "test_chrome_profile_groups",
+      "tests": 8,
+      "skipped": 0
+    },
+    {
+      "module": "test_clipboard_task_material_ui",
+      "tests": 11,
+      "skipped": 0
+    },
+    {
+      "module": "test_codex_account_switcher_plugin",
+      "tests": 12,
+      "skipped": 0
+    },
+    {
+      "module": "test_codex_project_state",
+      "tests": 17,
+      "skipped": 0
+    },
+    {
+      "module": "test_color_field",
+      "tests": 3,
+      "skipped": 0
+    },
+    {
+      "module": "test_color_palettes",
+      "tests": 19,
+      "skipped": 0
+    },
+    {
+      "module": "test_compact_inspector",
+      "tests": 6,
+      "skipped": 0
+    },
+    {
+      "module": "test_completion_shutdown",
+      "tests": 16,
+      "skipped": 0
+    },
+    {
+      "module": "test_component_import_race",
+      "tests": 3,
+      "skipped": 0
+    },
+    {
+      "module": "test_config_hot_reload",
+      "tests": 11,
+      "skipped": 0
+    },
+    {
+      "module": "test_control_clipboard",
+      "tests": 14,
+      "skipped": 0
+    },
+    {
+      "module": "test_control_size_modes",
+      "tests": 20,
+      "skipped": 0
+    },
+    {
+      "module": "test_control_time_window",
+      "tests": 13,
+      "skipped": 0
+    },
+    {
+      "module": "test_cooking_assistant",
+      "tests": 25,
+      "skipped": 0
+    },
+    {
+      "module": "test_cursor_parameters",
+      "tests": 12,
+      "skipped": 0
+    },
+    {
+      "module": "test_cursor_pool",
+      "tests": 9,
+      "skipped": 0
+    },
+    {
+      "module": "test_custom_video_background_selection",
+      "tests": 6,
+      "skipped": 0
+    },
+    {
+      "module": "test_daily_link_archive",
+      "tests": 3,
+      "skipped": 0
+    },
+    {
+      "module": "test_daily_quantity_categories",
+      "tests": 8,
+      "skipped": 0
+    },
+    {
+      "module": "test_daily_quantity_dedup",
+      "tests": 14,
+      "skipped": 0
+    },
+    {
+      "module": "test_daily_quantity_default_slot",
+      "tests": 5,
+      "skipped": 0
+    },
+    {
+      "module": "test_daily_quantity_dialog",
+      "tests": 15,
+      "skipped": 0
+    },
+    {
+      "module": "test_daily_quantity_formula_headers",
+      "tests": 11,
+      "skipped": 0
+    },
+    {
+      "module": "test_daily_quantity_inspection",
+      "tests": 22,
+      "skipped": 0
+    },
+    {
+      "module": "test_daily_quantity_manual_progress",
+      "tests": 4,
+      "skipped": 0
+    },
+    {
+      "module": "test_daily_quantity_oral_duration",
+      "tests": 15,
+      "skipped": 0
+    },
+    {
+      "module": "test_daily_quantity_prayer_repair",
+      "tests": 8,
+      "skipped": 0
+    },
+    {
+      "module": "test_daily_quantity_progress",
+      "tests": 12,
+      "skipped": 0
+    },
+    {
+      "module": "test_daily_quantity_removed_columns",
+      "tests": 18,
+      "skipped": 0
+    },
+    {
+      "module": "test_daily_quantity_settings",
+      "tests": 2,
+      "skipped": 0
+    },
+    {
+      "module": "test_daily_quantity_stats",
+      "tests": 21,
+      "skipped": 0
+    },
+    {
+      "module": "test_daily_tasks",
+      "tests": 35,
+      "skipped": 0
+    },
+    {
+      "module": "test_data_safety_regressions",
+      "tests": 17,
+      "skipped": 0
+    },
+    {
+      "module": "test_davinci_remote_plugin",
+      "tests": 15,
+      "skipped": 0
+    },
+    {
+      "module": "test_delivery_background_integration",
+      "tests": 13,
+      "skipped": 0
+    },
+    {
+      "module": "test_delivery_board_embedded",
+      "tests": 15,
+      "skipped": 0
+    },
+    {
+      "module": "test_delivery_export_journal",
+      "tests": 7,
+      "skipped": 0
+    },
+    {
+      "module": "test_delivery_input_fields",
+      "tests": 19,
+      "skipped": 0
+    },
+    {
+      "module": "test_delivery_media_storage",
+      "tests": 4,
+      "skipped": 0
+    },
+    {
+      "module": "test_delivery_passthrough",
+      "tests": 4,
+      "skipped": 0
+    },
+    {
+      "module": "test_delivery_todo_board",
+      "tests": 16,
+      "skipped": 0
+    },
+    {
+      "module": "test_developer_documentation",
+      "tests": 10,
+      "skipped": 1
+    },
+    {
+      "module": "test_distribution_directory",
+      "tests": 2,
+      "skipped": 0
+    },
+    {
+      "module": "test_document_formatter",
+      "tests": 20,
+      "skipped": 0
+    },
+    {
+      "module": "test_document_formatter_auth",
+      "tests": 8,
+      "skipped": 0
+    },
+    {
+      "module": "test_document_formatter_ui",
+      "tests": 7,
+      "skipped": 0
+    },
+    {
+      "module": "test_drive_browser",
+      "tests": 22,
+      "skipped": 0
+    },
+    {
+      "module": "test_drive_browser_frames",
+      "tests": 2,
+      "skipped": 2
+    },
+    {
+      "module": "test_drive_browser_ui",
+      "tests": 10,
+      "skipped": 0
+    },
+    {
+      "module": "test_drive_shortcuts",
+      "tests": 5,
+      "skipped": 0
+    },
+    {
+      "module": "test_e2e_stabilization",
+      "tests": 59,
+      "skipped": 0
+    },
+    {
+      "module": "test_ele_settings_lifecycle",
+      "tests": 4,
+      "skipped": 0
+    },
+    {
+      "module": "test_elevenlabs_paid_keys",
+      "tests": 18,
+      "skipped": 0
+    },
+    {
+      "module": "test_elevenlabs_permissions",
+      "tests": 19,
+      "skipped": 0
+    },
+    {
+      "module": "test_elevenlabs_timestamps",
+      "tests": 25,
+      "skipped": 0
+    },
+    {
+      "module": "test_export_project_prefix",
+      "tests": 7,
+      "skipped": 0
+    },
+    {
+      "module": "test_export_queue_delete",
+      "tests": 10,
+      "skipped": 0
+    },
+    {
+      "module": "test_export_total_list",
+      "tests": 11,
+      "skipped": 0
+    },
+    {
+      "module": "test_face_anchor",
+      "tests": 16,
+      "skipped": 1
+    },
+    {
+      "module": "test_facebook_background_tasks",
+      "tests": 8,
+      "skipped": 0
+    },
+    {
+      "module": "test_facebook_contact_sheet",
+      "tests": 26,
+      "skipped": 0
+    },
+    {
+      "module": "test_facebook_separate_frames",
+      "tests": 8,
+      "skipped": 0
+    },
+    {
+      "module": "test_fetch_ffmpeg",
+      "tests": 2,
+      "skipped": 0
+    },
+    {
+      "module": "test_firefox_containers",
+      "tests": 23,
+      "skipped": 0
+    },
+    {
+      "module": "test_first_use",
+      "tests": 32,
+      "skipped": 0
+    },
+    {
+      "module": "test_flow_account_isolation",
+      "tests": 11,
+      "skipped": 0
+    },
+    {
+      "module": "test_flow_assistant",
+      "tests": 25,
+      "skipped": 0
+    },
+    {
+      "module": "test_flow_audit_state_machine",
+      "tests": 20,
+      "skipped": 0
+    },
+    {
+      "module": "test_flow_automatic_dispatch",
+      "tests": 13,
+      "skipped": 0
+    },
+    {
+      "module": "test_flow_background_results",
+      "tests": 6,
+      "skipped": 0
+    },
+    {
+      "module": "test_flow_backup_rotation",
+      "tests": 9,
+      "skipped": 0
+    },
+    {
+      "module": "test_flow_balance_dispatch",
+      "tests": 7,
+      "skipped": 0
+    },
+    {
+      "module": "test_flow_batch_handoff",
+      "tests": 9,
+      "skipped": 0
+    },
+    {
+      "module": "test_flow_batch_workspace",
+      "tests": 23,
+      "skipped": 0
+    },
+    {
+      "module": "test_flow_boundary_regressions",
+      "tests": 8,
+      "skipped": 0
+    },
+    {
+      "module": "test_flow_bridge_auto_recovery",
+      "tests": 14,
+      "skipped": 0
+    },
+    {
+      "module": "test_flow_bridge_install",
+      "tests": 6,
+      "skipped": 0
+    },
+    {
+      "module": "test_flow_browser_lifecycle",
+      "tests": 9,
+      "skipped": 0
+    },
+    {
+      "module": "test_flow_browser_options",
+      "tests": 10,
+      "skipped": 0
+    },
+    {
+      "module": "test_flow_browser_slots",
+      "tests": 14,
+      "skipped": 0
+    },
+    {
+      "module": "test_flow_browser_table",
+      "tests": 9,
+      "skipped": 0
+    },
+    {
+      "module": "test_flow_bulk_close",
+      "tests": 9,
+      "skipped": 0
+    },
+    {
+      "module": "test_flow_capacity_liveness",
+      "tests": 3,
+      "skipped": 0
+    },
+    {
+      "module": "test_flow_catalog_readonly",
+      "tests": 12,
+      "skipped": 0
+    },
+    {
+      "module": "test_flow_cautious_launch",
+      "tests": 18,
+      "skipped": 0
+    },
+    {
+      "module": "test_flow_collect_submit",
+      "tests": 13,
+      "skipped": 0
+    },
+    {
+      "module": "test_flow_com_lifecycle",
+      "tests": 7,
+      "skipped": 0
+    },
+    {
+      "module": "test_flow_connection_automation",
+      "tests": 13,
+      "skipped": 0
+    },
+    {
+      "module": "test_flow_credit_connection_regressions",
+      "tests": 8,
+      "skipped": 0
+    },
+    {
+      "module": "test_flow_credit_cooldown",
+      "tests": 24,
+      "skipped": 0
+    },
+    {
+      "module": "test_flow_credit_demote",
+      "tests": 6,
+      "skipped": 0
+    },
+    {
+      "module": "test_flow_credit_packs",
+      "tests": 13,
+      "skipped": 0
+    },
+    {
+      "module": "test_flow_credit_probe_wait",
+      "tests": 4,
+      "skipped": 0
+    },
+    {
+      "module": "test_flow_credit_scan",
+      "tests": 17,
+      "skipped": 0
+    },
+    {
+      "module": "test_flow_daily_refresh",
+      "tests": 13,
+      "skipped": 0
+    },
+    {
+      "module": "test_flow_deleted_slot_release",
+      "tests": 4,
+      "skipped": 0
+    },
+    {
+      "module": "test_flow_download_backlog",
+      "tests": 11,
+      "skipped": 0
+    },
+    {
+      "module": "test_flow_drain_before_launch",
+      "tests": 5,
+      "skipped": 0
+    },
+    {
+      "module": "test_flow_editor_width",
+      "tests": 3,
+      "skipped": 0
+    },
+    {
+      "module": "test_flow_error_liveness",
+      "tests": 6,
+      "skipped": 0
+    },
+    {
+      "module": "test_flow_exhausted_disconnect",
+      "tests": 12,
+      "skipped": 0
+    },
+    {
+      "module": "test_flow_extension_package",
+      "tests": 6,
+      "skipped": 1
+    },
+    {
+      "module": "test_flow_failure_capacity",
+      "tests": 9,
+      "skipped": 0
+    },
+    {
+      "module": "test_flow_failure_skip",
+      "tests": 15,
+      "skipped": 0
+    },
+    {
+      "module": "test_flow_fault_rotation",
+      "tests": 10,
+      "skipped": 0
+    },
+    {
+      "module": "test_flow_fixed_pricing",
+      "tests": 8,
+      "skipped": 0
+    },
+    {
+      "module": "test_flow_generation_recovery",
+      "tests": 7,
+      "skipped": 0
+    },
+    {
+      "module": "test_flow_group_sync",
+      "tests": 8,
+      "skipped": 1
+    },
+    {
+      "module": "test_flow_high_credit",
+      "tests": 35,
+      "skipped": 0
+    },
+    {
+      "module": "test_flow_high_permission",
+      "tests": 9,
+      "skipped": 0
+    },
+    {
+      "module": "test_flow_image_affinity",
+      "tests": 20,
+      "skipped": 0
+    },
+    {
+      "module": "test_flow_image_capacity",
+      "tests": 7,
+      "skipped": 0
+    },
+    {
+      "module": "test_flow_image_content_id",
+      "tests": 7,
+      "skipped": 0
+    },
+    {
+      "module": "test_flow_image_upload_limit",
+      "tests": 11,
+      "skipped": 0
+    },
+    {
+      "module": "test_flow_joint_packs",
+      "tests": 11,
+      "skipped": 0
+    },
+    {
+      "module": "test_flow_known_result_recovery",
+      "tests": 5,
+      "skipped": 0
+    },
+    {
+      "module": "test_flow_late_generation",
+      "tests": 7,
+      "skipped": 0
+    },
+    {
+      "module": "test_flow_launch_contract",
+      "tests": 8,
+      "skipped": 0
+    },
+    {
+      "module": "test_flow_launch_recheck",
+      "tests": 8,
+      "skipped": 0
+    },
+    {
+      "module": "test_flow_launch_spacing",
+      "tests": 9,
+      "skipped": 0
+    },
+    {
+      "module": "test_flow_launch_ui_mutex",
+      "tests": 15,
+      "skipped": 0
+    },
+    {
+      "module": "test_flow_manual_credit_check",
+      "tests": 10,
+      "skipped": 0
+    },
+    {
+      "module": "test_flow_manual_iterator_holds",
+      "tests": 5,
+      "skipped": 0
+    },
+    {
+      "module": "test_flow_manual_parallelism",
+      "tests": 7,
+      "skipped": 0
+    },
+    {
+      "module": "test_flow_media_identity",
+      "tests": 7,
+      "skipped": 0
+    },
+    {
+      "module": "test_flow_mutex_monitor",
+      "tests": 9,
+      "skipped": 0
+    },
+    {
+      "module": "test_flow_mutex_upgrade",
+      "tests": 9,
+      "skipped": 0
+    },
+    {
+      "module": "test_flow_native_foreground",
+      "tests": 11,
+      "skipped": 0
+    },
+    {
+      "module": "test_flow_no_auto_close",
+      "tests": 5,
+      "skipped": 0
+    },
+    {
+      "module": "test_flow_ordered_runtime",
+      "tests": 11,
+      "skipped": 1
+    },
+    {
+      "module": "test_flow_pack_lock_yield",
+      "tests": 9,
+      "skipped": 0
+    },
+    {
+      "module": "test_flow_page_readiness",
+      "tests": 13,
+      "skipped": 0
+    },
+    {
+      "module": "test_flow_pairing_recovery",
+      "tests": 10,
+      "skipped": 0
+    },
+    {
+      "module": "test_flow_pairing_state",
+      "tests": 8,
+      "skipped": 0
+    },
+    {
+      "module": "test_flow_parallel_regression",
+      "tests": 16,
+      "skipped": 0
+    },
+    {
+      "module": "test_flow_parameter_guard",
+      "tests": 14,
+      "skipped": 0
+    },
+    {
+      "module": "test_flow_parked_close",
+      "tests": 4,
+      "skipped": 0
+    },
+    {
+      "module": "test_flow_passive_credits",
+      "tests": 6,
+      "skipped": 0
+    },
+    {
+      "module": "test_flow_passive_ui_waits",
+      "tests": 5,
+      "skipped": 0
+    },
+    {
+      "module": "test_flow_preparation_recovery",
+      "tests": 7,
+      "skipped": 0
+    },
+    {
+      "module": "test_flow_prepare_snapshot",
+      "tests": 5,
+      "skipped": 0
+    },
+    {
+      "module": "test_flow_probe_upgrade",
+      "tests": 7,
+      "skipped": 0
+    },
+    {
+      "module": "test_flow_production",
+      "tests": 36,
+      "skipped": 1
+    },
+    {
+      "module": "test_flow_project_landing",
+      "tests": 5,
+      "skipped": 0
+    },
+    {
+      "module": "test_flow_project_startup",
+      "tests": 12,
+      "skipped": 0
+    },
+    {
+      "module": "test_flow_prompt_segments",
+      "tests": 6,
+      "skipped": 0
+    },
+    {
+      "module": "test_flow_readiness_exit",
+      "tests": 8,
+      "skipped": 0
+    },
+    {
+      "module": "test_flow_record_deletion",
+      "tests": 17,
+      "skipped": 0
+    },
+    {
+      "module": "test_flow_reference_image",
+      "tests": 8,
+      "skipped": 0
+    },
+    {
+      "module": "test_flow_release_bundle",
+      "tests": 9,
+      "skipped": 0
+    },
+    {
+      "module": "test_flow_report_audit",
+      "tests": 13,
+      "skipped": 0
+    },
+    {
+      "module": "test_flow_report_regressions",
+      "tests": 14,
+      "skipped": 0
+    },
+    {
+      "module": "test_flow_retry_now",
+      "tests": 11,
+      "skipped": 0
+    },
+    {
+      "module": "test_flow_runtime_close",
+      "tests": 15,
+      "skipped": 0
+    },
+    {
+      "module": "test_flow_scheduler_audit",
+      "tests": 10,
+      "skipped": 0
+    },
+    {
+      "module": "test_flow_settings_retry",
+      "tests": 7,
+      "skipped": 0
+    },
+    {
+      "module": "test_flow_setup",
+      "tests": 33,
+      "skipped": 1
+    },
+    {
+      "module": "test_flow_site_pause_evidence",
+      "tests": 3,
+      "skipped": 0
+    },
+    {
+      "module": "test_flow_snapshot_download_regressions",
+      "tests": 9,
+      "skipped": 0
+    },
+    {
+      "module": "test_flow_socket_lifecycle",
+      "tests": 5,
+      "skipped": 0
+    },
+    {
+      "module": "test_flow_stable_upload_name",
+      "tests": 8,
+      "skipped": 0
+    },
+    {
+      "module": "test_flow_stall_followthrough",
+      "tests": 8,
+      "skipped": 2
+    },
+    {
+      "module": "test_flow_stall_recovery",
+      "tests": 11,
+      "skipped": 0
+    },
+    {
+      "module": "test_flow_start_fill",
+      "tests": 10,
+      "skipped": 0
+    },
+    {
+      "module": "test_flow_startup_recovery",
+      "tests": 9,
+      "skipped": 0
+    },
+    {
+      "module": "test_flow_startup_state",
+      "tests": 7,
+      "skipped": 0
+    },
+    {
+      "module": "test_flow_status_layout",
+      "tests": 1,
+      "skipped": 0
+    },
+    {
+      "module": "test_flow_suspicious_download",
+      "tests": 11,
+      "skipped": 0
+    },
+    {
+      "module": "test_flow_tab_reuse",
+      "tests": 9,
+      "skipped": 0
+    },
+    {
+      "module": "test_flow_task_reset",
+      "tests": 15,
+      "skipped": 0
+    },
+    {
+      "module": "test_flow_task_selection",
+      "tests": 13,
+      "skipped": 1
+    },
+    {
+      "module": "test_flow_timing_settings",
+      "tests": 31,
+      "skipped": 0
+    },
+    {
+      "module": "test_flow_transfer_recovery",
+      "tests": 19,
+      "skipped": 0
+    },
+    {
+      "module": "test_flow_transient_recovery",
+      "tests": 13,
+      "skipped": 0
+    },
+    {
+      "module": "test_flow_ui_launch_retry",
+      "tests": 10,
+      "skipped": 0
+    },
+    {
+      "module": "test_flow_ui_mutex",
+      "tests": 13,
+      "skipped": 0
+    },
+    {
+      "module": "test_flow_ui_permission_recovery",
+      "tests": 11,
+      "skipped": 0
+    },
+    {
+      "module": "test_flow_ui_renewal",
+      "tests": 8,
+      "skipped": 0
+    },
+    {
+      "module": "test_flow_upload_stall_exit",
+      "tests": 5,
+      "skipped": 0
+    },
+    {
+      "module": "test_flow_upstream_build",
+      "tests": 3,
+      "skipped": 0
+    },
+    {
+      "module": "test_flow_usability",
+      "tests": 17,
+      "skipped": 0
+    },
+    {
+      "module": "test_flow_version_sync",
+      "tests": 3,
+      "skipped": 0
+    },
+    {
+      "module": "test_flow_video_catalog",
+      "tests": 17,
+      "skipped": 0
+    },
+    {
+      "module": "test_flow_video_page_download",
+      "tests": 6,
+      "skipped": 0
+    },
+    {
+      "module": "test_flow_visual_reference",
+      "tests": 2,
+      "skipped": 0
+    },
+    {
+      "module": "test_flow_wait_existing_balance",
+      "tests": 6,
+      "skipped": 0
+    },
+    {
+      "module": "test_flow_waiting_parallel",
+      "tests": 9,
+      "skipped": 0
+    },
+    {
+      "module": "test_flow_window_budget",
+      "tests": 10,
+      "skipped": 0
+    },
+    {
+      "module": "test_flow_window_reuse",
+      "tests": 12,
+      "skipped": 0
+    },
+    {
+      "module": "test_follow_vertical_clip",
+      "tests": 9,
+      "skipped": 0
+    },
+    {
+      "module": "test_fusion_batch",
+      "tests": 3,
+      "skipped": 0
+    },
+    {
+      "module": "test_gemini_key_manager",
+      "tests": 17,
+      "skipped": 0
+    },
+    {
+      "module": "test_gemini_key_recovery",
+      "tests": 6,
+      "skipped": 0
+    },
+    {
+      "module": "test_global_render_plan_deletion",
+      "tests": 8,
+      "skipped": 0
+    },
+    {
+      "module": "test_global_render_queue",
+      "tests": 11,
+      "skipped": 0
+    },
+    {
+      "module": "test_google_account_isolation",
+      "tests": 15,
+      "skipped": 0
+    },
+    {
+      "module": "test_google_accounts",
+      "tests": 33,
+      "skipped": 0
+    },
+    {
+      "module": "test_google_accounts_release",
+      "tests": 2,
+      "skipped": 0
+    },
+    {
+      "module": "test_google_accounts_ui",
+      "tests": 10,
+      "skipped": 0
+    },
+    {
+      "module": "test_google_authorization_registry",
+      "tests": 19,
+      "skipped": 0
+    },
+    {
+      "module": "test_groq_provider",
+      "tests": 5,
+      "skipped": 0
+    },
+    {
+      "module": "test_gui_responsiveness",
+      "tests": 14,
+      "skipped": 1
+    },
+    {
+      "module": "test_hotkey_settings",
+      "tests": 3,
+      "skipped": 0
+    },
+    {
+      "module": "test_image_assignment_sort",
+      "tests": 2,
+      "skipped": 0
+    },
+    {
+      "module": "test_image_classifier_plugin",
+      "tests": 13,
+      "skipped": 0
+    },
+    {
+      "module": "test_image_index_connections",
+      "tests": 3,
+      "skipped": 0
+    },
+    {
+      "module": "test_image_remix",
+      "tests": 60,
+      "skipped": 0
+    },
+    {
+      "module": "test_image_remix_completion",
+      "tests": 22,
+      "skipped": 0
+    },
+    {
+      "module": "test_image_remix_instant",
+      "tests": 32,
+      "skipped": 0
+    },
+    {
+      "module": "test_image_remix_planning",
+      "tests": 34,
+      "skipped": 0
+    },
+    {
+      "module": "test_image_remix_safety",
+      "tests": 33,
+      "skipped": 0
+    },
+    {
+      "module": "test_image_remix_simple",
+      "tests": 6,
+      "skipped": 0
+    },
+    {
+      "module": "test_image_remix_skill",
+      "tests": 22,
+      "skipped": 0
+    },
+    {
+      "module": "test_independent_visual_fades",
+      "tests": 6,
+      "skipped": 0
+    },
+    {
+      "module": "test_inventory_plugin_merge",
+      "tests": 9,
+      "skipped": 0
+    },
+    {
+      "module": "test_inventory_update_sort",
+      "tests": 3,
+      "skipped": 0
+    },
+    {
+      "module": "test_late_task_associations",
+      "tests": 28,
+      "skipped": 0
+    },
+    {
+      "module": "test_life_dashboard_design",
+      "tests": 25,
+      "skipped": 0
+    },
+    {
+      "module": "test_main_dialog_extraction",
+      "tests": 11,
+      "skipped": 0
+    },
+    {
+      "module": "test_main_plugin_integration",
+      "tests": 2,
+      "skipped": 0
+    },
+    {
+      "module": "test_main_workspace_layout",
+      "tests": 15,
+      "skipped": 0
+    },
+    {
+      "module": "test_manual_association_refresh",
+      "tests": 8,
+      "skipped": 0
+    },
+    {
+      "module": "test_material_dedup",
+      "tests": 7,
+      "skipped": 0
+    },
+    {
+      "module": "test_material_download_queue",
+      "tests": 5,
+      "skipped": 0
+    },
+    {
+      "module": "test_material_download_resume",
+      "tests": 3,
+      "skipped": 0
+    },
+    {
+      "module": "test_material_drive_sync",
+      "tests": 4,
+      "skipped": 0
+    },
+    {
+      "module": "test_material_organizer",
+      "tests": 10,
+      "skipped": 0
+    },
+    {
+      "module": "test_material_submission_validation",
+      "tests": 8,
+      "skipped": 0
+    },
+    {
+      "module": "test_matting_live_preview",
+      "tests": 12,
+      "skipped": 0
+    },
+    {
+      "module": "test_matting_master_switch",
+      "tests": 10,
+      "skipped": 0
+    },
+    {
+      "module": "test_matting_memory",
+      "tests": 16,
+      "skipped": 0
+    },
+    {
+      "module": "test_matting_parameter_ownership",
+      "tests": 8,
+      "skipped": 0
+    },
+    {
+      "module": "test_matting_studio",
+      "tests": 34,
+      "skipped": 0
+    },
+    {
+      "module": "test_matting_video_preview",
+      "tests": 20,
+      "skipped": 0
+    },
+    {
+      "module": "test_media_boundary_safety",
+      "tests": 12,
+      "skipped": 0
+    },
+    {
+      "module": "test_monitor_sorter_plugins",
+      "tests": 10,
+      "skipped": 0
+    },
+    {
+      "module": "test_new_managers",
+      "tests": 101,
+      "skipped": 0
+    },
+    {
+      "module": "test_node_batch_layers",
+      "tests": 19,
+      "skipped": 0
+    },
+    {
+      "module": "test_node_caption_styles",
+      "tests": 10,
+      "skipped": 0
+    },
+    {
+      "module": "test_node_clipboard",
+      "tests": 5,
+      "skipped": 0
+    },
+    {
+      "module": "test_node_compression",
+      "tests": 16,
+      "skipped": 0
+    },
+    {
+      "module": "test_node_connections_upgrade",
+      "tests": 5,
+      "skipped": 0
+    },
+    {
+      "module": "test_node_deferred_operations",
+      "tests": 18,
+      "skipped": 0
+    },
+    {
+      "module": "test_node_execution_modes",
+      "tests": 17,
+      "skipped": 0
+    },
+    {
+      "module": "test_node_export_terminal",
+      "tests": 9,
+      "skipped": 0
+    },
+    {
+      "module": "test_node_feature_suggestions",
+      "tests": 9,
+      "skipped": 0
+    },
+    {
+      "module": "test_node_filesystem",
+      "tests": 16,
+      "skipped": 1
+    },
+    {
+      "module": "test_node_foundation",
+      "tests": 18,
+      "skipped": 0
+    },
+    {
+      "module": "test_node_global_data",
+      "tests": 14,
+      "skipped": 0
+    },
+    {
+      "module": "test_node_loop_blocks",
+      "tests": 41,
+      "skipped": 0
+    },
+    {
+      "module": "test_node_loop_regions",
+      "tests": 11,
+      "skipped": 0
+    },
+    {
+      "module": "test_node_media",
+      "tests": 18,
+      "skipped": 0
+    },
+    {
+      "module": "test_node_media_smoke",
+      "tests": 13,
+      "skipped": 0
+    },
+    {
+      "module": "test_node_multi_boolean",
+      "tests": 6,
+      "skipped": 0
+    },
+    {
+      "module": "test_node_multiswitch",
+      "tests": 7,
+      "skipped": 0
+    },
+    {
+      "module": "test_node_mutex_legacy",
+      "tests": 3,
+      "skipped": 0
+    },
+    {
+      "module": "test_node_mutexes",
+      "tests": 19,
+      "skipped": 0
+    },
+    {
+      "module": "test_node_named_saving",
+      "tests": 4,
+      "skipped": 0
+    },
+    {
+      "module": "test_node_overlay_timing",
+      "tests": 24,
+      "skipped": 0
+    },
+    {
+      "module": "test_node_polymorphism",
+      "tests": 10,
+      "skipped": 0
+    },
+    {
+      "module": "test_node_postprocess",
+      "tests": 47,
+      "skipped": 0
+    },
+    {
+      "module": "test_node_presentation_upgrade",
+      "tests": 6,
+      "skipped": 0
+    },
+    {
+      "module": "test_node_preview_edit_regressions",
+      "tests": 10,
+      "skipped": 0
+    },
+    {
+      "module": "test_node_preview_refresh",
+      "tests": 2,
+      "skipped": 0
+    },
+    {
+      "module": "test_node_python_extended",
+      "tests": 16,
+      "skipped": 0
+    },
+    {
+      "module": "test_node_python_native",
+      "tests": 18,
+      "skipped": 0
+    },
+    {
+      "module": "test_node_render_smoke",
+      "tests": 5,
+      "skipped": 0
+    },
+    {
+      "module": "test_node_routing",
+      "tests": 20,
+      "skipped": 0
+    },
+    {
+      "module": "test_node_task_smoke",
+      "tests": 6,
+      "skipped": 0
+    },
+    {
+      "module": "test_node_task_workflow",
+      "tests": 22,
+      "skipped": 0
+    },
+    {
+      "module": "test_node_text_palette",
+      "tests": 13,
+      "skipped": 0
+    },
+    {
+      "module": "test_node_text_paths",
+      "tests": 18,
+      "skipped": 0
+    },
+    {
+      "module": "test_node_values_upgrade",
+      "tests": 13,
+      "skipped": 0
+    },
+    {
+      "module": "test_node_video_stitch",
+      "tests": 10,
+      "skipped": 0
+    },
+    {
+      "module": "test_node_visual_upgrade",
+      "tests": 8,
+      "skipped": 0
+    },
+    {
+      "module": "test_node_window",
+      "tests": 6,
+      "skipped": 0
+    },
+    {
+      "module": "test_node_workflow",
+      "tests": 22,
+      "skipped": 0
+    },
+    {
+      "module": "test_node_workspace",
+      "tests": 74,
+      "skipped": 0
+    },
+    {
+      "module": "test_offline_mode",
+      "tests": 16,
+      "skipped": 0
+    },
+    {
+      "module": "test_offscreen_slide",
+      "tests": 6,
+      "skipped": 0
+    },
+    {
+      "module": "test_open_today_task_table",
+      "tests": 10,
+      "skipped": 0
+    },
+    {
+      "module": "test_openai_chat",
+      "tests": 13,
+      "skipped": 0
+    },
+    {
+      "module": "test_oral_video_duration_checker",
+      "tests": 4,
+      "skipped": 0
+    },
+    {
+      "module": "test_organizer_offline_behavior",
+      "tests": 2,
+      "skipped": 0
+    },
+    {
+      "module": "test_outside_preview_speed",
+      "tests": 3,
+      "skipped": 1
+    },
+    {
+      "module": "test_plugin_host",
+      "tests": 21,
+      "skipped": 0
+    },
+    {
+      "module": "test_plugin_manager",
+      "tests": 12,
+      "skipped": 0
+    },
+    {
+      "module": "test_plugin_storage_boundary",
+      "tests": 5,
+      "skipped": 0
+    },
+    {
+      "module": "test_pool_exclusion",
+      "tests": 9,
+      "skipped": 0
+    },
+    {
+      "module": "test_preview_result_lifecycle",
+      "tests": 2,
+      "skipped": 0
+    },
+    {
+      "module": "test_private_path_remount",
+      "tests": 16,
+      "skipped": 0
+    },
+    {
+      "module": "test_project_initializer",
+      "tests": 8,
+      "skipped": 0
+    },
+    {
+      "module": "test_project_initializer_ui",
+      "tests": 4,
+      "skipped": 0
+    },
+    {
+      "module": "test_protected_integration",
+      "tests": 9,
+      "skipped": 0
+    },
+    {
+      "module": "test_protected_storage",
+      "tests": 17,
+      "skipped": 0
+    },
+    {
+      "module": "test_qt6_migration",
+      "tests": 6,
+      "skipped": 0
+    },
+    {
+      "module": "test_qt_thread_lifecycle",
+      "tests": 15,
+      "skipped": 0
+    },
+    {
+      "module": "test_quantity_copy",
+      "tests": 14,
+      "skipped": 0
+    },
+    {
+      "module": "test_quantity_scope_and_review",
+      "tests": 16,
+      "skipped": 0
+    },
+    {
+      "module": "test_quantity_selection",
+      "tests": 25,
+      "skipped": 0
+    },
+    {
+      "module": "test_queue_completed_selection",
+      "tests": 6,
+      "skipped": 0
+    },
+    {
+      "module": "test_queue_legacy_snapshots",
+      "tests": 8,
+      "skipped": 0
+    },
+    {
+      "module": "test_reference_auth_fallback",
+      "tests": 20,
+      "skipped": 0
+    },
+    {
+      "module": "test_release_artifact",
+      "tests": 10,
+      "skipped": 0
+    },
+    {
+      "module": "test_release_native_environment",
+      "tests": 4,
+      "skipped": 0
+    },
+    {
+      "module": "test_release_notes",
+      "tests": 12,
+      "skipped": 0
+    },
+    {
+      "module": "test_release_privacy_inventory",
+      "tests": 3,
+      "skipped": 0
+    },
+    {
+      "module": "test_release_private_config",
+      "tests": 4,
+      "skipped": 0
+    },
+    {
+      "module": "test_release_test_runner",
+      "tests": 3,
+      "skipped": 0
+    },
+    {
+      "module": "test_render_checkboxes",
+      "tests": 7,
+      "skipped": 0
+    },
+    {
+      "module": "test_review_status_monitor",
+      "tests": 20,
+      "skipped": 0
+    },
+    {
+      "module": "test_script_duration_warning",
+      "tests": 13,
+      "skipped": 0
+    },
+    {
+      "module": "test_script_segmenter",
+      "tests": 61,
+      "skipped": 0
+    },
+    {
+      "module": "test_script_segmenter_node",
+      "tests": 13,
+      "skipped": 0
+    },
+    {
+      "module": "test_scroll_line_anchors",
+      "tests": 14,
+      "skipped": 0
+    },
+    {
+      "module": "test_scroll_origin",
+      "tests": 8,
+      "skipped": 0
+    },
+    {
+      "module": "test_search_shutdown",
+      "tests": 10,
+      "skipped": 0
+    },
+    {
+      "module": "test_security_bridge_writes",
+      "tests": 4,
+      "skipped": 0
+    },
+    {
+      "module": "test_security_hardening",
+      "tests": 10,
+      "skipped": 0
+    },
+    {
+      "module": "test_security_io_limits",
+      "tests": 11,
+      "skipped": 0
+    },
+    {
+      "module": "test_settings_hotkey_conflict",
+      "tests": 2,
+      "skipped": 0
+    },
+    {
+      "module": "test_settings_native_lifecycle",
+      "tests": 1,
+      "skipped": 0
+    },
+    {
+      "module": "test_settings_navigation",
+      "tests": 8,
+      "skipped": 0
+    },
+    {
+      "module": "test_shared_capabilities",
+      "tests": 8,
+      "skipped": 0
+    },
+    {
+      "module": "test_shared_music",
+      "tests": 20,
+      "skipped": 0
+    },
+    {
+      "module": "test_shared_music_drop",
+      "tests": 9,
+      "skipped": 0
+    },
+    {
+      "module": "test_smart_breath_presets",
+      "tests": 17,
+      "skipped": 0
+    },
+    {
+      "module": "test_smart_breath_settings",
+      "tests": 11,
+      "skipped": 0
+    },
+    {
+      "module": "test_smart_duplicate_display",
+      "tests": 6,
+      "skipped": 0
+    },
+    {
+      "module": "test_smart_image_assignment",
+      "tests": 23,
+      "skipped": 0
+    },
+    {
+      "module": "test_smart_image_delete",
+      "tests": 15,
+      "skipped": 0
+    },
+    {
+      "module": "test_smart_image_search",
+      "tests": 36,
+      "skipped": 1
+    },
+    {
+      "module": "test_smart_music_search",
+      "tests": 26,
+      "skipped": 0
+    },
+    {
+      "module": "test_smart_order_evidence",
+      "tests": 6,
+      "skipped": 0
+    },
+    {
+      "module": "test_smart_review_ux",
+      "tests": 8,
+      "skipped": 0
+    },
+    {
+      "module": "test_smart_seam_cover",
+      "tests": 19,
+      "skipped": 0
+    },
+    {
+      "module": "test_smart_search",
+      "tests": 22,
+      "skipped": 0
+    },
+    {
+      "module": "test_smart_source_tree",
+      "tests": 11,
+      "skipped": 0
+    },
+    {
+      "module": "test_smart_srt_only",
+      "tests": 12,
+      "skipped": 0
+    },
+    {
+      "module": "test_smart_subtitle_timing",
+      "tests": 4,
+      "skipped": 0
+    },
+    {
+      "module": "test_smart_task_refresh",
+      "tests": 16,
+      "skipped": 0
+    },
+    {
+      "module": "test_smart_video_background_integration",
+      "tests": 25,
+      "skipped": 0
+    },
+    {
+      "module": "test_smart_video_cache_rename",
+      "tests": 6,
+      "skipped": 0
+    },
+    {
+      "module": "test_smart_video_editor",
+      "tests": 83,
+      "skipped": 0
+    },
+    {
+      "module": "test_smart_video_export_blockers_ui",
+      "tests": 31,
+      "skipped": 0
+    },
+    {
+      "module": "test_smart_video_layout",
+      "tests": 1,
+      "skipped": 0
+    },
+    {
+      "module": "test_smart_video_locations",
+      "tests": 10,
+      "skipped": 0
+    },
+    {
+      "module": "test_smart_video_only",
+      "tests": 9,
+      "skipped": 0
+    },
+    {
+      "module": "test_smart_video_player",
+      "tests": 13,
+      "skipped": 0
+    },
+    {
+      "module": "test_smart_video_postprocess",
+      "tests": 19,
+      "skipped": 0
+    },
+    {
+      "module": "test_smart_video_renaming",
+      "tests": 2,
+      "skipped": 0
+    },
+    {
+      "module": "test_smart_video_segments",
+      "tests": 14,
+      "skipped": 0
+    },
+    {
+      "module": "test_smart_video_timeline",
+      "tests": 9,
+      "skipped": 0
+    },
+    {
+      "module": "test_startup_guide",
+      "tests": 14,
+      "skipped": 0
+    },
+    {
+      "module": "test_static_visual_once",
+      "tests": 5,
+      "skipped": 0
+    },
+    {
+      "module": "test_storage_capacity",
+      "tests": 9,
+      "skipped": 0
+    },
+    {
+      "module": "test_subtitle_no_console",
+      "tests": 5,
+      "skipped": 0
+    },
+    {
+      "module": "test_task_audio_quiet_skips",
+      "tests": 3,
+      "skipped": 0
+    },
+    {
+      "module": "test_task_audio_subtitle",
+      "tests": 12,
+      "skipped": 0
+    },
+    {
+      "module": "test_task_delivery_config",
+      "tests": 27,
+      "skipped": 0
+    },
+    {
+      "module": "test_task_delivery_gemini",
+      "tests": 2,
+      "skipped": 0
+    },
+    {
+      "module": "test_task_delivery_inbox",
+      "tests": 7,
+      "skipped": 0
+    },
+    {
+      "module": "test_task_delivery_quick_upload",
+      "tests": 5,
+      "skipped": 0
+    },
+    {
+      "module": "test_task_loading_performance",
+      "tests": 31,
+      "skipped": 0
+    },
+    {
+      "module": "test_task_path_loading",
+      "tests": 13,
+      "skipped": 0
+    },
+    {
+      "module": "test_task_rerender_preview",
+      "tests": 21,
+      "skipped": 0
+    },
+    {
+      "module": "test_task_result_exporter_candidates",
+      "tests": 2,
+      "skipped": 0
+    },
+    {
+      "module": "test_task_result_file_guard",
+      "tests": 22,
+      "skipped": 0
+    },
+    {
+      "module": "test_task_review_list",
+      "tests": 8,
+      "skipped": 0
+    },
+    {
+      "module": "test_task_schema_nodes",
+      "tests": 29,
+      "skipped": 0
+    },
+    {
+      "module": "test_task_submission_audit",
+      "tests": 4,
+      "skipped": 0
+    },
+    {
+      "module": "test_task_voice_id",
+      "tests": 27,
+      "skipped": 0
+    },
+    {
+      "module": "test_temporary_totp",
+      "tests": 20,
+      "skipped": 0
+    },
+    {
+      "module": "test_test_runner",
+      "tests": 3,
+      "skipped": 0
+    },
+    {
+      "module": "test_text_outside_stroke",
+      "tests": 10,
+      "skipped": 0
+    },
+    {
+      "module": "test_ui_action_integrity",
+      "tests": 3,
+      "skipped": 0
+    },
+    {
+      "module": "test_vc_responsiveness",
+      "tests": 15,
+      "skipped": 0
+    },
+    {
+      "module": "test_video_crop_geometry",
+      "tests": 5,
+      "skipped": 0
+    },
+    {
+      "module": "test_video_prompt_assistant",
+      "tests": 7,
+      "skipped": 0
+    },
+    {
+      "module": "test_video_prompt_vision_retry",
+      "tests": 12,
+      "skipped": 0
+    },
+    {
+      "module": "test_video_stitch",
+      "tests": 24,
+      "skipped": 0
+    },
+    {
+      "module": "test_video_upload_history",
+      "tests": 11,
+      "skipped": 0
+    },
+    {
+      "module": "test_visual_control_audio",
+      "tests": 9,
+      "skipped": 0
+    },
+    {
+      "module": "test_visual_loop_compat",
+      "tests": 4,
+      "skipped": 2
+    },
+    {
+      "module": "test_visual_loop_dissolve",
+      "tests": 12,
+      "skipped": 0
+    },
+    {
+      "module": "test_visual_loop_region",
+      "tests": 20,
+      "skipped": 1
+    },
+    {
+      "module": "test_visual_transitions",
+      "tests": 19,
+      "skipped": 0
+    },
+    {
+      "module": "test_voice_effects",
+      "tests": 15,
+      "skipped": 0
+    },
+    {
+      "module": "test_waste_reminder",
+      "tests": 51,
+      "skipped": 0
+    },
+    {
+      "module": "test_waste_weather",
+      "tests": 51,
+      "skipped": 0
+    },
+    {
+      "module": "test_weather_ball_physics",
+      "tests": 2,
+      "skipped": 0
+    },
+    {
+      "module": "test_whisper_inference",
+      "tests": 12,
+      "skipped": 0
+    },
+    {
+      "module": "test_windows_shutdown",
+      "tests": 9,
+      "skipped": 0
+    }
+  ],
+  "flow": {
+    "scripts": 67,
+    "failed": 0,
+    "raster_fixture_skipped": true
+  },
+  "source_scan": {
+    "files": 1583,
+    "findings": [],
+    "syntax_errors": []
+  },
+  "pip_audit": {
+    "packages": 127,
+    "affected": 0
+  },
+  "default_branch_dependency_alerts": {
+    "compared": 82,
+    "installed_affected": 0
+  },
+  "frozen": {
+    "version": "3.5.0",
+    "extension_version": "1.1.62",
+    "plugin_count": 26,
+    "qt_runtime": "6.11.2",
+    "torch": "2.13.0+cpu",
+    "torchaudio": "2.11.0+cpu",
+    "closed": true,
+    "media": {
+      "av_decode": true,
+      "opencv_decode": true,
+      "pillow_png": true,
+      "torch_cpu": true,
+      "qt_video_frames": 3
+    }
+  },
+  "initial_failed_modules": [
+    "test_batch_parallel_64",
+    "test_batch_parallel_export",
+    "test_node_media_smoke",
+    "test_node_postprocess"
+  ]
+}

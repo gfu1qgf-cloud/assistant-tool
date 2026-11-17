@@ -18,10 +18,13 @@ from model.SensitiveData import redact_sensitive_text
 from model.BackgroundTasks import TaskRunContext, BackgroundTaskCanceled
 from model.QtThreadLifecycle import connect_thread_finished
 from .settings import CONFIG_KEY, ClientSettingsPage, default_options
-from .rendering import message_html, is_web_link, cited_message_html
+from .rendering import is_web_link
 from .catalog import openai_identity
 from .advanced_options import AdvancedOptions
 from .option_layout import OptionsGrid,inline_field
+from .chat_view import Transcript
+from .chat_style import apply_chat_style
+from .version import APP_VERSION
 
 
 def safe_ui(function):
@@ -31,7 +34,8 @@ def safe_ui(function):
             return function(self, *args, **kwargs)
         except Exception as error:
             self.status.setText(redact_sensitive_text(str(error)))
-            self.context.log("AI 客户端操作失败：\n" + traceback.format_exc(), logging.ERROR)
+            if not getattr(self, 'is_private', False):
+                self.context.log('AI客户端操作失败（' + type(error).__name__ + '）；未将对话内容写入日志。', logging.ERROR)
             return None
     return wrapped
 
@@ -86,7 +90,10 @@ class ClientWorker(QtCore.QThread):
 def run_chat(payload, job, *, store, client, stream=None):
     try:
         job.check_canceled()
-        messages = store.request_messages(payload["conversation"], payload["prompt_id"], payload["options"]["rounds"])
+        options = payload['options']
+        messages = store.request_messages(payload["conversation"], payload["prompt_id"], options['rounds'],
+            text_limit=options.get('context_chars', 0), include_history_images=options.get('history_images', True),
+            system=options.get('system', ''))
         keywords = {"on_delta": stream.append} if stream is not None else {}
         result = client.chat(payload["provider"], payload["model"], messages,
                              payload["options"], payload["config"], job, **keywords)
@@ -105,6 +112,13 @@ def run_images(payload, job, *, store):
         job.report(f"处理图片 {index+1}/{len(payload['sources'])}…", int(index * 100 / len(payload["sources"])))
         images.append(store.import_image(source))
     return {"conversation": payload["conversation"], "images": images}
+
+
+def run_purge(payload, job, *, store):
+    job.check_canceled()
+    store.purge_conversation(payload['conversation'])
+    store.resume_purges()
+    return {'conversation': payload['conversation']}
 
 
 class ChatInput(QtWidgets.QPlainTextEdit):
@@ -143,29 +157,19 @@ class ChatInput(QtWidgets.QPlainTextEdit):
         super().keyPressEvent(event)
 
 
-class Transcript(QtWidgets.QTextBrowser):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.allowed_images = {}
-
-    def loadResource(self, resource_type, name):
-        path = self.allowed_images.get(name.toString())
-        if resource_type == QtGui.QTextDocument.ResourceType.ImageResource.value and path and path.is_file():
-            return QtGui.QImage(str(path))
-        return None
-
-    def keyPressEvent(self, event):
-        if event.matches(QtGui.QKeySequence.StandardKey.Copy):
-            set_internal_clipboard_text(self.textCursor().selectedText().replace("\u2029", "\n"))
-            return
-        super().keyPressEvent(event)
-
-
 class AIClientDialog(QtWidgets.QDialog):
     def __init__(self, context, store, parent=None):
         super().__init__(parent)
         self.context, self.store = context, store
+        self.is_private = bool(getattr(store, 'is_private', False))
+        self._private_dialogs = []
+        self._group_dialogs = []
+        self._account_dialogs = []
+        self._privacy_closing = False
         self.client = context.ai_client
+        if self.is_private:
+            from .private_store import private_client
+            self.client = private_client(self.client)
         self.current_id = None
         self.pending_images = []
         self.handle = self.operation = None
@@ -179,19 +183,27 @@ class AIClientDialog(QtWidgets.QDialog):
         self.catalog_active_identity = None
         self.loading = False
         self.consent = False
-        self.setWindowTitle("AI 模型试用台 · LZX")
+        saved_size = (context.load_config().get(CONFIG_KEY) or {}).get('chat_font_px', 15)
+        self.chat_font_px = max(12, min(28, saved_size)) if type(saved_size) is int else 15
+        self.setWindowTitle(f"AI 模型试用台 {APP_VERSION} · " + ('无痕聊天' if self.is_private else 'LZX'))
         self.setWindowFlag(QtCore.Qt.WindowType.WindowMinimizeButtonHint, True)
         self.setWindowFlag(QtCore.Qt.WindowType.WindowMaximizeButtonHint, True)
         self.resize(1180, 820)
         self.setMinimumSize(760, 580)
         layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        self.setObjectName('aiChatWindow')
+        apply_chat_style(self)
         menu = QtWidgets.QMenuBar(self)
         layout.setMenuBar(menu)
         conversation_menu = menu.addMenu("对话")
         for title, callback, shortcut in (
             ("新建对话", self.new_conversation, "Ctrl+N"), ("重命名…", self.rename_conversation, ""),
-            ("删除本段对话…", self.delete_conversation, ""), ("导出对话文本…", self.export_conversation, ""),
+            ("彻底删除本段对话…", self.delete_conversation, ""), ("导出对话文本…", self.export_conversation, ""),
             ("打开本地记录目录", self.open_history_folder, ""), ("复制最新回答", self.copy_answer, ""),
+            ('分支记录…', self.show_branches, ''),
+            ('重试最新回答', self.retry_request, 'Ctrl+R'),
         ):
             action = conversation_menu.addAction(title)
             action.triggered.connect(callback)
@@ -199,20 +211,96 @@ class AIClientDialog(QtWidgets.QDialog):
                 action.setShortcut(QtGui.QKeySequence(shortcut))
         connection_menu = menu.addMenu("连接")
         connection_menu.addAction("连接设置…", self.connection_settings)
+        connection_menu.addAction('余额 / 用量…', self.open_balance)
         connection_menu.addAction("管理 Gemini 密钥…", self.open_gemini)
         connection_menu.addAction("刷新模型列表", self.refresh_models)
+        if not self.is_private:
+            conversation_menu.addAction('打开无痕聊天', self.open_private_chat)
+        batch_menu = menu.addMenu('Batch')
+        batch_menu.menuAction().setVisible(not self.is_private and not getattr(self,'is_group',False))
+        batch_menu.addAction('检查当前对话的Batch', self.check_batch_requests)
+        batch_menu.addAction('取消当前对话的Batch…', self.cancel_batch_requests)
 
         splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal, self)
-        self.history = QtWidgets.QListWidget(splitter)
+        self.sidebar = QtWidgets.QWidget(splitter)
+        self.sidebar.setObjectName('chatSidebar')
+        sidebar_layout = QtWidgets.QVBoxLayout(self.sidebar)
+        sidebar_layout.setContentsMargins(16, 20, 16, 16)
+        sidebar_layout.setSpacing(12)
+        brand = QtWidgets.QLabel('无痕聊天' if self.is_private else 'LZX  /  AI 试用台', self.sidebar)
+        brand.setObjectName('sidebarBrand')
+        sidebar_layout.addWidget(brand)
+        self.new_button = QtWidgets.QPushButton('＋  新建对话', self.sidebar)
+        self.new_button.setObjectName('newChat')
+        self.new_button.clicked.connect(self.new_conversation)
+        sidebar_layout.addWidget(self.new_button)
+        self.group_button = QtWidgets.QPushButton('AI 群聊', self.sidebar)
+        self.group_button.clicked.connect(self.open_group_chat)
+        sidebar_layout.addWidget(self.group_button)
+        if not self.is_private:
+            self.private_button = QtWidgets.QPushButton('无痕聊天', self.sidebar)
+            self.private_button.clicked.connect(self.open_private_chat)
+            sidebar_layout.addWidget(self.private_button)
+        self.history_search = QtWidgets.QLineEdit(self.sidebar)
+        self.history_search.setPlaceholderText('搜索对话…')
+        self.history_search.setClearButtonEnabled(True)
+        sidebar_layout.addWidget(self.history_search)
+        self.history = QtWidgets.QListWidget(self.sidebar)
+        self.history.setObjectName('chatHistory')
         self.history.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.history.setTextElideMode(QtCore.Qt.TextElideMode.ElideRight)
         self.history.setMinimumWidth(180)
         self.history.setMaximumWidth(360)
         self.history.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
         self.history.customContextMenuRequested.connect(self.history_menu)
+        sidebar_layout.addWidget(self.history, 1)
+        self.delete_button = QtWidgets.QPushButton('彻底删除当前对话…', self.sidebar)
+        self.delete_button.clicked.connect(self.delete_conversation)
+        sidebar_layout.addWidget(self.delete_button)
+        settings_button = QtWidgets.QPushButton('连接设置', self.sidebar)
+        settings_button.clicked.connect(self.connection_settings)
+        sidebar_layout.addWidget(settings_button)
+        local_note = QtWidgets.QLabel('无痕：关闭后不保留记录' if self.is_private else '普通对话记录保存在本机', self.sidebar)
+        local_note.setObjectName('muted')
+        sidebar_layout.addWidget(local_note)
         right = QtWidgets.QWidget(splitter)
+        right.setObjectName('chatMain')
         right_layout = QtWidgets.QVBoxLayout(right)
         right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setSpacing(0)
+        self.header = QtWidgets.QWidget(right)
+        self.header.setObjectName('chatHeader')
+        header_layout = QtWidgets.QVBoxLayout(self.header)
+        header_layout.setContentsMargins(22, 16, 22, 14)
+        header_layout.setSpacing(12)
+        title_row = QtWidgets.QHBoxLayout()
+        self.sidebar_button = QtWidgets.QToolButton(self.header)
+        self.sidebar_button.setText('会话')
+        self.sidebar_button.setToolTip('显示 / 隐藏会话列表')
+        self.sidebar_button.clicked.connect(lambda: self.sidebar.setVisible(not self.sidebar.isVisible()))
+        title_row.addWidget(self.sidebar_button)
+        self.conversation_title = QtWidgets.QLabel('新对话', self.header)
+        self.conversation_title.setTextFormat(QtCore.Qt.TextFormat.PlainText)
+        self.conversation_title.setObjectName('conversationTitle')
+        self.conversation_title.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored, QtWidgets.QSizePolicy.Policy.Preferred)
+        title_row.addWidget(self.conversation_title, 1)
+        self.font_size = QtWidgets.QSpinBox(self.header)
+        self.font_size.setRange(12, 28)
+        self.font_size.setSuffix(' px')
+        self.font_size.setValue(self.chat_font_px)
+        self.font_size.setPrefix('字号 ')
+        self.font_size.setFixedWidth(112)
+        self.font_size.setToolTip('聊天字号：同时调整消息、代码及输入区，保存为所有对话通用的偏好。')
+        title_row.addWidget(self.font_size)
+        self.copy_latest = QtWidgets.QToolButton(self.header)
+        self.copy_latest.setText('复制最新回答')
+        self.copy_latest.clicked.connect(self.copy_answer)
+        title_row.addWidget(self.copy_latest)
+        self.balance_button = QtWidgets.QToolButton(self.header)
+        self.balance_button.setText('余额 / 用量')
+        self.balance_button.clicked.connect(self.open_balance)
+        title_row.addWidget(self.balance_button)
+        header_layout.addLayout(title_row)
         selectors = QtWidgets.QHBoxLayout()
         self.provider = QtWidgets.QComboBox(right)
         for identifier, title in PROVIDERS.items():
@@ -223,19 +311,26 @@ class AIClientDialog(QtWidgets.QDialog):
         self.model.setMinimumContentsLength(14)
         self.model.setInsertPolicy(QtWidgets.QComboBox.InsertPolicy.NoInsert)
         self.model.lineEdit().setPlaceholderText("刷新列表，或填写具体模型 ID")
-        self.model.setMinimumWidth(220)
+        self.model.setMinimumWidth(140)
         self.refresh_button = QtWidgets.QPushButton("刷新模型", right)
         self.options_button = QtWidgets.QToolButton(right)
-        self.options_button.setText("参数 / 联网 ▾")
+        self.options_button.setText("参数 / 联网")
+        self.options_button.setCheckable(True)
         selectors.addWidget(self.provider)
         selectors.addWidget(self.model, 1)
         selectors.addWidget(self.refresh_button)
         selectors.addWidget(self.options_button)
-        right_layout.addLayout(selectors)
+        header_layout.addLayout(selectors)
+        right_layout.addWidget(self.header)
+        if self.is_private:
+            private_note = QtWidgets.QLabel('无痕：聊天、草稿和图片仅在内存中，不写本机聊天文件；关闭窗口后清除。内容仍会发送至所选服务商，手动复制也可能留下外部记录。', right)
+            private_note.setWordWrap(True)
+            private_note.setContentsMargins(18,8,18,8)
+            right_layout.addWidget(private_note)
         self.catalog_hint = QtWidgets.QLabel(right)
         self.catalog_hint.setWordWrap(True)
         self.catalog_hint.setTextFormat(QtCore.Qt.TextFormat.PlainText)
-        right_layout.addWidget(self.catalog_hint)
+        header_layout.addWidget(self.catalog_hint)
         self.options_panel = OptionsGrid(right)
         self.system = QtWidgets.QPlainTextEdit(self.options_panel)
         self.system.setMinimumHeight(56)
@@ -243,8 +338,10 @@ class AIClientDialog(QtWidgets.QDialog):
         self.system.setPlaceholderText("可选：给模型的固定要求；留空使用模型默认行为")
         self.options_panel.add_field('系统提示',self.system,wide=True,top=True)
         self.rounds = QtWidgets.QSpinBox(self.options_panel)
-        self.rounds.setRange(1, 50)
+        self.rounds.setRange(0, 50)
         self.rounds.setSuffix(" 轮")
+        self.rounds.setSpecialValueText('不带历史')
+        self.rounds.setToolTip('只发送最近的成功对话；0表示仅发送当前消息和系统提示。旧记录仍保留。')
         self.maximum = QtWidgets.QSpinBox(self.options_panel)
         self.maximum.setRange(128, 128000)
         self.maximum.setSingleStep(512)
@@ -261,6 +358,35 @@ class AIClientDialog(QtWidgets.QDialog):
         self.options_panel.add_field('输出上限',self.maximum)
         self.options_panel.add_field('采样温度',inline_field(self.options_panel,self.temperature_enabled,self.temperature))
         self.advanced = AdvancedOptions(self.options_panel)
+        self.context_chars = QtWidgets.QSpinBox(self.options_panel)
+        self.context_chars.setRange(0, 512000)
+        self.context_chars.setSingleStep(2000)
+        self.context_chars.setSpecialValueText('不限制')
+        self.context_chars.setFixedWidth(160)
+        self.context_chars.setToolTip('限制当前消息、系统提示和历史文字的总字符数，不是Token。超限时按整轮省略最旧历史，绝不截断当前消息。')
+        self.history_images = QtWidgets.QCheckBox('携带历史图片', self.options_panel)
+        self.history_images.setChecked(True)
+        self.history_images.setToolTip('关闭后只发送本次附加的图片，旧图片保留在聊天记录中。')
+        self.options_panel.add_field('请求文字上限',self.context_chars)
+        self.options_panel.add_field('历史图片',self.history_images)
+        self.request_mode = QtWidgets.QComboBox(self.options_panel)
+        self.request_mode.addItem('即时聊天', 'instant')
+        self.request_mode.addItem('OpenAI Batch · 异步优惠', 'batch')
+        self.request_mode.setFixedWidth(260)
+        self.request_mode.setToolTip('Batch仅支持OpenAI；按官方适用价格计费，最长等待24小时，不流式。请求会作为文件上传；未知结果不自动重复提交。')
+        self.batch_check_button = QtWidgets.QPushButton('检查 Batch 结果', self.options_panel)
+        self.batch_check_button.clicked.connect(self.check_batch_requests)
+        self.options_panel.add_field('请求方式', self.request_mode)
+        self.options_panel.add_field('异步任务', self.batch_check_button)
+        economy_row = inline_field(self.options_panel,width=None)
+        self.economy_button = QtWidgets.QPushButton('精简上下文',self.options_panel)
+        self.economy_button.setToolTip('改为最近5轮、最多16000文字字符、不携带历史图片。保留所选模型、输出上限、思考和联网设置。')
+        self.economy_button.clicked.connect(self.apply_economy_context)
+        economy_row.layout().addWidget(self.economy_button)
+        economy_note = QtWidgets.QLabel('减少历史可降低发送量，也会减少模型能记住的细节。',self.options_panel)
+        economy_note.setWordWrap(True)
+        economy_row.layout().addWidget(economy_note,1)
+        self.options_panel.add_field('用量控制',economy_row,wide=True)
         self.free_only = QtWidgets.QCheckBox("OpenRouter 仅免费", self.options_panel)
         self.foreign_only = QtWidgets.QCheckBox("国外厂商", self.options_panel)
         self.cf_free_only = QtWidgets.QCheckBox("Cloudflare 免费额度", self.options_panel)
@@ -288,15 +414,28 @@ class AIClientDialog(QtWidgets.QDialog):
         right_layout.addWidget(self.options_scroll)
         hint = QtWidgets.QLabel("聊天记录保存在本机；点击发送会把上下文和图片发给所选云服务。图片会保存静态副本（长边不超过2048），原文件不变。", right)
         hint.setWordWrap(True)
-        right_layout.addWidget(hint)
+        self.options_panel.add_field('数据说明',hint,wide=True)
         self.billing_hint = QtWidgets.QLabel("", right)
         self.billing_hint.setWordWrap(True)
-        right_layout.addWidget(self.billing_hint)
+        self.options_panel.add_field('',self.billing_hint,wide=True)
         self.transcript = Transcript(right)
-        self.transcript.setOpenLinks(False)
-        self.transcript.setOpenExternalLinks(False)
+        self.transcript.set_font_size(self.chat_font_px)
         self.transcript.anchorClicked.connect(self.open_attachment)
+        self.transcript.regenerateRequested.connect(self.regenerate_answer)
+        self.transcript.branchRequested.connect(self.switch_branch)
+        self.transcript.editRequested.connect(self.edit_message)
         right_layout.addWidget(self.transcript, 1)
+        self.jump_button = QtWidgets.QToolButton(right)
+        self.jump_button.setText('↓  回到最新消息')
+        self.jump_button.clicked.connect(self.jump_to_latest)
+        self.jump_button.hide()
+        right_layout.addWidget(self.jump_button, 0, QtCore.Qt.AlignmentFlag.AlignHCenter)
+        self.transcript.verticalScrollBar().valueChanged.connect(self.update_jump_button)
+        self.composer = QtWidgets.QFrame(right)
+        self.composer.setObjectName('chatComposer')
+        composer_layout = QtWidgets.QVBoxLayout(self.composer)
+        composer_layout.setContentsMargins(18, 12, 18, 12)
+        composer_layout.setSpacing(8)
         self.attachments = QtWidgets.QListWidget(right)
         self.attachments.setViewMode(QtWidgets.QListView.ViewMode.IconMode)
         self.attachments.setIconSize(QtCore.QSize(84, 65))
@@ -305,31 +444,46 @@ class AIClientDialog(QtWidgets.QDialog):
         self.attachments.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
         self.attachments.customContextMenuRequested.connect(self.attachment_menu)
         self.attachments.hide()
-        right_layout.addWidget(self.attachments)
+        composer_layout.addWidget(self.attachments)
         self.input = ChatInput(right)
-        self.input.setPlaceholderText("输入消息；Ctrl+Enter 发送，Enter 换行。可拖入图片或 Ctrl+V 粘贴图片。")
-        self.input.setMinimumHeight(80)
-        self.input.setMaximumHeight(145)
-        right_layout.addWidget(self.input)
+        self.input.setObjectName('chatInput')
+        self.input.setPlaceholderText("写下你的问题…  可粘贴或拖入图片")
+        self.input.setFixedHeight(80)
+        composer_layout.addWidget(self.input)
+        self.request_hint = QtWidgets.QLabel(self.composer)
+        self.request_hint.setObjectName('muted')
+        self.request_hint.setTextFormat(QtCore.Qt.TextFormat.PlainText)
+        self.request_hint.setWordWrap(True)
+        self.request_hint.setToolTip('仅做本地统计，不请求模型。字符数不等于Token，图片和服务商内部格式另计。旧历史不会从本地记录删除。')
+        composer_layout.addWidget(self.request_hint)
         buttons = QtWidgets.QHBoxLayout()
         self.attach_button = QtWidgets.QPushButton("附加图片…", right)
-        self.retry_button = QtWidgets.QPushButton("重试未成功消息", right)
+        self.retry_button = QtWidgets.QPushButton("重试回答", right)
+        self.retry_button.setToolTip('重试当前分支最后一条失败请求，或重新生成最新回答；成功回答的新版本保存在独立分支。也可按Ctrl+R。')
         self.stop_button = QtWidgets.QPushButton("停止", right)
-        self.send_button = QtWidgets.QPushButton("发送", right)
+        self.send_button = QtWidgets.QPushButton("发送 ↑", right)
+        self.send_button.setObjectName('sendChat')
         self.send_button.setDefault(False)
         self.send_button.setAutoDefault(False)
         for button in (self.attach_button, self.retry_button, self.stop_button):
             button.setAutoDefault(False)
             buttons.addWidget(button)
         buttons.addStretch(1)
+        shortcut_hint = QtWidgets.QLabel('Ctrl+Enter 发送 · Enter 换行', self.composer)
+        shortcut_hint.setObjectName('muted')
+        buttons.addWidget(shortcut_hint)
         buttons.addWidget(self.send_button)
-        right_layout.addLayout(buttons)
-        splitter.addWidget(self.history)
+        composer_layout.addLayout(buttons)
+        right_layout.addWidget(self.composer)
+        splitter.addWidget(self.sidebar)
         splitter.addWidget(right)
         splitter.setChildrenCollapsible(False)
-        splitter.setSizes([230, 900])
+        splitter.setSizes([250, 930])
+        splitter.setStretchFactor(0, 0)
+        splitter.setStretchFactor(1, 1)
         layout.addWidget(splitter, 1)
         self.status = QtWidgets.QLabel(self)
+        self.status.setObjectName('chatStatus')
         self.status.setTextFormat(QtCore.Qt.TextFormat.PlainText)
         self.status.setWordWrap(True)
         layout.addWidget(self.status)
@@ -343,13 +497,26 @@ class AIClientDialog(QtWidgets.QDialog):
         self.stream_timer = QtCore.QTimer(self)
         self.stream_timer.setInterval(160)
         self.stream_timer.timeout.connect(self.show_stream)
+        self.preview_timer = QtCore.QTimer(self)
+        self.preview_timer.setSingleShot(True)
+        self.preview_timer.setInterval(200)
+        self.preview_timer.timeout.connect(self.update_request_hint)
+        self.font_size.valueChanged.connect(self.font_size_changed)
+        for text, shortcut, delta in (('放大聊天文字', 'Ctrl++', 1), ('缩小聊天文字', 'Ctrl+-', -1)):
+            action = QtGui.QAction(text, self)
+            action.setShortcut(QtGui.QKeySequence(shortcut))
+            action.triggered.connect(lambda _checked=False, step=delta: self.font_size.stepBy(step))
+            self.addAction(action)
         self.history.currentItemChanged.connect(self.select_conversation)
+        self.history_search.textChanged.connect(self.filter_history)
         self.provider.currentIndexChanged.connect(self.provider_changed)
         self.model.currentTextChanged.connect(self.schedule_draft)
         self.input.textChanged.connect(self.schedule_draft)
         self.system.textChanged.connect(self.schedule_draft)
-        for widget in (self.rounds, self.maximum, self.temperature):
+        for widget in (self.rounds, self.maximum, self.temperature, self.context_chars):
             widget.valueChanged.connect(self.schedule_draft)
+        self.history_images.toggled.connect(self.schedule_draft)
+        self.request_mode.currentIndexChanged.connect(self.request_mode_changed)
         for widget in (self.free_only, self.foreign_only, self.cf_free_only):
             widget.toggled.connect(self.filter_changed)
         self.temperature_enabled.toggled.connect(self.schedule_draft)
@@ -376,15 +543,241 @@ class AIClientDialog(QtWidgets.QDialog):
         if not existing:
             self.new_conversation()
         self.set_busy(False)
+        self.request_mode_changed()
         self.status.setText("离线模式：可以查看历史，不能请求模型。" if is_offline() else "从“连接 → 连接设置”添加服务密钥，再刷新并选择模型。")
 
     def showEvent(self, event):
         super().showEvent(event)
         self.catalog_timer.start(0)
+        self.preview_timer.start()
+
+    def changeEvent(self, event):
+        super().changeEvent(event)
+        if event.type() in (QtCore.QEvent.Type.PaletteChange, QtCore.QEvent.Type.ApplicationPaletteChange):
+            dark = QtWidgets.QApplication.palette().color(QtGui.QPalette.ColorRole.Window).lightness() < 128
+            if hasattr(self, '_chat_dark') and dark != self._chat_dark:
+                apply_chat_style(self)
 
     def settings_changed(self):
         # Also called when credentials were saved from the main settings page.
         self.catalog_timer.start(0)
+
+    def open_private_chat(self, _checked=False):
+        if self.is_private:
+            return
+        from .private_store import PrivateChatStore
+        dialog = type(self)(self.context, PrivateChatStore(), self)
+        self._private_dialogs.append(dialog)
+        dialog.destroyed.connect(lambda *_args, child=dialog: self._private_dialogs.remove(child) if child in self._private_dialogs else None)
+        dialog.show()
+        return dialog
+
+    @safe_ui
+    def open_group_chat(self, _checked=False):
+        if self._group_dialogs:
+            dialog=self._group_dialogs[0]
+            dialog.show();dialog.raise_();dialog.activateWindow();return dialog
+        from .group_ui import GroupChatDialog
+        if self.is_private:
+            from .private_store import PrivateChatStore
+            store=PrivateChatStore()
+        else:
+            from .store import ChatStore
+            store=ChatStore(self.store.root / 'GroupChats')
+        dialog=GroupChatDialog(self.context,store,self)
+        self._group_dialogs.append(dialog)
+        dialog.destroyed.connect(lambda *_args,child=dialog:self._group_dialogs.remove(child) if child in self._group_dialogs else None)
+        dialog.show();return dialog
+
+    @safe_ui
+    def open_balance(self, _checked=False):
+        from .balance_ui import BalanceDialog
+        existing=next((window for window in self._account_dialogs if not window._closing),None)
+        if existing is not None:
+            existing.show();existing.raise_();existing.activateWindow();return existing
+        root=self
+        while isinstance(root.parent(),AIClientDialog):root=root.parent()
+        dialog=BalanceDialog(self.context,self.client)
+        for owner in ({self,root}):
+            owner._account_dialogs.append(dialog)
+            dialog.destroyed.connect(lambda *_args,owner=owner,child=dialog:owner._account_dialogs.remove(child) if child in owner._account_dialogs else None)
+        dialog.show();return dialog
+
+    def child_chat_windows(self):
+        result=[]
+        for child in [*self._private_dialogs,*self._group_dialogs,*self._account_dialogs]:
+            result.append(child);result.extend(child.child_chat_windows())
+        return result
+
+    @safe_ui
+    def font_size_changed(self, pixels):
+        self.chat_font_px = pixels
+        apply_chat_style(self)
+        self.transcript.set_font_size(pixels)
+        snapshot = self.context.load_config()
+        settings = dict(snapshot.get(CONFIG_KEY) or {})
+        settings['chat_font_px'] = pixels
+        if not self.context.patch_config({CONFIG_KEY: settings}, expected=snapshot):
+            self.status.setText('字号已应用，但偏好未保存；请稍后重新调整。')
+
+    def apply_economy_context(self):
+        self.rounds.setValue(5)
+        self.context_chars.setValue(16000)
+        self.history_images.setChecked(False)
+        self.schedule_draft()
+        self.update_request_hint()
+
+    def request_mode_changed(self, *_args):
+        batch = self.request_mode.currentData() == 'batch'
+        self.streaming.setEnabled(not batch)
+        self.streaming.setToolTip('Batch不流式；此选项保留用于即时聊天。' if batch else '流式只改变显示速度，不减少输入文字量。')
+        self.send_button.setText('提交 Batch' if batch else '发送 ↑')
+        self.schedule_draft()
+        self.update_request_hint()
+
+    @safe_ui
+    def update_request_hint(self):
+        if not self.current_id or self.loading or not self.isVisible():
+            return
+        try:
+            info = self.store.context_preview(self.current_id, self.input.toPlainText().strip(), self.pending_images, self.options())
+            text = (f"本次携带 {info['history_rounds']} 轮历史 · 文字 {info['text_chars']} 字符 · 图片 {info['images']} 张")
+            if info['omitted_messages']:
+                text += f" · 已省略 {info['omitted_messages']} 条旧历史"
+            if self.request_mode.currentData() == 'batch':
+                text = 'Batch异步优惠 · 最长24小时 · 不流式\n' + text
+            self.request_hint.setText(text)
+        except ValueError as error:
+            self.request_hint.setText(str(error))
+
+    @safe_ui
+    def regenerate_answer(self, assistant_id):
+        if self.handle:
+            self.status.setText('请等待当前请求完成，再重新生成。')
+            return
+        self.send(regenerate_id=assistant_id)
+
+    @safe_ui
+    def edit_message(self, prompt_id):
+        if self.handle:
+            self.status.setText('请等待当前操作完成后再编辑消息。')
+            return
+        row = self.store.editable_prompt(self.current_id, prompt_id)
+        dialog = QtWidgets.QDialog(self)
+        dialog.setWindowTitle('编辑我的消息')
+        dialog.resize(720, 500)
+        layout = QtWidgets.QVBoxLayout(dialog)
+        note = QtWidgets.QLabel('修改并重新发送会创建新分支；原问题、原回答和后续对话都保留。', dialog)
+        note.setWordWrap(True)
+        layout.addWidget(note)
+        editor = QtWidgets.QPlainTextEdit(dialog)
+        editor.setObjectName('editChatMessage')
+        font = editor.font()
+        font.setPixelSize(self.chat_font_px)
+        editor.setFont(font)
+        editor.setPlainText(row['text'])
+        layout.addWidget(editor, 1)
+        if row['images']:
+            attachments = QtWidgets.QLabel('沿用本条消息的图片：' + '、'.join(image['name'] for image in row['images']), dialog)
+            attachments.setTextFormat(QtCore.Qt.TextFormat.PlainText)
+            attachments.setWordWrap(True)
+            layout.addWidget(attachments)
+        identity = QtWidgets.QLabel('本次使用：' + PROVIDERS.get(self.provider.currentData(), '') + ' / ' + self.model_id(), dialog)
+        identity.setTextFormat(QtCore.Qt.TextFormat.PlainText)
+        identity.setWordWrap(True)
+        layout.addWidget(identity)
+        error_label = QtWidgets.QLabel(dialog)
+        error_label.setTextFormat(QtCore.Qt.TextFormat.PlainText)
+        error_label.setWordWrap(True)
+        layout.addWidget(error_label)
+        buttons = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.StandardButton.Save | QtWidgets.QDialogButtonBox.StandardButton.Cancel, dialog)
+        buttons.button(QtWidgets.QDialogButtonBox.StandardButton.Save).setText('保存并重新发送')
+        buttons.button(QtWidgets.QDialogButtonBox.StandardButton.Cancel).setText('取消')
+        def submit():
+            result = self.send(edit_id=prompt_id, edited_text=editor.toPlainText())
+            if result is not None:
+                dialog.accept()
+            else:
+                error_label.setText(self.status.text() or '尚未发送，修改仍保留在编辑框中。')
+        buttons.accepted.connect(submit)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        editor.setFocus()
+        dialog.exec()
+
+    @safe_ui
+    def check_batch_requests(self, _checked=False, *, cancel=False):
+        if self.is_private:
+            self.status.setText('无痕聊天不保存Batch记录，仅支持即时请求。')
+            return
+        if self.handle:
+            self.status.setText('请等待当前操作完成后再检查Batch。')
+            return
+        if not self.store.batches(self.current_id):
+            self.status.setText('当前对话没有Batch记录；可在“参数 / 联网 → 请求方式”选择OpenAI Batch。')
+            return
+        from .batch_chat import check_batches
+        config = pin_provider_config(self.connection_snapshot(), 'openai')
+        self.submit('检查AI聊天Batch', functools.partial(check_batches, store=self.store),
+            {'conversation': self.current_id, 'config': config, 'cancel': cancel}, {'type': 'batch_check', 'conversation': self.current_id})
+
+    def cancel_batch_requests(self, _checked=False):
+        if QtWidgets.QMessageBox.question(self, '取消云端Batch', '取消当前对话尚在运行的Batch？已完成的部分仍可能计费。关闭聊天窗口本身不会取消云端任务。') == QtWidgets.QMessageBox.StandardButton.Yes:
+            self.check_batch_requests(cancel=True)
+
+    @safe_ui
+    def switch_branch(self, branch_id):
+        self.save_draft()
+        self.store.select_branch(self.current_id, branch_id)
+        self._displayed_conversation = None
+        self.render_transcript()
+        self.update_request_hint()
+        self.status.setText('已切换分支；后续请求只携带当前分支的上下文。')
+
+    @safe_ui
+    def show_branches(self, _checked=False):
+        dialog = QtWidgets.QDialog(self)
+        dialog.setWindowTitle('分支记录 · 选择一条历史继续')
+        dialog.resize(820, 560)
+        layout = QtWidgets.QVBoxLayout(dialog)
+        note = QtWidgets.QLabel('重新生成会保留原分支。选择一个节点，可切换到该分支及其最近的后续对话；切换不会请求模型。', dialog)
+        note.setWordWrap(True)
+        layout.addWidget(note)
+        tree = QtWidgets.QTreeWidget(dialog)
+        tree.setHeaderLabels(['对话节点', '模型', '状态'])
+        tree.setColumnWidth(0, 470)
+        tree.setColumnWidth(1, 190)
+        layout.addWidget(tree, 1)
+        nodes = {}
+        leaf = self.store.get(self.current_id)['active_leaf']
+        for row in self.store.messages(self.current_id, all_branches=True):
+            title = ('你：' if row['role'] == 'user' else 'AI：') + row['text'].replace('\n', ' ')[:90]
+            item = QtWidgets.QTreeWidgetItem([title, row['model'], row['status']])
+            item.setData(0, QtCore.Qt.ItemDataRole.UserRole, row['id'])
+            parent = nodes.get(row['parent_id'])
+            if parent:
+                parent.addChild(item)
+            else:
+                tree.addTopLevelItem(item)
+            nodes[row['id']] = item
+            if row['id'] == leaf:
+                tree.setCurrentItem(item)
+                ancestor = parent
+                while ancestor:
+                    ancestor.setExpanded(True)
+                    ancestor = ancestor.parent()
+        buttons = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.StandardButton.Open | QtWidgets.QDialogButtonBox.StandardButton.Cancel, dialog)
+        buttons.button(QtWidgets.QDialogButtonBox.StandardButton.Open).setText('切换分支')
+        def choose():
+            item = tree.currentItem()
+            if item:
+                self.switch_branch(item.data(0, QtCore.Qt.ItemDataRole.UserRole))
+                dialog.accept()
+        buttons.accepted.connect(choose)
+        buttons.rejected.connect(dialog.reject)
+        tree.itemDoubleClicked.connect(lambda *_args: choose())
+        layout.addWidget(buttons)
+        dialog.exec()
 
     def sync_openai_identity(self, config):
         identity = openai_identity(config)
@@ -414,6 +807,8 @@ class AIClientDialog(QtWidgets.QDialog):
 
     def options(self):
         return {"system": self.system.toPlainText(), "rounds": self.rounds.value(),
+                'context_chars': self.context_chars.value(), 'history_images': self.history_images.isChecked(),
+                'request_mode': self.request_mode.currentData(),
                 "max_tokens": self.maximum.value(),
                 "temperature": self.temperature.value() if self.temperature_enabled.isChecked() else None,
                 "free_only": self.free_only.isChecked(), "foreign_only": self.foreign_only.isChecked(),
@@ -437,6 +832,9 @@ class AIClientDialog(QtWidgets.QDialog):
         self.temperature.setEnabled(caps['sampling'] and self.temperature_enabled.isChecked())
         self.temperature_enabled.setToolTip('模型／思考等级不支持时保留原值，但不发送温度。')
         provider=self.provider.currentData()
+        self.request_mode.model().item(1).setEnabled(provider == 'openai' and not self.is_private)
+        if (provider != 'openai' or self.is_private) and self.request_mode.currentData() == 'batch':
+            self.request_mode.setCurrentIndex(0)
         self.free_only.setEnabled(provider=='openrouter')
         self.cf_free_only.setEnabled(provider=='cloudflare')
         self.foreign_only.setEnabled(provider in {'openrouter','cloudflare','mistral','groq'})
@@ -478,6 +876,7 @@ class AIClientDialog(QtWidgets.QDialog):
         if chosen:
             self.history.setCurrentItem(chosen)
         self.history.blockSignals(False)
+        self.filter_history()
         if chosen and selected != self.current_id:
             self.select_conversation(chosen)
 
@@ -503,8 +902,12 @@ class AIClientDialog(QtWidgets.QDialog):
             index = self.provider.findData(row["provider"])
             self.provider.setCurrentIndex(max(0, index))
             options = {**default_options(), **row["options"]}
+            self.conversation_options_loaded(options)
             self.system.setPlainText(options["system"])
             self.rounds.setValue(options["rounds"])
+            self.context_chars.setValue(options.get('context_chars', 0))
+            self.history_images.setChecked(options.get('history_images', True))
+            self.request_mode.setCurrentIndex(max(0,self.request_mode.findData(options.get('request_mode','instant'))))
             self.maximum.setValue(options["max_tokens"])
             self.temperature_enabled.setChecked(options["temperature"] is not None)
             self.temperature.setEnabled(options["temperature"] is not None)
@@ -523,10 +926,15 @@ class AIClientDialog(QtWidgets.QDialog):
         finally:
             self.loading = False
         self.catalog_timer.start(0)
+        self.update_request_hint()
+
+    def conversation_options_loaded(self,options):
+        pass
 
     def schedule_draft(self, *_args):
         if not self.loading and self.current_id:
             self.draft_timer.start()
+            self.preview_timer.start()
 
     @safe_ui
     def presentation_changed(self, *_args):
@@ -631,26 +1039,38 @@ class AIClientDialog(QtWidgets.QDialog):
         queued = QtCore.Qt.ConnectionType.QueuedConnection
         handle.completed.connect(lambda result, current=handle: self.completed(current, result), queued)
         handle.failed.connect(lambda message, current=handle: self.failed(current, message), queued)
-        handle.diagnostic.connect(lambda message: self.context.log("AI 试用台异常：\n" + message, logging.ERROR), queued)
+        handle.diagnostic.connect(lambda _message: None if self.is_private else self.context.log('AI试用台后台异常；未将对话内容写入日志。', logging.ERROR), queued)
         connect_thread_finished(handle, self, "handle", self.finished, pass_thread=True)
         handle.progressChanged.connect(lambda text, _percent, current=handle: self.progress(current, text), queued)
         self.set_busy(True)
         handle.start()
 
     def set_busy(self, busy):
+        self.transcript.set_busy(busy)
+        self.batch_check_button.setEnabled(not busy and not is_offline())
         self.send_button.setEnabled(not busy and not is_offline())
         self.stop_button.setEnabled(busy)
+        self.stop_button.setVisible(busy)
         self.refresh_button.setEnabled(not busy and not is_offline())
         self.attach_button.setEnabled(not busy)
         self.retry_button.setEnabled(not busy and not is_offline())
+        self.delete_button.setEnabled(not busy)
+        purging = busy and self.operation and self.operation.get('type') == 'purge'
+        self.history.setEnabled(not purging)
+        self.input.setReadOnly(bool(purging))
+        if purging:
+            self.stop_button.setEnabled(False)
         if busy:
-            self.stage = "正在请求模型"
+            self.stage = '正在彻底删除本机对话与备份' if purging else '正在请求模型'
             self.elapsed_timer.start()
         else:
             self.elapsed_timer.stop()
 
     def show_elapsed(self):
-        self.status.setText(self.stage + f" · {int(time.monotonic()-self.started)} 秒；关闭此窗口不会丢失请求。")
+        suffix = ('；关闭无痕窗口会取消本机请求并清除内存记录。' if self.is_private else '；关闭此窗口不会丢失请求。')
+        if self.operation and self.operation.get('type') == 'purge':
+            suffix = '；正在完成删除清理。'
+        self.status.setText(self.stage + f" · {int(time.monotonic()-self.started)} 秒" + suffix)
 
     @safe_ui
     def show_stream(self):
@@ -659,24 +1079,9 @@ class AIClientDialog(QtWidgets.QDialog):
         text = self.stream.text()
         if len(text) <= self.stream_displayed:
             return
-        scrollbar = self.transcript.verticalScrollBar()
-        scroll_value = scrollbar.value()
-        follow = scrollbar.value() >= scrollbar.maximum() - 20
-        cursor = QtGui.QTextCursor(self.transcript.document())
-        cursor.movePosition(QtGui.QTextCursor.MoveOperation.End)
-        if self.markdown.isChecked():
-            if self.stream_start_pos is None:
-                return
-            cursor.setPosition(self.stream_start_pos, QtGui.QTextCursor.MoveMode.KeepAnchor)
-            cursor.insertHtml(message_html(text))
-        else:
-            cursor.insertText(text[self.stream_displayed:])
+        self.transcript.update_stream(text, self.markdown.isChecked())
         self.stream_displayed = len(text)
         self.stage = "正在流式输出"
-        if follow:
-            scrollbar.setValue(scrollbar.maximum())
-        else:
-            scrollbar.setValue(scroll_value)
         self.show_elapsed()
 
     def progress(self, handle, text):
@@ -685,12 +1090,21 @@ class AIClientDialog(QtWidgets.QDialog):
             self.show_elapsed()
 
     @safe_ui
-    def send(self, _checked=False, retry_id=None):
+    def send(self, _checked=False, retry_id=None, regenerate_id=None, edit_id=None, edited_text=None):
         if self.handle:
             return
         provider = self.provider.currentData()
         model = validate_model(provider, self.model_id())
-        if retry_id is not None:
+        source_prompt_id = retry_id
+        if edit_id is not None:
+            row = self.store.editable_prompt(self.current_id, edit_id)
+            if not isinstance(edited_text, str):
+                raise ValueError('请填写修改后的消息。')
+            text, images, source_prompt_id = edited_text.strip(), row['images'], row['id']
+        elif regenerate_id is not None:
+            row = self.store.regeneration_prompt(self.current_id, regenerate_id)
+            text, images, source_prompt_id = row['text'], row['images'], row['id']
+        elif retry_id is not None:
             row = next(row for row in self.store.messages(self.current_id) if row["id"] == retry_id)
             text, images = row["text"], row["images"]
         else:
@@ -710,10 +1124,19 @@ class AIClientDialog(QtWidgets.QDialog):
         # An unselected/deleted active key must not strand a fake running turn.
         request_config=pin_provider_config(self.connection_snapshot(),provider)
         request_options=self.request_options()
+        batch = request_options.get('request_mode') == 'batch'
+        if batch and provider != 'openai':
+            raise ValueError('Batch目前只支持OpenAI官方接口。')
+        if batch and request_options.get('web_search'):
+            raise ValueError('本版Batch暂不支持联网工具，请关闭联网或使用即时聊天。')
+        self.store.context_preview(self.current_id, text, images, request_options, before_prompt_id=source_prompt_id)
+        if self.current_id is None:
+            self.current_id = self.store.create(provider, model, request_options)
+            self.reload_history()
         self.save_draft()
         identifier = self.current_id
-        prompt_id = self.store.begin_request(identifier, text, images, provider, model, retry_id)
-        if retry_id is None:
+        prompt_id = self.store.begin_request(identifier, text, images, provider, model, retry_id, regenerate_id, edit_id)
+        if retry_id is None and regenerate_id is None and edit_id is None:
             self.loading = True
             self.input.clear()
             self.pending_images = []
@@ -721,12 +1144,17 @@ class AIClientDialog(QtWidgets.QDialog):
             self.loading = False
         payload = {"conversation": identifier, "prompt_id": prompt_id, "provider": provider,
                    "model": model, "options": request_options, "config": request_config}
-        self.stream = StreamBuffer() if payload["options"]["stream"] else None
+        self.stream = StreamBuffer() if payload["options"]["stream"] and not batch else None
         self.stream_displayed = 0
         try:
+            if batch:
+                from .batch_chat import submit_batch
+                runner = functools.partial(submit_batch, store=self.store)
+            else:
+                runner = functools.partial(run_chat, store=self.store, client=self.client, stream=self.stream)
             self.submit("AI 对话 · " + PROVIDERS[provider] + " / " + model,
-                        functools.partial(run_chat, store=self.store, client=self.client, stream=self.stream), payload,
-                        {"type": "chat", "conversation": identifier, "prompt_id": prompt_id,
+                        runner, payload,
+                        {"type": "chat_batch" if batch else 'chat', "conversation": identifier, "prompt_id": prompt_id,
                          "provider": provider, "model": model})
             if self.stream:
                 self.stream_timer.start()
@@ -736,17 +1164,36 @@ class AIClientDialog(QtWidgets.QDialog):
             raise
         self.reload_history()
         self.render_transcript()
+        self.transcript.follow = True
+        return prompt_id
 
     @safe_ui
     def retry_request(self, _checked=False):
+        if self.handle:
+            self.status.setText('请等待当前操作完成后再重试。')
+            return
+        if is_offline():
+            self.status.setText('离线模式下不能重试请求。')
+            return
         rows = self.store.messages(self.current_id)
-        if rows and rows[-1]["role"] == "user" and rows[-1]["status"] not in {"done", "pending"}:
-            self.send(retry_id=rows[-1]["id"])
+        if not rows:
+            self.status.setText('当前对话还没有可以重试的消息。')
+            return
+        latest = rows[-1]
+        if latest['role'] == 'assistant' and latest['status'] == 'done':
+            self.regenerate_answer(latest['id'])
+        elif latest['role'] == 'user' and latest['status'] not in {'done', 'pending'}:
+            self.send(retry_id=latest['id'])
+        elif latest['status'] == 'pending':
+            self.status.setText('当前请求还在等待回答；Batch请求可从顶部Batch菜单检查结果。')
         else:
-            self.status.setText("本对话最后一条消息没有需要重试的失败请求。")
+            self.status.setText('最新消息尚无可重新生成的完整回答，请先检查请求状态。')
 
     @safe_ui
     def stop_request(self, _checked=False):
+        if self.operation and self.operation.get('type') == 'purge':
+            self.status.setText('正在完成彻底删除清理，请等待结束。')
+            return
         if self.handle:
             self.handle.requestInterruption()
             self.stage = "已请求取消，等待网络步骤安全结束（读取超时60秒）"
@@ -775,6 +1222,12 @@ class AIClientDialog(QtWidgets.QDialog):
             return
         self.stream_timer.stop()
         self.stream = None
+        if self._privacy_closing:
+            return
+        if self.operation['type'] == 'purge':
+            self._after_purge()
+            self.last_status = '本机程序管理的对话、全部分支、草稿、未共享附件与自动对话备份已清理。' if not self.is_private else '此无痕对话已从内存清除。'
+            return
         if self.operation["type"] == "models":
             provider = output["provider"]
             if provider == 'openai' and self.operation.get('identity') != openai_identity(self.connection_snapshot()):
@@ -797,6 +1250,10 @@ class AIClientDialog(QtWidgets.QDialog):
                 self.pending_images = combined
                 self.render_attachments()
             self.last_status = "图片副本已就绪；右键可移除，不会删除原图。"
+        elif self.operation['type'] in {'chat_batch', 'batch_check'}:
+            self.last_status = ('Batch记录已更新。云端任务独立运行；稍后用顶部“Batch → 检查”收取结果，未知提交不会自动重发。')
+            if output['conversation'] == self.current_id:
+                self.render_transcript()
         else:
             result = output["result"]
             usage = result["usage"]
@@ -819,10 +1276,20 @@ class AIClientDialog(QtWidgets.QDialog):
         self.stream_timer.stop()
         self.stream = None
         self.last_status = "未完成：" + message
-        self.context.log("AI 试用台：" + message, logging.WARNING)
-        if self.operation["type"] == "chat":
-            self.store.fail_request(self.operation["conversation"], self.operation["prompt_id"], message,
-                                    "取消" in message)
+        if not self.is_private:
+            self.context.log('AI试用台请求未完成；未将对话或接口错误正文写入日志。', logging.WARNING)
+        if self._privacy_closing:
+            return
+        if self.operation['type'] == 'purge':
+            self._after_purge()
+            self.last_status = '彻底删除清理尚未全部完成：' + message + '。可再次使用“彻底删除”重试清理。'
+            return
+        if self.operation["type"] in {'chat', 'chat_batch'}:
+            cloud_records = self.store.batches(self.operation['conversation']) if self.operation['type'] == 'chat_batch' else []
+            submitted = any(item['prompt_id'] == self.operation['prompt_id'] and item['state'] not in {'failed', 'expired', 'cancelled'} for item in cloud_records)
+            if not submitted:
+                self.store.fail_request(self.operation["conversation"], self.operation["prompt_id"], message,
+                                        "取消" in message)
             self.render_transcript()
         elif self.operation['type'] == 'models' and self.operation.get('provider') == 'openai':
             if self.operation.get('identity') == openai_identity(self.connection_snapshot()):
@@ -836,20 +1303,33 @@ class AIClientDialog(QtWidgets.QDialog):
             self.stream_timer.stop()
             self.stream = None
             self.handle = self.operation = None
+            if self._privacy_closing:
+                self.store.close_private()
+                self.current_id = None
+                self.deleteLater()
+                return
             self.set_busy(False)
             self.status.setText(getattr(self, "last_status", "操作结束。"))
             self.catalog_timer.start(0)
+            self.preview_timer.start()
 
     def render_attachments(self):
         self.attachments.clear()
         for image in self.pending_images:
-            path = self.store.asset_path(image)
-            pixmap = QtGui.QPixmap(str(path)).scaled(84, 65, QtCore.Qt.AspectRatioMode.KeepAspectRatio, QtCore.Qt.TransformationMode.SmoothTransformation)
+            resource = self.store.asset_resource(image)
+            pixmap = QtGui.QPixmap()
+            if isinstance(resource,bytes):
+                pixmap.loadFromData(resource)
+            else:
+                pixmap.load(str(resource))
+            pixmap = pixmap.scaled(84, 65, QtCore.Qt.AspectRatioMode.KeepAspectRatio, QtCore.Qt.TransformationMode.SmoothTransformation)
             item = QtWidgets.QListWidgetItem(QtGui.QIcon(pixmap), image["name"])
             item.setToolTip(f"{image['name']} · {image['width']}×{image['height']}\n右键移除附件")
             item.setData(QtCore.Qt.ItemDataRole.UserRole, image["file"])
             self.attachments.addItem(item)
         self.attachments.setVisible(bool(self.pending_images))
+        if hasattr(self, 'preview_timer'):
+            self.preview_timer.start()
 
     @safe_ui
     def attachment_menu(self, position):
@@ -869,60 +1349,79 @@ class AIClientDialog(QtWidgets.QDialog):
 
     def render_transcript(self):
         rows = self.store.messages(self.current_id) if self.current_id else []
+        branches = self.store.branch_navigation(self.current_id) if self.current_id else {}
+        batches = {item['prompt_id']: item for item in self.store.batches(self.current_id)} if self.current_id else {}
         self.allowed_images = {}
-        self.stream_start_pos = None
-        parts = []
-        for row in rows:
-            title = "你" if row["role"] == "user" else "AI"
-            parts.append("<p><b>" + html.escape(title + " · " + row["provider"] + " / " + row["model"]) + "</b></p>"
-                         + cited_message_html(row["text"], row['metadata'], self.markdown.isChecked()))
+        display_rows = []
+        for original in rows:
+            row = dict(original)
+            row['_branch'] = branches.get(row['id'])
+            batch = batches.get(row['id'])
+            if batch and row['status'] == 'pending':
+                row['status'] = 'Batch · ' + batch['state'] + (' · ' + batch['error'] if batch['error'] else ' · 顶部Batch菜单可检查结果')
+            attachments = []
             for image in row["images"]:
                 try:
-                    path = self.store.asset_path(image)
+                    path = self.store.asset_resource(image)
                 except ValueError:
-                    parts.append("<p>[本地图片已丢失]</p>")
+                    attachments.append("<p>[本地图片已丢失]</p>")
                     continue
-                url = QtCore.QUrl.fromLocalFile(str(path)).toString()
+                url = ('chat-image:///' + image['file']) if isinstance(path,bytes) else QtCore.QUrl.fromLocalFile(str(path)).toString()
                 self.allowed_images[url] = path
                 scale = min(180 / max(1, image["width"]), 180 / max(1, image["height"]))
                 width, height = max(1, int(image["width"] * scale)), max(1, int(image["height"] * scale))
-                parts.append(f'<p><a href="{html.escape(url, quote=True)}"><img src="{html.escape(url, quote=True)}" width="{width}" height="{height}"></a><br>{html.escape(image["name"])}</p>')
-            if row["status"] != "done":
-                parts.append("<p><i>" + html.escape("请求中…" if row["status"] == "pending" else row["error"] or row["status"]) + "</i></p>")
-            partial = row["metadata"].get("partial") or {}
-            if partial.get("text"):
-                parts.append("<p><b>AI · 未完成（不计入后续上下文）</b></p>"
-                             + message_html(partial["text"], self.markdown.isChecked()))
-            if row["role"] == "assistant":
-                meta = row["metadata"]
-                if 'requested_model' in meta:
-                    parts.append('<p><small>' + html.escape('请求模型：' + meta['requested_model'] +
-                        '；接口返回：' + (meta.get('reported_model') or '未提供模型 ID')) + '</small></p>')
-                parts.append("<p><small>" + html.escape(str(meta.get("elapsed", "")) + "秒 · " + str(meta.get("usage", {})) + " " + meta.get("warning", "")) + "</small></p>")
-            parts.append("<hr>")
+                attachments.append(f'<p><a href="{html.escape(url, quote=True)}"><img src="{html.escape(url, quote=True)}" width="{width}" height="{height}"></a><br>{html.escape(image["name"])}</p>')
+            row['_attachments'] = ''.join(attachments)
+            display_rows.append(row)
+            partial = row['metadata'].get('partial') or {}
+            if partial.get('text'):
+                display_rows.append(dict(id='partial-' + str(row['id']), role='assistant',
+                    text=partial['text'], provider=partial.get('provider', row['provider']),
+                    model=partial.get('model', row['model']), metadata={},
+                    status='未完成（不计入后续上下文）'))
+        self.stream_start_pos = None
+        if self.stream and self.operation and self.operation.get('conversation') == self.current_id and any(
+                row['id'] == self.operation.get('prompt_id') and row['status'] == 'pending' for row in rows):
+            content = self.stream.text()
+            display_rows.append(dict(id='stream', role='assistant', text=content,
+                provider=self.operation.get('provider', self.provider.currentData()),
+                model=self.operation.get('model', self.model_id()),
+                metadata={key:self.operation[key] for key in ('group_member','group_round') if key in self.operation},status='生成中…'))
+            self.stream_start_pos = 0
+            self.stream_displayed = len(content)
         self.transcript.allowed_images = self.allowed_images.copy()
-        self.transcript.setHtml("".join(parts) or "<p>选择服务与模型，输入消息后发送。</p>")
-        if self.stream and self.operation and self.operation.get("conversation") == self.current_id and any(
-                row["id"] == self.operation.get("prompt_id") and row["status"] == "pending" for row in rows):
-            cursor = QtGui.QTextCursor(self.transcript.document())
-            cursor.movePosition(QtGui.QTextCursor.MoveOperation.End)
-            cursor.insertBlock()
-            cursor.insertText("AI · 生成中")
-            cursor.insertBlock()
-            self.stream_start_pos = cursor.position()
-            text = self.stream.text()
-            if self.markdown.isChecked():
-                cursor.insertHtml(message_html(text))
-            else:
-                cursor.insertText(text)
-            self.stream_displayed = len(text)
-        scrollbar = self.transcript.verticalScrollBar()
-        scrollbar.setValue(scrollbar.maximum())
+        changed = getattr(self, '_displayed_conversation', None) != self.current_id
+        self._displayed_conversation = self.current_id
+        self.transcript.set_messages(display_rows, self.markdown.isChecked(), force_bottom=changed)
+        if self.current_id:
+            self.conversation_title.setText(self.store.get(self.current_id)['title'])
+
+    def jump_to_latest(self):
+        self.transcript.follow = True
+        self.transcript.verticalScrollBar().setValue(self.transcript.verticalScrollBar().maximum())
+
+    def update_jump_button(self, *_args):
+        self.jump_button.setVisible(not self.transcript.near_bottom())
+
+    def filter_history(self, *_args):
+        query = self.history_search.text().strip().casefold()
+        for index in range(self.history.count()):
+            item = self.history.item(index)
+            item.setHidden(bool(query) and query not in (item.text() + item.toolTip()).casefold())
 
     @safe_ui
     def open_attachment(self, url):
         path = self.allowed_images.get(url.toString())
-        if path and path.is_file():
+        if isinstance(path,bytes):
+            dialog = QtWidgets.QDialog(self)
+            dialog.setWindowTitle('无痕图片预览')
+            layout = QtWidgets.QVBoxLayout(dialog)
+            label = QtWidgets.QLabel(dialog)
+            pixmap = QtGui.QPixmap(); pixmap.loadFromData(path)
+            label.setPixmap(pixmap.scaled(1000,800,QtCore.Qt.AspectRatioMode.KeepAspectRatio,QtCore.Qt.TransformationMode.SmoothTransformation))
+            layout.addWidget(label)
+            dialog.exec()
+        elif path and path.is_file():
             QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(str(path)))
         elif is_web_link(url):
             require_online("打开回答中的网页链接")
@@ -972,20 +1471,51 @@ class AIClientDialog(QtWidgets.QDialog):
     @safe_ui
     def delete_conversation(self, _checked=False):
         if self.handle:
-            self.status.setText("请等待当前操作结束后再删除对话。")
+            self.status.setText('请等待当前操作结束后再彻底删除对话。')
             return
-        if QtWidgets.QMessageBox.question(self, "删除对话", "删除这段本地对话？不会删除你添加的原图片。") != QtWidgets.QMessageBox.StandardButton.Yes:
+        queued = self.store.pending_purges()
+        target = self.current_id or (queued[0] if queued else None)
+        if target is None:
+            self.status.setText('没有可删除的对话或待完成清理。')
+            return
+        text = ('永久清除这段对话在本程序中的全部分支、消息、草稿、未共享图片，以及程序自动生成的对话数据库备份中的对应记录。此操作不能撤销。\n\n'
+                '范围限本机聊天数据库、自动对话备份及未共享附件；旧版本运行日志、手动导出、系统备份、硬盘底层残留和服务商云端不在此范围。')
+        if self.is_private:
+            text = '清除此无痕对话及其全部分支、草稿和图片内存数据？不能撤销。'
+        pending = [batch for batch in self.store.batches(target) if batch['state'] not in {'completed','failed','expired','cancelled'}]
+        if pending:
+            text += '\n\n此对话仍有云端Batch任务。删除本机记录不会停止云端任务；如需取消，请先从Batch菜单操作。删除后将无法再从这里收取这些结果。'
+        if QtWidgets.QMessageBox.question(self, '彻底删除对话', text,
+                QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No,
+                QtWidgets.QMessageBox.StandardButton.No) != QtWidgets.QMessageBox.StandardButton.Yes:
             return
         self.draft_timer.stop()
-        self.store.delete(self.current_id)
+        self.preview_timer.stop()
+        self.loading = True
+        self.submit('彻底删除本机对话',functools.partial(run_purge,store=self.store),
+                    {'conversation':target},{'type':'purge','conversation':target})
+
+    def _after_purge(self):
+        self.draft_timer.stop()
+        self.preview_timer.stop()
+        self.loading = True
         self.current_id = None
+        self.pending_images = []
+        self.input.clear()
+        self.render_attachments()
+        self.loading = False
         rows = self.store.conversations()
-        self.reload_history(rows[0]["id"] if rows else None)
+        self.reload_history(rows[0]['id'] if rows else None)
         if not rows:
-            self.new_conversation()
+            self.render_transcript()
+            self.conversation_title.setText('新对话')
+            self.request_hint.setText('已清除本机对话。输入新消息时才会建立新记录。')
 
     @safe_ui
     def export_conversation(self, _checked=False):
+        if self.is_private:
+            self.status.setText('无痕聊天不导出本机记录。手动复制到其他应用会留下外部副本。')
+            return
         filename, _ = QtWidgets.QFileDialog.getSaveFileName(self, "导出对话（不含密钥）", "对话.txt", "文本 (*.txt)")
         if filename:
             data_file(Path(filename)).write_text(self.store.export_text(self.current_id), encoding="utf-8")
@@ -1010,6 +1540,9 @@ class AIClientDialog(QtWidgets.QDialog):
 
     @safe_ui
     def open_history_folder(self, _checked=False):
+        if self.is_private:
+            self.status.setText('无痕聊天仅在内存中，没有本地记录目录。')
+            return
         QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(str(self.store.root)))
 
     @safe_ui
@@ -1019,11 +1552,26 @@ class AIClientDialog(QtWidgets.QDialog):
             self.history.setCurrentItem(item)
         menu = QtWidgets.QMenu(self.history)
         for title, callback in (("新建对话", self.new_conversation), ("重命名…", self.rename_conversation),
-                                ("导出文本…", self.export_conversation), ("删除…", self.delete_conversation)):
+                                ("导出文本…", self.export_conversation), ("彻底删除…", self.delete_conversation)):
             menu.addAction(title, callback)
         menu.exec(self.history.mapToGlobal(position))
 
     def closeEvent(self, event):
         self.catalog_timer.stop()
-        self.save_draft()
+        self.preview_timer.stop()
+        self.draft_timer.stop()
+        for dialog in list(self._account_dialogs):dialog.close()
+        if self.is_private:
+            self._privacy_closing = True
+            if self.handle:
+                if not self.operation or self.operation.get('type') != 'purge':
+                    self.handle.requestInterruption()
+            else:
+                self.store.close_private()
+                self.current_id = None
+                self.deleteLater()
+        else:
+            self.save_draft()
+            for dialog in [*self._private_dialogs,*self._group_dialogs]:
+                dialog.close()
         event.accept()

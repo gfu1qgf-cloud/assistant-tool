@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import subprocess
 import threading
+import time
 import unittest
 from unittest.mock import patch
 import numpy as np
@@ -132,12 +133,32 @@ class WorkbenchVideoTests(unittest.TestCase):
         request = dict(path=str(self.clip), values=normalize(dict(model='rvm')), info=loaded['video'], position=0.,
                        play=True, generation=1, expected=loaded['expected'], ffmpeg=FFMPEG, models=None)
         worker = MattingVideoWorker(request); frames = []; worker.frameReady.connect(frames.append)
-        self.addCleanup(worker.stop)
+        def cleanup():
+            worker.stop()
+            self.assertTrue(worker.wait(5000),'Decoder thread did not finish native cleanup')
+            worker.deleteLater()
+        self.addCleanup(cleanup)
         worker.start(); self.wait(lambda: len(frames) == 1)
         QtTest.QTest.qWait(300)
         self.assertEqual(len(frames), 1); self.assertEqual(VideoPredictor.calls, 1)
-        worker.stop(); self.wait(lambda: not worker.isRunning())
-        self.assertIsNone(worker._process); worker.deleteLater()
+        process=worker._process
+        self.assertIsNotNone(process)
+        worker.stop()
+        self.assertTrue(worker.wait(5000),'Decoder thread did not finish native cleanup')
+        self.assertIsNone(worker._process)
+        self.assertIsNotNone(process.poll(),'Decoder process still owns the source')
+        # Windows can briefly return sharing violations even after the process
+        # and native thread have exited. Check actual file release with a hard
+        # deadline, not isRunning() alone or an ignored TemporaryDirectory error.
+        renamed=self.clip.with_name('released.mov');deadline=time.monotonic()+1
+        while True:
+            try:
+                self.clip.rename(renamed)
+                break
+            except PermissionError as error:
+                if getattr(error,'winerror',None)!=32 or time.monotonic()>=deadline:raise
+                QtTest.QTest.qWait(10)
+        renamed.rename(self.clip)
 
     def gate_predictor(self):
         entered, release = threading.Event(), threading.Event(); self.addCleanup(release.set)

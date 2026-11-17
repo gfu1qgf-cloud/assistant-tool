@@ -12,7 +12,7 @@ from qt_compat import QtCore, QtGui, QtWidgets
 from model.InventoryManager import InventoryStore
 
 from model.image_retrieval.encoder import ChineseImageEncoder, MODEL_SPECS, combine_search_vectors
-from model.image_retrieval.index import ImageSearchIndex, discover_external_groups
+from model.image_retrieval.index import ImageSearchIndex, discover_external_groups, DELETED_IMAGES_FOLDER
 from .settings import normalize_settings
 
 
@@ -319,9 +319,13 @@ class SmartImageSearchDialog(QtWidgets.QDialog):
         self.move_button.clicked.connect(lambda: self._transfer("move"))
         action_row.addWidget(self.move_button)
         self.delete_button = QtWidgets.QPushButton("删除选中图片…")
-        self.delete_button.setToolTip("将选中的原图移入系统回收站，并从搜索结果中移除。")
+        self.delete_button.setToolTip("默认移入图库内的已删除图片文件夹，也可明确选择永久删除；成功后同步移除搜索结果。")
         self.delete_button.clicked.connect(self._delete_selected)
         action_row.addWidget(self.delete_button)
+        self.deleted_folder_button = QtWidgets.QPushButton("打开已删除文件夹")
+        self.deleted_folder_button.setToolTip("查看保留的图片；移回原位置后，增量更新索引即可恢复搜索。")
+        self.deleted_folder_button.clicked.connect(self._open_deleted_folder)
+        action_row.addWidget(self.deleted_folder_button)
         layout.addLayout(action_row)
         self.model_combo.currentIndexChanged.connect(self._search_options_changed)
         self.text_weight.valueChanged.connect(self._search_options_changed)
@@ -634,7 +638,11 @@ class SmartImageSearchDialog(QtWidgets.QDialog):
         elif kind == "delete":
             self._remove_result_paths(result["deleted"])
             self._refresh_index_status()
-            message = f"已将 {len(result['deleted'])} 张图片移入回收站。"
+            permanent = result.get("permanent", False)
+            message = (f"已永久删除 {len(result['deleted'])} 张图片。" if permanent else
+                       f"已将 {len(result['deleted'])} 张图片移入“{DELETED_IMAGES_FOLDER}”。")
+            if not permanent and result["deleted"]:
+                message += " 可点击“打开已删除文件夹”查看或恢复。"
             if result["cancelled"]:
                 message += " 已停止，其余图片未删除。"
             failures = result["failures"]
@@ -649,6 +657,12 @@ class SmartImageSearchDialog(QtWidgets.QDialog):
                     details += "\n索引更新失败：" + result["index_error"]
                 notice = QtWidgets.QMessageBox(QtWidgets.QMessageBox.Icon.Warning,
                     "删除图片", message, parent=self)
+                # Show the actual reason without requiring an English details
+                # button. Full paths and all failures remain available below.
+                preview = "\n".join(reason[:300] for reason in result.get("failure_reasons", failures)[:3])
+                notice.setInformativeText(preview.strip())
+                notice.setStandardButtons(QtWidgets.QMessageBox.StandardButton.Ok)
+                notice.button(QtWidgets.QMessageBox.StandardButton.Ok).setText("确定")
                 notice.setDetailedText(details.strip())
                 notice.exec()
 
@@ -880,25 +894,51 @@ class SmartImageSearchDialog(QtWidgets.QDialog):
         paths = list(dict.fromkeys(path for path, _kind in selected))
         roots = self._selected_roots()
         confirm = QtWidgets.QMessageBox(QtWidgets.QMessageBox.Icon.Warning,
-            "确认删除原图", f"将选中的 {len(paths)} 张原图移入系统回收站？",
+            "确认删除原图", f"删除选中的 {len(paths)} 张原图？",
             QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No,
             self)
-        confirm.setInformativeText("删除后会从图片库和搜索结果中消失。无法移入回收站的图片将保留。")
+        confirm.setInformativeText(
+            f"移入保留文件夹：移动到各自图库的“{DELETED_IMAGES_FOLDER}”，可恢复。\n"
+            "永久删除：直接删除原文件，不经过回收站，无法撤销。"
+        )
         confirm.setDetailedText("\n".join(paths))
+        confirm.button(QtWidgets.QMessageBox.StandardButton.Yes).setText("移入保留文件夹（可恢复）")
+        confirm.button(QtWidgets.QMessageBox.StandardButton.No).setText("取消")
+        permanent_button = confirm.addButton("永久删除（不可恢复）", QtWidgets.QMessageBox.ButtonRole.DestructiveRole)
         confirm.setDefaultButton(QtWidgets.QMessageBox.StandardButton.No)
-        if confirm.exec() != QtWidgets.QMessageBox.StandardButton.Yes:
+        confirm.setEscapeButton(QtWidgets.QMessageBox.StandardButton.No)
+        answer = confirm.exec()
+        permanent = confirm.clickedButton() is permanent_button
+        if not permanent and answer != QtWidgets.QMessageBox.StandardButton.Yes:
             return
         index = self.index
         def task(progress, cancelled):
             from .image_delete import trash_selected
-            result = trash_selected(paths, roots, progress, cancelled)
+            result = trash_selected(paths, roots, progress, cancelled, permanent=permanent)
             if result["deleted"]:
                 try:
                     index.remove_paths(result["deleted"])
                 except Exception as error:
                     result["index_error"] = str(error)
             return result
-        self._start(task, "正在将选中图片移入回收站…")
+        self._start(task, "正在永久删除选中图片…" if permanent else "正在将选中图片移入保留文件夹…")
+
+    def _open_deleted_folder(self):
+        folders = []
+        for raw in self._selected_roots():
+            folder = Path(raw).expanduser().resolve() / DELETED_IMAGES_FOLDER
+            if folder.is_dir() and folder not in folders:
+                folders.append(folder)
+        if not folders:
+            self.status.setText("当前图片库尚无已删除图片文件夹；移动删除后会自动创建。")
+        elif len(folders) == 1:
+            QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(str(folders[0])))
+        else:
+            menu = QtWidgets.QMenu(self)
+            for folder in folders:
+                menu.addAction(str(folder.parent), lambda _checked=False, path=folder:
+                    QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(str(path))))
+            menu.exec(self.deleted_folder_button.mapToGlobal(QtCore.QPoint(0, self.deleted_folder_button.height())))
 
     def _show_context_menu(self, position):
         item = self.results.itemAt(position)

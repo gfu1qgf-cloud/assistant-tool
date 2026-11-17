@@ -54,7 +54,7 @@ class SmartVideoEditorPlugin:
 
     plugin_id = "smart_video_editor"
     display_name = "智能剪辑"
-    version = "1.8"
+    version = "1.16"
     required_api_version = 1
 
     def __init__(self):
@@ -259,7 +259,9 @@ class SmartVideoEditorPlugin:
                 )
         else:
             settings = self._effective_settings()
-        selected = BreathCutSourceDialog.get_sources(initial_sources, self.parent)
+        preset_settings = {}
+        selected = BreathCutSourceDialog.get_sources(initial_sources, self.parent,
+                                                     settings_out=preset_settings)
         if selected is None:
             self.context.log("[气口剪辑] 用户取消了视频选择。")
             return
@@ -270,6 +272,7 @@ class SmartVideoEditorPlugin:
         if not isinstance(saved_settings, dict) or "compress_internal_pauses" not in saved_settings:
             settings["compress_internal_pauses"] = True
             settings["internal_pause_mode"] = "enabled"
+        settings.update(preset_settings)
         self.context.log(f"[气口剪辑] 开始分析 {len(selected)} 个视频。")
         self._start_worker(
             "breath_analyze", settings, files=selected
@@ -390,10 +393,10 @@ class SmartVideoEditorPlugin:
         if not self.context.background_tasks.is_accepting():
             self.context.log("程序正在退出，未提交新视频任务；已核对的智能剪辑可从待处理列表重新打开。")
             return None
-        load_model = bool(model_loader) and not (phase == "export" and settings.get("export_mode") == "segments")
+        load_model = bool(model_loader) and not (phase == "export" and settings.get("export_mode") in {"segments", "srt_only", "video_only"})
         resources = render_resources(bundle) if rendering else analysis_resources(phase, settings, jobs, files)
         runner, postprocess = run_smart_video_job, None
-        if phase == "export" and settings.get("postprocess_enabled") and any(
+        if phase == "export" and settings.get("export_mode") != "srt_only" and settings.get("postprocess_enabled") and any(
             smart_video_task_review_decision(task) != "skipped" for task in (bundle or {}).get("tasks", [])
         ):
             from .postprocess_workflow import prepare
@@ -403,6 +406,8 @@ class SmartVideoEditorPlugin:
         count = len((bundle or {}).get("tasks", [])) if rendering else len(jobs or files or [])
         label = {"analyze": "智能剪辑分析", "breath_analyze": "气口分析",
                  "export": "智能剪辑导出", "breath_export": "气口剪辑导出"}[phase]
+        if phase == "export" and settings.get("export_mode") == "srt_only":
+            label = "智能剪辑字幕导出"
         if analysis_receiver is not None:
             label = "智能剪辑刷新"
         items = (bundle or {}).get("tasks", []) if rendering else jobs or files or []
@@ -413,7 +418,7 @@ class SmartVideoEditorPlugin:
             title=f"{label} · {count} 个任务" + (f" · {description}" if description else ""), runner=runner,
             payload={"phase": phase, "settings": settings, "jobs": jobs or [],
                      "files": files or [], "bundle": bundle, "load_model": load_model,
-                     "source_versions": render_inputs(bundle) if rendering else refresh_inputs(jobs), "postprocess": postprocess},
+                     "source_versions": render_inputs(bundle, settings, include_seam_cover=phase == "export") if rendering else refresh_inputs(jobs), "postprocess": postprocess},
             # Only colliding output directories serialize. Shared Whisper is
             # guarded inside native recognition/alignment, not during encoding.
             kind="media", resources=resources, retryable=False)
@@ -444,7 +449,7 @@ class SmartVideoEditorPlugin:
                 handle.task_id, lambda: factory(result, self.parent).exec()), pending=True)
             self._foreground_results().enqueue(handle.task_id, handle.show_result)
             if not result.get("failed"):
-                self.context.notify("视频导出完成", f"成功 {len(result.get('completed', []))}，"
+                self.context.notify("字幕导出完成" if result.get("export_mode") == "srt_only" else "视频导出完成", f"成功 {len(result.get('completed', []))}，"
                                     f"暂缓 {len(result.get('skipped', []))}；结果窗口将自动打开。")
         except Exception:
             logging.getLogger(__name__).exception("处理后台视频结果失败")
@@ -737,10 +742,12 @@ class SmartVideoEditorPlugin:
         self._remember_pending_reviews(bundle)
         has_exports = any(smart_video_task_review_decision(task) != "skipped"
                           for task in bundle.get("tasks", []))
-        if has_exports and settings.get("export_mode") != "segments" and not self._model_ready(settings):
+        if has_exports and settings.get("export_mode") == "joined" and not self._model_ready(settings):
             return
         self.context.log("[智能剪辑] 所有任务均已暂缓，本次不生成视频。" if not has_exports else
-                         "[智能剪辑] 核对已确认，开始导出分段视频。" if settings.get("export_mode") == "segments"
+                         "[智能剪辑] 核对已确认，按当前时间线仅导出 SRT。" if settings.get("export_mode") == "srt_only" else
+                         "[智能剪辑] 核对已确认，开始导出分段视频。" if settings.get("export_mode") == "segments" else
+                         "[智能剪辑] 核对已确认，仅导出合并视频，不生成字幕。" if settings.get("export_mode") == "video_only"
                          else "[智能剪辑] 核对已确认，开始生成视频与 SRT。")
         self._start_worker(
             "export",

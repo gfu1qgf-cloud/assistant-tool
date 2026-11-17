@@ -83,12 +83,14 @@ def generate_srt_whisper_only(audio_path, text, output_srt_path, language="sk",
             model = stable_whisper.load_faster_whisper(
                 "base", device="cpu", compute_type="int8"
             )
-            result = model.align(audio_path, text=text, language=language)
+            result = model.align(audio_path, text=text, language=language, verbose=None)
         else:
             # Reuse the loaded faster-whisper instance and original alignment
             # algorithm. Only model use is serialized, not SRT formatting/I/O.
+            # In stable-whisper False enables tqdm; None disables console I/O.
+            # GUI/windowed processes can have sys.stderr=None.
             from stable_whisper.alignment import align as stable_align
-            result = stable_align(model, audio_path, text=text, language=language)
+            result = stable_align(model, audio_path, text=text, language=language, verbose=None)
 
     _format_subtitle_result(result, output_srt_path, chars_per_line, max_lines,
                             include_line_breaks, max_words_per_block,

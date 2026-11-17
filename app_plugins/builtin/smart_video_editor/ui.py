@@ -119,13 +119,15 @@ class SmartVideoSourceDialog(QtWidgets.QDialog):
         self.jobs = copy.deepcopy(list(jobs))
         self.selected_jobs = []
         self._changing_checks = False
+        self._source_items = [[] for _job in self.jobs]
+        self._directory_items = {}
         self.setWindowTitle("智能剪辑：选择视频片段")
         self.resize(900, 560)
 
         layout = QtWidgets.QVBoxLayout(self)
         note = QtWidgets.QLabel(
             "程序会按每个视频实际朗读的文案位置重新排序，不依赖文件名或当前列表顺序。"
-            "取消勾选不属于本任务的文件；"
+            "按原有目录结构选择，可整组勾选文件夹；取消勾选不属于本任务的文件。"
             "双击文件可先用系统默认播放器查看。原视频不会被覆盖。",
             self,
         )
@@ -136,13 +138,14 @@ class SmartVideoSourceDialog(QtWidgets.QDialog):
 
         self.tree = QtWidgets.QTreeWidget(self)
         self.tree.setColumnCount(3)
-        self.tree.setHeaderLabels(["任务 / 视频", "任务文案", "所在目录"])
+        self.tree.setHeaderLabels(["任务 / 目录 / 视频", "任务文案", "所在目录"])
         self.tree.setAlternatingRowColors(True)
         self.tree.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
         self.tree.itemChanged.connect(self._on_item_changed)
         self.tree.itemDoubleClicked.connect(self._open_item)
         layout.addWidget(self.tree, 1)
 
+        self.tree.blockSignals(True)
         for job_index, job in enumerate(self.jobs):
             script = str(job.get("script") or "").strip()
             parent_item = QtWidgets.QTreeWidgetItem([
@@ -151,6 +154,8 @@ class SmartVideoSourceDialog(QtWidgets.QDialog):
                 str(job.get("task_dir") or ""),
             ])
             parent_item.setData(0, QtCore.Qt.UserRole, ("task", job_index))
+            parent_item.setIcon(0, self.style().standardIcon(QtWidgets.QStyle.StandardPixmap.SP_DirIcon))
+            parent_item.setToolTip(2, str(job.get("task_dir") or ""))
             parent_item.setFlags(parent_item.flags() | QtCore.Qt.ItemIsUserCheckable)
             parent_item.setCheckState(0, QtCore.Qt.Checked)
             if not script:
@@ -172,12 +177,15 @@ class SmartVideoSourceDialog(QtWidgets.QDialog):
                 child.setFlags(child.flags() | QtCore.Qt.ItemIsUserCheckable)
                 child.setCheckState(0, QtCore.Qt.Checked)
                 child.setToolTip(0, str(path))
-                parent_item.addChild(child)
+                child.setIcon(0, self.style().standardIcon(QtWidgets.QStyle.StandardPixmap.SP_FileIcon))
+                self._source_parent(job_index, job, parent_item, path).addChild(child)
+                self._source_items[job_index].append(child)
             if not job.get("sources"):
                 missing = QtWidgets.QTreeWidgetItem(["没有找到可用视频", "", ""])
                 missing.setForeground(0, QtGui.QBrush(QtGui.QColor("#B3261E")))
                 parent_item.addChild(missing)
                 parent_item.setCheckState(0, QtCore.Qt.Unchecked)
+        self.tree.blockSignals(False)
         self.tree.expandAll()
         header = self.tree.header()
         header.setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeToContents)
@@ -189,9 +197,58 @@ class SmartVideoSourceDialog(QtWidgets.QDialog):
             parent=self,
         )
         buttons.button(QtWidgets.QDialogButtonBox.Ok).setText("开始分析")
+        expand_button = buttons.addButton("展开全部", QtWidgets.QDialogButtonBox.ButtonRole.ActionRole)
+        collapse_button = buttons.addButton("收起目录", QtWidgets.QDialogButtonBox.ButtonRole.ActionRole)
+        expand_button.clicked.connect(self.tree.expandAll)
+        collapse_button.clicked.connect(self._collapse_directories)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
+
+    def _source_parent(self, job_index, job, task_item, source):
+        directory = source.absolute().parent
+        root = Path(job["task_dir"]).absolute() if job.get("task_dir") else None
+        try:
+            relative = directory.relative_to(root) if root is not None else None
+        except ValueError:
+            relative = None
+        if relative is not None:
+            directories = []
+            current = root
+            for name in relative.parts:
+                current = current / name
+                directories.append(current)
+        else:
+            # External sources keep their real ancestry, including the drive.
+            directories = list(reversed([directory, *directory.parents]))
+        parent = task_item
+        for path in directories:
+            key = (job_index, path)
+            folder = self._directory_items.get(key)
+            if folder is None:
+                folder = QtWidgets.QTreeWidgetItem([path.name or str(path), "", str(path)])
+                folder.setData(0, QtCore.Qt.UserRole, ("directory", job_index, str(path)))
+                folder.setFlags(folder.flags() | QtCore.Qt.ItemIsUserCheckable)
+                folder.setCheckState(0, QtCore.Qt.Checked)
+                folder.setToolTip(0, str(path))
+                folder.setToolTip(2, str(path))
+                folder.setIcon(0, self.style().standardIcon(QtWidgets.QStyle.StandardPixmap.SP_DirIcon))
+                parent.addChild(folder)
+                self._directory_items[key] = folder
+            parent = folder
+        return parent
+
+    @staticmethod
+    def _descendants(item):
+        for index in range(item.childCount()):
+            child = item.child(index)
+            yield child
+            yield from SmartVideoSourceDialog._descendants(child)
+
+    def _collapse_directories(self):
+        self.tree.collapseAll()
+        for index in range(self.tree.topLevelItemCount()):
+            self.tree.topLevelItem(index).setExpanded(True)
 
     def _on_item_changed(self, item, column):
         if self._changing_checks or column != 0:
@@ -201,14 +258,15 @@ class SmartVideoSourceDialog(QtWidgets.QDialog):
             return
         self._changing_checks = True
         try:
-            if data[0] == "task":
+            if data[0] in ("task", "directory"):
                 state = item.checkState(0)
-                for child_index in range(item.childCount()):
-                    child = item.child(child_index)
+                if state not in (QtCore.Qt.Checked, QtCore.Qt.Unchecked):
+                    return
+                for child in self._descendants(item):
                     if child.data(0, QtCore.Qt.UserRole):
                         child.setCheckState(0, state)
-            elif data[0] == "source":
-                parent = item.parent()
+            parent = item.parent()
+            while parent is not None:
                 states = [
                     parent.child(index).checkState(0)
                     for index in range(parent.childCount())
@@ -220,6 +278,7 @@ class SmartVideoSourceDialog(QtWidgets.QDialog):
                     parent.setCheckState(0, QtCore.Qt.Unchecked)
                 else:
                     parent.setCheckState(0, QtCore.Qt.PartiallyChecked)
+                parent = parent.parent()
         finally:
             self._changing_checks = False
 
@@ -237,13 +296,10 @@ class SmartVideoSourceDialog(QtWidgets.QDialog):
         selected = []
         missing_scripts = []
         for job_index, job in enumerate(self.jobs):
-            parent_item = self.tree.topLevelItem(job_index)
-            sources = []
-            for child_index in range(parent_item.childCount()):
-                child = parent_item.child(child_index)
-                data = child.data(0, QtCore.Qt.UserRole)
-                if data and child.checkState(0) == QtCore.Qt.Checked:
-                    sources.append(data[3])
+            # Keep input order, independent of folder grouping or tree sorting.
+            sources = [child.data(0, QtCore.Qt.UserRole)[3]
+                       for child in self._source_items[job_index]
+                       if child.checkState(0) == QtCore.Qt.Checked]
             if not sources:
                 continue
             if not str(job.get("script") or "").strip():
@@ -734,12 +790,19 @@ class SmartVideoReviewDialog(QtWidgets.QDialog):
         self.export_mode_combo = QtWidgets.QComboBox(self)
         self.export_mode_combo.addItem("合并视频 + SRT", "joined")
         self.export_mode_combo.addItem("导出分段视频（不拼接）", "segments")
+        self.export_mode_combo.addItem("仅导出 SRT", "srt_only")
+        self.export_mode_combo.addItem("仅导出合并视频（无字幕）", "video_only")
         self.export_mode_combo.setToolTip(
             "分段模式按核对后的顺序，每个保留的原视频输出一个编号 MP4；应用气口和手动裁切。"
-            "不合并不同片段、不生成 SRT、不改原视频。"
+            "不合并不同片段、不生成 SRT、不改原视频。\n"
+            "仅 SRT：按当前核对后的顺序、裁切和气口导出字幕，不生成视频，不重新识别；视频后处理不适用。\n"
+            "仅导出合并视频：输出一条完整 MP4，保留剪辑与接缝补画面，不加载字幕模型、不生成 SRT。"
         )
-        self.export_mode_combo.setCurrentIndex(1 if self.bundle.get("settings", {}).get("export_mode") == "segments" else 0)
+        self.export_mode_combo.setCurrentIndex(max(0, self.export_mode_combo.findData(self.bundle.get("settings", {}).get("export_mode", "joined"))))
         export_row.addWidget(self.export_mode_combo)
+        from .seam_cover_ui import SeamCoverControls
+        self.seam_cover_controls = SeamCoverControls(self.bundle.get("settings", {}), self, compact=True)
+        export_row.addWidget(self.seam_cover_controls)
         from .postprocess_ui import PostprocessControls
         self.postprocess_controls = PostprocessControls(self.bundle.get("settings", {}), workflow_services, self)
         export_row.addWidget(self.postprocess_controls, 1)
@@ -1475,6 +1538,11 @@ class SmartVideoReviewDialog(QtWidgets.QDialog):
 
     def _refresh_export_blockers(self, select_tab=False):
         self._apply_current_include_states()
+        srt_only = self.export_mode_combo.currentData() == "srt_only"
+        export_label = {"srt_only": "确认并导出 SRT", "segments": "确认并导出分段视频",
+                        "video_only": "确认并导出视频"}.get(self.export_mode_combo.currentData(), "确认并生成视频与 SRT")
+        self.postprocess_controls.setEnabled(not self._task_refresh_running and not srt_only)
+        self.seam_cover_controls.setEnabled(not self._task_refresh_running and self.export_mode_combo.currentData() in ("joined", "video_only"))
         missing_findings = smart_video_missing_findings(self.bundle)
         extra_findings = smart_video_extra_clip_findings(self.bundle)
         findings = missing_findings + extra_findings
@@ -1563,7 +1631,7 @@ class SmartVideoReviewDialog(QtWidgets.QDialog):
         }
         self.blocker_banner.setVisible(bool(findings or skipped_tasks))
         if blocked:
-            self.export_button.setText("确认并生成视频与 SRT")
+            self.export_button.setText(export_label)
             self.blocker_banner.setStyleSheet(
                 "QLabel { background:#B3261E; color:white; border-radius:4px; "
                 "padding:10px; font-weight:600; }"
@@ -1590,11 +1658,10 @@ class SmartVideoReviewDialog(QtWidgets.QDialog):
             )
             self.export_button.setText(
                 "导出其余任务" if skipped_tasks else
-                "确认并导出分段视频" if self.export_mode_combo.currentData() == "segments" else "确认并生成视频与 SRT"
+                export_label
             )
         else:
-            self.export_button.setText("确认并导出分段视频" if self.export_mode_combo.currentData() == "segments"
-                                       else "确认并生成视频与 SRT")
+            self.export_button.setText(export_label)
         if not blocked and self.bundle.get("tasks") and all(
             smart_video_task_review_decision(task) == "skipped"
             for task in self.bundle["tasks"]
@@ -2031,6 +2098,7 @@ class SmartVideoReviewDialog(QtWidgets.QDialog):
         self.timeline_review.apply_pending_subtitle_settings()
         self.bundle.setdefault("settings", {})["export_mode"] = self.export_mode_combo.currentData()
         self.bundle["settings"].update(self.postprocess_controls.selection())
+        self.bundle["settings"].update(self.seam_cover_controls.selection())
         skipped_tasks = {
             index for index, task in enumerate(self.bundle.get("tasks", []))
             if smart_video_task_review_decision(task) == "skipped"
@@ -2095,7 +2163,8 @@ class SmartVideoReviewDialog(QtWidgets.QDialog):
             bundle = self.collect()
             export_tasks = [task for task in bundle.get("tasks", [])
                             if smart_video_task_review_decision(task) != "skipped"]
-            self.postprocess_controls.selection(validate=bool(export_tasks))
+            self.postprocess_controls.selection(validate=bool(export_tasks) and self.export_mode_combo.currentData() != "srt_only")
+            self.seam_cover_controls.selection(validate=bool(export_tasks) and self.export_mode_combo.currentData() in ("joined", "video_only"))
             if not bundle.get("tasks") or (export_tasks and not any(
                 clip.get("included", True)
                 for task in export_tasks
@@ -2174,7 +2243,7 @@ class SmartVideoExportResultDialog(QtWidgets.QDialog):
         label = QtWidgets.QLabel(
             f"成功 {len(completed)} 个任务，暂缓 {len(skipped)} 个任务，"
             f"失败 {len(failed)} 个任务。"
-            "双击成功项可打开视频，双击暂缓项可打开任务目录。"
+            "双击成功项可打开导出文件，双击暂缓项可打开任务目录。"
             + ("后处理失败项可双击打开保留的原成片。" if any(item.get("stage") == "postprocess" for item in failed) else "")
             + ("失败详情已写入程序日志。" if failed else ""),
             self,
@@ -2189,6 +2258,8 @@ class SmartVideoExportResultDialog(QtWidgets.QDialog):
         tree.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
         for item in completed:
             status = ("已跳过" if item.get("status") == "skipped" else
+                      "SRT 已导出" if item.get("export_mode") == "srt_only" else
+                      "视频已导出（无字幕）" if item.get("export_mode") == "video_only" else
                       f"已生成 {item.get('segment_count', 0)} 段" if item.get("export_mode") == "segments" else "已生成")
             video = str(item.get("video") or item.get("message") or "")
             srt = str(item.get("srt") or "")
@@ -2198,7 +2269,7 @@ class SmartVideoExportResultDialog(QtWidgets.QDialog):
                 self._short_path(video),
                 self._short_path(srt),
             ])
-            row.setData(0, QtCore.Qt.UserRole, str(item.get("video") or ""))
+            row.setData(0, QtCore.Qt.UserRole, str(item.get("video") or item.get("srt") or ""))
             row.setToolTip(2, video)
             row.setToolTip(3, srt)
             tree.addTopLevelItem(row)
@@ -2251,6 +2322,8 @@ class SmartVideoExportResultDialog(QtWidgets.QDialog):
 
     def _open_item(self, item, _column):
         value = str(item.data(0, QtCore.Qt.UserRole) or "")
+        if not value:
+            return
         path = Path(value)
         if path.is_file() or path.is_dir():
             QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(str(path.resolve())))

@@ -3,6 +3,7 @@ from qt_compat import QtWidgets
 from .engine import (
     SMART_VIDEO_EDITOR_CONFIG_KEY,
     normalize_smart_video_editor_settings,
+    describe_breath_detection_mode,
 )
 
 
@@ -17,6 +18,11 @@ class SmartVideoEditorSettingsPage:
         content = QtWidgets.QWidget(scroll)
         form = QtWidgets.QFormLayout(content)
         form.setFieldGrowthPolicy(QtWidgets.QFormLayout.AllNonFixedFieldsGrow)
+
+        from .breath_preset_ui import BreathPresetPicker
+        self.breath_preset_picker = BreathPresetPicker(content)
+        self.breath_preset_picker.presetApplied.connect(self._apply_breath_preset)
+        form.addRow("气口预设：", self.breath_preset_picker)
 
         self.lead_padding_spinbox = QtWidgets.QSpinBox(content)
         self.lead_padding_spinbox.setRange(0, 3000)
@@ -110,6 +116,10 @@ class SmartVideoEditorSettingsPage:
             "并集删除更多，交集删除更少。"
         )
         form.addRow("气口判断方式：", self.breath_detection_mode_combo)
+        self.breath_mode_hint = QtWidgets.QLabel(content)
+        self.breath_mode_hint.setWordWrap(True)
+        self.breath_mode_hint.setStyleSheet("color:#666;")
+        form.addRow(self.breath_mode_hint)
         form.addRow("", self.silence_detection_checkbox)
         form.addRow("静音音量阈值：", self.silence_db_spinbox)
         form.addRow("", self.voice_detection_checkbox)
@@ -203,7 +213,8 @@ class SmartVideoEditorSettingsPage:
         form.addRow("", self.subtitle_line_break_checkbox)
 
         subtitle_note = QtWidgets.QLabel(
-            "间隔 -1 表示保留模型时间，0 ms 表示字幕块首尾相接。单词数和"
+            "间隔 -1 表示保留模型时间，0 ms 表示字幕延长至下一块（会覆盖中间静音）；"
+            "时间线的模型原始时间轨不受此项影响。单词数和"
             "字符数同时启用时，任何一个达到上限都会切分。",
             content,
         )
@@ -230,7 +241,9 @@ class SmartVideoEditorSettingsPage:
         self.export_mode_combo = QtWidgets.QComboBox(content)
         self.export_mode_combo.addItem("合并视频 + SRT", "joined")
         self.export_mode_combo.addItem("导出分段视频（不拼接，不生成 SRT）", "segments")
-        self.export_mode_combo.setToolTip("按核对顺序每个保留的源视频输出一段，编号 001、002…；同样应用裁切和排除决定。")
+        self.export_mode_combo.addItem("仅导出 SRT（按核对时间线）", "srt_only")
+        self.export_mode_combo.addItem("仅导出合并视频（无字幕）", "video_only")
+        self.export_mode_combo.setToolTip("分段模式逐段输出视频；仅 SRT 模式按当前核对后的顺序、裁切和气口生成字幕，不生成视频，不重新识别；仅视频模式输出一条完整 MP4，不加载字幕模型、不生成 SRT。")
         self.auto_export_checkbox = QtWidgets.QCheckBox(
             "没有发生裁切且全部通过时直接导出；有裁切或异常时打开核对界面",
             content,
@@ -239,6 +252,11 @@ class SmartVideoEditorSettingsPage:
         form.addRow("FFmpeg 编码器：", browse_row)
         form.addRow("已有输出：", self.existing_output_combo)
         form.addRow("默认导出方式：", self.export_mode_combo)
+        from .seam_cover_ui import SeamCoverControls
+        self.seam_cover_controls = SeamCoverControls({}, content)
+        form.addRow(self.seam_cover_controls)
+        self.export_mode_combo.currentIndexChanged.connect(
+            lambda _index: self.seam_cover_controls.setEnabled(self.export_mode_combo.currentData() in ("joined", "video_only")))
         form.addRow("", self.auto_export_checkbox)
 
         note = QtWidgets.QLabel(
@@ -266,6 +284,11 @@ class SmartVideoEditorSettingsPage:
         )
         self.load_config({})
 
+    def _apply_breath_preset(self, preset_id):
+        from .breath_preset_ui import apply_preset_to_controls
+        apply_preset_to_controls(self, preset_id)
+        self._update_enabled_state()
+
     def _browse_ffmpeg(self):
         selected, _filter = QtWidgets.QFileDialog.getOpenFileName(
             self.widget,
@@ -278,6 +301,7 @@ class SmartVideoEditorSettingsPage:
 
     def _update_enabled_state(self):
         mode = str(self.breath_detection_mode_combo.currentData() or "voice_refined")
+        self.breath_mode_hint.setText(describe_breath_detection_mode(mode))
         needs_db = mode in {"db_only", "union", "intersection", "voice_refined"}
         needs_voice = mode in {
             "voice_only", "union", "intersection", "voice_refined"
@@ -363,8 +387,10 @@ class SmartVideoEditorSettingsPage:
         self.ffmpeg_path_edit.setText(settings["ffmpeg_path"])
         index = self.existing_output_combo.findData(settings["existing_output"])
         self.existing_output_combo.setCurrentIndex(index if index >= 0 else 0)
-        self.export_mode_combo.setCurrentIndex(1 if settings["export_mode"] == "segments" else 0)
+        self.export_mode_combo.setCurrentIndex(self.export_mode_combo.findData(settings["export_mode"]))
         self.auto_export_checkbox.setChecked(settings["auto_export_clean"])
+        self.seam_cover_controls.load_settings(settings)
+        self.seam_cover_controls.setEnabled(settings["export_mode"] in ("joined", "video_only"))
         self._update_enabled_state()
         self._update_subtitle_state()
 
@@ -410,9 +436,11 @@ class SmartVideoEditorSettingsPage:
             "existing_output": self.existing_output_combo.currentData(),
             "export_mode": self.export_mode_combo.currentData(),
             "auto_export_clean": self.auto_export_checkbox.isChecked(),
+            **self.seam_cover_controls.selection(),
         })
 
     def validate(self):
+        self.seam_cover_controls.selection(validate=self.export_mode_combo.currentData() in ("joined", "video_only"))
         output_name = self.output_folder_edit.text().strip()
         if (
             not output_name

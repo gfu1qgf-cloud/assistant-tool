@@ -2,12 +2,12 @@ from app_paths import DATA_ROOT as APP_ROOT
 from app_plugins.api import MAIN_MENU, PluginCommand, PluginSettingsPage
 from .settings import ClientSettingsPage
 from model.QtThreadLifecycle import thread_is_active
-
+from .version import APP_VERSION
 
 class AIModelClientPlugin:
     plugin_id = "ai_model_client"
     display_name = "AI 模型试用台"
-    version = "1.8.1"
+    version = APP_VERSION
     required_api_version = 1
 
     def __init__(self):
@@ -43,9 +43,14 @@ class AIModelClientPlugin:
         return True
 
     def can_close(self):
-        if self.dialog is not None and thread_is_active(self.dialog.handle):
-            self.dialog.handle.requestInterruption()
-            return False, "AI 试用台正在安全结束请求，请稍候再退出（网络读取超时最多60秒）。"
+        windows = [self.dialog, *self.dialog.child_chat_windows()] if self.dialog is not None else []
+        active = [window for window in windows if thread_is_active(window.handle)]
+        for window in active:
+            operation = getattr(window,'operation',None)
+            if not operation or operation.get('type') != 'purge':
+                window.handle.requestInterruption()
+        if active:
+            return False, 'AI试用台正在安全结束请求或删除清理，请稍候退出（网络读取超时最多60秒）。'
         return True, ""
 
     def stop(self):

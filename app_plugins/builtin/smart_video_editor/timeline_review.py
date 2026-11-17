@@ -11,6 +11,7 @@ from .engine import (
     apply_manual_breath_overrides,
     breath_cut_plan,
     combine_breath_gap_ranges,
+    describe_breath_detection_mode,
     find_pause_removals,
     kept_ranges,
     refine_trim_boundaries,
@@ -166,6 +167,15 @@ class SmartVideoTimelineReview(QtWidgets.QWidget):
         self.breath_panel = breath_panel
         breath_layout = QtWidgets.QGridLayout(breath_panel)
         breath_layout.setContentsMargins(8, 5, 8, 5)
+        from .breath_preset_ui import BreathPresetPicker
+        self.breath_preset_picker = BreathPresetPicker(breath_panel)
+        self.breath_preset_picker.presetApplied.connect(self._apply_breath_preset)
+        self.lead_padding_spinbox = QtWidgets.QSpinBox(breath_panel)
+        self.tail_padding_spinbox = QtWidgets.QSpinBox(breath_panel)
+        for control in (self.lead_padding_spinbox, self.tail_padding_spinbox):
+            control.setRange(0, 3000)
+            control.setSingleStep(50)
+            control.setSuffix(" ms")
         self.breath_detection_mode_combo = QtWidgets.QComboBox(breath_panel)
         self.breath_detection_mode_combo.addItem("仅分贝（旧版）", "db_only")
         self.breath_detection_mode_combo.addItem("仅人声", "voice_only")
@@ -177,6 +187,9 @@ class SmartVideoTimelineReview(QtWidgets.QWidget):
         self.breath_detection_mode_combo.setToolTip(
             "并集：任一检测认为是气口就删除；交集：两种检测都确认才删除。"
         )
+        self.breath_mode_hint = QtWidgets.QLabel(breath_panel)
+        self.breath_mode_hint.setWordWrap(True)
+        self.breath_mode_hint.setStyleSheet("color:#616B7E;")
         self.silence_detection_checkbox = QtWidgets.QCheckBox(
             "启用分贝检测", breath_panel
         )
@@ -305,6 +318,10 @@ class SmartVideoTimelineReview(QtWidgets.QWidget):
         breath_layout.addWidget(self.restore_removed_button, 4, 2, 1, 2)
         breath_layout.addWidget(self.clear_manual_button, 4, 4, 1, 2)
         breath_layout.addWidget(self.breath_status_label, 5, 0, 1, 8)
+        breath_layout.addWidget(self.breath_preset_picker, 6, 0, 1, 8)
+        breath_layout.addWidget(self.lead_padding_spinbox, 7, 0)
+        breath_layout.addWidget(self.tail_padding_spinbox, 7, 1)
+        breath_layout.addWidget(self.breath_mode_hint, 8, 0, 1, 8)
         # Only the empty tail column may absorb spare window width.  Giving
         # stretch to a parameter column makes its spin box look like an
         # oversized text field and merely moves the original layout problem.
@@ -439,6 +456,9 @@ class SmartVideoTimelineReview(QtWidgets.QWidget):
         self.subtitle_gap_spinbox.setRange(-1, 5000)
         self.subtitle_gap_spinbox.setSpecialValueText("保留")
         self.subtitle_gap_spinbox.setSuffix(" ms")
+        self.subtitle_gap_spinbox.setToolTip(
+            "保留（-1）：按原识别时间结束。0 ms：任务字幕延长至下一块，可能覆盖中间静音；"
+            "正数：设置固定块间隔。模型原始时间轨始终保留识别时间，不受此项影响。")
         self.subtitle_line_break_checkbox = QtWidgets.QCheckBox(
             "字幕块内允许换行", self.subtitle_settings_panel
         )
@@ -602,6 +622,8 @@ class SmartVideoTimelineReview(QtWidgets.QWidget):
             "请选择最终使用的一个版本：", self.duplicate_group_panel
         )
         self.duplicate_group_hint.setStyleSheet("color:#616B7E;")
+        self.duplicate_group_hint.setWordWrap(True)
+        self.duplicate_group_hint.setTextFormat(QtCore.Qt.TextFormat.PlainText)
         self.duplicate_group_layout.addWidget(self.duplicate_group_hint)
         self.duplicate_choices_widget = QtWidgets.QWidget(
             self.duplicate_group_panel
@@ -614,7 +636,11 @@ class SmartVideoTimelineReview(QtWidgets.QWidget):
         self.duplicate_group_layout.addWidget(self.duplicate_choices_widget)
         self.duplicate_button_group = QtWidgets.QButtonGroup(self)
         self.duplicate_button_group.setExclusive(True)
-        self.duplicate_group_panel.setMaximumHeight(180)
+        # The inspector already scrolls; let larger groups retain full row height.
+        self.duplicate_group_panel.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Preferred,
+            QtWidgets.QSizePolicy.Policy.Minimum,
+        )
         self.duplicate_group_panel.hide()
         right_layout.addWidget(self.duplicate_group_panel)
         task_decision = QtWidgets.QGroupBox("当前任务生成决定", right)
@@ -914,8 +940,20 @@ class SmartVideoTimelineReview(QtWidgets.QWidget):
             if saved else "color:#B3261E;font-weight:600;"
         )
 
+    def _apply_breath_preset(self, preset_id):
+        if self._breath_reanalysis_running or self._task_refresh_running:
+            return
+        from .breath_preset_ui import apply_preset_to_controls
+        from .breath_presets import get_preset
+        apply_preset_to_controls(self, preset_id)
+        self._update_breath_control_state()
+        self.breath_status_label.setText(
+            f"已载入“{get_preset(preset_id).name}”；点击“检测并应用”更新当前剪辑，或保存气口默认。")
+
     def _load_breath_controls(self):
         settings = self.bundle.get("settings", {})
+        self.lead_padding_spinbox.setValue(int(settings.get("lead_padding_ms", 120)))
+        self.tail_padding_spinbox.setValue(int(settings.get("tail_padding_ms", 220)))
         mode_index = self.breath_detection_mode_combo.findData(
             settings.get("breath_detection_mode", "voice_refined")
         )
@@ -962,9 +1000,13 @@ class SmartVideoTimelineReview(QtWidgets.QWidget):
 
     def _update_breath_control_state(self):
         busy = self._breath_reanalysis_running or self._task_refresh_running
+        self.breath_preset_picker.setEnabled(not busy)
+        self.lead_padding_spinbox.setEnabled(not busy)
+        self.tail_padding_spinbox.setEnabled(not busy)
         self.task_refresh_button.setEnabled(self._task_refresh_available and not self._breath_reanalysis_running
             and not self._task_refresh_canceling and self.task_combo.currentIndex() >= 0)
         mode = str(self.breath_detection_mode_combo.currentData() or "voice_refined")
+        self.breath_mode_hint.setText(describe_breath_detection_mode(mode, script_guard=not self.breath_only))
         needs_db = mode in {"db_only", "union", "intersection", "voice_refined"}
         needs_voice = mode in {
             "voice_only", "union", "intersection", "voice_refined"
@@ -1047,6 +1089,8 @@ class SmartVideoTimelineReview(QtWidgets.QWidget):
 
     def _breath_settings_from_controls(self):
         return {
+            "lead_padding_ms": self.lead_padding_spinbox.value(),
+            "tail_padding_ms": self.tail_padding_spinbox.value(),
             "breath_detection_mode": self.breath_detection_mode_combo.currentData(),
             "silence_detection_enabled": self.silence_detection_checkbox.isChecked(),
             "silence_threshold_db": self.silence_db_spinbox.value(),
@@ -2159,13 +2203,15 @@ class SmartVideoTimelineReview(QtWidgets.QWidget):
         return open_file_location(clips[clip_index].get("source"), self)
 
     def _clear_duplicate_choices(self):
-        for button in self.duplicate_button_group.buttons():
-            self.duplicate_button_group.removeButton(button)
-            button.deleteLater()
         while self.duplicate_choices_layout.count():
             item = self.duplicate_choices_layout.takeAt(0)
             widget = item.widget()
             if widget is not None:
+                # takeAt() only removes layout ownership. Until deleteLater()
+                # runs, a visible old button still paints over its replacement.
+                widget.hide()
+                widget.blockSignals(True)
+                self.duplicate_button_group.removeButton(widget)
                 widget.deleteLater()
 
     def _update_duplicate_group_controls(self, clip_index):
@@ -2211,6 +2257,7 @@ class SmartVideoTimelineReview(QtWidgets.QWidget):
             button = QtWidgets.QRadioButton(
                 label, self.duplicate_choices_widget
             )
+            button.setMinimumHeight(button.minimumSizeHint().height())
             button.setToolTip(
                 str(candidate.get("recognized_text") or "没有识别文本")
             )

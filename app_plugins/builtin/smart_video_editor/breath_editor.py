@@ -54,6 +54,7 @@ class BreathCutSourceDialog(QtWidgets.QDialog):
     def __init__(self, sources=(), parent=None):
         super().__init__(parent)
         self.selected_sources = []
+        self.preset_settings = {}
         self.setWindowTitle("剪辑气口：选择视频")
         self.resize(760, 480)
         layout = QtWidgets.QVBoxLayout(self)
@@ -65,6 +66,10 @@ class BreathCutSourceDialog(QtWidgets.QDialog):
         )
         note.setWordWrap(True)
         layout.addWidget(note)
+        from .breath_preset_ui import BreathPresetPicker
+        self.breath_preset_picker = BreathPresetPicker(self)
+        self.breath_preset_picker.presetApplied.connect(self._apply_breath_preset)
+        layout.addWidget(self.breath_preset_picker)
         self.list_widget = _VideoDropList(self)
         self.list_widget.setAlternatingRowColors(True)
         self.list_widget.filesDropped.connect(self.add_sources)
@@ -90,6 +95,12 @@ class BreathCutSourceDialog(QtWidgets.QDialog):
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
         self.add_sources(sources)
+
+    def _apply_breath_preset(self, preset_id):
+        from .breath_presets import get_preset
+        self.preset_settings = get_preset(preset_id).values()
+        self.breath_preset_picker.description.setText(
+            "本次已应用：" + get_preset(preset_id).description)
 
     def _browse(self):
         files, _selected_filter = QtWidgets.QFileDialog.getOpenFileNames(
@@ -166,9 +177,12 @@ class BreathCutSourceDialog(QtWidgets.QDialog):
         super().accept()
 
     @classmethod
-    def get_sources(cls, sources=(), parent=None):
+    def get_sources(cls, sources=(), parent=None, *, settings_out=None):
+        """Keep the list API; pass explicit per-run preset values on acceptance."""
         dialog = cls(sources, parent)
         if dialog.exec() == QtWidgets.QDialog.Accepted:
+            if settings_out is not None:
+                settings_out.update(dialog.preset_settings)
             return dialog.selected_sources
         return None
 

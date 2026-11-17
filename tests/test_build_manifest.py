@@ -34,6 +34,16 @@ class BuildManifestTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "native stack"):
                 module.make_manifest("v2.0.0", "a" * 40)
 
+    def test_untested_torch_variant_fails(self):
+        from types import SimpleNamespace
+        fake_cv = SimpleNamespace(__version__='4.14.0', getBuildInformation=lambda: '')
+        distributions = [SimpleNamespace(metadata={'Name': 'torch'}, version='2.13.0+cu130'),
+                         SimpleNamespace(metadata={'Name': 'torchaudio'}, version='2.11.0+cpu')]
+        with patch.dict(sys.modules, {'cv2': fake_cv, 'numpy': SimpleNamespace(__version__='2.5.4')}), \
+                patch.object(module.importlib.metadata, 'distributions', return_value=distributions):
+            with self.assertRaisesRegex(ValueError, 'CPU variant: torch'):
+                module.make_manifest('v3.5.0', 'a'*40)
+
 
 if __name__ == "__main__":
     unittest.main()

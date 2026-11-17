@@ -517,7 +517,9 @@ def build_subtitle_tracks(
             ),
         })
     block_gap_ms = settings.get("srt_block_gap_ms", -1) if settings else -1
-    _apply_track_gap(recognized_blocks, block_gap_ms)
+    # The model track is recognition evidence, not an export preview. A user
+    # caption-gap setting (especially 0 = contiguous captions) must not extend
+    # its measured word times across seconds of silence or another source.
     _apply_track_gap(aligned_blocks, block_gap_ms)
     return recognized_blocks, aligned_blocks
 

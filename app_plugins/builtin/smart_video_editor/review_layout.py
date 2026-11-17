@@ -107,10 +107,15 @@ def arrange_timeline(review, toolbar, refresh_button):
     breath = review.breath_panel
     breath.setTitle("气口与内部停顿")
     layout = fresh_layout(breath)
+    layout.addWidget(review.breath_preset_picker)
+    review.breath_preset_picker.show()
     layout.addWidget(form_group("裁切策略", [
         ("判断方式", review.breath_detection_mode_combo),
+        ("", review.breath_mode_hint),
         ("", review.silence_detection_checkbox), ("", review.voice_detection_checkbox),
         ("", review.compress_pauses_checkbox),
+        ("片头留白", review.lead_padding_spinbox),
+        ("片尾留白", review.tail_padding_spinbox),
         ("内部停顿 ≥", review.pause_threshold_spinbox),
         ("向前保留", review.pause_keep_before_spinbox),
         ("向后保留", review.pause_keep_after_spinbox)], breath))

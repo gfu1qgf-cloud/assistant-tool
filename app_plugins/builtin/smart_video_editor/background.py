@@ -19,12 +19,18 @@ def analysis_resources(phase, settings, jobs, files):
     return tuple(sorted({directory_resource(path) for path in directories}))
 
 
-def render_inputs(bundle):
-    return {str(Path(clip["source"]).resolve()): version_of(clip["source"])
+def render_inputs(bundle, settings=None, *, include_seam_cover=True):
+    versions = {str(Path(clip["source"]).resolve()): version_of(clip["source"])
             for task in (bundle or {}).get("tasks", [])
             for clip in task.get("clips", [])
             if clip.get("included", True) and clip.get("source")
             and smart_video_task_review_decision(task) != "skipped"}
+    from .seam_cover import is_active, validate_source
+    options = settings if settings is not None else (bundle or {}).get("settings", {})
+    if versions and include_seam_cover and is_active(options):
+        source = validate_source(options)
+        versions[str(Path(source).resolve())] = version_of(source)
+    return versions
 
 
 def refresh_inputs(jobs):
@@ -41,8 +47,9 @@ def render_resources(bundle):
 
 def run_smart_video_job(payload, context, *, registry=None):
     phase, settings = payload["phase"], payload["settings"]
-    context.report("正在准备视频处理", 0)
-    if phase == "export" and settings.get("postprocess_enabled") and any(
+    srt_only = phase == "export" and settings.get("export_mode") == "srt_only"
+    context.report("正在准备字幕导出" if srt_only else "正在准备视频处理", 0)
+    if phase == "export" and not srt_only and settings.get("postprocess_enabled") and any(
         smart_video_task_review_decision(task) != "skipped" for task in payload["bundle"].get("tasks", [])
     ) and (registry is None or not payload.get("postprocess")):
         raise ValueError("导出后处理缺少提交时的节点快照，请重新选择工作流后提交。")
@@ -56,7 +63,7 @@ def run_smart_video_job(payload, context, *, registry=None):
         name = settings.get("whisper_model_size", "base")
         context.report(f"加载字幕模型 {name}", None)
         return globalValue.get_whisper_model(name)
-    if payload.get("load_model"):
+    if payload.get("load_model") and not srt_only:
         if phase == "export":
             # No model is needed to crop/concatenate video. The shared subtitle
             # helper invokes this loader inside its native-inference guard.
@@ -86,7 +93,7 @@ def run_smart_video_job(payload, context, *, registry=None):
             result = export_smart_video_bundle(payload["bundle"], settings,
                 progress=progress, cancelled=context.is_canceled, alignment_model=model,
                 alignment_model_loader=model_loader)
-            if payload.get("postprocess"):
+            if payload.get("postprocess") and not srt_only:
                 from .postprocess_workflow import process_results
                 result = process_results(result, payload["bundle"], payload["postprocess"], registry, context, settings)
         elif phase == "breath_export":
@@ -96,7 +103,8 @@ def run_smart_video_job(payload, context, *, registry=None):
             raise ValueError(f"未知的视频处理阶段：{phase}")
     except InterruptedError as error:
         raise BackgroundTaskCanceled(str(error)) from error
-    result["paths"] = [str(item["video"]) for item in result["completed"] if item.get("video")]
+    result["paths"] = [str(item.get("video") or item["srt"]) for item in result["completed"]
+                       if item.get("video") or item.get("srt")]
     for item in result["failed"]:
         if item.get("original_video"):
             result["paths"].append(str(item["original_video"]))

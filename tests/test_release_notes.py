@@ -42,6 +42,14 @@ class ReleaseNotesTests(unittest.TestCase):
         self.assertEqual(extract(text, "v1.0.1"), "## v1.0.1 2026-08-26\n\n- 一。\n")
         self.assertNotIn("一。", extract(text, "v1.0.10"))
 
+    def test_development_diary_does_not_leak_into_formal_release_body(self):
+        text='## v3.5.0 2026-11-17\n\n- 正式功能。\n\n### 说明\n\n保留说明。\n\n## 内部开发流水\n\n- 尚未发布的草稿。\n\n## v3.0.2\n\n- 旧版。\n'
+        notes=extract(text,'v3.5.0')
+        self.assertIn('正式功能',notes)
+        self.assertIn('保留说明',notes)
+        self.assertNotIn('内部开发流水',notes)
+        self.assertNotIn('尚未发布',notes)
+
     def test_unknown_duplicate_empty_or_placeholder_notes_fail(self):
         invalid = [
             "## v1.0.1\n- 不同版本。\n",

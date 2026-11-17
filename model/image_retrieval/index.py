@@ -19,6 +19,11 @@ from model.InventoryManager import MATERIAL_IMAGE_SUFFIXES
 
 INDEX_ROOT = APP_ROOT / "SmartImageSearch"
 THUMBNAIL_VERSION = "v2"
+DELETED_IMAGES_FOLDER = "已删除图片（智能搜索）"
+
+
+def is_deleted_image_path(path):
+    return any(part.casefold() == DELETED_IMAGES_FOLDER.casefold() for part in Path(path).parts)
 
 
 def discover_external_groups(roots):
@@ -29,11 +34,16 @@ def discover_external_groups(roots):
         if not root.is_dir():
             raise FileNotFoundError(f"图片库目录无法访问：{root}；原索引未删除")
         images = []
-        for path in root.rglob("*"):
-            if path.is_file() and path.suffix.lower() in MATERIAL_IMAGE_SUFFIXES:
-                relative = path.parent.relative_to(root)
-                label = root.name if relative == Path(".") else f"{root.name}/{relative}"
-                images.append({"path": str(path), "source_name": label})
+        if not is_deleted_image_path(root):
+            for directory, subdirectories, filenames in os.walk(root, followlinks=False):
+                subdirectories[:] = [name for name in subdirectories
+                                     if name.casefold() != DELETED_IMAGES_FOLDER.casefold()]
+                for name in filenames:
+                    path = Path(directory) / name
+                    if path.is_file() and path.suffix.lower() in MATERIAL_IMAGE_SUFFIXES:
+                        relative = path.parent.relative_to(root)
+                        label = root.name if relative == Path(".") else f"{root.name}/{relative}"
+                        images.append({"path": str(path), "source_name": label})
         groups.append({"source_kind": "folder", "name": root.name,
                        "images": images})
     return groups
@@ -56,6 +66,8 @@ def _resolve_roots(allowed_roots):
 
 
 def _within_roots(path, roots, parent_cache=None):
+    if is_deleted_image_path(path):
+        return False
     try:
         candidate = Path(path)
         if parent_cache is None or candidate.is_symlink():
@@ -69,6 +81,8 @@ def _within_roots(path, roots, parent_cache=None):
                 parent_cache[candidate.parent] = parent
             resolved = parent / candidate.name
     except (OSError, RuntimeError, ValueError):
+        return False
+    if is_deleted_image_path(resolved):
         return False
     # Component-based containment excludes similarly named sibling folders and
     # links/junctions pointing outside the selected library.
@@ -185,7 +199,7 @@ class ImageSearchIndex:
         for group in groups:
             for image in group.get("images", ()):
                 path = str(image.get("path") or "")
-                if path:
+                if path and not is_deleted_image_path(path):
                     current.setdefault(os.path.normcase(os.path.abspath(path)), (
                         path, str(group.get("source_kind") or ""),
                         str(image.get("source_name") or group.get("name") or ""),
@@ -354,7 +368,7 @@ class ImageSearchIndex:
                     "SELECT path,source_kind,source_name,thumbnail,vector "
                     "FROM images WHERE model_id=? AND vector IS NOT NULL",
                     (model_id,),
-                )]
+                ) if not is_deleted_image_path(row["path"])]
             if not rows:
                 result = ([], np.empty((0, 0), dtype=np.float32))
             else:

@@ -16,6 +16,15 @@ from app_plugins.builtin.batch_text_video.store import Store, fresh_state, file_
 
 
 class Parallel64Tests(unittest.TestCase):
+    def setUp(self):
+        # Synthetic encoders allocate no media buffers. Test the scheduler's
+        # limit, not the live workstation's changing RAM/commit headroom.
+        from app_plugins.builtin.batch_text_video import memory_pressure as memory
+        counter=patch.object(memory,'read_status',return_value=dict(
+            total_physical=512*memory.GIB,free_physical=512*memory.GIB,
+            total_commit=1024*memory.GIB,free_commit=512*memory.GIB))
+        counter.start();self.addCleanup(counter.stop)
+
     def test_policy_accepts_64_rejects_65_and_bounds_each_encoder_threads(self):
         self.assertEqual(MAX_EXPORT_WORKERS, 64)
         for workers in (1, 8, 16, 32, 64):
@@ -59,7 +68,7 @@ class Parallel64Tests(unittest.TestCase):
         self.assertEqual(gate.active, 0)
         self.assertEqual(len(gate.waiters), 0)
 
-    def test_72_jobs_reach_64_encoders_and_publish_once_in_order(self):
+    def test_72_jobs_reach_64_encoders_publish_once_and_return_task_order(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory); store = Store(root/'private'); state = fresh_state()
             state['settings'].update(export_workers=64, music_enabled=False, output_dir=str(root/'out'), layers=[])
@@ -97,7 +106,12 @@ class Parallel64Tests(unittest.TestCase):
             self.assertEqual((result['completed'], result['failed']), (72, 0), (result, messages[-8:]))
             self.assertNotIn('error', result)
             self.assertEqual(peak, 64)
-            self.assertEqual(published, list(map(str, range(72))))
+            # Independent outputs save as soon as they finish. Only the
+            # returned paths must follow task order, not OS thread completion.
+            self.assertCountEqual(published,list(map(str,range(72))))
+            self.assertEqual(len(published),len(set(published)))
+            self.assertEqual([Path(path).stem for path in result['paths']],
+                             [f'video-{i}' for i in range(72)])
             self.assertTrue(all(Path(path).is_file() for path in result['paths']))
             self.assertTrue(all(job['status'] == '已完成' for job in final['jobs']))
             print('64-worker scheduler: peak=64, ordered published=72', flush=True)

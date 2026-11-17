@@ -359,9 +359,21 @@ class StitchUiTests(unittest.TestCase):
             worker = dialog._worker
             self.assertIsNotNone(worker)
             loop = QtCore.QEventLoop()
-            worker.finished.connect(loop.quit)
-            QtCore.QTimer.singleShot(12000, loop.quit)
+            # finished precedes native cleanup. The UI intentionally stays busy
+            # until its joined-thread completion gate has retired this worker.
+            # Wait for that public state with the same finite deadline instead
+            # of asserting synchronously at the earlier QThread signal.
+            poll = QtCore.QTimer()
+            poll.setInterval(10)
+            poll.timeout.connect(lambda: loop.quit() if not dialog.is_busy() else None)
+            poll.start()
+            deadline = QtCore.QTimer()
+            deadline.setSingleShot(True)
+            deadline.timeout.connect(loop.quit)
+            deadline.start(12000)
             loop.exec()
+            poll.stop()
+            deadline.stop()
             self.app.processEvents()
             self.assertFalse(dialog.is_busy(), dialog.status.text())
 
