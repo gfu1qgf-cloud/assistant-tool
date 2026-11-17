@@ -2,7 +2,9 @@ import copy
 import threading
 import time
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
+from PyQt6 import sip
 from qt_compat import QtCore, QtWidgets
 from tests import test_ai_model_client as base
 from app_plugins.builtin.ai_model_client.group_service import default_group,validate_group,group_messages,preflight_group
@@ -23,7 +25,6 @@ class GroupConfigTests(unittest.TestCase):
 class GroupUITests(unittest.TestCase):
     setUpClass=base.UITests.__dict__['setUpClass']
     setUp=base.UITests.setUp
-    tearDown=base.UITests.tearDown
     wait=base.UITests.wait
     result=base.UITests.result
 
@@ -39,8 +40,80 @@ class GroupUITests(unittest.TestCase):
         group.group_config=config
         return group
 
+    def tearDown(self):
+        self.stop_group_workers()
+        base.UITests.tearDown(self)
+
+    def stop_group_workers(self):
+        # Normal group windows deliberately keep the current API request alive
+        # when hidden. A test must cancel/join those children before deleting
+        # its temporary store, including when an assertion just failed.
+        groups=self.dialog.findChildren(GroupChatDialog)
+        for group in groups:
+            if not sip.isdeleted(group):
+                group.pause_group()
+                if group.handle:group.handle.requestInterruption()
+        for group in groups:
+            if not sip.isdeleted(group):
+                self.wait(lambda current=group: current.handle is None,timeout=15)
+                if not sip.isdeleted(group):group.close()
+
+    def test_cleanup_cancels_and_joins_child_request_before_store_removal(self):
+        group=self.open_group(rounds=1)
+        started,canceled=threading.Event(),threading.Event()
+        def chat(*args,**_kwargs):
+            job=args[-1];started.set()
+            while not job.is_canceled():time.sleep(.003)
+            canceled.set();job.check_canceled()
+        with patch.object(group.client,'chat',side_effect=chat) as caller:
+            group.input.setPlainText('cleanup fixture');group.send()
+            self.wait(started.is_set)
+            self.stop_group_workers()
+            self.assertTrue(canceled.is_set())
+            self.assertIsNone(group.handle)
+            self.assertIsNone(group._group_plan)
+            self.assertEqual(caller.call_count,1)
+            self.assertTrue(group.store.messages(group.current_id))
+
     def settled(self,group):
-        self.wait(lambda:group.handle is None and group._group_plan is None,timeout=8)
+        total=group.group_config['round_limit']*len(group.group_config['members'])
+        deadline=time.monotonic()+20+2*total
+        last_step=None;last_progress=time.monotonic()
+        while group.handle is not None or group._group_plan is not None:
+            plan=group._group_plan
+            step=plan['step'] if plan else total
+            now=time.monotonic()
+            if step!=last_step:last_step,last_progress=step,now
+            detail=f'step={step}/{total}, status={group.status.text()!r}'
+            self.assertLess(now-last_progress,10,'group stalled: '+detail)
+            self.assertLess(now,deadline,'group exceeded total deadline: '+detail)
+            self.app.processEvents();time.sleep(.003)
+
+    def test_wait_accepts_progressing_thirty_call_discussion_beyond_old_total_limit(self):
+        now=[0.];group=SimpleNamespace(handle=object(),_group_plan={'step':0},
+            group_config={'round_limit':5,'members':list(range(6))},status=SimpleNamespace(text=lambda:'synthetic'))
+        def advance():
+            now[0]+=.7;group._group_plan['step']+=1
+            if group._group_plan['step']==30:group.handle=group._group_plan=None
+        app=self.app
+        try:
+            self.app=SimpleNamespace(processEvents=advance)
+            with patch.object(time,'monotonic',side_effect=lambda:now[0]),patch.object(time,'sleep'):
+                self.settled(group)
+        finally:self.app=app
+        self.assertGreater(now[0],15)
+
+    def test_wait_rejects_a_stalled_discussion_even_before_total_deadline(self):
+        now=[0.];group=SimpleNamespace(handle=object(),_group_plan={'step':0},
+            group_config={'round_limit':5,'members':list(range(6))},status=SimpleNamespace(text=lambda:'synthetic'))
+        app=self.app
+        try:
+            self.app=SimpleNamespace(processEvents=lambda:now.__setitem__(0,now[0]+2))
+            with patch.object(time,'monotonic',side_effect=lambda:now[0]),patch.object(time,'sleep'):
+                with self.assertRaisesRegex(AssertionError,'group stalled'):
+                    self.settled(group)
+        finally:self.app=app
+        self.assertLess(now[0],15)
 
     def test_two_members_two_rounds_then_followup_and_separate_history(self):
         group=self.open_group()
@@ -311,7 +384,7 @@ class GroupUITests(unittest.TestCase):
         config['round_limit']=5;group.group_config=config
         with patch.object(group.client,'chat',return_value=self.result()) as caller:
             group.input.setPlainText('验证讨论上限');group.send()
-            self.wait(lambda:group.handle is None and group._group_plan is None,timeout=15)
+            self.settled(group)
         self.assertEqual(caller.call_count,30)
         root=group.store.messages(group.current_id)[0]['metadata']['group_discussion']
         self.assertEqual((root['calls_started'],root['calls_done'],root['state']),(30,30,'complete'))
